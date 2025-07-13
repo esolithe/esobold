@@ -62,6 +62,8 @@ enum GGUFArch
     ARCH_QWEN2VL = 7,
     ARCH_GEMMA3 = 8,
     ARCH_GLM4 = 9,
+    ARCH_GEMMA3N = 10,
+    ARCH_JAMBA = 11,
 };
 
 struct FileFormatExtraMeta
