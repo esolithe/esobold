@@ -2292,11 +2292,11 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
         }
         //handle override tensor
         std::string tensoroverrides = inputs.override_tensors;
-        if(file_format_meta.model_architecture==GGUFArch::ARCH_GEMMA3N)
-        {
-            std::string forced = "per_layer_token_embd.weight=CPU"; //this tensor on gpu is problematic on unsloth q4_0
-            tensoroverrides = (tensoroverrides=="" ? forced: (forced+","+tensoroverrides));
-        }
+        // if(file_format_meta.model_architecture==GGUFArch::ARCH_GEMMA3N)
+        // {
+        //     std::string forced = "per_layer_token_embd.weight=CPU"; //this tensor on gpu is problematic on unsloth q4_0
+        //     tensoroverrides = (tensoroverrides=="" ? forced: (forced+","+tensoroverrides));
+        // }
         if(tensoroverrides!="" && ggml_backend_dev_count()>1)
         {
             printf("Handling Override Tensors for backends: ");
