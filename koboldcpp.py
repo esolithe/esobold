@@ -1127,7 +1127,7 @@ def autoset_gpu_layers(ctxsize, sdquanted, bbs, qkv_level): #shitty algo to dete
         if fsize > (10*1024*1024): #dont bother with models < 10mb
             cs = ctxsize
             mem = gpumem
-            if "-00001-of-0000" in fname:
+            if "-00001-of-00" in fname:
                 match = re.search(r'-(\d{5})-of-(\d{5})\.', fname)
                 if match:
                     total_parts = int(match.group(2))
@@ -2916,6 +2916,15 @@ ws ::= | " " | "\n" [ \t]{0,20}
                     # In case of any issues, just do normal gen
                     print("Structured Output not valid - discarded")
                     pass
+            elif 'json_schema' in genparams:
+                try:
+                    schema = genparams.get('json_schema')
+                    decoded = convert_json_to_gbnf(schema)
+                    if decoded:
+                        genparams["grammar"] = decoded
+                except Exception:
+                    print("Structured Output (old format) not valid - discarded")
+                    pass
 
             message_index = 0
             for message in messages_array:
@@ -3639,6 +3648,18 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                         tokenStr = tokenStr[:sindex]
 
                         if tokenStr!="" or streamDone:
+                            need_split_final_msg = True if (currfinishreason is not None and streamDone and tokenStr!="") else False
+                            if need_split_final_msg: #we need to send one message without the finish reason, then send a finish reason with no msg to follow standards
+                                if api_format == 4:  # if oai chat, set format to expected openai streaming response
+                                    event_str = json.dumps({"id":"koboldcpp","object":"chat.completion.chunk","created":int(time.time()),"model":friendlymodelname,"choices":[{"index":0,"finish_reason":None,"delta":{'role':'assistant','content':tokenStr}}]})
+                                    await self.send_oai_sse_event(event_str)
+                                elif api_format == 3:  # non chat completions
+                                    event_str = json.dumps({"id":"koboldcpp","object":"text_completion","created":int(time.time()),"model":friendlymodelname,"choices":[{"index":0,"finish_reason":None,"text":tokenStr}]})
+                                    await self.send_oai_sse_event(event_str)
+                                else:
+                                    event_str = json.dumps({"token": tokenStr, "finish_reason":None})
+                                    await self.send_kai_sse_event(event_str)
+                                tokenStr = "" # now the final finish reason can be sent alone
                             if api_format == 4:  # if oai chat, set format to expected openai streaming response
                                 event_str = json.dumps({"id":"koboldcpp","object":"chat.completion.chunk","created":int(time.time()),"model":friendlymodelname,"choices":[{"index":0,"finish_reason":currfinishreason,"delta":{'role':'assistant','content':tokenStr}}]})
                                 await self.send_oai_sse_event(event_str)
@@ -6766,7 +6787,7 @@ def show_gui():
     def load_config_gui(): #this is used to populate the GUI with a config file, whereas load_config_cli simply overwrites cli args
         file_type = [("KoboldCpp Settings", "*.kcpps *.kcppt")]
         global runmode_untouched, zenity_permitted
-        filename = zentk_askopenfilename(filetypes=file_type, defaultextension=".kcppt", initialdir=None)
+        filename = zentk_askopenfilename(filetypes=file_type, defaultextension=".kcppt", initialdir=None, title="Select kcpps or kcppt settings config file")
         if not filename or filename=="":
             return
         if not os.path.exists(filename) or os.path.getsize(filename)<4 or os.path.getsize(filename)>50000000: #for sanity, check invaid kcpps
@@ -7177,6 +7198,7 @@ def setuptunnel(global_memory, has_sd):
 def reload_from_new_args(newargs):
     try:
         args.istemplate = False
+        newargs = convert_invalid_args(newargs)
         for key, value in newargs.items(): #do not overwrite certain values
             if key not in ["remotetunnel","showgui","port","host","port_param","admin","adminpassword","admindir","admintextmodelsdir","admindatadir","adminallowhf","ssl","nocertify","benchmark","prompt","config"]:
                 setattr(args, key, value)
@@ -7202,6 +7224,7 @@ def load_config_cli(filename):
     print("Loading .kcpps configuration file...")
     with open(filename, 'r', encoding='utf-8', errors='ignore') as f:
         config = json.load(f)
+        config = convert_invalid_args(config)
         if "onready" in config:
             config["onready"] = "" #do not allow onready commands from config
         args.istemplate = False
@@ -7358,7 +7381,7 @@ def download_model_from_url(url, permitted_types=[".gguf",".safetensors", ".ggml
                 break
         if ((url.startswith("http://") or url.startswith("https://")) and end_ext_ok):
             dlfile = downloader_internal(url, "auto", False, min_file_size)
-            if handle_multipart and "-00001-of-0000" in url: #handle multipart files up to 9 parts
+            if handle_multipart and "-00001-of-00" in url: #handle multipart files up to 9 parts
                 match = re.search(r'-(\d{5})-of-(\d{5})\.', url)
                 if match:
                     total_parts = int(match.group(2))
