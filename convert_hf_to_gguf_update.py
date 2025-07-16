@@ -146,6 +146,7 @@ pre_computed_hashes = [
     {"name": "falcon-h1", "tokt": TOKENIZER_TYPE.BPE, "repo": "https://huggingface.co/tiiuae/Falcon-H1-1B-Base", "chkhsh": "60476e1243776c4fb1b993dbd7a5f15ac22f83c80afdf425fa5ae01c8d44ef86"},
     {"name": "falcon-h1", "tokt": TOKENIZER_TYPE.BPE, "repo": "https://huggingface.co/tiiuae/Falcon-H1-7B-Base", "chkhsh": "3eda48b4c4dc7de733d1a8b3e3b4a85243dbbf704da2ee9d42c6beced8897896"},
     {"name": "falcon-h1", "tokt": TOKENIZER_TYPE.BPE, "repo": "https://huggingface.co/tiiuae/Falcon-H1-34B-Base", "chkhsh": "48f8e02c0359c0bbdd82f26909171fac1c18a457bb47573ed1fe3bbb2c1cfd4b"},
+    {"name": "kimi-k2",   "tokt": TOKENIZER_TYPE.BPE, "repo": "https://huggingface.co/moonshotai/Kimi-K2-Base",   "chkhsh": "81212dc7cdb7e0c1074ca62c5aeab0d43c9f52b8a737be7b12a777c953027890"},
 ]
 
 
@@ -231,17 +232,12 @@ for model in models:
 # generate the source code for the convert_hf_to_gguf.py:get_vocab_base_pre() function:
 
 src_ifs = ""
-for model in [*all_models, *pre_computed_hashes]:
+for model in [*pre_computed_hashes, *all_models]:
     name = model["name"]
     tokt = model["tokt"]
     chkhsh = model.get("chkhsh")
 
     if tokt == TOKENIZER_TYPE.SPM or tokt == TOKENIZER_TYPE.UGM:
-        continue
-
-    # Skip if the tokenizer folder does not exist or there are other download issues previously
-    if not os.path.exists(f"models/tokenizers/{name}"):
-        logger.warning(f"Directory for tokenizer {name} not found. Skipping...")
         continue
 
     # create the tokenizer
@@ -253,6 +249,12 @@ for model in [*all_models, *pre_computed_hashes]:
         chkhsh = existing_models[name]
     else:
         # otherwise, compute the hash of the tokenizer
+
+        # Skip if the tokenizer folder does not exist or there are other download issues previously
+        if not os.path.exists(f"models/tokenizers/{name}"):
+            logger.warning(f"Directory for tokenizer {name} not found. Skipping...")
+            continue
+
         try:
             logger.info(f"Loading tokenizer from {f'models/tokenizers/{name}'}...")
             if name == "t5":

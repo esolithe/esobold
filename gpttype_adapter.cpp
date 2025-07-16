@@ -3009,13 +3009,12 @@ int GetThreadsToUse(bool blasmode)
 }
 
 //this function prepares the clip embds for llava. it's only needed when images change
-static void PrepareMediaEmbds(const int nctx, const std::vector<int> & media_sep, const std::vector<int> & media_intro)
+static void PrepareMediaEmbds(const int nctx, const std::vector<int> & media_intro)
 {
     bool vision_on = (clp_ctx_v != nullptr && clp_img_data != nullptr);
     bool audio_on = (clp_ctx_a != nullptr);
     if (vision_on || audio_on)
     {
-        int sepsize = media_sep.size();
         int introsize = media_intro.size();
         last_media_mem.clear();
 
@@ -3048,7 +3047,7 @@ static void PrepareMediaEmbds(const int nctx, const std::vector<int> & media_sep
                     int cliptokensneeded = chunk.clp_image_tokens;
                     if(cliptokensneeded>0 && cliptokensneeded < nctx)
                     {
-                        int tokcnt = (i==0?(chunk.clp_image_tokens):(chunk.clp_image_tokens+sepsize));
+                        int tokcnt = (chunk.clp_image_tokens + media_objects[i].chunk_start_seq.size() + media_objects[i].chunk_end_seq.size());
                         if(i==0)
                         {
                             tokcnt += introsize;
@@ -3101,7 +3100,7 @@ static void PrepareMediaEmbds(const int nctx, const std::vector<int> & media_sep
                 int cliptokensneeded = total_chunk_tokens;
                 if(cliptokensneeded>0 && cliptokensneeded < nctx)
                 {
-                    int tokcnt = (i==0?(cliptokensneeded):(cliptokensneeded+sepsize));
+                    int tokcnt = (cliptokensneeded + media_objects[i].chunk_start_seq.size() + media_objects[i].chunk_end_seq.size());
                     if(i==0)
                     {
                         tokcnt += introsize;
@@ -3289,6 +3288,8 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
             media_object lv;
             lv.b64data = item;
             lv.is_audio = false;
+            TokenizeString("<image>", lv.chunk_start_seq, file_format, false);
+            TokenizeString("</image>\n\n", lv.chunk_end_seq, file_format, false);
             media_objects.push_back(lv);
             new_media_composite += item;
         }
@@ -3301,6 +3302,8 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
             media_object lv;
             lv.b64data = item;
             lv.is_audio = true;
+            TokenizeString("<audio>", lv.chunk_start_seq, file_format, false);
+            TokenizeString("</audio>\n\n", lv.chunk_end_seq, file_format, false);
             media_objects.push_back(lv);
             new_media_composite += item;
         }
@@ -3473,8 +3476,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
     // tokenize the prompt
     std::vector<int> embd_inp;
     std::vector<int> embd_inp_mem; //for storing added memory
-    std::vector<int> media_sep; //to separate between different llava images
-    std::vector<int> media_intro; //to separate between different llava images
+    std::vector<int> media_intro; //added before media list
     std::vector<int> guidance_embd; //holds the guidance prompt
     bool media_embds_built = false;
 
@@ -3482,7 +3484,6 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
 
     TokenizeString(kcpp_data->prompt, embd_inp, file_format, add_bos_token);
     bool use_mrope = (file_format == FileFormat::GGUF_GENERIC && file_format_meta.model_architecture == GGUFArch::ARCH_QWEN2VL);
-    TokenizeString("\n\n", media_sep, file_format, false);
     TokenizeString("\nAttached Media:\n", media_intro, file_format, false);
 
     if(media_composite_image_signature=="")
@@ -3491,7 +3492,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
     }
     if(media_data_changed)
     {
-        PrepareMediaEmbds(nctx, media_sep, media_intro);
+        PrepareMediaEmbds(nctx, media_intro);
         media_embds_built = true;
     }
 
@@ -4263,7 +4264,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                 {
                     if(!media_embds_built) //this should never happen! however, handle it anyway
                     {
-                        PrepareMediaEmbds(nctx, media_sep, media_intro);
+                        PrepareMediaEmbds(nctx, media_intro);
                         media_embds_built = true;
                         printf("\nSomehow vision embd was not prepared (maybe no fast forward), rebuilding it...\n");
                     }
@@ -4278,7 +4279,6 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                         //batch is empty, do image processing
                         int llavatokenscounted = 0;
                         int llavatokensevaled = 0;
-                        int sepsize = media_sep.size();
                         int introsize = media_intro.size();
                         while(input_consumed < embd_inp.size() && (embd_inp[input_consumed]==MEDIA_TOKEN_IDENTIFIER_A || embd_inp[input_consumed]==MEDIA_TOKEN_IDENTIFIER_B))
                         {
@@ -4310,10 +4310,11 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                                 n_past += introsize;
                                 llavatokensevaled += introsize;
                             }
-                            if(sepsize>0 && i>0)
-                            {
+
+                            int start_size = media_objects[i].chunk_start_seq.size();
+                            if (start_size > 0) {
                                 //add a separator between each image
-                                kcpp_embd_batch batch = kcpp_embd_batch(media_sep, n_past, use_mrope, false);
+                                kcpp_embd_batch batch = kcpp_embd_batch(media_objects[i].chunk_start_seq, n_past, use_mrope, false);
                                 auto evr = llama_decode(llama_ctx_v4, batch.batch);
                                 if(evr!=0)
                                 {
@@ -4321,10 +4322,10 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                                 }
                                 else
                                 {
-                                    printf("\rProcessing Media Separator (%d tokens)",sepsize);
+                                    printf("\rProcessing Media Start Separator (%d tokens)",start_size);
                                 }
-                                n_past += sepsize;
-                                llavatokensevaled += sepsize;
+                                n_past += start_size;
+                                llavatokensevaled += start_size;
                             }
 
                             for(int j=0;j<media_objects[i].mediachunks.size();++j)
@@ -4347,6 +4348,23 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                                     generation_finished = true;
                                     return output;
                                 }
+                            }
+
+                            int end_size = media_objects[i].chunk_end_seq.size();
+                            if (end_size > 0) {
+                                //add a separator between each image
+                                kcpp_embd_batch batch = kcpp_embd_batch(media_objects[i].chunk_end_seq, n_past, use_mrope, false);
+                                auto evr = llama_decode(llama_ctx_v4, batch.batch);
+                                if(evr!=0)
+                                {
+                                    printf("\nError when appending media separator: %d\n",evr);
+                                }
+                                else
+                                {
+                                    printf("\rProcessing Media End Separator (%d tokens)",end_size);
+                                }
+                                n_past += end_size;
+                                llavatokensevaled += end_size;
                             }
                         }
                         if(llavatokenscounted!=llavatokensevaled)
