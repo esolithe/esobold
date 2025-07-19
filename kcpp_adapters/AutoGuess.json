@@ -199,11 +199,7 @@
         "assistant_start": "ASSISTANT: ",
         "assistant_end": "</s>\n"
     }
-},
-
-
-
-{
+}, {
     "search": ["[/INST]"],
     "name": "Mistral (Generic)",
     "adapter": {
