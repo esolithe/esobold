@@ -3059,6 +3059,7 @@ static void PrepareMediaEmbds(const int nctx, const std::vector<int> & media_int
                     }
                     else
                     {
+                        media_composite_image_signature = ""; //force invalidate
                         printf("\nWarning: Vision Image excluded - Context size too low or not enough clip tokens! (needed %d)\nImage will be IGNORED! You probably want to relaunch with a larger context size!\n",cliptokensneeded);
                     }
                     media_objects[i].mediachunks.push_back(chunk);
@@ -3112,6 +3113,7 @@ static void PrepareMediaEmbds(const int nctx, const std::vector<int> & media_int
                 }
                 else
                 {
+                    media_composite_image_signature = ""; //force invalidate
                     printf("\nWarning: Audio Embd excluded - Context size too low or not enough clip tokens! (needed %d)\nAudio will be IGNORED! You probably want to relaunch with a larger context size!\n",cliptokensneeded);
                 }
 
@@ -3315,7 +3317,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
         media_composite_image_signature = new_media_composite;
         if(debugmode==1 && !is_quiet)
         {
-            printf("\nLLAVA images changed, existing cache invalidated");
+            printf("\nAttached media changed, existing multimodal cache invalidated");
         }
         media_data_changed = true;
     }
@@ -3520,7 +3522,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
     {
         if(last_media_mem.size() + kcpp_data->n_predict + 4 > nctx)
         {
-            printf("\nWarning: Too many LLaVA tokens, max context exceeded! They will be ignored!\n");
+            printf("\nWarning: Too many multimodal tokens, max context exceeded! They will be ignored!\n");
         }
         else
         {
@@ -4266,7 +4268,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                     {
                         PrepareMediaEmbds(nctx, media_intro);
                         media_embds_built = true;
-                        printf("\nSomehow vision embd was not prepared (maybe no fast forward), rebuilding it...\n");
+                        printf("\nSomehow media embeds was not prepared (maybe no fast forward), rebuilding it...\n");
                     }
 
                     //if partial batch, dispatch existing first
@@ -4301,11 +4303,11 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                                 auto evr = llama_decode(llama_ctx_v4, batch.batch);
                                 if(evr!=0)
                                 {
-                                    printf("\nError when appending llava intro: %d\n",evr);
+                                    printf("\nError when appending media intro: %d\n",evr);
                                 }
                                 else
                                 {
-                                    printf("\rProcessing LLaVa Intro (%d tokens)",introsize);
+                                    printf("\rProcessing Media Intro (%d tokens)",introsize);
                                 }
                                 n_past += introsize;
                                 llavatokensevaled += introsize;
@@ -4340,7 +4342,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                                 if(!err)
                                 {
                                     media_composite_image_signature = ""; //force invalidate
-                                    fprintf(stderr, "\nFailed to eval llava image at %d!\n",n_past);
+                                    fprintf(stderr, "\nFailed to eval media tokens at %d!\n",n_past);
                                     output.text = nullptr;
                                     output.status = 0;
                                     output.prompt_tokens = output.completion_tokens = 0;
@@ -4370,7 +4372,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                         if(llavatokenscounted!=llavatokensevaled)
                         {
                             media_composite_image_signature = ""; //force invalidate
-                            fprintf(stderr, "\nLLAVA image tokens mismatch at %d! (%d vs %d tokens)\n",n_past,llavatokenscounted,llavatokensevaled);
+                            fprintf(stderr, "\nMedia tokens mismatch at %d! (%d vs %d tokens)\n",n_past,llavatokenscounted,llavatokensevaled);
                             output.text = nullptr;
                             output.status = 0;
                             output.prompt_tokens = output.completion_tokens = 0;
