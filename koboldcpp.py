@@ -56,7 +56,7 @@ logprobs_max = 5
 default_draft_amount = 8
 default_ttsmaxlen = 4096
 default_visionmaxres = 1024
-net_save_slots = 10
+net_save_slots = 12
 savestate_limit = 3 #3 savestate slots
 default_vae_tile_threshold = 768
 
@@ -68,7 +68,7 @@ dry_seq_break_max = 128
 extra_images_max = 4
 
 # global vars
-KcppVersion = "1.96.2"
+KcppVersion = "1.97"
 showdebug = True
 kcpp_instance = None #global running instance
 global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None}
@@ -808,7 +808,7 @@ def utfprint(str, importance = 2): #0 = only debugmode, 1 = except quiet, 2 = al
             return
     maxlen = 32000
     if args.debugmode >= 1:
-        maxlen = 64000
+        maxlen = 192000
     try:
         strlength = len(str)
         if strlength > maxlen: #limit max output len
@@ -2552,6 +2552,7 @@ def websearch(query):
     utfprint("Performing new websearch...",1)
 
     def fetch_searched_webpage(url, random_agent=False):
+        from urllib.parse import quote, urlsplit, urlunsplit
         uagent = 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)'
         if random_agent:
             agents = ["Mozilla/5.0 (Macintosh; Intel Mac OS X 13_2) Gecko/20100101 Firefox/114.0",
@@ -2562,17 +2563,23 @@ def websearch(query):
             uagent = random.choice(agents)
         if args.debugmode:
             utfprint(f"WebSearch URL: {url}")
+        # Encode non-ASCII parts of the URL
         try:
+            split_url = urlsplit(url)
+            encoded_path = quote(split_url.path)
+            encoded_url = urlunsplit((split_url.scheme, split_url.netloc, encoded_path, split_url.query, split_url.fragment))
+
             ssl_cert_dir = os.environ.get('SSL_CERT_DIR')
             if not ssl_cert_dir and not nocertify and os.name != 'nt':
                 os.environ['SSL_CERT_DIR'] = '/etc/ssl/certs'
-            req = urllib.request.Request(url, headers={'User-Agent': uagent})
+
+            req = urllib.request.Request(encoded_url, headers={'User-Agent': uagent})
             with urllib.request.urlopen(req, timeout=15) as response:
                 html_content = response.read().decode('utf-8', errors='ignore')
                 return html_content
         except urllib.error.HTTPError: #we got blocked? try 1 more time with a different user agent
             try:
-                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36'})
+                req = urllib.request.Request(encoded_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36'})
                 with urllib.request.urlopen(req, timeout=15) as response:
                     html_content = response.read().decode('utf-8', errors='ignore')
                     return html_content
@@ -2869,7 +2876,7 @@ def transform_genparams(genparams, api_format):
             user_message_end = adapter_obj.get("user_end", "")
             assistant_message_start = adapter_obj.get("assistant_start", "\n### Response:\n")
             assistant_message_end = adapter_obj.get("assistant_end", "")
-            tools_message_start = adapter_obj.get("tools_start", "")
+            tools_message_start = adapter_obj.get("tools_start", "\nTool Results:\n")
             tools_message_end = adapter_obj.get("tools_end", "")
             images_added = []
             audio_added = []
@@ -2948,6 +2955,13 @@ ws ::= | " " | "\n" [ \t]{0,20}
                         for img in imgs:
                             images_added.append(img)
                 if not curr_content:
+                    if "tool_calls" in message:
+                        try:
+                            if len(message.get("tool_calls"))>0:
+                                tcfnname = message.get("tool_calls")[0].get("function").get("name")
+                                messages_string += f"\n(Made a function call to {tcfnname})\n"
+                        except Exception:
+                            messages_string += "\n(Made a function call)\n"
                     pass  # do nothing
                 elif isinstance(curr_content, str):
                     messages_string += curr_content
@@ -2966,7 +2980,7 @@ ws ::= | " " | "\n" [ \t]{0,20}
                                 attachedaudid += 1
                                 messages_string += f"\n(Attached Audio {attachedaudid})\n"
                 # If last message, add any tools calls after message content and before message end token if any
-                if message['role'] == "user" and message_index == len(messages_array):
+                if (message['role'] == "user" or message['role'] == "tool") and message_index == len(messages_array):
                     # tools handling: Check if user is passing a openai tools array, if so add to end of prompt before assistant prompt unless tool_choice has been set to None
                     tools_array = genparams.get('tools', [])
                     chosen_tool = genparams.get('tool_choice', "auto")
@@ -2978,6 +2992,8 @@ ws ::= | " " | "\n" [ \t]{0,20}
                         if chosen_tool=="auto":
                             # if you want a different template, you can set 'custom_tools_prompt' in the chat completions adapter as follows
                             custom_tools_prompt = adapter_obj.get("custom_tools_prompt", "Can the user query be answered by a listed tool above? (One word response: yes or no):")
+                            if message['role'] == "tool":
+                                custom_tools_prompt = adapter_obj.get("custom_tools_prompt", "Can the user query be further answered by another listed tool above? (If response is already complete, reply NO) (One word response: yes or no):")
                             # note: message string already contains the instruct start tag!
                             pollgrammar = r'root ::= "yes" | "no" | "Yes" | "No" | "YES" | "NO"'
                             temp_poll = {
@@ -3556,7 +3572,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                     for tc in tool_calls:
                         tcarg = tc.get("function",{}).get("arguments",None)
                         tc["id"] = f"call_{random.randint(10000, 99999)}"
-                        if tcarg and not isinstance(tcarg, str):
+                        if tcarg is not None and not isinstance(tcarg, str):
                             tc["function"]["arguments"] = json.dumps(tcarg)
                     recvtxt = None
                     currfinishreason = "tool_calls"
@@ -4102,7 +4118,8 @@ Change Mode<br>
             response_body = (json.dumps({"models":[{"name":"koboldcpp","model":f"{friendlymodelname}:latest","modified_at":"2024-07-19T15:26:55.6122841+08:00","expires_at": "2055-06-04T19:06:25.5433636+08:00","size":394998579,"size_vram":394998579,"digest":"b5dc5e784f2a3ee1582373093acf69a2f4e2ac1710b253a001712b86a61f88bb","details":{"parent_model":"","format":"gguf","family":"koboldcpp","families":["koboldcpp"],"parameter_size":"128M","quantization_level":"Q4_0"}},{"name":"koboldcpp","model":friendlymodelname,"modified_at":"2024-07-19T15:26:55.6122841+08:00","expires_at": "2055-06-04T19:06:25.5433636+08:00","size":394998579,"size_vram":394998579,"digest":"b5dc5e784f2a3ee1582373093acf69a2f4e2ac1710b253a001712b86a61f88bb","details":{"parent_model":"","format":"gguf","family":"koboldcpp","families":["koboldcpp"],"parameter_size":"128M","quantization_level":"Q4_0"}}]}).encode())
         elif self.path.endswith('/api/version'): #ollama compatible, NOT the kcpp version
             response_body = (json.dumps({"version":"0.7.0"}).encode())
-
+        elif self.path=='/ping':
+            response_body = (json.dumps({"status": "healthy"}).encode())
 
         #comfyui compatible
         elif self.path=='/system_stats':
@@ -4931,7 +4948,7 @@ Change Mode<br>
 
                 trunc_len = 8000
                 if args.debugmode >= 1:
-                    trunc_len = 16000
+                    trunc_len = 32000
 
                 printablegenparams_raw = truncate_long_json(genparams,trunc_len)
                 utfprint("\nInput: " + json.dumps(printablegenparams_raw),1)

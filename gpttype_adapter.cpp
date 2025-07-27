@@ -1852,6 +1852,8 @@ void PurgeMissingTokens(llama_context * ctx, llama_context * draft_ctx, std::vec
         }
     }
 
+    //printf("\nPN: %d, NTL: %d, CCT: %d,TS:%d, diff:%d, sft:%d\n",purgeneeded,new_tokens_len,current_context_tokens.size(),trimstart,(new_tokens_len - trimstart),ShortfallThreshold);
+
     if(!purgeneeded || new_tokens_len < 6 || current_context_tokens.size() < 6 || new_tokens_len - trimstart < ShortfallThreshold)
     {
         return; //no purge is needed
@@ -1865,7 +1867,7 @@ void PurgeMissingTokens(llama_context * ctx, llama_context * draft_ctx, std::vec
 
     auto shared = LongestCommonSubseq(curr_ctx_without_memory, new_ctx_without_memory);
 
-    // printf("\nSharedSize: %d, LCSTokThreshold: %d, ArrPass: %d\n",shared.size(),LCSTokThreshold,ArrStartWith(new_ctx_without_memory, shared));
+    //printf("\nSharedSize: %d, LCSTokThreshold: %d, ArrPass: %d\n",shared.size(),LCSTokThreshold,ArrStartWith(new_ctx_without_memory, shared));
     if (shared.size() > LCSTokThreshold && ArrStartWith(new_ctx_without_memory, shared)) // enough tokens in common
     {
         int found = ArrFindIndexOf(current_context_tokens,shared);
@@ -2209,11 +2211,7 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
         {
             printf("Warning, you are running Qwen2 without Flash Attention. If you observe incoherent output, try enabling it.\n");
         }
-        if(file_format_meta.model_architecture == GGUFArch::ARCH_QWEN2VL)
-        {
-            printf("Qwen2VL detected! Mrope will be used, and context shift will be disabled!\n");
-            kcpp_data->use_contextshift = false;
-        }
+
         model_params.main_gpu = kcpp_parseinfo_maindevice;
 
         #if defined(GGML_USE_CUDA)
@@ -2334,6 +2332,11 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
         }
 
         llama_model * llamamodel = llama_model_load_from_file(kcpp_data->model_filename.c_str(), model_params);
+        if(file_format_meta.model_architecture == GGUFArch::ARCH_QWEN2VL || llama_model_rope_type(llamamodel)==LLAMA_ROPE_TYPE_MROPE)
+        {
+            printf("\nMRope is used, context shift will be disabled!\n");
+            kcpp_data->use_contextshift = false;
+        }
 
         if(overwriteRope)
         {

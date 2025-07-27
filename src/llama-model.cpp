@@ -651,6 +651,9 @@ void llama_model::load_hparams(llama_model_loader & ml) {
                 ml.get_key(LLM_KV_RESIDUAL_SCALE,              hparams.f_residual_scale);
                 ml.get_key(LLM_KV_LOGIT_SCALE,                 hparams.f_logit_scale);
 
+                // MiniCPM uses rope by default, unlike Granite which uses it as a switch
+                hparams.rope_finetuned = true;
+
                 switch (hparams.n_layer) {
                     case 52: type = LLM_TYPE_1B; break;
                     case 40: type = LLM_TYPE_2B; break;
@@ -1371,7 +1374,7 @@ void llama_model::load_hparams(llama_model_loader & ml) {
                     // that have no expert_gating_func model parameter set
                     hparams.expert_gating_func = LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX;
                 }
-                ml.get_key(LLM_KV_ROPE_SCALING_YARN_LOG_MUL, hparams.rope_yarn_log_mul);
+                ml.get_key(LLM_KV_ROPE_SCALING_YARN_LOG_MUL, hparams.rope_yarn_log_mul, false);
 
                 switch (hparams.n_layer) {
                     case 27: type = LLM_TYPE_16B; break;
@@ -1549,7 +1552,11 @@ void llama_model::load_hparams(llama_model_loader & ml) {
                 ml.get_key(LLM_KV_TOKEN_SHIFT_COUNT,                      hparams.token_shift_count, false);
 
                 switch (hparams.n_layer) {
-                    case 12: type = LLM_TYPE_190M; break;
+                    case 12:
+                        switch (hparams.n_embd) {
+                            case 768: type = LLM_TYPE_190M; break;
+                            default: type = LLM_TYPE_UNKNOWN;
+                        } break;
                     case 24:
                         switch (hparams.n_embd) {
                             case 1024: type = LLM_TYPE_450M; break;
@@ -1562,7 +1569,17 @@ void llama_model::load_hparams(llama_model_loader & ml) {
                             case 3584: type = LLM_TYPE_7B; break;
                             default: type = LLM_TYPE_UNKNOWN;
                         } break;
-                    case 32: type = LLM_TYPE_2_9B; break; // RWKV-7-World
+                    case 32:
+                        switch (hparams.n_embd) {
+                            case 2560: type = LLM_TYPE_2_9B; break;
+                            case 4096: type = LLM_TYPE_7B; break;
+                            default: type = LLM_TYPE_UNKNOWN;
+                        } break;
+                    case 61:
+                        switch (hparams.n_embd) {
+                            case 4096: type = LLM_TYPE_14B; break;
+                            default: type = LLM_TYPE_UNKNOWN;
+                        } break;
                     default: type = LLM_TYPE_UNKNOWN;
                 }
             } break;
@@ -16274,7 +16291,7 @@ private:
         {
             // PLaMo-2 uses combined QKV tensor
             ggml_tensor * qkv = build_lora_mm(model.layers[il].wqkv, cur);
-            cb(qkv, "qkv", il);
+            cb(qkv, "wqkv", il);
 
             // split QKV tensor into Q, K, V
             const int64_t n_embd_head_q = hparams.n_embd_head_k;
@@ -16314,7 +16331,7 @@ private:
                     ext_factor, attn_factor, beta_fast, beta_slow
                     );
 
-            cur = build_attn(inp, model.layers[il].wo, NULL, Qcur, Kcur, Vcur, NULL, NULL, 1.0f, il);
+            cur = build_attn(inp, model.layers[il].wo, NULL, Qcur, Kcur, Vcur, NULL, NULL, 1.0f/sqrtf(float(n_embd_head_v)), il);
         }
 
         cb(cur, "attn_out", il);
@@ -16389,8 +16406,9 @@ private:
             ggml_build_forward_expand(gf,
                 ggml_cpy(ctx0, last_conv,
                     ggml_view_1d(ctx0, conv_states_all,
-                        (d_conv - 1)*(d_inner)*(n_seqs),
-                        kv_head*(d_conv - 1)*(d_inner)*ggml_element_size(conv_states_all))));
+                        (d_conv - 1)*(d_inner + 2*n_group*d_state)*(n_seqs),
+                        kv_head*(d_conv - 1)*(d_inner + 2*n_group*d_state)*ggml_element_size(conv_states_all))));
+            cb(conv_states_all, "mamba_conv1d_state", il);
 
             // 1D convolution
             x = ggml_ssm_conv(ctx0, conv_x, model.layers[il].ssm_conv1d);
@@ -16453,9 +16471,9 @@ private:
             // store last states
             ggml_build_forward_expand(gf,
                 ggml_cpy(ctx0,
-                    ggml_view_1d(ctx0, y_ssm, d_state*d_inner*n_seqs, x->nb[3]*x->ne[3]),
-                    ggml_view_1d(ctx0, ssm_states_all, d_state*d_inner*n_seqs,
-                            kv_head*d_state*d_inner*ggml_element_size(ssm_states_all))));
+                    ggml_view_1d(ctx0, y_ssm, n_heads*head_dim*d_state*n_seqs, n_heads*head_dim*n_seq_tokens*n_seqs*ggml_element_size(y_ssm)),
+                    ggml_view_1d(ctx0, ssm_states_all, n_heads*head_dim*d_state*n_seqs, kv_head*n_seqs*n_heads*head_dim*d_state*ggml_element_size(ssm_states_all))));
+            cb(ssm_states_all, "mamba_ssm_states", il);
 
             ggml_tensor * y = ggml_view_4d(ctx0, y_ssm, head_dim, n_heads, n_seq_tokens, n_seqs, head_dim * ggml_element_size(x), head_dim * n_heads * ggml_element_size(x), head_dim * n_heads * n_seq_tokens * ggml_element_size(x), 0);
             cb(y, "mamba_y_view", il);
