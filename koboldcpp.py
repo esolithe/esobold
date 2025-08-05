@@ -81,14 +81,13 @@ friendlyembeddingsmodelname = "inactive"
 lastgeneratedcomfyimg = b''
 lastuploadedcomfyimg = b''
 fullsdmodelpath = ""  #if empty, it's not initialized
-mmprojpath = "" #if empty, it's not initialized
 password = "" #if empty, no auth key required
 fullwhispermodelpath = "" #if empty, it's not initialized
 ttsmodelpath = "" #if empty, not initialized
 embeddingsmodelpath = "" #if empty, not initialized
 maxctx = 8192
 maxhordectx = 0 #set to whatever maxctx is if 0
-maxhordelen = 512
+maxhordelen = 1024
 modelbusy = threading.Lock()
 requestsinqueue = 0
 defaultport = 5001
@@ -111,6 +110,7 @@ modelfile_extracted_meta = None
 importvars_in_progress = False
 has_multiplayer = False
 has_audio_support = False
+has_vision_support = False
 savedata_obj = None
 multiplayer_story_data_compressed = None #stores the full compressed story of the current multiplayer session
 multiplayer_turn_major = 1 # to keep track of when a client needs to sync their stories
@@ -202,6 +202,7 @@ class load_model_inputs(ctypes.Structure):
                 ("rope_freq_scale", ctypes.c_float),
                 ("rope_freq_base", ctypes.c_float),
                 ("moe_experts", ctypes.c_int),
+                ("moecpu", ctypes.c_int),
                 ("no_bos_token", ctypes.c_bool),
                 ("load_guidance", ctypes.c_bool),
                 ("override_kv", ctypes.c_char_p),
@@ -546,6 +547,7 @@ def init_library():
     handle.get_stream_count.restype = ctypes.c_int
     handle.has_finished.restype = ctypes.c_bool
     handle.has_audio_support.restype = ctypes.c_bool
+    handle.has_vision_support.restype = ctypes.c_bool
     handle.get_last_eval_time.restype = ctypes.c_float
     handle.get_last_process_time.restype = ctypes.c_float
     handle.get_last_token_count.restype = ctypes.c_int
@@ -898,10 +900,9 @@ def convert_json_to_gbnf(json_obj):
         return ""
 
 def get_capabilities():
-    global savedata_obj, has_multiplayer, KcppVersion, friendlymodelname, friendlysdmodelname, fullsdmodelpath, mmprojpath, password, fullwhispermodelpath, ttsmodelpath, embeddingsmodelpath, has_audio_support
+    global savedata_obj, has_multiplayer, KcppVersion, friendlymodelname, friendlysdmodelname, fullsdmodelpath, password, fullwhispermodelpath, ttsmodelpath, embeddingsmodelpath, has_audio_support, has_vision_support
     has_llm = not (friendlymodelname=="inactive")
     has_txt2img = not (friendlysdmodelname=="inactive" or fullsdmodelpath=="")
-    has_vision = (mmprojpath!="")
     has_password = (password!="")
     has_whisper = (fullwhispermodelpath!="")
     has_search = True if args.websearch else False
@@ -917,7 +918,7 @@ def get_capabilities():
     has_server_saving = args.admin and not (args.admindatadir == "")
     had_admin_with_hf = args.adminallowhf
     admin_type = (2 if args.admin and args.admindir and args.adminpassword else (1 if args.admin and args.admindir else 0))
-    return {"result":"KoboldCpp", "version":KcppVersion, "protected":has_password, "llm":has_llm, "txt2img":has_txt2img,"vision":has_vision,"audio":has_audio_support,"transcribe":has_whisper,"multiplayer":has_multiplayer,"websearch":has_search,"tts":has_tts, "embeddings":has_embeddings, "savedata":(savedata_obj is not None), "admin": admin_type, "guidance": has_guidance, "hasServerSaving": has_server_saving, "hasAdminWithHF": had_admin_with_hf, "embeddingModel": embeddingModel}
+    return {"result":"KoboldCpp", "version":KcppVersion, "protected":has_password, "llm":has_llm, "txt2img":has_txt2img,"vision":has_vision_support,"audio":has_audio_support,"transcribe":has_whisper,"multiplayer":has_multiplayer,"websearch":has_search,"tts":has_tts, "embeddings":has_embeddings, "savedata":(savedata_obj is not None), "admin": admin_type, "guidance": has_guidance, "hasServerSaving": has_server_saving, "hasAdminWithHF": had_admin_with_hf, "embeddingModel": embeddingModel}
 
 def dump_gguf_metadata(file_path): #if you're gonna copy this into your own project at least credit concedo
     chunk_size = 1024*1024*12  # read first 12mb of file
@@ -1404,6 +1405,7 @@ def load_model(model_filename):
     inputs.load_guidance = args.enableguidance
     inputs.override_kv = args.overridekv.encode("UTF-8") if args.overridekv else "".encode("UTF-8")
     inputs.override_tensors = args.overridetensors.encode("UTF-8") if args.overridetensors else "".encode("UTF-8")
+    inputs.moecpu = (200 if args.moecpu > 200 else args.moecpu)
     inputs.check_slowness = (not args.highpriority and os.name == 'nt' and 'Intel' in platform.processor())
     inputs.highpriority = args.highpriority
     inputs.swa_support = args.useswa
@@ -2825,11 +2827,111 @@ def extract_all_names_from_tool_array(tools_array):
             pass
     return toolnames
 
+#returns the found JSON of the correct tool to use, or None if no tool is suitable
+def determine_tool_json_to_use(genparams, curr_ctx, assistant_message_start, is_followup_tool):
+    # tools handling: Check if user is passing a openai tools array, if so add to end of prompt before assistant prompt unless tool_choice has been set to None
+    tools_array = genparams.get('tools', [])
+    chosen_tool = genparams.get('tool_choice', "auto")
+    # first handle auto mode, determine whether a tool is needed
+    used_tool_json = None
+    if not curr_ctx:
+        return None
+    if tools_array and len(tools_array) > 0 and chosen_tool is not None and chosen_tool!="none":
+        tools_string = json.dumps(tools_array, indent=0)
+        should_use_tools = True
+        if chosen_tool=="auto":
+            # if you want a different template, you can set 'custom_tools_prompt' in the chat completions adapter as follows
+            custom_tools_prompt = "Can the user query be answered by a listed tool above? (One word response: yes or no):"
+            if is_followup_tool:
+                custom_tools_prompt = "Can the user query be further answered by another listed tool above? (If response is already complete, reply NO) (One word response: yes or no):"
+            # note: message string already contains the instruct start tag!
+            pollgrammar = r'root ::= "yes" | "no" | "Yes" | "No" | "YES" | "NO"'
+            temp_poll = {
+                "prompt": f"{curr_ctx}\n\nTool List:\n{tools_string}\n\n{custom_tools_prompt}{assistant_message_start}",
+                "max_length":5,
+                "temperature":0.1,
+                "top_k":1,
+                "rep_pen":1,
+                "ban_eos_token":False,
+                "grammar":pollgrammar
+                }
+            temp_poll_result = generate(genparams=temp_poll)
+            if temp_poll_result and "yes" not in temp_poll_result['text'].lower():
+                should_use_tools = False
+            if not args.quiet:
+                print(f"\nRelevant tool is listed: {temp_poll_result['text']} ({should_use_tools})")
+
+        if should_use_tools:
+            #first, try and extract a specific tool if selected
+            used_tool_json = extract_tool_info_from_tool_array(chosen_tool, tools_array)
+            if used_tool_json: #already found the tool we want, remove all others
+                pass
+            elif len(tools_array)==1:
+                used_tool_json = tools_array[0]
+            else: # we have to find the tool we want the old fashioned way
+                toolnames = extract_all_names_from_tool_array(tools_array)
+                if len(toolnames) == 1:
+                    used_tool_json = extract_tool_info_from_tool_array(toolnames[0], tools_array)
+                else:
+                    pollgrammar = ""
+                    for name in toolnames:
+                        pollgrammar += ("" if pollgrammar=="" else " | ")
+                        pollgrammar += "\"" + name + "\""
+                    pollgrammar = r'root ::= ' + pollgrammar
+                    decide_tool_prompt = "Which of the listed tools should be used next? Pick exactly one. (Reply directly with the selected tool's name):"
+                    temp_poll = {
+                        "prompt": f"{curr_ctx}\n\nTool List:\n{tools_string}\n\n{decide_tool_prompt}{assistant_message_start}",
+                        "max_length":16,
+                        "temperature":0.1,
+                        "top_k":1,
+                        "rep_pen":1,
+                        "ban_eos_token":False,
+                        "grammar":pollgrammar
+                        }
+                    temp_poll_result = generate(genparams=temp_poll)
+                    if temp_poll_result:
+                        raw = temp_poll_result['text'].lower()
+                        for name in toolnames:
+                            if name.lower() in raw:
+                                used_tool_json = extract_tool_info_from_tool_array(name, tools_array)
+                                if not args.quiet:
+                                    print(f"\nAttempting to use tool: {name}")
+                                break
+
+    return used_tool_json
+
 def transform_genparams(genparams, api_format):
     global chatcompl_adapter, maxctx
 
     if api_format < 0: #not text gen, do nothing
         return
+
+    jsongrammar = r"""
+root   ::= arr
+value  ::= object | array | string | number | ("true" | "false" | "null") ws
+arr  ::=
+  "[\n" ws (
+            value
+    (",\n" ws value)*
+  )? "]"
+object ::=
+  "{" ws (
+            string ":" ws value
+    ("," ws string ":" ws value)*
+  )? "}" ws
+array  ::=
+  "[" ws (
+            value
+    ("," ws value)*
+  )? "]" ws
+string ::=
+  "\"" (
+    [^"\\\x7F\x00-\x1F] |
+    "\\" (["\\bfnrt] | "u" [0-9a-fA-F]{4})
+  )* "\"" ws
+number ::= ("-"? ([0-9] | [1-9] [0-9]{0,15})) ("." [0-9]+)? ([eE] [-+]? [1-9] [0-9]{0,15})? ws
+ws ::= | " " | "\n" [ \t]{0,20}
+"""
 
     #api format 1=basic,2=kai,3=oai,4=oai-chat,5=interrogate,6=ollama,7=ollamachat
     #alias all nonstandard alternative names for rep pen.
@@ -2847,7 +2949,31 @@ def transform_genparams(genparams, api_format):
         genparams["max_length"] = int(genparams.get('max', args.defaultgenamt))
 
     elif api_format==2:
-        pass
+        #tool calls only possible if forced, or if ending with assistant tag
+        adapter_obj = {} if chatcompl_adapter is None else chatcompl_adapter
+        assistant_message_start = adapter_obj.get("assistant_start", "\n### Response:\n")
+        used_tool_json = determine_tool_json_to_use(genparams, genparams.get('prompt', ""), assistant_message_start, True)
+        if used_tool_json and not genparams.get('grammar', ""):
+            toolparamjson = None
+            toolname = None
+            # Set temperature lower automatically if function calling, cannot exceed 0.5
+            genparams["temperature"] = (1.0 if genparams.get("temperature", 0.5) > 1.0 else genparams.get("temperature", 0.5))
+            genparams["using_openai_tools"] = True
+            # Set grammar to llamacpp example grammar to force json response (see https://github.com/ggerganov/llama.cpp/blob/master/grammars/json_arr.gbnf)
+            genparams["grammar"] = jsongrammar
+            try:
+                toolname = used_tool_json.get('function').get('name')
+                toolparamjson = used_tool_json.get('function').get('parameters')
+                bettergrammarjson = {"type":"array","items":{"type":"object","properties":{"id":{"type":"string","enum":["call_001"]},"type":{"type":"string","enum":["function"]},"function":{"type":"object","properties":{"name":{"type":"string"},"arguments":{}},"required":["name","arguments"],"additionalProperties":False}},"required":["id","type","function"],"additionalProperties":False}}
+                bettergrammarjson["items"]["properties"]["function"]["properties"]["arguments"] = toolparamjson
+                decoded = convert_json_to_gbnf(bettergrammarjson)
+                if decoded:
+                    genparams["grammar"] = decoded
+            except Exception:
+                pass
+            tool_json_formatting_instruction = f"\nPlease use the provided schema to fill the parameters to create a function call for {toolname}, in the following format: " + json.dumps([{"id": "call_001", "type": "function", "function": {"name": f"{toolname}", "arguments": {"first property key": "first property value", "second property key": "second property value"}}}], indent=0)
+            genparams["prompt"] += f"\n\nJSON Schema:\n{used_tool_json}\n\n{tool_json_formatting_instruction}{assistant_message_start}"
+
 
     elif api_format==3 or api_format==4 or api_format==7:
         default_adapter = {} if chatcompl_adapter is None else chatcompl_adapter
@@ -2880,32 +3006,6 @@ def transform_genparams(genparams, api_format):
             tools_message_end = adapter_obj.get("tools_end", "")
             images_added = []
             audio_added = []
-            jsongrammar = r"""
-root   ::= arr
-value  ::= object | array | string | number | ("true" | "false" | "null") ws
-arr  ::=
-  "[\n" ws (
-            value
-    (",\n" ws value)*
-  )? "]"
-object ::=
-  "{" ws (
-            string ":" ws value
-    ("," ws string ":" ws value)*
-  )? "}" ws
-array  ::=
-  "[" ws (
-            value
-    ("," ws value)*
-  )? "]" ws
-string ::=
-  "\"" (
-    [^"\\\x7F\x00-\x1F] |
-    "\\" (["\\bfnrt] | "u" [0-9a-fA-F]{4})
-  )* "\"" ws
-number ::= ("-"? ([0-9] | [1-9] [0-9]{0,15})) ("." [0-9]+)? ([eE] [-+]? [1-9] [0-9]{0,15})? ws
-ws ::= | " " | "\n" [ \t]{0,20}
-"""
 
             # handle structured outputs
             respformat = genparams.get('response_format', None)
@@ -2980,94 +3080,29 @@ ws ::= | " " | "\n" [ \t]{0,20}
                                 attachedaudid += 1
                                 messages_string += f"\n(Attached Audio {attachedaudid})\n"
                 # If last message, add any tools calls after message content and before message end token if any
-                if (message['role'] == "user" or message['role'] == "tool") and message_index == len(messages_array):
-                    # tools handling: Check if user is passing a openai tools array, if so add to end of prompt before assistant prompt unless tool_choice has been set to None
-                    tools_array = genparams.get('tools', [])
-                    chosen_tool = genparams.get('tool_choice', "auto")
-                    # first handle auto mode, determine whether a tool is needed
-                    if tools_array and len(tools_array) > 0 and chosen_tool is not None and chosen_tool!="none":
-                        tools_string = json.dumps(tools_array, indent=0)
-                        should_use_tools = True
-                        user_end = assistant_message_start
-                        if chosen_tool=="auto":
-                            # if you want a different template, you can set 'custom_tools_prompt' in the chat completions adapter as follows
-                            custom_tools_prompt = adapter_obj.get("custom_tools_prompt", "Can the user query be answered by a listed tool above? (One word response: yes or no):")
-                            if message['role'] == "tool":
-                                custom_tools_prompt = adapter_obj.get("custom_tools_prompt", "Can the user query be further answered by another listed tool above? (If response is already complete, reply NO) (One word response: yes or no):")
-                            # note: message string already contains the instruct start tag!
-                            pollgrammar = r'root ::= "yes" | "no" | "Yes" | "No" | "YES" | "NO"'
-                            temp_poll = {
-                                "prompt": f"{messages_string}\n\nTool List:\n{tools_string}\n\n{custom_tools_prompt}{user_end}",
-                                "max_length":4,
-                                "temperature":0.1,
-                                "top_k":1,
-                                "rep_pen":1,
-                                "ban_eos_token":False,
-                                "grammar":pollgrammar
-                                }
-                            temp_poll_result = generate(genparams=temp_poll)
-                            if temp_poll_result and "yes" not in temp_poll_result['text'].lower():
-                                should_use_tools = False
-                            if not args.quiet:
-                                print(f"\nRelevant tool is listed: {temp_poll_result['text']} ({should_use_tools})")
+                if message_index == len(messages_array):
+                    used_tool_json = determine_tool_json_to_use(genparams, messages_string, assistant_message_start, (message['role'] == "tool"))
 
-                        if should_use_tools:
-                            #first, try and extract a specific tool if selected
-                            used_tool_json = extract_tool_info_from_tool_array(chosen_tool, tools_array)
-                            if used_tool_json: #already found the tool we want, remove all others
-                                pass
-                            elif len(tools_array)==1:
-                                used_tool_json = tools_array[0]
-                            else: # we have to find the tool we want the old fashioned way
-                                toolnames = extract_all_names_from_tool_array(tools_array)
-                                if len(toolnames) == 1:
-                                     used_tool_json = extract_tool_info_from_tool_array(toolnames[0], tools_array)
-                                else:
-                                    pollgrammar = ""
-                                    for name in toolnames:
-                                        pollgrammar += ("" if pollgrammar=="" else " | ")
-                                        pollgrammar += "\"" + name + "\""
-                                    pollgrammar = r'root ::= ' + pollgrammar
-                                    decide_tool_prompt = "Which of the listed tools should be used? Pick exactly one. (Reply directly with the selected tool's name):"
-                                    temp_poll = {
-                                        "prompt": f"{messages_string}\n\nTool List:\n{tools_string}\n\n{decide_tool_prompt}{user_end}",
-                                        "max_length":8,
-                                        "temperature":0.1,
-                                        "top_k":1,
-                                        "rep_pen":1,
-                                        "ban_eos_token":False,
-                                        "grammar":pollgrammar
-                                        }
-                                    temp_poll_result = generate(genparams=temp_poll)
-                                    if temp_poll_result:
-                                        raw = temp_poll_result['text'].lower()
-                                        for name in toolnames:
-                                            if name.lower() in raw:
-                                                used_tool_json = extract_tool_info_from_tool_array(name, tools_array)
-                                                if not args.quiet:
-                                                    print(f"\nAttempting to use tool: {name}")
-                                                break
-
-                            if used_tool_json:
-                                toolparamjson = None
-                                toolname = None
-                                # Set temperature lower automatically if function calling, cannot exceed 0.5
-                                genparams["temperature"] = (1.0 if genparams.get("temperature", 0.5) > 1.0 else genparams.get("temperature", 0.5))
-                                genparams["using_openai_tools"] = True
-                                # Set grammar to llamacpp example grammar to force json response (see https://github.com/ggerganov/llama.cpp/blob/master/grammars/json_arr.gbnf)
-                                genparams["grammar"] = jsongrammar
-                                try:
-                                    toolname = used_tool_json.get('function').get('name')
-                                    toolparamjson = used_tool_json.get('function').get('parameters')
-                                    bettergrammarjson = {"type":"array","items":{"type":"object","properties":{"id":{"type":"string","enum":["call_001"]},"type":{"type":"string","enum":["function"]},"function":{"type":"object","properties":{"name":{"type":"string"},"arguments":{}},"required":["name","arguments"],"additionalProperties":False}},"required":["id","type","function"],"additionalProperties":False}}
-                                    bettergrammarjson["items"]["properties"]["function"]["properties"]["arguments"] = toolparamjson
-                                    decoded = convert_json_to_gbnf(bettergrammarjson)
-                                    if decoded:
-                                        genparams["grammar"] = decoded
-                                except Exception:
-                                    pass
-                                tool_json_formatting_instruction = f"\nPlease use the provided schema to fill the parameters to create a function call for {toolname}, in the following format: " + json.dumps([{"id": "call_001", "type": "function", "function": {"name": f"{toolname}", "arguments": {"first property key": "first property value", "second property key": "second property value"}}}], indent=0)
-                                messages_string += f"\n\nJSON Schema:\n{used_tool_json}\n\n{tool_json_formatting_instruction}{user_end}"
+                    if used_tool_json:
+                        toolparamjson = None
+                        toolname = None
+                        # Set temperature lower automatically if function calling, cannot exceed 0.5
+                        genparams["temperature"] = (1.0 if genparams.get("temperature", 0.5) > 1.0 else genparams.get("temperature", 0.5))
+                        genparams["using_openai_tools"] = True
+                        # Set grammar to llamacpp example grammar to force json response (see https://github.com/ggerganov/llama.cpp/blob/master/grammars/json_arr.gbnf)
+                        genparams["grammar"] = jsongrammar
+                        try:
+                            toolname = used_tool_json.get('function').get('name')
+                            toolparamjson = used_tool_json.get('function').get('parameters')
+                            bettergrammarjson = {"type":"array","items":{"type":"object","properties":{"id":{"type":"string","enum":["call_001"]},"type":{"type":"string","enum":["function"]},"function":{"type":"object","properties":{"name":{"type":"string"},"arguments":{}},"required":["name","arguments"],"additionalProperties":False}},"required":["id","type","function"],"additionalProperties":False}}
+                            bettergrammarjson["items"]["properties"]["function"]["properties"]["arguments"] = toolparamjson
+                            decoded = convert_json_to_gbnf(bettergrammarjson)
+                            if decoded:
+                                genparams["grammar"] = decoded
+                        except Exception:
+                            pass
+                        tool_json_formatting_instruction = f"\nPlease use the provided schema to fill the parameters to create a function call for {toolname}, in the following format: " + json.dumps([{"id": "call_001", "type": "function", "function": {"name": f"{toolname}", "arguments": {"first property key": "first property value", "second property key": "second property value"}}}], indent=0)
+                        messages_string += f"\n\nJSON Schema:\n{used_tool_json}\n\n{tool_json_formatting_instruction}{assistant_message_start}"
 
 
                 if message['role'] == "system":
@@ -3160,8 +3195,8 @@ ws ::= | " " | "\n" [ \t]{0,20}
                 prompt = prompt.replace("{{[INPUT_END]}}", user_message_end)
                 prompt = prompt.replace("{{[OUTPUT_END]}}", assistant_message_end)
                 prompt = prompt.replace("{{[SYSTEM_END]}}", system_message_end)
-                memory = memory.replace("{{[INPUT]}}", assistant_message_end + user_message_start)
-                memory = memory.replace("{{[OUTPUT]}}", user_message_end + assistant_message_start)
+                memory = memory.replace("{{[INPUT]}}", user_message_start)
+                memory = memory.replace("{{[OUTPUT]}}", assistant_message_start)
                 memory = memory.replace("{{[SYSTEM]}}", system_message_start)
                 memory = memory.replace("{{[INPUT_END]}}", user_message_end)
                 memory = memory.replace("{{[OUTPUT_END]}}", assistant_message_end)
@@ -3181,13 +3216,13 @@ ws ::= | " " | "\n" [ \t]{0,20}
                 memory = memory.replace("{{[SYSTEM_END]}}", "")
         for i in range(len(stop_sequence)):
             if stop_sequence[i] == "{{[INPUT]}}":
-                stop_sequence[i] = user_message_start
+                stop_sequence[i] = user_message_start.strip()
             elif stop_sequence[i] == "{{[OUTPUT]}}":
-                stop_sequence[i] = assistant_message_start
+                stop_sequence[i] = assistant_message_start.strip()
             elif stop_sequence[i] == "{{[INPUT_END]}}":
-                stop_sequence[i] = (user_message_end if user_message_end.strip()!="" else "")
+                stop_sequence[i] = (user_message_end.strip() if user_message_end.strip()!="" else "")
             elif stop_sequence[i] == "{{[OUTPUT_END]}}":
-                stop_sequence[i] = (assistant_message_end if assistant_message_end.strip()!="" else "")
+                stop_sequence[i] = (assistant_message_end.strip() if assistant_message_end.strip()!="" else "")
         stop_sequence = list(filter(None, stop_sequence))
         genparams["prompt"] = prompt
         genparams["memory"] = memory
@@ -3938,7 +3973,7 @@ Change Mode<br>
     def do_GET(self):
         global embedded_kailite, embedded_kcpp_docs, embedded_kcpp_sdui
         global last_req_time, start_time
-        global savedata_obj, has_multiplayer, multiplayer_turn_major, multiplayer_turn_minor, multiplayer_story_data_compressed, multiplayer_dataformat, multiplayer_lastactive, maxctx, maxhordelen, friendlymodelname, lastuploadedcomfyimg, lastgeneratedcomfyimg, KcppVersion, totalgens, preloaded_story, exitcounter, currentusergenkey, friendlysdmodelname, fullsdmodelpath, mmprojpath, password, friendlyembeddingsmodelname
+        global savedata_obj, has_multiplayer, multiplayer_turn_major, multiplayer_turn_minor, multiplayer_story_data_compressed, multiplayer_dataformat, multiplayer_lastactive, maxctx, maxhordelen, friendlymodelname, lastuploadedcomfyimg, lastgeneratedcomfyimg, KcppVersion, totalgens, preloaded_story, exitcounter, currentusergenkey, friendlysdmodelname, fullsdmodelpath, password, friendlyembeddingsmodelname
         self.path = self.path.rstrip('/')
         response_body = None
         content_type = 'application/json'
@@ -4243,7 +4278,7 @@ Change Mode<br>
         return
 
     def do_POST(self):
-        global modelbusy, requestsinqueue, currentusergenkey, totalgens, pendingabortkey, lastuploadedcomfyimg, lastgeneratedcomfyimg, multiplayer_turn_major, multiplayer_turn_minor, multiplayer_story_data_compressed, multiplayer_dataformat, multiplayer_lastactive, net_save_slots
+        global modelbusy, requestsinqueue, currentusergenkey, totalgens, pendingabortkey, lastuploadedcomfyimg, lastgeneratedcomfyimg, multiplayer_turn_major, multiplayer_turn_minor, multiplayer_story_data_compressed, multiplayer_dataformat, multiplayer_lastactive, net_save_slots, has_vision_support
         contlenstr = self.headers['content-length']
         content_length = 0
         body = None
@@ -4878,8 +4913,7 @@ Change Mode<br>
             elif self.path.endswith('/v1/chat/completions'):
                 api_format = 4
             elif self.path.endswith('/sdapi/v1/interrogate'):
-                has_vision = (mmprojpath!="")
-                if not has_vision:
+                if not has_vision_support:
                     self.send_response(503)
                     self.end_headers(content_type='application/json')
                     self.wfile.write(json.dumps({"detail": {
@@ -5505,6 +5539,7 @@ def show_gui():
     customrope_base = ctk.StringVar(value="10000")
     chatcompletionsadapter_var = ctk.StringVar(value="AutoGuess")
     moeexperts_var = ctk.StringVar(value=str(-1))
+    moecpu_var = ctk.StringVar(value=str(0))
     defaultgenamt_var = ctk.StringVar(value=str(512))
     nobostoken_var = ctk.IntVar(value=0)
     override_kv_var = ctk.StringVar(value="")
@@ -6182,6 +6217,7 @@ def show_gui():
     makecheckbox(tokens_tab, "No BOS Token", nobostoken_var, 43, tooltiptxt="Prevents BOS token from being added at the start of any prompt. Usually NOT recommended for most models.")
     makecheckbox(tokens_tab, "Enable Guidance", enableguidance_var, 43,padx=140, tooltiptxt="Enables the use of Classifier-Free-Guidance, which allows the use of negative prompts. Has performance and memory impact.")
     makelabelentry(tokens_tab, "MoE Experts:", moeexperts_var, row=55, padx=120, singleline=True, tooltip="Override number of MoE experts.")
+    makelabelentry(tokens_tab, "MoE CPU Layers:", moecpu_var, row=55, padx=320, singleline=True, tooltip="Keep Mixture of Experts (MoE) weights of the first N layers in the CPU.", labelpadx=210)
     makelabelentry(tokens_tab, "Override KV:", override_kv_var, row=57, padx=120, singleline=True, width=150, tooltip="Advanced option to override model metadata by key, same as in llama.cpp. Mainly for debugging, not intended for general use. Types: int, float, bool, str")
     makelabelentry(tokens_tab, "Override Tensors:", override_tensors_var, row=59, padx=120, singleline=True, width=150, tooltip="Advanced option to override tensor backend selection, same as in llama.cpp.")
 
@@ -6476,6 +6512,7 @@ def show_gui():
         else:
             args.ropeconfig = [0.0, 10000.0]
         args.moeexperts = int(moeexperts_var.get()) if moeexperts_var.get()!="" else -1
+        args.moecpu = int(moecpu_var.get()) if moecpu_var.get()!="" else 0
         args.defaultgenamt = int(defaultgenamt_var.get()) if defaultgenamt_var.get()!="" else 512
         args.nobostoken = (nobostoken_var.get()==1)
         args.enableguidance = (enableguidance_var.get()==1)
@@ -6688,6 +6725,8 @@ def show_gui():
                 customrope_var.set(0)
         if "moeexperts" in dict and dict["moeexperts"]:
             moeexperts_var.set(dict["moeexperts"])
+        if "moecpu" in dict and dict["moecpu"]:
+            moecpu_var.set(dict["moecpu"])
         if "defaultgenamt" in dict and dict["defaultgenamt"]:
             defaultgenamt_var.set(dict["defaultgenamt"])
         nobostoken_var.set(dict["nobostoken"] if ("nobostoken" in dict) else 0)
@@ -6822,9 +6861,6 @@ def show_gui():
             import_vars(dict)
         pass
 
-    def display_help():
-        LaunchWebbrowser("https://github.com/LostRuins/koboldcpp/wiki","Cannot launch help in browser.")
-
     def display_help_models():
         LaunchWebbrowser("https://github.com/LostRuins/koboldcpp/wiki#what-models-does-koboldcpp-support-what-architectures-are-supported","Cannot launch help in browser.")
 
@@ -6836,7 +6872,7 @@ def show_gui():
     ctk.CTkButton(tabs , text = "Update", fg_color="#9900cc", hover_color="#aa11dd", command = display_updates, width=90, height = 35 ).grid(row=1,column=0, stick="sw", padx= 5, pady=5)
     ctk.CTkButton(tabs , text = "Save Config", fg_color="#084a66", hover_color="#085a88", command = save_config_gui, width=60, height = 35 ).grid(row=1,column=1, stick="sw", padx= 5, pady=5)
     ctk.CTkButton(tabs , text = "Load Config", fg_color="#084a66", hover_color="#085a88", command = load_config_gui, width=60, height = 35 ).grid(row=1,column=1, stick="sw", padx= 92, pady=5)
-    ctk.CTkButton(tabs , text = "Help (Find Models)", fg_color="#992222", hover_color="#bb3333", command = display_help, width=100, height = 35 ).grid(row=1,column=1, stick="sw", padx= 180, pady=5)
+    ctk.CTkButton(tabs , text = "Help (Find Models)", fg_color="#992222", hover_color="#bb3333", command = display_help_models, width=100, height = 35 ).grid(row=1,column=1, stick="sw", padx= 180, pady=5)
 
     # start a thread that tries to get actual gpu names and layer counts
     gpuinfo_thread = threading.Thread(target=auto_set_backend_gui)
@@ -6870,7 +6906,7 @@ def show_gui():
             print("")
             time.sleep(0.5)
             if using_gui_launcher:
-                givehelp = show_gui_yesnobox("No Model Loaded","No text or image model file was selected. Cannot continue.\n\nDo you want help finding a GGUF model?")
+                givehelp = show_gui_yesnobox("No Model Loaded","No text or image model file was selected. Need a model to continue.\n\nDo you want help finding a GGUF model?")
                 if givehelp == 'yes':
                     display_help_models()
             else:
@@ -7728,7 +7764,7 @@ def main(launch_args, default_args):
 
 def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
     global embedded_kailite, embedded_kcpp_docs, embedded_kcpp_sdui, start_time, exitcounter, global_memory, using_gui_launcher
-    global libname, args, friendlymodelname, friendlysdmodelname, fullsdmodelpath, mmprojpath, password, fullwhispermodelpath, ttsmodelpath, embeddingsmodelpath, friendlyembeddingsmodelname, has_audio_support
+    global libname, args, friendlymodelname, friendlysdmodelname, fullsdmodelpath, password, fullwhispermodelpath, ttsmodelpath, embeddingsmodelpath, friendlyembeddingsmodelname, has_audio_support, has_vision_support
 
     start_server = True
 
@@ -8076,9 +8112,7 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
                     exitcounter = 999
                     exit_with_error(2,f"Cannot find mmproj file: {args.mmproj}")
             else:
-                global mmprojpath
                 args.mmproj = os.path.abspath(args.mmproj)
-                mmprojpath = args.mmproj
 
         if not args.blasthreads or args.blasthreads <= 0:
             args.blasthreads = args.threads
@@ -8092,7 +8126,13 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
             print("WARNING: Selected Text Model does not seem to be a GGUF file! Are you sure you picked the right file?")
         loadok = load_model(modelname)
         print("Load Text Model OK: " + str(loadok))
-        has_audio_support = handle.has_audio_support() # multimodal audio support is only known at runtime
+        if args.mmproj and args.mmproj!="": # multimodal vision and audio support is only known at runtime
+            has_audio_support = handle.has_audio_support()
+            has_vision_support = handle.has_vision_support()
+        else:
+            has_audio_support = False
+            has_vision_support = False
+
         if not loadok:
             exitcounter = 999
             exit_with_error(3,"Could not load text model: " + modelname)
@@ -8287,6 +8327,7 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
     enabledmlist.append("ImageGeneration") if "txt2img" in caps and caps["txt2img"] else disabledmlist.append("ImageGeneration")
     enabledmlist.append("VoiceRecognition") if "transcribe" in caps and caps["transcribe"] else disabledmlist.append("VoiceRecognition")
     enabledmlist.append("MultimodalVision") if "vision" in caps and caps["vision"] else disabledmlist.append("MultimodalVision")
+    enabledmlist.append("MultimodalAudio") if "audio" in caps and caps["audio"] else disabledmlist.append("MultimodalAudio")
     enabledmlist.append("NetworkMultiplayer") if "multiplayer" in caps and caps["multiplayer"] else disabledmlist.append("NetworkMultiplayer")
     enabledmlist.append("ApiKeyPassword") if "protected" in caps and caps["protected"] else disabledmlist.append("ApiKeyPassword")
     enabledmlist.append("WebSearchProxy") if "websearch" in caps and caps["websearch"] else disabledmlist.append("WebSearchProxy")
@@ -8558,6 +8599,7 @@ if __name__ == '__main__':
     advparser.add_argument("--exporttemplate", help="Exports the current selected arguments as a .kcppt template file", metavar=('[filename]'), type=str, default="")
     advparser.add_argument("--nomodel", help="Allows you to launch the GUI alone, without selecting any model.", action='store_true')
     advparser.add_argument("--moeexperts", metavar=('[num of experts]'), help="How many experts to use for MoE models (default=follow gguf)", type=int, default=-1)
+    advparser.add_argument("--moecpu", metavar=('[layers affected]'), help="Keep the Mixture of Experts (MoE) weights of the first N layers in the CPU. If no value is provided, applies to all layers.", nargs='?', const=999, type=int, default=0)
     advparser.add_argument("--defaultgenamt", help="How many tokens to generate by default, if not specified. Must be smaller than context size. Usually, your frontend GUI will override this.", type=check_range(int,64,8192), default=512)
     advparser.add_argument("--nobostoken", help="Prevents BOS token from being added at the start of any prompt. Usually NOT recommended for most models.", action='store_true')
     advparser.add_argument("--enableguidance", help="Enables the use of Classifier-Free-Guidance, which allows the use of negative prompts. Has performance and memory impact.", action='store_true')

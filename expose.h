@@ -61,6 +61,7 @@ struct load_model_inputs
     const float rope_freq_scale = 1.0f;
     const float rope_freq_base = 10000.0f;
     const int moe_experts = -1;
+    const int moecpu = 0;
     const bool no_bos_token = false;
     const bool load_guidance = false;
     const char * override_kv = nullptr;
@@ -288,6 +289,7 @@ extern std::string draftmodel_filename;
 extern std::vector<std::string> generated_tokens;
 extern bool generation_finished;
 extern bool audio_multimodal_supported;
+extern bool vision_multimodal_supported;
 extern float last_eval_time;
 extern float last_process_time;
 extern int last_token_count;

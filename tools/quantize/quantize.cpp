@@ -312,7 +312,7 @@ static int load_imatrix(const std::string & imatrix_file, std::vector<std::strin
     int64_t n_datasets = gguf_get_arr_n(ctx_gguf, dataset_idx);
     imatrix_datasets.reserve(n_datasets);
     for (int64_t i = 0; i < n_datasets; ++i) {
-        imatrix_datasets.push_back(gguf_get_val_str(ctx_gguf, dataset_idx));
+        imatrix_datasets.push_back(gguf_get_arr_str(ctx_gguf, dataset_idx, i));
     }
     printf("%s: imatrix datasets=['%s'", __func__, imatrix_datasets[0].c_str());
     for (size_t i = 1; i < imatrix_datasets.size(); ++i) {
@@ -612,7 +612,7 @@ int main(int argc, char ** argv) {
             return 1;
         }
         if (!try_parse_ftype(argv[arg_idx], params.ftype, ftype_str)) {
-            fprintf(stderr, "%s: invalid ftype '%s'\n", __func__, argv[3]);
+            fprintf(stderr, "%s: invalid ftype '%s'\n", __func__, argv[arg_idx]);
             return 1;
         }
         if (ftype_str == "COPY") {
