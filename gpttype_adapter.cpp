@@ -2293,15 +2293,21 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
         //     std::string forced = "per_layer_token_embd.weight=CPU"; //this tensor on gpu is problematic on unsloth q4_0
         //     tensoroverrides = (tensoroverrides=="" ? forced: (forced+","+tensoroverrides));
         // }
-        if(tensoroverrides=="" && ggml_backend_dev_count()>1 && inputs.moecpu>0)
+        if(ggml_backend_dev_count()>1 && inputs.moecpu>0)
         {
+            std::string toadd = "";
             for (int i = 0; i < inputs.moecpu; ++i) {
                 std::string tmp = string_format("blk\\.%d\\.ffn_(up|down|gate)_exps=CPU", i);
                 if(i>0)
                 {
                     tmp = "," + tmp;
                 }
-                tensoroverrides += tmp;
+                toadd += tmp;
+            }
+            if (tensoroverrides == "") {
+                tensoroverrides = toadd;
+            } else {
+                tensoroverrides += "," + toadd;
             }
             printf("Overriding %d MoE layers to CPU...\n",inputs.moecpu);
         }
