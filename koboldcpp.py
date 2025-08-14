@@ -59,6 +59,7 @@ default_visionmaxres = 1024
 net_save_slots = 12
 savestate_limit = 3 #3 savestate slots
 default_vae_tile_threshold = 768
+default_native_ctx = 16384
 
 # abuse prevention
 stop_token_max = 256
@@ -201,6 +202,7 @@ class load_model_inputs(ctypes.Structure):
                 ("gpulayers", ctypes.c_int),
                 ("rope_freq_scale", ctypes.c_float),
                 ("rope_freq_base", ctypes.c_float),
+                ("overridenativecontext", ctypes.c_int),
                 ("moe_experts", ctypes.c_int),
                 ("moecpu", ctypes.c_int),
                 ("no_bos_token", ctypes.c_bool),
@@ -1396,11 +1398,17 @@ def load_model(model_filename):
     inputs.blasbatchsize = args.blasbatchsize
     inputs.forceversion = args.forceversion
     inputs.gpulayers = args.gpulayers
-    inputs.rope_freq_scale = args.ropeconfig[0]
-    if len(args.ropeconfig)>1:
-        inputs.rope_freq_base = args.ropeconfig[1]
-    else:
+    if args.overridenativecontext and args.overridenativecontext>0:
+        inputs.overridenativecontext = args.overridenativecontext
+        inputs.rope_freq_scale = 0
         inputs.rope_freq_base = 10000
+    else:
+        inputs.overridenativecontext = 0
+        inputs.rope_freq_scale = args.ropeconfig[0]
+        if len(args.ropeconfig)>1:
+            inputs.rope_freq_base = args.ropeconfig[1]
+        else:
+            inputs.rope_freq_base = 10000
 
     for n in range(tensor_split_max):
         if args.tensor_split and n < len(args.tensor_split):
@@ -2481,10 +2489,10 @@ def embeddings_load_model(model_filename):
     inputs = embeddings_load_model_inputs()
     inputs.model_filename = model_filename.encode("UTF-8")
     inputs.gpulayers = (999 if args.embeddingsgpu else 0)
-    inputs.flash_attention = False
+    inputs.flash_attention = args.flashattention
     inputs.threads = args.threads
     inputs.use_mmap = args.usemmap
-    inputs.embeddingsmaxctx = args.embeddingsmaxctx
+    inputs.embeddingsmaxctx = (args.embeddingsmaxctx if args.embeddingsmaxctx else args.contextsize) # for us to clamp to contextsize if embeddingsmaxctx unspecified
     inputs = set_backend_props(inputs)
     ret = handle.embeddings_load_model(inputs)
     return ret
@@ -3506,8 +3514,8 @@ def deleteSave(saveName):
 ### we are intentionally NOT using flask, because we want MINIMAL dependencies
 #################################################################
 class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
-    sys_version = ""
-    server_version = "ConcedoLlamaForKoboldServer"
+    sys_version = "1"
+    server_version = "KoboldCppServer"
 
     def __init__(self, addr, port):
         self.addr = addr
@@ -5555,8 +5563,10 @@ def show_gui():
     flashattention_var = ctk.IntVar(value=0)
     context_var = ctk.IntVar()
     customrope_var = ctk.IntVar()
+    manualrope_var = ctk.IntVar()
     customrope_scale = ctk.StringVar(value="1.0")
     customrope_base = ctk.StringVar(value="10000")
+    customrope_nativectx = ctk.StringVar(value=str(default_native_ctx))
     chatcompletionsadapter_var = ctk.StringVar(value="AutoGuess")
     moeexperts_var = ctk.StringVar(value=str(-1))
     moecpu_var = ctk.StringVar(value=str(0))
@@ -6219,16 +6229,31 @@ def show_gui():
     context_var.trace_add("write", changed_gpulayers_estimate)
     makelabelentry(tokens_tab, "Default Gen Amt:", defaultgenamt_var, row=20, padx=120, singleline=True, tooltip="How many tokens to generate by default, if not specified. Must be smaller than context size. Usually, your frontend GUI will override this.")
 
+    nativectx_entry, nativectx_label = makelabelentry(tokens_tab, "Override Native Context:", customrope_nativectx, row=23, padx=146, singleline=True, tooltip="Overrides the native trained context of the loaded model with a custom value to be used for Rope scaling.")
     customrope_scale_entry, customrope_scale_label = makelabelentry(tokens_tab, "RoPE Scale:", customrope_scale, row=23, padx=100, singleline=True, tooltip="For Linear RoPE scaling. RoPE frequency scale.")
     customrope_base_entry, customrope_base_label = makelabelentry(tokens_tab, "RoPE Base:", customrope_base, row=24, padx=100, singleline=True, tooltip="For NTK Aware Scaling. RoPE frequency base.")
     def togglerope(a,b,c):
-        items = [customrope_scale_label, customrope_scale_entry,customrope_base_label, customrope_base_entry]
-        for idx, item in enumerate(items):
-            if customrope_var.get() == 1:
-                item.grid()
-            else:
+        if customrope_var.get() == 1:
+            manualropebox.grid()
+            enabled_items = [customrope_scale_label, customrope_scale_entry,customrope_base_label, customrope_base_entry]
+            disabled_items = [nativectx_entry,nativectx_label]
+            for idx, item in enumerate(enabled_items):
+                if manualrope_var.get() == 1:
+                    item.grid()
+                else:
+                    item.grid_remove()
+            for idx, item in enumerate(disabled_items):
+                if manualrope_var.get() == 0:
+                    item.grid()
+                else:
+                    item.grid_remove()
+        else:
+            disabled_items = [manualropebox, nativectx_entry,nativectx_label, customrope_scale_label, customrope_scale_entry, customrope_base_label, customrope_base_entry]
+            for idx, item in enumerate(disabled_items):
                 item.grid_remove()
-    makecheckbox(tokens_tab,  "Custom RoPE Config", variable=customrope_var, row=22, command=togglerope,tooltiptxt="Override the default RoPE configuration with custom RoPE scaling.")
+    manualropebox = makecheckbox(tokens_tab, "Manual Rope Scale", variable=manualrope_var, row=22, command=togglerope, padx=166, tooltiptxt="Set RoPE base and scale manually.")
+
+    makecheckbox(tokens_tab, "Custom RoPE Config", variable=customrope_var, row=22, command=togglerope,tooltiptxt="Override the default RoPE configuration with custom RoPE scaling.")
     makecheckbox(tokens_tab, "Use FlashAttention", flashattention_var, 28, command=toggleflashattn,  tooltiptxt="Enable flash attention for GGUF models.")
     noqkvlabel = makelabel(tokens_tab,"(Note: QuantKV works best with flash attention)",28,0,"Only K cache can be quantized, and performance can suffer.\nIn some cases, it might even use more VRAM when doing a full offload.",padx=160)
     noqkvlabel.configure(text_color="#ff5555")
@@ -6528,9 +6553,15 @@ def show_gui():
         args.forceversion = 0 if version_var.get()=="" else int(version_var.get())
         args.contextsize = int(contextsize_text[context_var.get()])
         if customrope_var.get()==1:
-            args.ropeconfig = [float(customrope_scale.get()),float(customrope_base.get())]
+            if manualrope_var.get()==1:
+                args.ropeconfig = [float(customrope_scale.get()),float(customrope_base.get())]
+                args.overridenativecontext = 0
+            else:
+                args.ropeconfig = [0.0, 10000.0]
+                args.overridenativecontext = int(customrope_nativectx.get())
         else:
             args.ropeconfig = [0.0, 10000.0]
+            args.overridenativecontext = 0
         args.moeexperts = int(moeexperts_var.get()) if moeexperts_var.get()!="" else -1
         args.moecpu = int(moecpu_var.get()) if moecpu_var.get()!="" else 0
         args.defaultgenamt = int(defaultgenamt_var.get()) if defaultgenamt_var.get()!="" else 512
@@ -6736,13 +6767,24 @@ def show_gui():
             blas_threads_var.set("")
         if "contextsize" in dict and dict["contextsize"]:
             context_var.set(contextsize_text.index(str(dict["contextsize"])))
-        if "ropeconfig" in dict and dict["ropeconfig"] and len(dict["ropeconfig"])>1:
+        if "overridenativecontext" in dict and dict["overridenativecontext"]>0:
+            customrope_var.set(1)
+            manualrope_var.set(0)
+            customrope_nativectx.set(str(dict["overridenativecontext"]))
+        elif "ropeconfig" in dict and dict["ropeconfig"] and len(dict["ropeconfig"])>1:
+            customrope_nativectx.set(default_native_ctx)
             if dict["ropeconfig"][0]>0:
                 customrope_var.set(1)
+                manualrope_var.set(1)
                 customrope_scale.set(str(dict["ropeconfig"][0]))
                 customrope_base.set(str(dict["ropeconfig"][1]))
             else:
                 customrope_var.set(0)
+                manualrope_var.set(0)
+        else:
+            customrope_nativectx.set(default_native_ctx)
+            customrope_var.set(0)
+            manualrope_var.set(0)
         if "moeexperts" in dict and dict["moeexperts"]:
             moeexperts_var.set(dict["moeexperts"])
         if "moecpu" in dict and dict["moecpu"]:
@@ -8556,7 +8598,6 @@ if __name__ == '__main__':
     parser.add_argument("--host", metavar=('[ipaddr]'), help="Host IP to listen on. If this flag is not set, all routable interfaces are accepted.", default="")
     parser.add_argument("--launch", help="Launches a web browser when load is completed.", action='store_true')
     parser.add_argument("--config", metavar=('[filename]'), help="Load settings from a .kcpps file. Other arguments will be ignored", type=str, nargs=1)
-
     parser.add_argument("--threads", metavar=('[threads]'), help="Use a custom number of threads if specified. Otherwise, uses an amount based on CPU cores", type=int, default=get_default_threads())
     compatgroup = parser.add_mutually_exclusive_group()
     compatgroup.add_argument("--usecuda", "--usecublas", "--usehipblas", help="Use CUDA for GPU Acceleration. Requires CUDA. Enter a number afterwards to select and use 1 GPU. Leaving no number will use all GPUs.", nargs='*',metavar=('[lowvram|normal] [main GPU ID] [mmq|nommq] [rowsplit]'), choices=['normal', 'lowvram', '0', '1', '2', '3', 'all', 'mmq', 'nommq', 'rowsplit'])
@@ -8572,7 +8613,6 @@ if __name__ == '__main__':
     advparser.add_argument("--version", help="Prints version and exits.", action='store_true')
     advparser.add_argument("--analyze", metavar=('[filename]'), help="Reads the metadata, weight types and tensor names in any GGUF file.", default="")
     advparser.add_argument("--maingpu", help="Only used in a multi-gpu setup. Sets the index of the main GPU that will be used.",metavar=('[Device ID]'), type=int, default=-1)
-    advparser.add_argument("--ropeconfig", help="If set, uses customized RoPE scaling from configured frequency scale and frequency base (e.g. --ropeconfig 0.25 10000). Otherwise, uses NTK-Aware scaling set automatically based on context size. For linear rope, simply set the freq-scale and ignore the freq-base",metavar=('[rope-freq-scale]', '[rope-freq-base]'), default=[0.0, 10000.0], type=float, nargs='+')
     advparser.add_argument("--blasbatchsize", help="Sets the batch size used in BLAS processing (default 512). Setting it to -1 disables BLAS mode, but keeps other benefits like GPU offload.", type=int,choices=[-1,16,32,64,128,256,512,1024,2048], default=512)
     advparser.add_argument("--blasthreads", help="Use a different number of threads during BLAS if specified. Otherwise, has the same value as --threads",metavar=('[threads]'), type=int, default=0)
     advparser.add_argument("--lora", help="GGUF models only, applies a lora file on top of model.", metavar=('[lora_filename]'), nargs='+')
@@ -8580,6 +8620,8 @@ if __name__ == '__main__':
     advparser.add_argument("--noshift", help="If set, do not attempt to Trim and Shift the GGUF context.", action='store_true')
     advparser.add_argument("--nofastforward", help="If set, do not attempt to fast forward GGUF context (always reprocess). Will also enable noshift", action='store_true')
     advparser.add_argument("--useswa", help="If set, allows Sliding Window Attention (SWA) KV Cache, which saves memory but cannot be used with context shifting.", action='store_true')
+    advparser.add_argument("--ropeconfig", help="If set, uses customized RoPE scaling from configured frequency scale and frequency base (e.g. --ropeconfig 0.25 10000). Otherwise, uses NTK-Aware scaling set automatically based on context size. For linear rope, simply set the freq-scale and ignore the freq-base",metavar=('[rope-freq-scale]', '[rope-freq-base]'), default=[0.0, 10000.0], type=float, nargs='+')
+    advparser.add_argument("--overridenativecontext", help="Overrides the native trained context of the loaded model with a custom value to be used for Rope scaling.",metavar=('[trained context]'), type=int, default=0)
     compatgroup3 = advparser.add_mutually_exclusive_group()
     compatgroup3.add_argument("--usemmap", help="If set, uses mmap to load model.", action='store_true')
     advparser.add_argument("--usemlock", help="Enables mlock, preventing the RAM used to load the model from being paged out. Not usually recommended.", action='store_true')
