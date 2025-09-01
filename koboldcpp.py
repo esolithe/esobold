@@ -1210,22 +1210,45 @@ def fetch_gpu_properties(testCL,testCU,testVK):
             FetchedCUfreeMem = []
             pass
         if len(FetchedCUdevices)==0:
-            try: # Get AMD ROCm GPU names
+            try: # Get AMD ROCm GPU names and VRAM from rocminfo
                 output = subprocess.run(['rocminfo'], capture_output=True, text=True, check=True, encoding='utf-8', timeout=10).stdout
                 device_name = None
+                current_agent_is_gpu = False
+                in_pool_section = False
+
                 for line in output.splitlines(): # read through the output line by line
                     line = line.strip()
-                    if line.startswith("Marketing Name:"):
+                    if line.startswith("Agent ") and "Agent" in line:
+                        # Reset state for new agent
+                        device_name = None
+                        current_agent_is_gpu = False
+                        in_pool_section = False
+                    elif line.startswith("Marketing Name:"):
                         device_name = line.split(":", 1)[1].strip() # if we find a named device, temporarily save the name
-                    elif line.startswith("Device Type:") and "GPU" in line and device_name is not None: # if the following Device Type is a GPU (not a CPU) then add it to devices list
+                    elif line.startswith("Device Type:") and "GPU" in line and device_name is not None:
+                        # if the following Device Type is a GPU (not a CPU) then add it to devices list
                         FetchedCUdevices.append(device_name)
+                        current_agent_is_gpu = True
                         AMDgpu = True
                     elif line.startswith("Device Type:") and "GPU" not in line:
                         device_name = None
-                if FetchedCUdevices:
-                    getamdvram = subprocess.run(['rocm-smi', '--showmeminfo', 'vram', '--csv'], capture_output=True, text=True, check=True, encoding='utf-8', timeout=10).stdout # fetch VRAM of devices
-                    if getamdvram:
-                        FetchedCUdeviceMem = [line.split(",")[1].strip() for line in getamdvram.splitlines()[1:] if line.strip()]
+                        current_agent_is_gpu = False
+                    elif line.startswith("Pool Info:") and current_agent_is_gpu:
+                        in_pool_section = True
+                    elif in_pool_section and current_agent_is_gpu and line.startswith("Segment:") and "GLOBAL" in line and "COARSE GRAINED" in line:
+                        # This is the main VRAM pool for this GPU
+                        continue
+                    elif in_pool_section and current_agent_is_gpu and line.startswith("Size:"):
+                        # Extract VRAM size in KB and convert to MB
+                        size_match = re.search(r'(\d+)\(0x[0-9a-fA-F]+\)\s*KB', line)
+                        if size_match:
+                            vram_kb = int(size_match.group(1))
+                            vram_mb = vram_kb // 1024
+                            FetchedCUdeviceMem.append(str(vram_mb))
+                            in_pool_section = False
+
+                if FetchedCUdevices and FetchedCUdeviceMem:
+                    print(f"Detected AMD GPU VRAM from rocminfo: {list(zip(FetchedCUdevices, FetchedCUdeviceMem))} MB")
             except Exception:
                 FetchedCUdeviceMem = []
                 FetchedCUfreeMem = []
@@ -1251,12 +1274,10 @@ def fetch_gpu_properties(testCL,testCU,testVK):
         MaxMemory[0] = max(lowestcumem,MaxMemory[0])
         MaxFreeMemory[0] = max(lowestfreecumem,MaxFreeMemory[0])
 
-        if MaxMemory[0] < (1024*1024*256):
-            print("Unable to detect VRAM, please set layers manually.")
-
     if testVK:
         try: # Get Vulkan names
             foundVkGPU = False
+            lowestvkmem = 0
             output = subprocess.run(['vulkaninfo','--summary'], capture_output=True, text=True, check=True, encoding='utf-8', timeout=10).stdout
             devicelist = [line.split("=")[1].strip() for line in output.splitlines() if "deviceName" in line]
             devicetypes = [line.split("=")[1].strip() for line in output.splitlines() if "deviceType" in line]
@@ -1280,16 +1301,15 @@ def fetch_gpu_properties(testCL,testCU,testVK):
                     output = subprocess.run(['vulkaninfo'], capture_output=True, text=True, check=True, encoding='utf-8', timeout=10).stdout
                     devicechunks = output.split("VkPhysicalDeviceMemoryProperties")[1:]
                     gpuidx = 0
-                    lowestvkmem = 0
                     for chunk in devicechunks:
                         heaps = chunk.split("memoryTypes:")[0].split("memoryHeaps[")[1:]
-                        snippet = heaps[0]
-                        if "MEMORY_HEAP_DEVICE_LOCAL_BIT" in snippet and "size" in snippet:
-                            match = re.search(r"size\s*=\s*(\d+)", snippet)
-                            if match:
-                                dmem = int(match.group(1))
-                                if dmem > gpumem_ignore_limit_min and dmem < gpumem_ignore_limit_max:
-                                    lowestvkmem = dmem if lowestvkmem==0 else (dmem if dmem<lowestvkmem else lowestvkmem)
+                        for heap in heaps:  # Check all heaps, not just the first one
+                            if "MEMORY_HEAP_DEVICE_LOCAL_BIT" in heap and "size" in heap:
+                                match = re.search(r"size\s*=\s*(\d+)", heap)
+                                if match:
+                                    dmem = int(match.group(1))
+                                    if dmem > gpumem_ignore_limit_min and dmem < gpumem_ignore_limit_max:
+                                        lowestvkmem = dmem if lowestvkmem==0 else (dmem if dmem<lowestvkmem else lowestvkmem)
                         gpuidx += 1
                 except Exception: # failed to get vulkan vram
                     pass
@@ -1326,6 +1346,11 @@ def fetch_gpu_properties(testCL,testCU,testVK):
             MaxMemory[0] = max(lowestclmem,MaxMemory[0])
         except Exception:
             pass
+
+    # Check VRAM detection after all backends have been tested
+    if MaxMemory[0] < (1024*1024*256):
+        print("Unable to detect VRAM, please set layers manually.")
+
     return
 
 def auto_set_backend_cli():
@@ -1525,6 +1550,8 @@ def generate(genparams, stream_flag=False):
         max_context_length = maxctx
     min_remain_hardlimit = max(min(max_context_length-4, 16),int(max_context_length*0.2))
     min_remain_softlimit = max(min(max_context_length-4, 16),int(max_context_length*0.4))
+    if args.genlimit > 0 and max_length > args.genlimit:
+        max_length = args.genlimit
     if max_length >= (max_context_length-min_remain_softlimit):
         print(f"\n!!! ====== !!!\nWarning: You are trying to generate text with max_length ({max_length}) near or exceeding max_context_length limit ({max_context_length}).\nMost of the context will be removed, and your outputs will not be very coherent.\nConsider launching with increased --contextsize to avoid issues.\n!!! ====== !!!")
         if max_length >= (max_context_length-min_remain_hardlimit):
@@ -4206,6 +4233,8 @@ Change Mode<br>
             response_body = (json.dumps(["kobo","cheery","sleepy","shouty","chatty"]).encode()) #some random voices for them to enjoy
         elif self.path.endswith('/speakers'): #xtts compatible
             response_body = (json.dumps([{"name":"kobo","voice_id":"kobo","preview_url":""},{"name":"cheery","voice_id":"cheery","preview_url":""},{"name":"sleepy","voice_id":"sleepy","preview_url":""},{"name":"shouty","voice_id":"shouty","preview_url":""},{"name":"chatty","voice_id":"chatty","preview_url":""}]).encode()) #some random voices for them to enjoy
+        elif self.path.endswith('/v1/audio/voices'):
+            response_body = (json.dumps({"status":"ok","voices":["kobo","cheery","sleepy","shouty","chatty"]}).encode()) #some random voices for them to enjoy
         elif self.path.endswith('/get_tts_settings'): #xtts compatible
             response_body = (json.dumps({"temperature":0.75,"speed":1,"length_penalty":1,"repetition_penalty":1,"top_p":1,"top_k":4,"enable_text_splitting":True,"stream_chunk_size":100}).encode()) #some random voices for them to enjoy
 
@@ -5603,6 +5632,7 @@ def show_gui():
     moeexperts_var = ctk.StringVar(value=str(-1))
     moecpu_var = ctk.StringVar(value=str(0))
     defaultgenamt_var = ctk.StringVar(value=str(768))
+    genlimit_var = ctk.StringVar(value=str(0))
     nobostoken_var = ctk.IntVar(value=0)
     override_kv_var = ctk.StringVar(value="")
     override_tensors_var = ctk.StringVar(value="")
@@ -6274,6 +6304,7 @@ def show_gui():
     makeslider(tokens_tab, "Context Size:",contextsize_text, context_var, 0, len(contextsize_text)-1, 18, width=280, set=7,tooltip="What is the maximum context size to support. Model specific. You cannot exceed it.\nLarger contexts require more memory, and not all models support it.")
     context_var.trace_add("write", changed_gpulayers_estimate)
     makelabelentry(tokens_tab, "Default Gen Amt:", defaultgenamt_var, row=20, padx=120, singleline=True, tooltip="How many tokens to generate by default, if not specified. Must be smaller than context size. Usually, your frontend GUI will override this.")
+    makelabelentry(tokens_tab, "Prompt Limit:", genlimit_var, row=20, padx=300, singleline=True, tooltip="If set, restricts max output tokens to this limit regardless of API request. Set to 0 to disable.",labelpadx=210)
 
     nativectx_entry, nativectx_label = makelabelentry(tokens_tab, "Override Native Context:", customrope_nativectx, row=23, padx=146, singleline=True, tooltip="Overrides the native trained context of the loaded model with a custom value to be used for Rope scaling.")
     customrope_scale_entry, customrope_scale_label = makelabelentry(tokens_tab, "RoPE Scale:", customrope_scale, row=23, padx=100, singleline=True, tooltip="For Linear RoPE scaling. RoPE frequency scale.")
@@ -6613,6 +6644,7 @@ def show_gui():
         args.moeexperts = int(moeexperts_var.get()) if moeexperts_var.get()!="" else -1
         args.moecpu = int(moecpu_var.get()) if moecpu_var.get()!="" else 0
         args.defaultgenamt = int(defaultgenamt_var.get()) if defaultgenamt_var.get()!="" else 768
+        args.genlimit = int(genlimit_var.get()) if genlimit_var.get()!="" else 0
         args.nobostoken = (nobostoken_var.get()==1)
         args.enableguidance = (enableguidance_var.get()==1)
         args.overridekv = None if override_kv_var.get() == "" else override_kv_var.get()
@@ -6841,6 +6873,10 @@ def show_gui():
             moecpu_var.set(dict["moecpu"])
         if "defaultgenamt" in dict and dict["defaultgenamt"]:
             defaultgenamt_var.set(dict["defaultgenamt"])
+        if "genlimit" in dict and dict["genlimit"]:
+            genlimit_var.set(dict["genlimit"])
+        else:
+            genlimit_var.set(str(0))
         nobostoken_var.set(dict["nobostoken"] if ("nobostoken" in dict) else 0)
         enableguidance_var.set(dict["enableguidance"] if ("enableguidance" in dict) else 0)
         if "overridekv" in dict and dict["overridekv"]:
@@ -8456,7 +8492,8 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
 
     print(f"======\nActive Modules: {' '.join(enabledmlist)}")
     print(f"Inactive Modules: {' '.join(disabledmlist)}")
-    print(f"Enabled APIs: {' '.join(apimlist)}")
+    if not args.cli:
+        print(f"Enabled APIs: {' '.join(apimlist)}")
 
     global sslvalid
     if args.ssl:
@@ -8541,7 +8578,7 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
         else:
             save_to_file = (args.benchmark and args.benchmark!="stdout" and args.benchmark!="")
             benchmaxctx = maxctx
-            benchlen = args.promptlimit
+            benchlen = args.genlimit if args.genlimit > 0 else 100
             benchtemp = 0.1
             benchtopk = 1
             benchreppen = 1
@@ -8645,7 +8682,7 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser(description=f'KoboldCpp Server - Version {KcppVersion}')
     modelgroup = parser.add_mutually_exclusive_group() #we want to be backwards compatible with the unnamed positional args
-    modelgroup.add_argument("--model", metavar=('[filenames]'), help="Model file to load. Accepts multiple values if they are URLs.", type=str, nargs='+', default=[])
+    modelgroup.add_argument("--model","-m", metavar=('[filenames]'), help="Model file to load. Accepts multiple values if they are URLs.", type=str, nargs='+', default=[])
     modelgroup.add_argument("model_param", help="Model file to load (positional)", nargs="?")
     portgroup = parser.add_mutually_exclusive_group() #we want to be backwards compatible with the unnamed positional args
     portgroup.add_argument("--port", metavar=('[portnumber]'), help=f"Port to listen on. (Defaults to {defaultport})", default=defaultport, type=int, action='store')
@@ -8653,41 +8690,41 @@ if __name__ == '__main__':
     parser.add_argument("--host", metavar=('[ipaddr]'), help="Host IP to listen on. If this flag is not set, all routable interfaces are accepted.", default="")
     parser.add_argument("--launch", help="Launches a web browser when load is completed.", action='store_true')
     parser.add_argument("--config", metavar=('[filename]'), help="Load settings from a .kcpps file. Other arguments will be ignored", type=str, nargs=1)
-    parser.add_argument("--threads", metavar=('[threads]'), help="Use a custom number of threads if specified. Otherwise, uses an amount based on CPU cores", type=int, default=get_default_threads())
+    parser.add_argument("--threads","-t", metavar=('[threads]'), help="Use a custom number of threads if specified. Otherwise, uses an amount based on CPU cores", type=int, default=get_default_threads())
     compatgroup = parser.add_mutually_exclusive_group()
     compatgroup.add_argument("--usecuda", "--usecublas", "--usehipblas", help="Use CUDA for GPU Acceleration. Requires CUDA. Enter a number afterwards to select and use 1 GPU. Leaving no number will use all GPUs.", nargs='*',metavar=('[lowvram|normal] [main GPU ID] [mmq|nommq] [rowsplit]'), choices=['normal', 'lowvram', '0', '1', '2', '3', 'all', 'mmq', 'nommq', 'rowsplit'])
     compatgroup.add_argument("--usevulkan", help="Use Vulkan for GPU Acceleration. Can optionally specify one or more GPU Device ID (e.g. --usevulkan 0), leave blank to autodetect.", metavar=('[Device IDs]'), nargs='*', type=int, default=None)
     compatgroup.add_argument("--useclblast", help="Use CLBlast for GPU Acceleration. Must specify exactly 2 arguments, platform ID and device ID (e.g. --useclblast 1 0).", type=int, choices=range(0,9), nargs=2)
     compatgroup.add_argument("--usecpu", help="Do not use any GPU acceleration (CPU Only)", action='store_true')
-    parser.add_argument("--contextsize", help="Controls the memory allocated for maximum context size, only change if you need more RAM for big contexts. (default 8192).",metavar=('[256 to 262144]'), type=check_range(int,256,262144), default=8192)
-    parser.add_argument("--gpulayers", help="Set number of layers to offload to GPU when using GPU. Requires GPU. Set to -1 to try autodetect, set to 0 to disable GPU offload.",metavar=('[GPU layers]'), nargs='?', const=1, type=int, default=-1)
-    parser.add_argument("--tensor_split", "--tensorsplit", help="For CUDA and Vulkan only, ratio to split tensors across multiple GPUs, space-separated list of proportions, e.g. 7 3", metavar=('[Ratios]'), type=float, nargs='+')
+    parser.add_argument("--contextsize","--ctx-size", "-c", help="Controls the memory allocated for maximum context size, only change if you need more RAM for big contexts. (default 8192).",metavar=('[256 to 262144]'), type=check_range(int,256,262144), default=8192)
+    parser.add_argument("--gpulayers","--gpu-layers","--n-gpu-layers","-ngl", help="Set number of layers to offload to GPU when using GPU. Requires GPU. Set to -1 to try autodetect, set to 0 to disable GPU offload.",metavar=('[GPU layers]'), nargs='?', const=1, type=int, default=-1)
+    parser.add_argument("--tensor_split","--tensorsplit","--tensor-split","-ts", help="For CUDA and Vulkan only, ratio to split tensors across multiple GPUs, space-separated list of proportions, e.g. 7 3", metavar=('[Ratios]'), type=float, nargs='+')
 
     #more advanced params
     advparser = parser.add_argument_group('Advanced Commands')
     advparser.add_argument("--version", help="Prints version and exits.", action='store_true')
     advparser.add_argument("--analyze", metavar=('[filename]'), help="Reads the metadata, weight types and tensor names in any GGUF file.", default="")
-    advparser.add_argument("--maingpu", help="Only used in a multi-gpu setup. Sets the index of the main GPU that will be used.",metavar=('[Device ID]'), type=int, default=-1)
-    advparser.add_argument("--blasbatchsize", help="Sets the batch size used in BLAS processing (default 512). Setting it to -1 disables BLAS mode, but keeps other benefits like GPU offload.", type=int,choices=[-1,16,32,64,128,256,512,1024,2048,4096], default=512)
-    advparser.add_argument("--blasthreads", help="Use a different number of threads during BLAS if specified. Otherwise, has the same value as --threads",metavar=('[threads]'), type=int, default=0)
+    advparser.add_argument("--maingpu","--main-gpu","-mg", help="Only used in a multi-gpu setup. Sets the index of the main GPU that will be used.",metavar=('[Device ID]'), type=int, default=-1)
+    advparser.add_argument("--blasbatchsize","--batch-size","-b", help="Sets the batch size used in BLAS processing (default 512). Setting it to -1 disables BLAS mode, but keeps other benefits like GPU offload.", type=int,choices=[-1,16,32,64,128,256,512,1024,2048,4096], default=512)
+    advparser.add_argument("--blasthreads","--threads-batch", help="Use a different number of threads during BLAS if specified. Otherwise, has the same value as --threads",metavar=('[threads]'), type=int, default=0)
     advparser.add_argument("--lora", help="GGUF models only, applies a lora file on top of model.", metavar=('[lora_filename]'), nargs='+')
     advparser.add_argument("--loramult", metavar=('[amount]'), help="Multiplier for the Text LORA model to be applied.", type=float, default=1.0)
-    advparser.add_argument("--noshift", help="If set, do not attempt to Trim and Shift the GGUF context.", action='store_true')
+    advparser.add_argument("--noshift","--no-context-shift", help="If set, do not attempt to Trim and Shift the GGUF context.", action='store_true')
     advparser.add_argument("--nofastforward", help="If set, do not attempt to fast forward GGUF context (always reprocess). Will also enable noshift", action='store_true')
     advparser.add_argument("--useswa", help="If set, allows Sliding Window Attention (SWA) KV Cache, which saves memory but cannot be used with context shifting.", action='store_true')
     advparser.add_argument("--ropeconfig", help="If set, uses customized RoPE scaling from configured frequency scale and frequency base (e.g. --ropeconfig 0.25 10000). Otherwise, uses NTK-Aware scaling set automatically based on context size. For linear rope, simply set the freq-scale and ignore the freq-base",metavar=('[rope-freq-scale]', '[rope-freq-base]'), default=[0.0, 10000.0], type=float, nargs='+')
     advparser.add_argument("--overridenativecontext", help="Overrides the native trained context of the loaded model with a custom value to be used for Rope scaling.",metavar=('[trained context]'), type=int, default=0)
     compatgroup3 = advparser.add_mutually_exclusive_group()
     compatgroup3.add_argument("--usemmap", help="If set, uses mmap to load model.", action='store_true')
-    advparser.add_argument("--usemlock", help="Enables mlock, preventing the RAM used to load the model from being paged out. Not usually recommended.", action='store_true')
+    advparser.add_argument("--usemlock","--mlock", help="Enables mlock, preventing the RAM used to load the model from being paged out. Not usually recommended.", action='store_true')
     advparser.add_argument("--noavx2", help="Do not use AVX2 instructions, a slower compatibility mode for older devices.", action='store_true')
     advparser.add_argument("--failsafe", help="Use failsafe mode, extremely slow CPU only compatibility mode that should work on all devices. Can be combined with useclblast if your device supports OpenCL.", action='store_true')
     advparser.add_argument("--debugmode", help="Shows additional debug info in the terminal.", nargs='?', const=1, type=int, default=0)
     advparser.add_argument("--onready", help="An optional shell command to execute after the model has been loaded.", metavar=('[shell command]'), type=str, default="",nargs=1)
     advparser.add_argument("--benchmark", help="Do not start server, instead run benchmarks. If filename is provided, appends results to provided file.", metavar=('[filename]'), nargs='?', const="stdout", type=str, default=None)
-    advparser.add_argument("--prompt", metavar=('[prompt]'), help="Passing a prompt string triggers a direct inference, loading the model, outputs the response to stdout and exits. Can be used alone or with benchmark.", type=str, default="")
+    advparser.add_argument("--prompt","-p", metavar=('[prompt]'), help="Passing a prompt string triggers a direct inference, loading the model, outputs the response to stdout and exits. Can be used alone or with benchmark.", type=str, default="")
     advparser.add_argument("--cli", help="Does not launch KoboldCpp HTTP server. Instead, enables KoboldCpp from the command line, accepting interactive console input and displaying responses to the terminal.", action='store_true')
-    advparser.add_argument("--promptlimit", help="Sets the maximum number of generated tokens, usable only with --prompt or --benchmark",metavar=('[token limit]'), type=int, default=100)
+    advparser.add_argument("--genlimit","--promptlimit", help="Sets the maximum number of generated tokens, it will restrict all generations to this or lower. Also usable with --prompt or --benchmark.",metavar=('[token limit]'), type=int, default=0)
     advparser.add_argument("--multiuser", help="Runs in multiuser mode, which queues incoming requests instead of blocking them.", metavar=('limit'), nargs='?', const=1, type=int, default=1)
     advparser.add_argument("--multiplayer", help="Hosts a shared multiplayer session that others can join.", action='store_true')
     advparser.add_argument("--websearch", help="Enable the local search engine proxy so Web Searches can be done.", action='store_true')
@@ -8700,16 +8737,16 @@ if __name__ == '__main__':
     advparser.add_argument("--ssl", help="Allows all content to be served over SSL instead. A valid UNENCRYPTED SSL cert and key .pem files must be provided", metavar=('[cert_pem]', '[key_pem]'), nargs='+')
     advparser.add_argument("--nocertify", help="Allows insecure SSL connections. Use this if you have cert errors and need to bypass certificate restrictions.", action='store_true')
     advparser.add_argument("--mmproj", metavar=('[filename]'), help="Select a multimodal projector file for vision models like LLaVA.", default="")
-    advparser.add_argument("--mmprojcpu", help="Force CLIP for Vision mmproj always on CPU.", action='store_true')
+    advparser.add_argument("--mmprojcpu","--no-mmproj-offload", help="Force CLIP for Vision mmproj always on CPU.", action='store_true')
     advparser.add_argument("--visionmaxres", metavar=('[max px]'), help="Clamp MMProj vision maximum allowed resolution. Allowed values are between 512 to 2048 px (default 1024).", type=int, default=default_visionmaxres)
-    advparser.add_argument("--draftmodel", metavar=('[filename]'), help="Load a small draft model for speculative decoding. It will be fully offloaded. Vocab must match the main model.", default="")
-    advparser.add_argument("--draftamount", metavar=('[tokens]'), help="How many tokens to draft per chunk before verifying results", type=int, default=default_draft_amount)
-    advparser.add_argument("--draftgpulayers", metavar=('[layers]'), help="How many layers to offload to GPU for the draft model (default=full offload)", type=int, default=999)
+    advparser.add_argument("--draftmodel","--model-draft","-md", metavar=('[filename]'), help="Load a small draft model for speculative decoding. It will be fully offloaded. Vocab must match the main model.", default="")
+    advparser.add_argument("--draftamount","--draft-max","--draft-n", metavar=('[tokens]'), help="How many tokens to draft per chunk before verifying results", type=int, default=default_draft_amount)
+    advparser.add_argument("--draftgpulayers","--gpu-layers-draft","--n-gpu-layers-draft","-ngld", metavar=('[layers]'), help="How many layers to offload to GPU for the draft model (default=full offload)", type=int, default=999)
     advparser.add_argument("--draftgpusplit", help="GPU layer distribution ratio for draft model (default=same as main). Only works if multi-GPUs selected for MAIN model and tensor_split is set!", metavar=('[Ratios]'), type=float, nargs='+')
     advparser.add_argument("--password", metavar=('[API key]'), help="Enter a password required to use this instance. This key will be required for all text endpoints. Image endpoints are not secured.", default=None)
     advparser.add_argument("--ignoremissing", help="Ignores all missing non-essential files, just skipping them instead.", action='store_true')
     advparser.add_argument("--chatcompletionsadapter", metavar=('[filename]'), help="Select an optional ChatCompletions Adapter JSON file to force custom instruct tags.", default="AutoGuess")
-    advparser.add_argument("--flashattention", help="Enables flash attention.", action='store_true')
+    advparser.add_argument("--flashattention","--flash-attn","-fa", help="Enables flash attention.", action='store_true')
     advparser.add_argument("--quantkv", help="Sets the KV cache data type quantization, 0=f16, 1=q8, 2=q4. Requires Flash Attention for full effect, otherwise only K cache is quantized.",metavar=('[quantization level 0/1/2]'), type=int, choices=[0,1,2], default=0)
     advparser.add_argument("--forceversion", help="If the model file format detection fails (e.g. rogue modified model) you can set this to override the detected format (enter desired version, e.g. 401 for GPTNeoX-Type2).",metavar=('[version]'), type=int, default=0)
     advparser.add_argument("--smartcontext", help="Reserving a portion of context to try processing less frequently. Outdated. Not recommended.", action='store_true')
@@ -8718,13 +8755,13 @@ if __name__ == '__main__':
     advparser.add_argument("--exporttemplate", help="Exports the current selected arguments as a .kcppt template file", metavar=('[filename]'), type=str, default="")
     advparser.add_argument("--nomodel", help="Allows you to launch the GUI alone, without selecting any model.", action='store_true')
     advparser.add_argument("--moeexperts", metavar=('[num of experts]'), help="How many experts to use for MoE models (default=follow gguf)", type=int, default=-1)
-    advparser.add_argument("--moecpu", metavar=('[layers affected]'), help="Keep the Mixture of Experts (MoE) weights of the first N layers in the CPU. If no value is provided, applies to all layers.", nargs='?', const=999, type=int, default=0)
+    advparser.add_argument("--moecpu","--n-cpu-moe", "-ncmoe", metavar=('[layers affected]'), help="Keep the Mixture of Experts (MoE) weights of the first N layers in the CPU. If no value is provided, applies to all layers.", nargs='?', const=999, type=int, default=0)
     advparser.add_argument("--defaultgenamt", help="How many tokens to generate by default, if not specified. Must be smaller than context size. Usually, your frontend GUI will override this.", type=check_range(int,64,8192), default=768)
     advparser.add_argument("--nobostoken", help="Prevents BOS token from being added at the start of any prompt. Usually NOT recommended for most models.", action='store_true')
     advparser.add_argument("--enableguidance", help="Enables the use of Classifier-Free-Guidance, which allows the use of negative prompts. Has performance and memory impact.", action='store_true')
     advparser.add_argument("--maxrequestsize", metavar=('[size in MB]'), help="Specify a max request payload size. Any requests to the server larger than this size will be dropped. Do not change if unsure.", type=int, default=32)
-    advparser.add_argument("--overridekv", metavar=('[name=type:value]'), help="Advanced option to override a metadata by key, same as in llama.cpp. Mainly for debugging, not intended for general use. Types: int, float, bool, str", default="")
-    advparser.add_argument("--overridetensors", metavar=('[tensor name pattern=buffer type]'), help="Advanced option to override tensor backend selection, same as in llama.cpp.", default="")
+    advparser.add_argument("--overridekv","--override-kv", metavar=('[name=type:value]'), help="Advanced option to override a metadata by key, same as in llama.cpp. Mainly for debugging, not intended for general use. Types: int, float, bool, str", default="")
+    advparser.add_argument("--overridetensors","--override-tensor","-ot", metavar=('[tensor name pattern=buffer type]'), help="Advanced option to override tensor backend selection, same as in llama.cpp.", default="")
     advparser.add_argument("--developerMode", help="Enables developer utilities, such as hot reloading of Kobold Lite.", default=False, type=bool)
     compatgroup2 = parser.add_mutually_exclusive_group()
     compatgroup2.add_argument("--showgui", help="Always show the GUI instead of launching the model right away when loading settings from a .kcpps file.", action='store_true')
@@ -8784,7 +8821,7 @@ if __name__ == '__main__':
     deprecatedgroup.add_argument("--hordeconfig", help=argparse.SUPPRESS, nargs='+')
     deprecatedgroup.add_argument("--sdconfig", help=argparse.SUPPRESS, nargs='+')
     compatgroup.add_argument("--noblas", help=argparse.SUPPRESS, action='store_true')
-    compatgroup3.add_argument("--nommap", help=argparse.SUPPRESS, action='store_true')
+    compatgroup3.add_argument("--nommap","--no-mmap", help=argparse.SUPPRESS, action='store_true')
     deprecatedgroup.add_argument("--sdnotile", help=argparse.SUPPRESS, action='store_true') # legacy option, see sdtiledvae
 
     main(launch_args=parser.parse_args(),default_args=parser.parse_args([]))

@@ -607,7 +607,7 @@ static void speculative_decoding_setup(std::string spec_model_filename, const ll
     draft_ctx_params.n_ubatch = base_ctx_params.n_ubatch;
     draft_ctx_params.n_threads = base_ctx_params.n_threads;
     draft_ctx_params.n_threads_batch =  base_ctx_params.n_threads_batch;
-    draft_ctx_params.flash_attn = base_ctx_params.flash_attn;
+    draft_ctx_params.flash_attn_type = base_ctx_params.flash_attn_type;
     draft_ctx_params.type_k = base_ctx_params.type_k;
     draft_ctx_params.type_v = base_ctx_params.type_v;
     draft_ctx_params.swa_full = base_ctx_params.swa_full;
@@ -2401,7 +2401,7 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
             llamamodel->vocab.set_eos_bos(0,0);
         }
 
-        llama_ctx_params.flash_attn = kcpp_data->flash_attn;
+        llama_ctx_params.flash_attn_type = (kcpp_data->flash_attn?LLAMA_FLASH_ATTN_TYPE_ENABLED:LLAMA_FLASH_ATTN_TYPE_DISABLED);
         llama_ctx_params.swa_full = kcpp_data->swa_full;
         llama_ctx_params.type_k = (inputs.quant_k>1?GGML_TYPE_Q4_0:(inputs.quant_k==1?GGML_TYPE_Q8_0:GGML_TYPE_F16));
         llama_ctx_params.type_v = (inputs.quant_v>1?GGML_TYPE_Q4_0:(inputs.quant_v==1?GGML_TYPE_Q8_0:GGML_TYPE_F16));
