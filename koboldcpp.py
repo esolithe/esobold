@@ -91,6 +91,7 @@ maxhordectx = 0 #set to whatever maxctx is if 0
 maxhordelen = 1024
 modelbusy = threading.Lock()
 requestsinqueue = 0
+ratelimitlookup = {}
 defaultport = 5001
 showsamplerwarning = True
 showmaxctxwarning = True
@@ -4904,6 +4905,21 @@ Change Mode<br>
             return
 
         reqblocking = False
+        #handle rate limiting
+        ratelimiter = int(args.ratelimit)
+        if ratelimiter > 0:
+            client_ip = self.client_address[0]
+            lastdone = ratelimitlookup.get(client_ip, datetime.min)
+            diff = (datetime.now() - lastdone).total_seconds()
+            if diff < ratelimiter:
+                self.send_response(503)
+                self.end_headers(content_type='application/json')
+                self.wfile.write(json.dumps({"detail": {
+                        "msg": f"You are sending requests too quickly. Please try again in {int(ratelimiter-diff)} seconds.",
+                        "type": "service_unavailable",
+                    }}).encode())
+                return
+            ratelimitlookup[client_ip] = datetime.now()
         muint = int(args.multiuser)
         if muint<=0 and ((args.whispermodel and args.whispermodel!="") or (args.sdmodel and args.sdmodel!="") or (args.ttsmodel and args.ttsmodel!="") or (args.embeddingsmodel and args.embeddingsmodel!="")):
             muint = 2 # this prevents errors when using voice/img together with text
@@ -5667,6 +5683,7 @@ def show_gui():
     ssl_key_var = ctk.StringVar()
     password_var = ctk.StringVar()
     maxrequestsize_var = ctk.StringVar(value=str(32))
+    ratelimit_var = ctk.StringVar(value=str(0))
 
     sd_model_var = ctk.StringVar()
     sd_lora_var = ctk.StringVar()
@@ -6395,6 +6412,7 @@ def show_gui():
     makelabelentry(network_tab, "Password: ", password_var, 10, 200,tooltip="Enter a password required to use this instance.\nThis key will be required for all text endpoints.\nImage endpoints are not secured.")
 
     makelabelentry(network_tab, "Max Req. Size (MB):", maxrequestsize_var, row=20, width=50, tooltip="Specify a max request payload size. Any requests to the server larger than this size will be dropped. Do not change if unsure.")
+    makelabelentry(network_tab, "IP Rate Limiter (s):", ratelimit_var, row=22, width=50, tooltip="Rate limits each IP to allow a new request once per X seconds. Do not change if unsure.")
 
 
     # Horde Tab
@@ -6686,6 +6704,7 @@ def show_gui():
         args.multiplayer = (multiplayer_var.get()==1)
         args.websearch = (websearch_var.get()==1)
         args.maxrequestsize = int(maxrequestsize_var.get()) if maxrequestsize_var.get()!="" else 32
+        args.ratelimit = int(ratelimit_var.get()) if ratelimit_var.get()!="" else 0
 
         if usehorde_var.get() != 0:
             args.hordemodelname = horde_name_var.get()
@@ -6933,6 +6952,8 @@ def show_gui():
         usehorde_var.set(1 if ("hordekey" in dict and dict["hordekey"]) else 0)
         if "maxrequestsize" in dict and dict["maxrequestsize"]:
             maxrequestsize_var.set(dict["maxrequestsize"])
+        if "ratelimit" in dict and dict["ratelimit"]:
+            ratelimit_var.set(dict["ratelimit"])
 
         sd_model_var.set(dict["sdmodel"] if ("sdmodel" in dict and dict["sdmodel"]) else "")
         sd_clamped_var.set(int(dict["sdclamped"]) if ("sdclamped" in dict and dict["sdclamped"]) else 0)
@@ -8744,6 +8765,7 @@ if __name__ == '__main__':
     advparser.add_argument("--draftgpulayers","--gpu-layers-draft","--n-gpu-layers-draft","-ngld", metavar=('[layers]'), help="How many layers to offload to GPU for the draft model (default=full offload)", type=int, default=999)
     advparser.add_argument("--draftgpusplit", help="GPU layer distribution ratio for draft model (default=same as main). Only works if multi-GPUs selected for MAIN model and tensor_split is set!", metavar=('[Ratios]'), type=float, nargs='+')
     advparser.add_argument("--password", metavar=('[API key]'), help="Enter a password required to use this instance. This key will be required for all text endpoints. Image endpoints are not secured.", default=None)
+    advparser.add_argument("--ratelimit", metavar=('[seconds]'), help="If enabled, rate limit generative request by IP address. Each IP can only send a new request once per X seconds.", type=int, default=0)
     advparser.add_argument("--ignoremissing", help="Ignores all missing non-essential files, just skipping them instead.", action='store_true')
     advparser.add_argument("--chatcompletionsadapter", metavar=('[filename]'), help="Select an optional ChatCompletions Adapter JSON file to force custom instruct tags.", default="AutoGuess")
     advparser.add_argument("--flashattention","--flash-attn","-fa", help="Enables flash attention.", action='store_true')
