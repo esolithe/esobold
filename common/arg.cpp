@@ -1550,11 +1550,11 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         {"-fa", "--flash-attn"}, "FA",
         string_format("set Flash Attention use ('on', 'off', or 'auto', default: '%s')", llama_flash_attn_type_name(params.flash_attn_type)),
         [](common_params & params, const std::string & value) {
-            if (value == "on" || value == "enabled") {
+            if (value == "on" || value == "enabled" || value == "1") {
                 params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;
-            } else if (value == "off" || value == "disabled") {
+            } else if (value == "off" || value == "disabled" || value == "0") {
                 params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_DISABLED;
-            } else if (value == "auto") {
+            } else if (value == "auto" || value == "-1") {
                 params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_AUTO;
             } else {
                 throw std::runtime_error(string_format("error: unkown value for --flash-attn: '%s'\n", value.c_str()));
@@ -2965,19 +2965,19 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_ENDPOINT_METRICS"));
     add_opt(common_arg(
-        {"--slots"},
-        string_format("enable slots monitoring endpoint (default: %s)", params.endpoint_slots ? "enabled" : "disabled"),
-        [](common_params & params) {
-            params.endpoint_slots = true;
-        }
-    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_ENDPOINT_SLOTS"));
-    add_opt(common_arg(
         {"--props"},
         string_format("enable changing global properties via POST /props (default: %s)", params.endpoint_props ? "enabled" : "disabled"),
         [](common_params & params) {
             params.endpoint_props = true;
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_ENDPOINT_PROPS"));
+    add_opt(common_arg(
+        {"--slots"},
+        string_format("enable slots monitoring endpoint (default: %s)", params.endpoint_slots ? "enabled" : "disabled"),
+        [](common_params & params) {
+            params.endpoint_slots = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_ENDPOINT_SLOTS"));
     add_opt(common_arg(
         {"--no-slots"},
         "disables slots monitoring endpoint",
