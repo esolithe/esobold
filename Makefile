@@ -316,7 +316,10 @@ ifdef LLAMA_METAL
 CFLAGS   += -DGGML_USE_METAL -DGGML_METAL_NDEBUG -DSD_USE_METAL
 CXXFLAGS += -DGGML_USE_METAL -DSD_USE_METAL
 LDFLAGS  += -framework Foundation -framework Metal -framework MetalKit -framework MetalPerformanceShaders
-OBJS     += ggml-metal.o
+OBJS     += ggml-metal.o ggml-metal-common.o
+
+ggml-metal-common.o: ggml/src/ggml-metal/ggml-metal-common.cpp ggml/src/ggml-metal/ggml-metal-common.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 ggml-metal.o: ggml/src/ggml-metal/ggml-metal.m ggml/src/ggml-metal/ggml-metal-impl.h ggml/include/ggml-metal.h
 	@echo "== Preparing merged Metal file =="
