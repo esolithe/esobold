@@ -463,10 +463,10 @@ void ggml_backend_event_wait(ggml_backend_t backend, ggml_backend_event_t event)
     backend->iface.event_wait(backend, event);
 }
 
-static void ggml_backend_optimize_graph(ggml_backend_t backend, struct ggml_cgraph * cgraph) {
+static void ggml_backend_graph_optimize(ggml_backend_t backend, struct ggml_cgraph * cgraph) {
     GGML_ASSERT(backend);
-    if (backend->iface.optimize_graph != NULL) {
-        backend->iface.optimize_graph(backend, cgraph);
+    if (backend->iface.graph_optimize != NULL) {
+        backend->iface.graph_optimize(backend, cgraph);
     }
 }
 
@@ -656,9 +656,9 @@ static bool ggml_is_view_op(enum ggml_op op) {
 #ifndef GGML_SCHED_MAX_BACKENDS
 #define GGML_SCHED_MAX_BACKENDS 16
 #endif
-
+//kcpp yolo fix: decreased from 30 to 14 in order to try resolve tts oom issues.
 #ifndef GGML_SCHED_MAX_SPLIT_INPUTS
-#define GGML_SCHED_MAX_SPLIT_INPUTS 30
+#define GGML_SCHED_MAX_SPLIT_INPUTS 14
 #endif
 
 #ifndef GGML_SCHED_MAX_COPIES
@@ -1313,7 +1313,7 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
 
         // Optimize this split of the graph. This needs to happen before we make graph_copy,
         // so they are in sync.
-        ggml_backend_optimize_graph(sched->backends[split->backend_id], &split->graph);
+        ggml_backend_graph_optimize(sched->backends[split->backend_id], &split->graph);
 
         // add inputs to the graph copy so that they are allocated by ggml-alloc at the start of the split
         for (int j = 0; j < split->n_inputs; j++) {
