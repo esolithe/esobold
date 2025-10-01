@@ -289,6 +289,9 @@ class sd_load_model_inputs(ctypes.Structure):
                 ("threads", ctypes.c_int),
                 ("quant", ctypes.c_int),
                 ("flash_attention", ctypes.c_bool),
+                ("offload_cpu", ctypes.c_bool),
+                ("vae_cpu", ctypes.c_bool),
+                ("clip_cpu", ctypes.c_bool),
                 ("diffusion_conv_direct", ctypes.c_bool),
                 ("vae_conv_direct", ctypes.c_bool),
                 ("taesd", ctypes.c_bool),
@@ -320,10 +323,13 @@ class sd_generation_inputs(ctypes.Structure):
                 ("height", ctypes.c_int),
                 ("seed", ctypes.c_int),
                 ("sample_method", ctypes.c_char_p),
-                ("clip_skip", ctypes.c_int)]
+                ("clip_skip", ctypes.c_int),
+                ("vid_req_frames", ctypes.c_int),
+                ("vid_req_avi", ctypes.c_int)]
 
 class sd_generation_outputs(ctypes.Structure):
     _fields_ = [("status", ctypes.c_int),
+                ("animated", ctypes.c_int),
                 ("data", ctypes.c_char_p)]
 
 class whisper_load_model_inputs(ctypes.Structure):
@@ -1723,6 +1729,9 @@ def sd_load_model(model_filename,vae_filename,lora_filename,t5xxl_filename,clipl
     inputs.threads = thds
     inputs.quant = args.sdquant
     inputs.flash_attention = args.sdflashattention
+    inputs.offload_cpu = args.sdoffloadcpu
+    inputs.vae_cpu = args.sdvaecpu
+    inputs.clip_cpu = args.sdclipcpu
     sdconvdirect = sd_convdirect_option(args.sdconvdirect)
     inputs.diffusion_conv_direct = sdconvdirect == 'full'
     inputs.vae_conv_direct = sdconvdirect in ['vaeonly', 'full']
@@ -1830,6 +1839,9 @@ def sd_generate(genparams):
         seed = random.randint(100000, 999999)
     sample_method = genparams.get("sampler_name", "k_euler_a")
     clip_skip = tryparseint(genparams.get("clip_skip", -1),-1)
+    vid_req_frames = tryparseint(genparams.get("frames", 1),1)
+    vid_req_frames = 1 if (not vid_req_frames or vid_req_frames < 1) else vid_req_frames
+    vid_req_avi = 1 if genparams.get("avi_video", False) else 0
     extra_images_arr = genparams.get("extra_images", [])
     extra_images_arr = ([] if not extra_images_arr else extra_images_arr)
     extra_images_arr = [img for img in extra_images_arr if img not in (None, "")]
@@ -1838,6 +1850,7 @@ def sd_generate(genparams):
     #clean vars
     cfg_scale = (1 if cfg_scale < 1 else (25 if cfg_scale > 25 else cfg_scale))
     sample_steps = (1 if sample_steps < 1 else (forced_steplimit if sample_steps > forced_steplimit else sample_steps))
+    vid_req_frames = (1 if vid_req_frames < 1 else (100 if vid_req_frames > 100 else vid_req_frames))
 
     if args.sdclamped:
         sample_steps = (40 if sample_steps > 40 else sample_steps)
@@ -1861,11 +1874,15 @@ def sd_generate(genparams):
     inputs.seed = seed
     inputs.sample_method = sample_method.lower().encode("UTF-8")
     inputs.clip_skip = clip_skip
+    inputs.vid_req_frames = vid_req_frames
+    inputs.vid_req_avi = vid_req_avi
     ret = handle.sd_generate(inputs)
     outstr = ""
+    animated = False
     if ret.status==1:
         outstr = ret.data.decode("UTF-8","ignore")
-    return outstr
+        animated = True if ret.animated else False
+    return {"animated": animated, "data":outstr}
 
 
 def whisper_load_model(model_filename):
@@ -5110,13 +5127,13 @@ Change Mode<br>
                     if (api_format == 4 or api_format == 3) and "stream" in genparams and genparams["stream"]:
                         sse_stream_flag = True
 
-                    gen = asyncio.run(self.handle_request(genparams, api_format, sse_stream_flag))
+                    gendat = asyncio.run(self.handle_request(genparams, api_format, sse_stream_flag))
 
                     try:
                         # Headers are already sent when streaming
                         if not sse_stream_flag:
                             self.send_response(200)
-                            genresp = (json.dumps(gen).encode())
+                            genresp = (json.dumps(gendat).encode())
                             self.send_header('content-length', str(len(genresp)))
                             self.end_headers(content_type='application/json')
                             self.wfile.write(genresp)
@@ -5128,7 +5145,7 @@ Change Mode<br>
                             self.end_headers(content_type='text/event-stream')
                             toolsdata_res = []
                             try:
-                                toolsdata_res = gen['choices'][0]['message']['tool_calls']
+                                toolsdata_res = gendat['choices'][0]['message']['tool_calls']
                                 if toolsdata_res and len(toolsdata_res)>0:
                                     toolsdata_res[0]["index"] = 0 # need to add an index for OWUI
                             except Exception:
@@ -5155,17 +5172,19 @@ Change Mode<br>
                         elif is_oai_imggen:
                             genparams = sd_oai_tranform_params(genparams)
                         gen = sd_generate(genparams)
+                        gendat = gen["data"]
+                        genanim = gen["animated"]
                         genresp = None
                         if is_comfyui_imggen:
-                            if gen:
-                                lastgeneratedcomfyimg = base64.b64decode(gen)
+                            if gendat:
+                                lastgeneratedcomfyimg = base64.b64decode(gendat)
                             else:
                                 lastgeneratedcomfyimg = b''
                             genresp = (json.dumps({"prompt_id": "12345678-0000-0000-0000-000000000001","number": 0,"node_errors":{}}).encode())
                         elif is_oai_imggen:
-                            genresp = (json.dumps({"created":int(time.time()),"data":[{"b64_json":gen}],"background":"opaque","output_format":"png","size":"1024x1024","quality":"medium"}).encode())
+                            genresp = (json.dumps({"created":int(time.time()),"data":[{"b64_json":gendat}],"background":"opaque","output_format":"png","size":"1024x1024","quality":"medium"}).encode())
                         else:
-                            genresp = (json.dumps({"images":[gen],"parameters":{},"info":""}).encode())
+                            genresp = (json.dumps({"images":[gendat],"parameters":{},"info":"","animated":genanim}).encode())
                         self.send_response(200)
                         self.send_header('content-length', str(len(genresp)))
                         self.end_headers(content_type='application/json')
@@ -5177,8 +5196,8 @@ Change Mode<br>
                     return
                 elif is_transcribe:
                     try:
-                        gen = whisper_generate(genparams)
-                        genresp = (json.dumps({"text":gen}).encode())
+                        gendat = whisper_generate(genparams)
+                        genresp = (json.dumps({"text":gendat}).encode())
                         self.send_response(200)
                         self.send_header('content-length', str(len(genresp)))
                         self.end_headers(content_type='application/json')
@@ -5203,10 +5222,10 @@ Change Mode<br>
                     return
                 elif is_tts:
                     try:
-                        gen = tts_generate(genparams)
+                        gendat = tts_generate(genparams)
                         wav_data = b''
-                        if gen:
-                            wav_data = base64.b64decode(gen) # Decode the Base64 string into binary data
+                        if gendat:
+                            wav_data = base64.b64decode(gendat) # Decode the Base64 string into binary data
                         self.send_response(200)
                         self.send_header('content-length', str(len(wav_data)))  # Set content length
                         self.send_header('Content-Disposition', 'attachment; filename="output.wav"')
@@ -5219,10 +5238,10 @@ Change Mode<br>
                     return
                 elif is_embeddings:
                     try:
-                        gen = embeddings_generate(genparams)
+                        gendat = embeddings_generate(genparams)
                         outdatas = []
                         odidx = 0
-                        for od in gen["data"]:
+                        for od in gendat["data"]:
                             if genparams.get("encoding_format", "")=="base64":
                                 binary_data = struct.pack('<' + 'f' * len(od), *od)
                                 b64_string = base64.b64encode(binary_data).decode('utf-8')
@@ -5230,7 +5249,7 @@ Change Mode<br>
                             else:
                                 outdatas.append({"object":"embedding","index":odidx,"embedding":od})
                             odidx += 1
-                        genresp = (json.dumps({"object":"list","data":outdatas,"model":friendlyembeddingsmodelname,"usage":{"prompt_tokens":gen["count"],"total_tokens":gen["count"]}}).encode())
+                        genresp = (json.dumps({"object":"list","data":outdatas,"model":friendlyembeddingsmodelname,"usage":{"prompt_tokens":gendat["count"],"total_tokens":gendat["count"]}}).encode())
                         self.send_response(200)
                         self.send_header('content-length', str(len(genresp)))
                         self.end_headers(content_type='application/json')
@@ -5697,6 +5716,9 @@ def show_gui():
     sd_clipg_var = ctk.StringVar()
     sd_photomaker_var = ctk.StringVar()
     sd_flash_attention_var = ctk.IntVar(value=0)
+    sd_offload_cpu_var = ctk.IntVar(value=0)
+    sd_vae_cpu_var = ctk.IntVar(value=0)
+    sd_clip_cpu_var = ctk.IntVar(value=0)
     sd_vaeauto_var = ctk.IntVar(value=0)
     sd_tiled_vae_var = ctk.StringVar(value=str(default_vae_tile_threshold))
     sd_convdirect_var = ctk.StringVar(value=str(sd_convdirect_choices[0]))
@@ -6451,13 +6473,13 @@ def show_gui():
     makefileentry(images_tab, "Image Gen. Model (safetensors/gguf):", "Select Image Gen Model File", sd_model_var, 1, width=280, singlecol=True, filetypes=[("*.safetensors *.gguf","*.safetensors *.gguf")], tooltiptxt="Select a .safetensors or .gguf Image Generation model file on disk to be loaded.")
     makelabelentry(images_tab, "Clamp Resolution Limit (Hard):", sd_clamped_var, 4, 50, padx=190,singleline=True,tooltip="Limit generation steps and output image size for shared use.\nSet to 0 to disable, otherwise value is clamped to the max size limit (min 512px).")
     makelabelentry(images_tab, "(Soft):", sd_clamped_soft_var, 4, 50, padx=290,singleline=True,tooltip="Square image size restriction, to protect the server against memory crashes.\nAllows width-height tradeoffs, eg. 640 allows 640x640 and 512x768\nLeave at 0 for the default value: 832 for SD1.5/SD2, 1024 otherwise.",labelpadx=250)
-    makelabelentry(images_tab, "Image Threads:" , sd_threads_var, 8, 50,padx=290,singleline=True,tooltip="How many threads to use during image generation.\nIf left blank, uses same value as threads.")
+    makelabelentry(images_tab, "ImgThreads:" , sd_threads_var, 8, 50,padx=290,singleline=True,tooltip="How many threads to use during image generation.\nIf left blank, uses same value as threads.",labelpadx=210)
     sd_model_var.trace_add("write", gui_changed_modelfile)
-    makelabelcombobox(images_tab, "Compress Weights (Saves Memory): ", sd_quant_var, 10, width=60, padx=220, labelpadx=8, tooltiptxt="Quantizes the SD model weights to save memory.\nHigher levels save more memory, and cause more quality degradation.", values=sd_quant_choices)
+    makelabelcombobox(images_tab, "Compress Weights: ", sd_quant_var, 8, width=60, padx=126, labelpadx=8, tooltiptxt="Quantizes the SD model weights to save memory.\nHigher levels save more memory, and cause more quality degradation.", values=sd_quant_choices)
     sd_quant_var.trace_add("write", changed_gpulayers_estimate)
 
-    makefileentry(images_tab, "Image LoRA (safetensors/gguf):", "Select SD lora file",sd_lora_var, 20, width=280, singlecol=True, filetypes=[("*.safetensors *.gguf", "*.safetensors *.gguf")],tooltiptxt="Select a .safetensors or .gguf SD LoRA model file to be loaded. Should be unquantized!")
-    makelabelentry(images_tab, "Image LoRA Multiplier:" , sd_loramult_var, 22, 50,padx=290,singleline=True,tooltip="What mutiplier value to apply the SD LoRA with.")
+    makefileentry(images_tab, "Image LoRA:", "Select SD lora file",sd_lora_var, 20, width=160, singlerow=True, filetypes=[("*.safetensors *.gguf", "*.safetensors *.gguf")],tooltiptxt="Select a .safetensors or .gguf SD LoRA model file to be loaded. Should be unquantized!")
+    makelabelentry(images_tab, "Multiplier:" , sd_loramult_var, 20, 50,padx=390,singleline=True,tooltip="What mutiplier value to apply the SD LoRA with.",labelpadx=330)
 
     makefileentry(images_tab, "T5-XXL File:", "Select Optional T5-XXL model file (SD3 or flux)",sd_t5xxl_var, 24, width=280, singlerow=True, filetypes=[("*.safetensors *.gguf","*.safetensors *.gguf")],tooltiptxt="Select a .safetensors t5xxl file to be loaded.")
     makefileentry(images_tab, "Clip-L File:", "Select Optional Clip-L model file (SD3 or flux)",sd_clipl_var, 26, width=280, singlerow=True, filetypes=[("*.safetensors *.gguf","*.safetensors *.gguf")],tooltiptxt="Select a .safetensors t5xxl file to be loaded.")
@@ -6478,7 +6500,10 @@ def show_gui():
     makecheckbox(images_tab, "TAE SD (AutoFix Broken VAE)", sd_vaeauto_var, 42,command=toggletaesd,tooltiptxt="Replace VAE with TAESD. May fix bad VAE.")
     makelabelcombobox(images_tab, "Conv2D Direct:", sd_convdirect_var, row=42, labelpadx=220, padx=310, width=90, tooltiptxt="Use Conv2D Direct operation. May save memory or improve performance.\nMight crash if not supported by the backend.\n", values=sd_convdirect_choices)
     makelabelentry(images_tab, "VAE Tiling Threshold:", sd_tiled_vae_var, 44, 50, padx=144,singleline=True,tooltip="Enable VAE Tiling for images above this size, to save memory.\nSet to 0 to disable VAE tiling.")
-    makecheckbox(images_tab, "SD Flash Attention", sd_flash_attention_var, 46, tooltiptxt="Enable Flash Attention for image diffusion. May save memory or improve performance.")
+    makecheckbox(images_tab, "SD Flash Attention", sd_flash_attention_var, 44,padx=230, tooltiptxt="Enable Flash Attention for image diffusion. May save memory or improve performance.")
+    makecheckbox(images_tab, "Model CPU Offload", sd_offload_cpu_var, 50,padx=8, tooltiptxt="Offload image weights in RAM to save VRAM, swap into VRAM when needed.")
+    makecheckbox(images_tab, "VAE on CPU", sd_vae_cpu_var, 50,padx=160, tooltiptxt="Force VAE to CPU only for image generation.")
+    makecheckbox(images_tab, "CLIP on CPU", sd_clip_cpu_var, 50,padx=280, tooltiptxt="Force CLIP to CPU only for image generation.")
 
     # audio tab
     audio_tab = tabcontent["Audio"]
@@ -6670,7 +6695,7 @@ def show_gui():
         args.enableguidance = (enableguidance_var.get()==1)
         args.overridekv = None if override_kv_var.get() == "" else override_kv_var.get()
         args.overridetensors = None if override_tensors_var.get() == "" else override_tensors_var.get()
-        args.chatcompletionsadapter = None if chatcompletionsadapter_var.get() == "" else chatcompletionsadapter_var.get()
+        args.chatcompletionsadapter = "AutoGuess" if chatcompletionsadapter_var.get() == "" else chatcompletionsadapter_var.get()
         try:
             if kcpp_exporting_template and isinstance(args.chatcompletionsadapter, str) and args.chatcompletionsadapter!="" and os.path.exists(args.chatcompletionsadapter):
                 print("Embedding chat completions adapter...")   # parse and save embedded preload story
@@ -6722,6 +6747,12 @@ def show_gui():
 
         if sd_flash_attention_var.get()==1:
             args.sdflashattention = True
+        if sd_offload_cpu_var.get()==1:
+            args.sdoffloadcpu = True
+        if sd_vae_cpu_var.get()==1:
+            args.sdvaecpu = True
+        if sd_clip_cpu_var.get()==1:
+            args.sdclipcpu = True
         args.sdthreads = (0 if sd_threads_var.get()=="" else int(sd_threads_var.get()))
         args.sdclamped = (0 if int(sd_clamped_var.get())<=0 else int(sd_clamped_var.get()))
         args.sdclampedsoft = (0 if int(sd_clamped_soft_var.get())<=0 else int(sd_clamped_soft_var.get()))
@@ -6964,6 +6995,9 @@ def show_gui():
         sd_threads_var.set(str(dict["sdthreads"]) if ("sdthreads" in dict and dict["sdthreads"]) else str(default_threads))
         sd_quant_var.set(sd_quant_choices[(dict["sdquant"] if ("sdquant" in dict and dict["sdquant"]>=0 and dict["sdquant"]<len(sd_quant_choices)) else 0)])
         sd_flash_attention_var.set(1 if ("sdflashattention" in dict and dict["sdflashattention"]) else 0)
+        sd_offload_cpu_var.set(1 if ("sdoffloadcpu" in dict and dict["sdoffloadcpu"]) else 0)
+        sd_vae_cpu_var.set(1 if ("sdvaecpu" in dict and dict["sdvaecpu"]) else 0)
+        sd_clip_cpu_var.set(1 if ("sdclipcpu" in dict and dict["sdclipcpu"]) else 0)
         sd_convdirect_var.set(sd_convdirect_option(dict.get("sdconvdirect")))
         sd_vae_var.set(dict["sdvae"] if ("sdvae" in dict and dict["sdvae"]) else "")
         sd_t5xxl_var.set(dict["sdt5xxl"] if ("sdt5xxl" in dict and dict["sdt5xxl"]) else "")
@@ -8832,6 +8866,9 @@ if __name__ == '__main__':
     sdparsergroup.add_argument("--sdclipg", metavar=('[filename]'), help="Specify a Clip-G safetensors model for use in SD3. Leave blank if prebaked or unused.", default="")
     sdparsergroup.add_argument("--sdphotomaker", metavar=('[filename]'), help="PhotoMaker is a model that allows face cloning. Specify a PhotoMaker safetensors model which will be applied replacing img2img. SDXL models only. Leave blank if unused.", default="")
     sdparsergroup.add_argument("--sdflashattention", help="Enables Flash Attention for image generation.", action='store_true')
+    sdparsergroup.add_argument("--sdoffloadcpu", help="Offload image weights in RAM to save VRAM, swap into VRAM when needed.", action='store_true')
+    sdparsergroup.add_argument("--sdvaecpu", help="Force VAE to CPU only for image generation.", action='store_true')
+    sdparsergroup.add_argument("--sdclipcpu", help="Force CLIP to CPU only for image generation.", action='store_true')
     sdparsergroup.add_argument("--sdconvdirect", help="Enables Conv2D Direct. May improve performance or reduce memory usage. Might crash if not supported by the backend. Can be 'off' (default) to disable, 'full' to turn it on for all operations, or 'vaeonly' to enable only for the VAE.", type=sd_convdirect_option, choices=sd_convdirect_choices, default=sd_convdirect_choices[0])
     sdparsergroupvae = sdparsergroup.add_mutually_exclusive_group()
     sdparsergroupvae.add_argument("--sdvae", metavar=('[filename]'), help="Specify an image generation safetensors VAE which replaces the one in the model.", default="")

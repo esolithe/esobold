@@ -37,6 +37,8 @@
 // #define STB_IMAGE_RESIZE_IMPLEMENTATION //already defined in llava
 #include "stb_image_resize.h"
 
+#include "avi_writer.h"
+
 static_assert((int)SD_TYPE_COUNT == (int)GGML_TYPE_COUNT,
               "inconsistency between SD_TYPE_COUNT and GGML_TYPE_COUNT");
 
@@ -64,7 +66,6 @@ struct SDParams {
     float strength                = 0.75f;
     int64_t seed                  = 42;
     bool clip_on_cpu              = false;
-    bool vae_on_cpu               = false;
     bool diffusion_flash_attn     = false;
     bool diffusion_conv_direct    = false;
     bool vae_conv_direct          = false;
@@ -93,10 +94,7 @@ static bool sd_is_quiet = false;
 static std::string sdmodelfilename = "";
 static bool photomaker_enabled = false;
 
-static void set_sd_vae_tiling(sd_ctx_t* ctx, bool tiling)
-{
-    ctx->sd->vae_tiling = tiling;
-}
+static bool is_vid_model = false;
 
 static int get_loaded_sd_version(sd_ctx_t* ctx)
 {
@@ -252,10 +250,9 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
     params.diffusion_model_path = sd_params->diffusion_model_path.c_str();
     params.vae_path = sd_params->vae_path.c_str();
     params.taesd_path = sd_params->taesd_path.c_str();
-    params.stacked_id_embed_dir = sd_params->stacked_id_embeddings_path.c_str();
+    params.photo_maker_path = sd_params->stacked_id_embeddings_path.c_str();
 
     params.vae_decode_only = false;
-    params.vae_tiling = false;
     params.free_params_immediately = false;
     params.rng_type = CUDA_RNG;
 
@@ -266,6 +263,10 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
     params.diffusion_conv_direct = sd_params->diffusion_conv_direct;
     params.vae_conv_direct = sd_params->vae_conv_direct;
     params.chroma_use_dit_mask = sd_params->chroma_use_dit_mask;
+    params.offload_params_to_cpu = inputs.offload_cpu;
+    params.keep_vae_on_cpu = inputs.vae_cpu;
+    params.keep_clip_on_cpu = inputs.clip_cpu;
+    // params.flow_shift = 5.0f;
 
     if (params.chroma_use_dit_mask && params.diffusion_flash_attn) {
         // note we don't know yet if it's a Chroma model
@@ -279,7 +280,7 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
             << "\nDIFFUSION:"  << params.diffusion_model_path
             << "\nVAE:"        << params.vae_path
             << "\nTAESD:"      << params.taesd_path
-            << "\nPHOTOMAKER:" << params.stacked_id_embed_dir
+            << "\nPHOTOMAKER:" << params.photo_maker_path
             << "\nTHREADS:"    << params.n_threads
             << "\nWTYPE:"      << params.wtype
             << "\nDIFFUSIONFLASHATTN:"  << (params.diffusion_flash_attn ? 1 : 0)
@@ -303,6 +304,13 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
             printf("Chroma: flash attention is on, disabling DiT mask (this will lower image quality)\n");
             // disabled before loading
         }
+    }
+
+    auto loadedsdver = get_loaded_sd_version(sd_ctx);
+    if (loadedsdver == SDVersion::VERSION_WAN2 || loadedsdver == SDVersion::VERSION_WAN2_2_I2V || loadedsdver == SDVersion::VERSION_WAN2_2_TI2V)
+    {
+        printf("\nVer %d, Setting to Video Generation Mode!\n",loadedsdver);
+        is_vid_model = true;
     }
 
     std::filesystem::path mpath(inputs.model_filename);
@@ -338,12 +346,12 @@ static std::string get_image_params(const sd_img_gen_params_t & params) {
     parameter_string << std::setprecision(3)
         <<    "Prompt: " << params.prompt
         << " | NegativePrompt: " << params.negative_prompt
-        << " | Steps: " << params.sample_steps
-        << " | CFGScale: " << params.guidance.txt_cfg
-        << " | Guidance: " << params.guidance.distilled_guidance
+        << " | Steps: " << params.sample_params.sample_steps
+        << " | CFGScale: " << params.sample_params.guidance.txt_cfg
+        << " | Guidance: " << params.sample_params.guidance.distilled_guidance
         << " | Seed: " << params.seed
         << " | Size: " << params.width << "x" << params.height
-        << " | Sampler: " << sd_sample_method_name(params.sample_method)
+        << " | Sampler: " << sd_sample_method_name(params.sample_params.sample_method)
         << " | Clip skip: " << params.clip_skip
         << " | Model: " << sdmodelfilename
         << " | Version: KoboldCpp";
@@ -491,6 +499,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
     {
         printf("\nWarning: KCPP image generation not initialized!\n");
         output.data = "";
+        output.animated = 0;
         output.status = 0;
         return output;
     }
@@ -569,7 +578,6 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
 
     // trigger tiling by image area, the memory used for the VAE buffer is 6656 bytes per image pixel, default 768x768
     bool dotile = (sd_params->width*sd_params->height > cfg_tiled_vae_threshold*cfg_tiled_vae_threshold);
-    set_sd_vae_tiling(sd_ctx,dotile); //changes vae tiling, prevents memory related crash/oom
 
     //for img2img
     sd_image_t input_image = {0,0,0,nullptr};
@@ -646,6 +654,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
             if (!resok) {
                 printf("\nKCPP SD: resize extra image failed!\n");
                 output.data = "";
+                output.animated = 0;
                 output.status = 0;
                 return output;
             }
@@ -670,7 +679,9 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
     }
 
     std::vector<sd_image_t> reference_imgs;
-    if(extra_image_data.size()>0 && loadedsdver==SDVersion::VERSION_FLUX && !loaded_model_is_chroma(sd_ctx))
+    bool is_wan = (loadedsdver == SDVersion::VERSION_WAN2 || loadedsdver == SDVersion::VERSION_WAN2_2_I2V || loadedsdver == SDVersion::VERSION_WAN2_2_TI2V);
+    bool is_kontext = (loadedsdver==SDVersion::VERSION_FLUX && !loaded_model_is_chroma(sd_ctx));
+    if(extra_image_data.size()>0 && (is_wan || is_kontext))
     {
         for(int i=0;i<extra_image_data.size();++i)
         {
@@ -678,7 +689,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
         }
         if(!sd_is_quiet && sddebugmode==1)
         {
-            printf("\nFlux Kontext: Using %d reference images\n",reference_imgs.size());
+            printf("\nImage Gen: Using %d reference images\n",reference_imgs.size());
         }
     }
 
@@ -698,39 +709,96 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
     sd_img_gen_params_t params = {};
     sd_img_gen_params_init (&params);
 
+    params.batch_count = 1;
+
     params.prompt = sd_params->prompt.c_str();
     params.negative_prompt = sd_params->negative_prompt.c_str();
     params.clip_skip = sd_params->clip_skip;
-    params.guidance.txt_cfg = sd_params->cfg_scale;
-    params.guidance.img_cfg = sd_params->cfg_scale;
+    params.sample_params.guidance.txt_cfg = sd_params->cfg_scale;
+    params.sample_params.guidance.img_cfg = sd_params->cfg_scale;
     params.width = sd_params->width;
     params.height = sd_params->height;
-    params.sample_method = sd_params->sample_method;
-    params.sample_steps = sd_params->sample_steps;
+    params.sample_params.sample_method = sd_params->sample_method;
+    params.sample_params.sample_steps = sd_params->sample_steps;
     params.seed = sd_params->seed;
     params.strength = sd_params->strength;
+    params.vae_tiling_params.enabled = dotile;
     params.batch_count = 1;
-    params.input_id_images_path = "";
 
     params.ref_images = reference_imgs.data();
     params.ref_images_count = reference_imgs.size();
 
-    kcpp_img_gen_params_t extra_params = {};
-    extra_params.photomaker_references = photomaker_imgs.data();
-    extra_params.photomaker_reference_count = photomaker_imgs.size();
+    params.pm_params.id_images = photomaker_imgs.data();
+    params.pm_params.id_images_count = photomaker_imgs.size();
 
-    if (!is_img2img) {
+    //the below params are only used in video models. May move into standalone object in future
+    int vid_req_frames = inputs.vid_req_frames;
+    int vid_req_avi = inputs.vid_req_avi;
+    int generated_num_results = 1;
 
+    if(is_vid_model)
+    {
+        std::vector<sd_image_t> control_frames; //empty for now
+        sd_vid_gen_params_t vid_gen_params = {};
+        sd_vid_gen_params_init (&vid_gen_params);
+        vid_gen_params.prompt = params.prompt;
+        vid_gen_params.negative_prompt = params.negative_prompt;
+        vid_gen_params.clip_skip = params.clip_skip;
+        vid_gen_params.control_frames = control_frames.data();
+        vid_gen_params.control_frames_size = (int)control_frames.size();
+        vid_gen_params.width = params.width;
+        vid_gen_params.height = params.height;
+        vid_gen_params.sample_params = params.sample_params;
+        vid_gen_params.strength = params.strength;
+        vid_gen_params.seed = params.seed;
+        vid_gen_params.video_frames = vid_req_frames;
+        if(reference_imgs.size()>0)
+        {
+            if(reference_imgs.size()>=1)
+            {
+                vid_gen_params.init_image = reference_imgs[0];
+            }
+            if(reference_imgs.size()>=2)
+            {
+                vid_gen_params.end_image = reference_imgs[1];
+            }
+        }
+        if(!sd_is_quiet && sddebugmode==1)
+        {
+            std::stringstream ss;
+            ss  << "\nVID PROMPT:" << vid_gen_params.prompt
+            << "\nNPROMPT:"   << vid_gen_params.negative_prompt
+            << "\nCLPSKP:"   << vid_gen_params.clip_skip
+            << "\nSIZE:"     << vid_gen_params.width << "x" << vid_gen_params.height
+            << "\nSTEP:"     << vid_gen_params.sample_params.sample_steps
+            << "\nSEED:"     << vid_gen_params.seed
+            << "\nSTRENGTH:" << vid_gen_params.strength
+            << "\nFRAMES:"   << vid_gen_params.video_frames
+            << "\nCTRL_FRM:" << vid_gen_params.control_frames_size
+            << "\nREF_IMGS:"   << reference_imgs.size()
+            << "\n\n";
+            printf("%s", ss.str().c_str());
+        }
+
+        fflush(stdout);
+        results = generate_video(sd_ctx, &vid_gen_params, &generated_num_results);
+        if(!sd_is_quiet && sddebugmode==1)
+        {
+            printf("\nRequested Vid Frames: %d, Generated Vid Frames: %d\n",vid_req_frames, generated_num_results);
+        }
+    }
+    else if (!is_img2img)
+    {
         if(!sd_is_quiet && sddebugmode==1)
         {
             std::stringstream ss;
             ss  << "\nTXT2IMG PROMPT:" << params.prompt
                 << "\nNPROMPT:" << params.negative_prompt
                 << "\nCLPSKP:" << params.clip_skip
-                << "\nCFGSCLE:" << params.guidance.txt_cfg
+                << "\nCFGSCLE:" << params.sample_params.guidance.txt_cfg
                 << "\nSIZE:" << params.width << "x" << params.height
-                << "\nSM:" << sd_sample_method_name(params.sample_method)
-                << "\nSTEP:" << params.sample_steps
+                << "\nSM:" << sd_sample_method_name(params.sample_params.sample_method)
+                << "\nSTEP:" << params.sample_params.sample_steps
                 << "\nSEED:" << params.seed
                 << "\nBATCH:" << params.batch_count
                 << "\n\n";
@@ -739,13 +807,14 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
 
         fflush(stdout);
 
-        results = generate_image(sd_ctx, &params, &extra_params);
+        results = generate_image(sd_ctx, &params);
 
     } else {
 
         if (params.width <= 0 || params.width % 64 != 0 || params.height <= 0 || params.height % 64 != 0) {
             printf("\nKCPP SD: bad request image dimensions!\n");
             output.data = "";
+            output.animated = 0;
             output.status = 0;
             return output;
         }
@@ -761,12 +830,14 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
         if (nx < 64 || ny < 64 || nx > 2048 || ny > 2048 || nc!= 3) {
             printf("\nKCPP SD: bad input image dimensions %d x %d!\n",nx,ny);
             output.data = "";
+            output.animated = 0;
             output.status = 0;
             return output;
         }
         if (!input_image_buffer) {
             printf("\nKCPP SD: load image from memory failed!\n");
             output.data = "";
+            output.animated = 0;
             output.status = 0;
             return output;
         }
@@ -780,6 +851,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
         if (!resok) {
             printf("\nKCPP SD: resize image failed!\n");
             output.data = "";
+            output.animated = 0;
             output.status = 0;
             return output;
         }
@@ -803,6 +875,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
             if (!resok) {
                 printf("\nKCPP SD: resize image failed!\n");
                 output.data = "";
+                output.animated = 0;
                 output.status = 0;
                 return output;
             }
@@ -838,10 +911,10 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
             ss  << "\nnIMG2IMG PROMPT:" << params.prompt
                 << "\nNPROMPT:" << params.negative_prompt
                 << "\nCLPSKP:" << params.clip_skip
-                << "\nCFGSCLE:" << params.guidance.txt_cfg
+                << "\nCFGSCLE:" << params.sample_params.guidance.txt_cfg
                 << "\nSIZE:" << params.width << "x" << params.height
-                << "\nSM:" << sd_sample_method_name(params.sample_method)
-                << "\nSTEP:" << params.sample_steps
+                << "\nSM:" << sd_sample_method_name(params.sample_params.sample_method)
+                << "\nSTEP:" << params.sample_params.sample_steps
                 << "\nSEED:" << params.seed
                 << "\nSTRENGTH:" << params.strength
                 << "\nBATCH:" << params.batch_count
@@ -851,29 +924,96 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
 
         fflush(stdout);
 
-        results = generate_image(sd_ctx, &params, &extra_params);
+        results = generate_image(sd_ctx, &params);
 
     }
 
     if (results == NULL) {
         printf("\nKCPP SD generate failed!\n");
         output.data = "";
+        output.animated = 0;
         output.status = 0;
         return output;
     }
 
+    bool wasanim = false;
 
     for (int i = 0; i < params.batch_count; i++) {
         if (results[i].data == NULL) {
             continue;
         }
 
-        int out_data_len;
-        unsigned char * png = stbi_write_png_to_mem(results[i].data, 0, results[i].width, results[i].height, results[i].channel, &out_data_len, get_image_params(params).c_str());
-        if (png != NULL)
+        //if multiframe, make a video
+        if(vid_req_frames>1 && generated_num_results>1 && is_vid_model)
         {
-            recent_data = kcpp_base64_encode(png,out_data_len);
-            free(png);
+            if(!sd_is_quiet && sddebugmode==1)
+            {
+                printf("\nSaving video buffer, AVI=%d...",vid_req_avi);
+            }
+            uint8_t * out_data = nullptr;
+            size_t out_len = 0;
+            int status = 0;
+            wasanim = true;
+
+            if(vid_req_avi==1)
+            {
+                status = create_mjpg_avi_membuf_from_sd_images(results, generated_num_results, 16, 40, &out_data,&out_len);
+            }
+            else
+            {
+                uint8_t * out_data_a = nullptr;
+                uint8_t * out_data_b = nullptr;
+                int status_a = 0;
+                int status_b = 0;
+                size_t out_len_a = 0;
+                size_t out_len_b = 0;
+                status_a = create_gif_buf_from_sd_images_gifh(results, generated_num_results, 16, &out_data_a,&out_len_a);
+                status_b = create_gif_buf_from_sd_images_msf(results, generated_num_results, 16, &out_data_b,&out_len_b);
+                if(!sd_is_quiet && sddebugmode==1)
+                {
+                    printf("GIF-H Len: %zu, MSF Len: %zu\n",out_len_a,out_len_b);
+                }
+                if(status_a==0 && out_len_a < out_len_b)
+                {
+                    free(out_data_b);
+                    out_len = out_len_a;
+                    out_data = out_data_a;
+                    status = status_a;
+                }
+                else
+                {
+                    free(out_data_a);
+                    out_len = out_len_b;
+                    out_data = out_data_b;
+                    status = status_b;
+                }
+            }
+
+            if(!sd_is_quiet && sddebugmode==1)
+            {
+                if(status==0)
+                {
+                    printf("Video Saved (Len %zu)!\n",out_len);
+                }else{
+                    printf("Save Failed!\n");
+                }
+
+            }
+            if(status==0)
+            {
+                recent_data = kcpp_base64_encode(out_data, out_len);
+                free(out_data);
+            }
+        }
+        else
+        {
+            int out_data_len;
+            unsigned char * png = stbi_write_png_to_mem(results[i].data, 0, results[i].width, results[i].height, results[i].channel, &out_data_len, get_image_params(params).c_str());
+            if (png != NULL)
+            {
+                recent_data = kcpp_base64_encode(png,out_data_len);
+                free(png);
+            }
         }
 
         free(results[i].data);
@@ -882,6 +1022,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
 
     free(results);
     output.data = recent_data.c_str();
+    output.animated = (wasanim?1:0);
     output.status = 1;
     total_img_gens += 1;
     return output;
