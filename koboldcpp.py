@@ -4170,8 +4170,8 @@ Change Mode<br>
                 response_body = (f"Embedded KoboldAI Lite is not found.<br>You will have to connect via the main KoboldAI client, or <a href='https://lite.koboldai.net?local=1&port={self.port}'>use this URL</a> to connect.").encode()
             else:
                 if args.developerMode:
-                    basepath = os.path.abspath(os.path.dirname(os.path.realpath(__file__)))
-                    with open(os.path.join(basepath, "klite.embd"), mode='rb') as f:
+                    embddir = os.path.join(os.path.abspath(os.path.dirname(os.path.realpath(__file__))),"embd_res")
+                    with open(os.path.join(embddir, "", "klite.embd"), mode='rb') as f:
                         embedded_kailite = f.read()
                         # patch it with extra stuff
                         patches = [{"find":"Sorry, KoboldAI Lite requires Javascript to function.","replace":"Sorry, KoboldAI Lite requires Javascript to function.<br>You can use <a class=\"color_blueurl\" href=\"/noscript\">KoboldCpp NoScript mode</a> instead."},
