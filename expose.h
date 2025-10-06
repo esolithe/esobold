@@ -197,11 +197,14 @@ struct sd_generation_inputs
     const bool flip_mask = false;
     const float denoising_strength = 0.0f;
     const float cfg_scale = 0.0f;
+    const float distilled_guidance = -1.0f;
+    const int shifted_timestep = 0;
     const int sample_steps = 0;
     const int width = 0;
     const int height = 0;
     const int seed = 0;
     const char * sample_method = nullptr;
+    const char * scheduler = nullptr;
     const int clip_skip = -1;
     const int vid_req_frames = 1;
     const int vid_req_avi = 0;

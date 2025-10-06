@@ -318,11 +318,14 @@ class sd_generation_inputs(ctypes.Structure):
                 ("flip_mask", ctypes.c_bool),
                 ("denoising_strength", ctypes.c_float),
                 ("cfg_scale", ctypes.c_float),
+                ("distilled_guidance", ctypes.c_float),
+                ("shifted_timestep", ctypes.c_int),
                 ("sample_steps", ctypes.c_int),
                 ("width", ctypes.c_int),
                 ("height", ctypes.c_int),
                 ("seed", ctypes.c_int),
                 ("sample_method", ctypes.c_char_p),
+                ("scheduler", ctypes.c_char_p),
                 ("clip_skip", ctypes.c_int),
                 ("vid_req_frames", ctypes.c_int),
                 ("vid_req_avi", ctypes.c_int)]
@@ -399,6 +402,8 @@ class embeddings_generation_outputs(ctypes.Structure):
     _fields_ = [("status", ctypes.c_int),
                 ("count", ctypes.c_int),
                 ("data", ctypes.c_char_p)]
+
+
 
 def getdirpath():
     return os.path.dirname(os.path.realpath(__file__))
@@ -1396,7 +1401,7 @@ def load_model(model_filename):
     inputs.model_filename = model_filename.encode("UTF-8")
     inputs.max_context_length = maxctx #initial value to use for ctx, can be overwritten
     inputs.threads = args.threads
-    inputs.low_vram = (True if (args.usecuda and "lowvram" in args.usecuda) else False)
+    inputs.low_vram = True if args.lowvram else False
     inputs.use_mmq = (True if (args.usecuda and "nommq" not in args.usecuda) else False)
     inputs.use_rowsplit = (True if (args.usecuda and "rowsplit" in args.usecuda) else False)
     inputs.vulkan_info = "0".encode("UTF-8")
@@ -1803,8 +1808,61 @@ def sd_comfyui_tranform_params(genparams):
         print("Warning: ComfyUI Payload Missing!")
     return genparams
 
+def sd_process_meta_fields(fields, config):
+    # aliases to match sd.cpp command-line options
+    aliases = {
+        'cfg-scale': 'cfg_scale',
+        'guidance': 'distilled_guidance',
+        'sampler': 'sampler_name',
+        'sampling-method': 'sampler_name',
+        'timestep-shift': 'shifted_timestep',
+    }
+    fields_dict = {aliases.get(k, k): v for k, v in fields}
+    # whitelist accepted parameters
+    whitelist = ['scheduler', 'shifted_timestep', 'distilled_guidance']
+    if config:
+        # note the current UI always set these
+        whitelist += ['sampler_name', 'cfg_scale']
+    fields_dict = {k: v for k, v in fields_dict.items() if k in whitelist}
+    return fields_dict
+
+# json with top-level dict
+def sd_parse_meta_field(prompt, config=False):
+    jfields = {}
+    kv_dict = {}
+    try:
+        try:
+            jfields = json.loads(prompt)
+        except json.JSONDecodeError:
+            # accept "field":"value",... without {} (also empty strings)
+            try:
+                jfields = json.loads('{ ' + prompt + ' }')
+            except json.JSONDecodeError:
+                print("Warning: couldn't parse meta prompt; it should be valid JSON.")
+        if not isinstance(jfields, dict):
+            jfields = {}
+        kv_dict = sd_process_meta_fields(jfields.items(), config)
+    except Exception:
+        pass
+    return kv_dict
+
+
 def sd_generate(genparams):
     global maxctx, args, currentusergenkey, totalgens, pendingabortkey, chatcompl_adapter
+
+    sdgendefaults = sd_parse_meta_field(args.sdgendefaults or '', config=True)
+    params = dict()
+    defparams = dict()
+    for k, v in sdgendefaults.items():
+        if k in ['sampler_name', 'scheduler']:
+            # these can be explicitely set to 'default'; process later
+            # TODO should we consider values like 'clip_skip=-1' as 'default' too?
+            defparams[k] = v
+        else:
+            params[k] = v
+    # apply most of the defaults
+    params.update(genparams)
+    genparams = params
 
     default_adapter = {} if chatcompl_adapter is None else chatcompl_adapter
     adapter_obj = genparams.get('adapter', default_adapter)
@@ -1831,13 +1889,20 @@ def sd_generate(genparams):
     flip_mask = genparams.get("inpainting_mask_invert", 0)
     denoising_strength = tryparsefloat(genparams.get("denoising_strength", 0.6),0.6)
     cfg_scale = tryparsefloat(genparams.get("cfg_scale", 5),5)
+    distilled_guidance = tryparsefloat(genparams.get("distilled_guidance", None), None)
+    shifted_timestep = tryparseint(genparams.get("shifted_timestep", None), None)
     sample_steps = tryparseint(genparams.get("steps", 20),20)
     width = tryparseint(genparams.get("width", 512),512)
     height = tryparseint(genparams.get("height", 512),512)
     seed = tryparseint(genparams.get("seed", -1),-1)
     if seed < 0:
         seed = random.randint(100000, 999999)
-    sample_method = genparams.get("sampler_name", "k_euler_a")
+    sample_method = (genparams.get("sampler_name") or "default").lower()
+    if sample_method == 'default' and 'sampler_name' in defparams:
+        sample_method = (defparams.get("sampler_name") or "default").lower()
+    scheduler = (genparams.get("scheduler") or "default").lower()
+    if scheduler == 'default' and 'scheduler' in defparams:
+        scheduler = (defparams.get("scheduler") or "default").lower()
     clip_skip = tryparseint(genparams.get("clip_skip", -1),-1)
     vid_req_frames = tryparseint(genparams.get("frames", 1),1)
     vid_req_frames = 1 if (not vid_req_frames or vid_req_frames < 1) else vid_req_frames
@@ -1849,6 +1914,10 @@ def sd_generate(genparams):
 
     #clean vars
     cfg_scale = (1 if cfg_scale < 1 else (25 if cfg_scale > 25 else cfg_scale))
+    if distilled_guidance is not None and (distilled_guidance < 0 or distilled_guidance > 100):
+        distilled_guidance = None # fall back to the default
+    if shifted_timestep is not None and (shifted_timestep < 0 or shifted_timestep > 1000):
+        shifted_timestep = None # fall back to the default
     sample_steps = (1 if sample_steps < 1 else (forced_steplimit if sample_steps > forced_steplimit else sample_steps))
     vid_req_frames = (1 if vid_req_frames < 1 else (100 if vid_req_frames > 100 else vid_req_frames))
 
@@ -1867,12 +1936,17 @@ def sd_generate(genparams):
         inputs.extra_images[n] = extra_image.encode("UTF-8")
     inputs.flip_mask = flip_mask
     inputs.cfg_scale = cfg_scale
+    if distilled_guidance is not None:
+        inputs.distilled_guidance = distilled_guidance
     inputs.denoising_strength = denoising_strength
+    if shifted_timestep is not None:
+        inputs.shifted_timestep = shifted_timestep
     inputs.sample_steps = sample_steps
     inputs.width = width
     inputs.height = height
     inputs.seed = seed
-    inputs.sample_method = sample_method.lower().encode("UTF-8")
+    inputs.sample_method = sample_method.encode("UTF-8")
+    inputs.scheduler = scheduler.encode("UTF-8")
     inputs.clip_skip = clip_skip
     inputs.vid_req_frames = vid_req_frames
     inputs.vid_req_avi = vid_req_avi
@@ -5726,6 +5800,7 @@ def show_gui():
     sd_clamped_soft_var = ctk.StringVar(value="0")
     sd_threads_var = ctk.StringVar(value=str(default_threads))
     sd_quant_var = ctk.StringVar(value=sd_quant_choices[0])
+    sd_gen_defaults_var = ctk.StringVar()
 
     whisper_model_var = ctk.StringVar()
     tts_model_var = ctk.StringVar()
@@ -6175,6 +6250,7 @@ def show_gui():
                 maingpu_entry.grid_remove()
                 if gpu_choice_var.get()=="All":
                     gpu_choice_var.set("1")
+                lowvram_box.grid_remove()
             elif index == "Use Vulkan" or index == "Use Vulkan (Old CPU)" or index == "Use CUDA" or index == "Use hipBLAS (ROCm)":
                 gpu_selector_box.grid_remove()
                 quick_gpu_selector_box.grid_remove()
@@ -6182,6 +6258,7 @@ def show_gui():
                 CUDA_quick_gpu_selector_box.grid(row=3, column=1, padx=8, pady=1, stick="nw")
                 maingpu_label.grid(row=10, column=0, padx = 8, pady=1, stick="nw")
                 maingpu_entry.grid(row=10, column=1, padx = 8, pady=1, stick="nw")
+                lowvram_box.grid(row=4, column=0, padx=8, pady=1,  stick="nw")
         else:
             quick_gpuname_label.grid_remove()
             gpuname_label.grid_remove()
@@ -6193,16 +6270,15 @@ def show_gui():
             CUDA_quick_gpu_selector_box.grid_remove()
             maingpu_label.grid_remove()
             maingpu_entry.grid_remove()
+            lowvram_box.grid_remove()
 
         if index == "Use CUDA" or index == "Use hipBLAS (ROCm)":
-            lowvram_box.grid(row=4, column=0, padx=8, pady=1,  stick="nw")
             mmq_box.grid(row=4, column=1, padx=8, pady=1,  stick="nw")
             quick_mmq_box.grid(row=4, column=1, padx=8, pady=1,  stick="nw")
             splitmode_box.grid(row=5, column=1, padx=8, pady=1,  stick="nw")
             tensor_split_label.grid(row=8, column=0, padx = 8, pady=1, stick="nw")
             tensor_split_entry.grid(row=8, column=1, padx=8, pady=1, stick="nw")
         else:
-            lowvram_box.grid_remove()
             mmq_box.grid_remove()
             quick_mmq_box.grid_remove()
             tensor_split_label.grid_remove()
@@ -6300,7 +6376,7 @@ def show_gui():
     layercounter_label.grid(row=6, column=1, padx=75, sticky="W")
     layercounter_label.configure(text_color="#ffff00")
     tensor_split_entry,tensor_split_label = makelabelentry(hardware_tab, "Tensor Split:", tensor_split_str_vars, 8, 80, tooltip='When using multiple GPUs this option controls how large tensors should be split across all GPUs.\nUses a comma-separated list of non-negative values that assigns the proportion of data that each GPU should get in order.\nFor example, "3,2" will assign 60% of the data to GPU 0 and 40% to GPU 1.')
-    lowvram_box = makecheckbox(hardware_tab,  "Low VRAM (No KV offload)", lowvram_var, 4,0, tooltiptxt='Avoid offloading KV Cache or scratch buffers to VRAM.\nAllows more layers to fit, but may result in a speed loss.')
+    lowvram_box = makecheckbox(hardware_tab,  "Low VRAM (No KV offload)", lowvram_var, 4,0, tooltiptxt='Avoid offloading KV Cache or scratch buffers to VRAM.\nAllows more layers to fit, but may result in a large speed loss.')
     mmq_box = makecheckbox(hardware_tab,  "Use QuantMatMul (mmq)", mmq_var, 4,1, tooltiptxt="Enable MMQ mode to use finetuned kernels instead of default CuBLAS/HipBLAS for prompt processing.\nRead the wiki. Speed may vary.")
     splitmode_box = makecheckbox(hardware_tab,  "Row-Split", rowsplit_var, 5,0, tooltiptxt="Split rows across GPUs instead of splitting layers and KV across GPUs.\nUses the main GPU for small tensors and intermediate results. Speed may vary.")
 
@@ -6504,6 +6580,7 @@ def show_gui():
     makecheckbox(images_tab, "Model CPU Offload", sd_offload_cpu_var, 50,padx=8, tooltiptxt="Offload image weights in RAM to save VRAM, swap into VRAM when needed.")
     makecheckbox(images_tab, "VAE on CPU", sd_vae_cpu_var, 50,padx=160, tooltiptxt="Force VAE to CPU only for image generation.")
     makecheckbox(images_tab, "CLIP on GPU", sd_clip_gpu_var, 50,padx=280, tooltiptxt="Put CLIP and T5 to GPU for image generation. Otherwise, CLIP will use CPU.")
+    makelabelentry(images_tab, "Default Params:", sd_gen_defaults_var, 52, 280, padx=110, singleline=True, tooltip='Default image generation parameters when not specified by the UI or API.\nSpecified as JSON fields: {"KEY1":"VALUE1", "KEY2":"VALUE2"...}')
 
     # audio tab
     audio_tab = tabcontent["Audio"]
@@ -6614,6 +6691,7 @@ def show_gui():
         args.nocertify = nocertifymode.get()==1
         args.nomodel = nomodel.get()==1
         args.quantkv = quantkv_var.get()
+        args.lowvram = lowvram_var.get()==1
 
         gpuchoiceidx = 0
         args.usecpu = False
@@ -6632,9 +6710,9 @@ def show_gui():
                 args.failsafe = True
         if runopts_var.get() == "Use CUDA" or runopts_var.get() == "Use hipBLAS (ROCm)":
             if gpu_choice_var.get()=="All":
-                args.usecuda = ["lowvram"] if lowvram_var.get() == 1 else ["normal"]
+                args.usecuda = ["normal"]
             else:
-                args.usecuda = ["lowvram",str(gpuchoiceidx)] if lowvram_var.get() == 1 else ["normal",str(gpuchoiceidx)]
+                args.usecuda = ["normal",str(gpuchoiceidx)]
             if mmq_var.get()==1:
                 args.usecuda.append("mmq")
             else:
@@ -6780,6 +6858,7 @@ def show_gui():
             args.sdloramult = float(sd_loramult_var.get())
         else:
             args.sdlora = ""
+        args.sdgendefaults = sd_gen_defaults_var.get()
 
         if whisper_model_var.get() != "":
             args.whispermodel = whisper_model_var.get()
@@ -6830,6 +6909,7 @@ def show_gui():
         quietmode.set(1 if "quiet" in dict and dict["quiet"] else 0)
         nocertifymode.set(1 if "nocertify" in dict and dict["nocertify"] else 0)
         nomodel.set(1 if "nomodel" in dict and dict["nomodel"] else 0)
+        lowvram_var.set(1 if "lowvram" in dict and dict["lowvram"] else 0)
         if "quantkv" in dict:
             quantkv_var.set(dict["quantkv"])
         if "useclblast" in dict and dict["useclblast"]:
@@ -6847,7 +6927,6 @@ def show_gui():
                     runopts_var.set(cublas_option)
                 elif hipblas_option:
                     runopts_var.set(hipblas_option)
-                lowvram_var.set(1 if "lowvram" in dict["usecuda"] else 0)
                 mmq_var.set(1 if "mmq" in dict["usecuda"] else 0)
                 rowsplit_var.set(1 if "rowsplit" in dict["usecuda"] else 0)
                 gpu_choice_var.set("All")
@@ -7009,6 +7088,7 @@ def show_gui():
 
         sd_lora_var.set(dict["sdlora"] if ("sdlora" in dict and dict["sdlora"]) else "")
         sd_loramult_var.set(str(dict["sdloramult"]) if ("sdloramult" in dict and dict["sdloramult"]) else "1.0")
+        sd_gen_defaults_var.set(dict.get("sdgendefaults", ""))
 
         whisper_model_var.set(dict["whispermodel"] if ("whispermodel" in dict and dict["whispermodel"]) else "")
 
@@ -7345,6 +7425,8 @@ def convert_invalid_args(args):
         dict = vars(args)
     if "usecuda" not in dict and "usecublas" in dict and dict["usecublas"]:
         dict["usecuda"] = dict["usecublas"]
+    if "usecuda" in dict and dict["usecuda"] and "lowvram" in dict["usecuda"]:
+        dict["lowvram"] = True
     if "sdconfig" in dict and dict["sdconfig"] and len(dict["sdconfig"])>0:
         dict["sdmodel"] = dict["sdconfig"][0]
         if dict["sdconfig"] and len(dict["sdconfig"]) > 1:
@@ -8774,7 +8856,7 @@ if __name__ == '__main__':
     parser.add_argument("--config", metavar=('[filename]'), help="Load settings from a .kcpps file. Other arguments will be ignored", type=str, nargs=1)
     parser.add_argument("--threads","-t", metavar=('[threads]'), help="Use a custom number of threads if specified. Otherwise, uses an amount based on CPU cores", type=int, default=get_default_threads())
     compatgroup = parser.add_mutually_exclusive_group()
-    compatgroup.add_argument("--usecuda", "--usecublas", "--usehipblas", help="Use CUDA for GPU Acceleration. Requires CUDA. Enter a number afterwards to select and use 1 GPU. Leaving no number will use all GPUs.", nargs='*',metavar=('[lowvram|normal] [main GPU ID] [mmq|nommq] [rowsplit]'), choices=['normal', 'lowvram', '0', '1', '2', '3', 'all', 'mmq', 'nommq', 'rowsplit'])
+    compatgroup.add_argument("--usecuda", "--usecublas", "--usehipblas", help="Use CUDA for GPU Acceleration. Requires CUDA. Enter a number afterwards to select and use 1 GPU. Leaving no number will use all GPUs.", nargs='*',metavar=('[main GPU ID] [mmq|nommq] [rowsplit]'), choices=['normal', 'lowvram', '0', '1', '2', '3', 'all', 'mmq', 'nommq', 'rowsplit'])
     compatgroup.add_argument("--usevulkan", help="Use Vulkan for GPU Acceleration. Can optionally specify one or more GPU Device ID (e.g. --usevulkan 0), leave blank to autodetect.", metavar=('[Device IDs]'), nargs='*', type=int, default=None)
     compatgroup.add_argument("--useclblast", help="Use CLBlast for GPU Acceleration. Must specify exactly 2 arguments, platform ID and device ID (e.g. --useclblast 1 0).", type=int, choices=range(0,9), nargs=2)
     compatgroup.add_argument("--usecpu", help="Do not use any GPU acceleration (CPU Only)", action='store_true')
@@ -8830,6 +8912,7 @@ if __name__ == '__main__':
     advparser.add_argument("--ignoremissing", help="Ignores all missing non-essential files, just skipping them instead.", action='store_true')
     advparser.add_argument("--chatcompletionsadapter", metavar=('[filename]'), help="Select an optional ChatCompletions Adapter JSON file to force custom instruct tags.", default="AutoGuess")
     advparser.add_argument("--flashattention","--flash-attn","-fa", help="Enables flash attention.", action='store_true')
+    advparser.add_argument("--lowvram","-nkvo","--no-kv-offload", help="If supported by the backend, do not offload KV to GPU (lowvram mode). Not recommended, will be slow.", action='store_true')
     advparser.add_argument("--quantkv", help="Sets the KV cache data type quantization, 0=f16, 1=q8, 2=q4. Requires Flash Attention for full effect, otherwise only K cache is quantized.",metavar=('[quantization level 0/1/2]'), type=int, choices=[0,1,2], default=0)
     advparser.add_argument("--forceversion", help="If the model file format detection fails (e.g. rogue modified model) you can set this to override the detected format (enter desired version, e.g. 401 for GPTNeoX-Type2).",metavar=('[version]'), type=int, default=0)
     advparser.add_argument("--smartcontext", help="Reserving a portion of context to try processing less frequently. Outdated. Not recommended.", action='store_true')
@@ -8880,6 +8963,7 @@ if __name__ == '__main__':
     sdparsergrouplora.add_argument("--sdlora", metavar=('[filename]'), help="Specify an image generation LORA safetensors model to be applied.", default="")
     sdparsergroup.add_argument("--sdloramult", metavar=('[amount]'), help="Multiplier for the image LORA model to be applied.", type=float, default=1.0)
     sdparsergroup.add_argument("--sdtiledvae", metavar=('[maxres]'), help="Adjust the automatic VAE tiling trigger for images above this size. 0 disables vae tiling.", type=int, default=default_vae_tile_threshold)
+    sdparsergroup.add_argument("--sdgendefaults", metavar=('{"parameter":"value",...}'), help="Sets default parameters for image generation, as a JSON string.", default="")
     whisperparsergroup = parser.add_argument_group('Whisper Transcription Commands')
     whisperparsergroup.add_argument("--whispermodel", metavar=('[filename]'), help="Specify a Whisper .bin model to enable Speech-To-Text transcription.", default="")
 

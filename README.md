@@ -216,7 +216,7 @@ when you can't use the precompiled binary directly, we provide an automated buil
 
 ### Compiling on Linux (Manual Method)
 - To compile your binaries from source, clone the repo with `git clone https://github.com/LostRuins/koboldcpp.git`
-- A makefile is provided, simply run `make`.
+- A makefile is provided, simply run `make` (when compiling, you can set the number of parallel jobs with the `-j` flag).
 - Optional Vulkan: Link your own install of Vulkan SDK manually with `make LLAMA_VULKAN=1`
 - Optional CLBlast: Link your own install of CLBlast manually with `make LLAMA_CLBLAST=1`
 - Note: for these you will need to obtain and link OpenCL and CLBlast libraries.
@@ -231,7 +231,7 @@ when you can't use the precompiled binary directly, we provide an automated buil
 - You're encouraged to use the .exe released, but if you want to compile your binaries from source at Windows, the easiest way is:
   - Get the latest release of w64devkit (https://github.com/skeeto/w64devkit). Be sure to use the "vanilla one", not i686 or other different stuff. If you try they will conflit with the precompiled libs!
   - Clone the repo with `git clone https://github.com/LostRuins/koboldcpp.git`
-  - Make sure you are using the w64devkit integrated terminal, then run `make` at the KoboldCpp source folder. This will create the .dll files for a pure CPU native build.
+  - Make sure you are using the w64devkit integrated terminal, then run `make` at the KoboldCpp source folder. This will create the .dll files for a pure CPU native build (when compiling, you can set the number of parallel jobs with the `-j` flag).
   - For a full featured build (all backends), do `make LLAMA_CLBLAST=1 LLAMA_VULKAN=1`. (Note that `LLAMA_CUBLAS=1` will not work on windows, you need visual studio)
   - To make your build sharable and capable of working on other devices, you must use `LLAMA_PORTABLE=1`
   - If you want to generate the .exe file, make sure you have the python module PyInstaller installed with pip (`pip install PyInstaller`). Then run the script `make_pyinstaller.bat`
@@ -246,7 +246,7 @@ when you can't use the precompiled binary directly, we provide an automated buil
 
 ### Compiling on MacOS
 - You can compile your binaries from source. You can clone the repo with `git clone https://github.com/LostRuins/koboldcpp.git`
-- A makefile is provided, simply run `make`.
+- A makefile is provided, simply run `make` (when compiling, you can set the number of parallel jobs with the `-j` flag).
 - If you want Metal GPU support, instead run `make LLAMA_METAL=1`, note that MacOS metal libraries need to be installed.
 - To make your build sharable and capable of working on other devices, you must use `LLAMA_PORTABLE=1`
 - After all binaries are built, you can run the python script with the command `python koboldcpp.py --model [ggml_model.gguf]` (and add `--gpulayers (number of layer)` if you wish to offload layers to GPU).

@@ -7,13 +7,11 @@
 #include <string.h>
 
 #include "stable-diffusion.h"
-#include "./gif.h"   // charlietangora/gif-h
 
 #ifndef MSF_GIF_IMPL
 #define MSF_GIF_IMPL
 #endif
 #include "./msf_gif.h" //notnullnotvoid/msf_gif
-
 
 #ifndef INCLUDE_STB_IMAGE_WRITE_H
 #include "stb_image_write.h"
@@ -410,9 +408,6 @@ int create_gif_buf_from_sd_images_msf(sd_image_t* images, int num_images, int fp
     if(fps <= 0) fps = 16;
     uint32_t delay = (uint32_t)(100 / fps); // hundredths of a second per frame
 
-    int bitDepth = 8;
-    bool dither = false;
-
     // assume all images same size; use first
     uint32_t width = images[0].width;
     uint32_t height = images[0].height;
@@ -426,13 +421,12 @@ int create_gif_buf_from_sd_images_msf(sd_image_t* images, int num_images, int fp
     for (int i = 0; i < num_images; i++)
     {
         sd_image_t* img = &images[i];
-
         if (img->width != width || img->height != height) {
             fprintf(stderr, "Frame %d has mismatched dimensions.\n", i);
             return -1;
         }
 
-        // gif-h expects 4 channels (RGBA) or 3 channels (RGB). It quantizes internally.
+        // gif expects 4 channels (RGBA) or 3 channels (RGB). It quantizes internally.
         // If your images have 3 channels, that’s fine. If 4 channels, it also works.
         int channels = img->channel;
         if (channels != 3 && channels != 4) {
@@ -440,7 +434,7 @@ int create_gif_buf_from_sd_images_msf(sd_image_t* images, int num_images, int fp
             return -1;
         }
 
-        // gif-h requires 4 channels (RGBA). If you only have RGB, add opaque alpha.
+        // gif requires 4 channels (RGBA). If you only have RGB, add opaque alpha.
         uint8_t* frame_rgba = NULL;
         if (channels == 3) {
             frame_rgba = (uint8_t*)malloc(width * height * 4);
@@ -469,98 +463,6 @@ int create_gif_buf_from_sd_images_msf(sd_image_t* images, int num_images, int fp
     MsfGifResult result = msf_gif_end(&gifState);
     *out_data = (uint8_t*)result.data;
     *out_len = result.dataSize;
-    return 0;
-}
-
-int create_gif_buf_from_sd_images_gifh(sd_image_t* images, int num_images, int fps,  uint8_t** out_data, size_t *out_len)
-{
-    if(!images || num_images <= 0 || !out_data || !out_len) return -1;
-
-    // basic parameter heuristics
-    if(fps <= 0) fps = 16;
-    uint32_t delay = (uint32_t)(100 / fps); // hundredths of a second per frame
-
-    int bitDepth = 8;
-    bool dither = false;
-
-    // assume all images same size; use first
-    uint32_t width = images[0].width;
-    uint32_t height = images[0].height;
-
-    GifWriter gw;
-    memset(&gw, 0, sizeof(gw));
-
-    if(!GifBegin(&gw, width, height, delay, bitDepth, dither))
-    {
-        if(gw.oldImage) GIF_FREE(gw.oldImage);
-
-        fprintf(stderr, "Error: GifBegin failed.\n");
-        return -1;
-    }
-
-    // Feed frames
-    for (int i = 0; i < num_images; i++)
-    {
-        sd_image_t* img = &images[i];
-
-        if (img->width != width || img->height != height) {
-            fprintf(stderr, "Frame %d has mismatched dimensions.\n", i);
-            GifEnd(&gw);
-            memfile_free(&gw.mem);
-            return -1;
-        }
-
-        // gif-h expects 4 channels (RGBA) or 3 channels (RGB). It quantizes internally.
-        // If your images have 3 channels, that’s fine. If 4 channels, it also works.
-        int channels = img->channel;
-        if (channels != 3 && channels != 4) {
-            fprintf(stderr, "Unsupported channel count: %d\n", channels);
-            GifEnd(&gw);
-            memfile_free(&gw.mem);
-            return -1;
-        }
-
-        // gif-h requires 4 channels (RGBA). If you only have RGB, add opaque alpha.
-        uint8_t* frame_rgba = NULL;
-        if (channels == 3) {
-            frame_rgba = (uint8_t*)malloc(width * height * 4);
-            for (int p = 0; p < width * height; p++) {
-                frame_rgba[p*4+0] = img->data[p*3+0];
-                frame_rgba[p*4+1] = img->data[p*3+1];
-                frame_rgba[p*4+2] = img->data[p*3+2];
-                frame_rgba[p*4+3] = 255;
-            }
-        } else {
-            frame_rgba = img->data; // already RGBA
-        }
-
-        if(!GifWriteFrame(&gw, frame_rgba, width, height, delay, bitDepth, dither))
-        {
-            fprintf(stderr, "GIF Write Failed\n");
-            GifEnd(&gw);
-            memfile_free(&gw.mem);
-            return -1;
-        }
-
-        if (channels == 3) {
-            free(frame_rgba);
-        }
-    }
-
-    if(!GifEnd(&gw))
-    {
-        memfile_free(&gw.mem);
-        return -1;
-    }
-
-    uint8_t* buf = memfile_detach(&gw.mem, out_len);
-    if(!buf)
-    {
-        memfile_free(&gw.mem);
-        return -1;
-    }
-
-    *out_data = buf;
     return 0;
 }
 

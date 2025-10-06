@@ -67,8 +67,11 @@ struct SDParams {
     int width         = 512;
     int height        = 512;
 
-    sample_method_t sample_method = EULER_A;
+    sample_method_t sample_method = SAMPLE_METHOD_DEFAULT;
+    scheduler_t scheduler         = scheduler_t::DEFAULT;
     int sample_steps              = 20;
+    float distilled_guidance      = -1.0f;
+    float shifted_timestep        = 0;
     float strength                = 0.75f;
     int64_t seed                  = 42;
     bool clip_on_cpu              = false;
@@ -404,8 +407,8 @@ std::string clean_input_prompt(const std::string& input) {
 }
 
 static std::string get_image_params(const sd_img_gen_params_t & params) {
-    std::stringstream parameter_string;
-    parameter_string << std::setprecision(3)
+    std::stringstream ss;
+    ss << std::setprecision(3)
         <<    "Prompt: " << params.prompt
         << " | NegativePrompt: " << params.negative_prompt
         << " | Steps: " << params.sample_params.sample_steps
@@ -413,11 +416,15 @@ static std::string get_image_params(const sd_img_gen_params_t & params) {
         << " | Guidance: " << params.sample_params.guidance.distilled_guidance
         << " | Seed: " << params.seed
         << " | Size: " << params.width << "x" << params.height
-        << " | Sampler: " << sd_sample_method_name(params.sample_params.sample_method)
-        << " | Clip skip: " << params.clip_skip
+        << " | Sampler: " << sd_sample_method_name(params.sample_params.sample_method);
+    if (params.sample_params.scheduler != scheduler_t::DEFAULT)
+        ss << " " << sd_schedule_name(params.sample_params.scheduler);
+    if (params.sample_params.shifted_timestep != 0)
+        ss << "| Timestep Shift: " << params.sample_params.shifted_timestep;
+    ss  << " | Clip skip: " << params.clip_skip
         << " | Model: " << sdmodelfilename
         << " | Version: KoboldCpp";
-    return parameter_string.str();
+    return ss.str();
 }
 
 static inline int rounddown_64(int n) {
@@ -519,23 +526,29 @@ static void sd_fix_resolution(int &width, int &height, int img_hard_limit, int i
 
 static enum sample_method_t sampler_from_name(const std::string& sampler)
 {
-    if(sampler=="euler a"||sampler=="k_euler_a"||sampler=="euler_a") //all lowercase
+    // all lowercase
+    enum sample_method_t result = str_to_sample_method(sampler.c_str());
+    if (result != sample_method_t::SAMPLE_METHOD_COUNT)
+    {
+        return result;
+    }
+    else if(sampler=="euler a"||sampler=="k_euler_a")
     {
         return sample_method_t::EULER_A;
     }
-    else if(sampler=="euler"||sampler=="k_euler")
+    else if(sampler=="k_euler")
     {
         return sample_method_t::EULER;
     }
-    else if(sampler=="heun"||sampler=="k_heun")
+    else if(sampler=="k_heun")
     {
         return sample_method_t::HEUN;
     }
-    else if(sampler=="dpm2"||sampler=="k_dpm_2")
+    else if(sampler=="k_dpm_2")
     {
         return sample_method_t::DPM2;
     }
-    else if(sampler=="lcm"||sampler=="k_lcm")
+    else if(sampler=="k_lcm")
     {
         return sample_method_t::LCM;
     }
@@ -549,10 +562,9 @@ static enum sample_method_t sampler_from_name(const std::string& sampler)
     }
     else
     {
-        return sample_method_t::EULER_A;
+        return sample_method_t::SAMPLE_METHOD_DEFAULT;
     }
 }
-
 
 uint8_t* load_image_from_b64(const std::string & b64str, int& width, int& height, int expected_width = 0, int expected_height = 0, int expected_channel = 3)
 {
@@ -644,6 +656,19 @@ uint8_t* load_image_from_b64(const std::string & b64str, int& width, int& height
         image_buffer = resized_image_buffer;
     }
     return image_buffer;
+
+}
+
+static enum scheduler_t scheduler_from_name(const char * scheduler)
+{
+    if (scheduler) {
+        enum scheduler_t result = str_to_schedule(scheduler);
+        if (result != scheduler_t::SCHEDULE_COUNT)
+        {
+            return result;
+        }
+    }
+    return scheduler_t::DEFAULT;
 }
 
 sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
@@ -674,13 +699,20 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
     sd_params->prompt = cleanprompt;
     sd_params->negative_prompt = cleannegprompt;
     sd_params->cfg_scale = inputs.cfg_scale;
+    sd_params->distilled_guidance = inputs.distilled_guidance;
     sd_params->sample_steps = inputs.sample_steps;
+    sd_params->shifted_timestep = inputs.shifted_timestep;
     sd_params->seed = inputs.seed;
     sd_params->width = inputs.width;
     sd_params->height = inputs.height;
     sd_params->strength = inputs.denoising_strength;
     sd_params->clip_skip = inputs.clip_skip;
     sd_params->sample_method = sampler_from_name(inputs.sample_method);
+    sd_params->scheduler = scheduler_from_name(inputs.scheduler);
+
+    if (sd_params->sample_method == SAMPLE_METHOD_DEFAULT) {
+        sd_params->sample_method = sd_get_default_sample_method(sd_ctx);
+    }
 
     auto loadedsdver = get_loaded_sd_version(sd_ctx);
     bool is_img2img = img2img_data != "";
@@ -841,10 +873,15 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
     params.clip_skip = sd_params->clip_skip;
     params.sample_params.guidance.txt_cfg = sd_params->cfg_scale;
     params.sample_params.guidance.img_cfg = sd_params->cfg_scale;
+    if (sd_params->distilled_guidance >= 0.f) {
+        params.sample_params.guidance.distilled_guidance = sd_params->distilled_guidance;
+    }
     params.width = sd_params->width;
     params.height = sd_params->height;
     params.sample_params.sample_method = sd_params->sample_method;
+    params.sample_params.scheduler = sd_params->scheduler;
     params.sample_params.sample_steps = sd_params->sample_steps;
+    params.sample_params.shifted_timestep = sd_params->shifted_timestep;
     params.seed = sd_params->seed;
     params.strength = sd_params->strength;
     params.vae_tiling_params.enabled = dotile;
@@ -922,6 +959,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
                 << "\nCFGSCLE:" << params.sample_params.guidance.txt_cfg
                 << "\nSIZE:" << params.width << "x" << params.height
                 << "\nSM:" << sd_sample_method_name(params.sample_params.sample_method)
+                << "\nSCHED:" << sd_schedule_name(params.sample_params.scheduler)
                 << "\nSTEP:" << params.sample_params.sample_steps
                 << "\nSEED:" << params.seed
                 << "\nBATCH:" << params.batch_count
@@ -1051,31 +1089,11 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
             }
             else
             {
-                uint8_t * out_data_a = nullptr;
-                uint8_t * out_data_b = nullptr;
-                int status_a = 0;
-                int status_b = 0;
-                size_t out_len_a = 0;
-                size_t out_len_b = 0;
-                status_a = create_gif_buf_from_sd_images_gifh(results, generated_num_results, 16, &out_data_a,&out_len_a);
-                status_b = create_gif_buf_from_sd_images_msf(results, generated_num_results, 16, &out_data_b,&out_len_b);
+
+                status = create_gif_buf_from_sd_images_msf(results, generated_num_results, 16, &out_data,&out_len);
                 if(!sd_is_quiet && sddebugmode==1)
                 {
-                    printf("GIF-H Len: %zu, MSF Len: %zu\n",out_len_a,out_len_b);
-                }
-                if(status_a==0 && out_len_a < out_len_b)
-                {
-                    free(out_data_b);
-                    out_len = out_len_a;
-                    out_data = out_data_a;
-                    status = status_a;
-                }
-                else
-                {
-                    free(out_data_a);
-                    out_len = out_len_b;
-                    out_data = out_data_b;
-                    status = status_b;
+                    printf("Video Output Size: %zu\n",out_len);
                 }
             }
 
