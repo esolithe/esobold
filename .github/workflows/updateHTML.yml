@@ -1,4 +1,4 @@
-name: docs
+name: updateHTML
 on:
   workflow_dispatch:
   # push:
