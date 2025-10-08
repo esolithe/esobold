@@ -1,0 +1,24 @@
+name: docs
+on:
+  workflow_dispatch:
+  # push:
+  #   branches: [ remoteManagement ]
+  #   paths: 'esobold/embd_res/klite.embd'
+
+jobs:
+  updateHTML:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v5
+    - name: Copy the HTML
+      run: |
+        cp "./esobold/embd_res/klite.embd" "./esobold/docs/klite.html"
+    - name: Commit HTML
+      run: |
+        date > generated.txt
+        # Note: the following account information will not work on GHES
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git add .
+        git commit -m "Latest HTML"
+        git push
