@@ -15,8 +15,6 @@ jobs:
         cp "/home/runner/work/esobold/esobold/embd_res/klite.embd" "/home/runner/work/esobold/esobold/docs/klite.html"
     - name: Commit HTML
       run: |
-        date > generated.txt
-        # Note: the following account information will not work on GHES
         git config user.name "github-actions[bot]"
         git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
         git add .
