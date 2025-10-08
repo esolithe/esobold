@@ -12,7 +12,7 @@ jobs:
     - uses: actions/checkout@v5
     - name: Copy the HTML
       run: |
-        cp "./esobold/embd_res/klite.embd" "./esobold/docs/klite.html"
+        cp "/home/runner/work/esobold/esobold/embd_res/klite.embd" "/home/runner/work/esobold/esobold/docs/klite.html"
     - name: Commit HTML
       run: |
         date > generated.txt
