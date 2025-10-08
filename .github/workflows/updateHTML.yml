@@ -1,9 +1,9 @@
 name: updateHTML
 on:
   workflow_dispatch:
-  # push:
-  #   branches: [ remoteManagement ]
-  #   paths: 'esobold/embd_res/klite.embd'
+  push:
+    branches: [ remoteManagement ]
+    paths: 'esobold/embd_res/klite.embd'
 
 jobs:
   updateHTML:
