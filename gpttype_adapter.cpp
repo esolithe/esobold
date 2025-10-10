@@ -484,8 +484,15 @@ void ContextRewind(std::vector<int> &embd, std::vector<int> &current_context_tok
         printf("\nWARNING: Don't use context rewind when in batch processing phase!\n");
         return;
     }
-    bool is_recurrent = (file_format == FileFormat::GGUF_GENERIC && (file_format_meta.model_architecture==GGUFArch::ARCH_MAMBALIKE
-    || file_format_meta.model_architecture==GGUFArch::ARCH_RWKV));
+    bool is_recurrent = false;
+    if(file_format==FileFormat::GGUF_GENERIC)
+    {
+        const llama_model * mdl = llama_get_model(llama_ctx_v4);
+        if(llama_model_is_recurrent(mdl) || llama_model_is_hybrid(mdl))
+        {
+            is_recurrent = true;
+        }
+    }
     if(file_format == FileFormat::RWKV_1 || file_format==FileFormat::RWKV_2 || is_recurrent)
     {
         printf("\nWARNING: RNN models do not support context rewind!\n");
@@ -3747,8 +3754,15 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
         printf("%s\n", RemoveBell(outstr).c_str());
     }
 
-    bool is_recurrent = (file_format == FileFormat::GGUF_GENERIC && (file_format_meta.model_architecture==GGUFArch::ARCH_MAMBALIKE
-    || file_format_meta.model_architecture==GGUFArch::ARCH_RWKV));
+    bool is_recurrent = false;
+    if(file_format==FileFormat::GGUF_GENERIC)
+    {
+        const llama_model * mdl = llama_get_model(llama_ctx_v4);
+        if(llama_model_is_recurrent(mdl) || llama_model_is_hybrid(mdl))
+        {
+            is_recurrent = true;
+        }
+    }
     bool blank_prompt = (addedmemory=="" && kcpp_data->prompt=="");
 
     if (file_format == FileFormat::RWKV_1 || file_format==FileFormat::RWKV_2 || is_recurrent)

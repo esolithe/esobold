@@ -6558,7 +6558,7 @@ def show_gui():
     makelabelentry(images_tab, "Multiplier:" , sd_loramult_var, 20, 50,padx=390,singleline=True,tooltip="What mutiplier value to apply the SD LoRA with.",labelpadx=330)
 
     makefileentry(images_tab, "T5-XXL File:", "Select T5-XXL model file (SD3, Flux, WAN)",sd_t5xxl_var, 24, width=280, singlerow=True, filetypes=[("*.safetensors *.gguf","*.safetensors *.gguf")],tooltiptxt="Select a .safetensors t5xxl file to be loaded.")
-    makefileentry(images_tab, "Clip-1 File:", "Select First Clip model file (Clip-L for SD3 or Flux, or other vision encoder)",sd_clip1_var, 26, width=280, singlerow=True, filetypes=[("*.safetensors *.gguf","*.safetensors *.gguf")],tooltiptxt="Select a .safetensors Clip-1 file to be loaded.\nThis is Clip-L for SD3 and Flux, or Clip Vision for WAN and QwenImage")
+    makefileentry(images_tab, "Clip-1 File:", "Select First Clip model file (Clip-L for SD3 or Flux, or other vision encoder)",sd_clip1_var, 26, width=280, singlerow=True, filetypes=[("*.safetensors *.gguf","*.safetensors *.gguf")],tooltiptxt="Select a .safetensors Clip-1 file to be loaded.\nThis is Clip-L for SD3 and Flux, Clip Vision for WAN, and Qwen2.5VL for QwenImage")
     makefileentry(images_tab, "Clip-2 File:", "Select Second Clip model file (Clip-G for SD3)",sd_clip2_var, 28, width=280, singlerow=True, filetypes=[("*.safetensors *.gguf","*.safetensors *.gguf")],tooltiptxt="Select a .safetensors Clip-2 file to be loaded.\nThis is Clip-G for SD3")
     makefileentry(images_tab, "PhotoMaker:", "Select Optional PhotoMaker model file (SDXL)",sd_photomaker_var, 30, width=280, singlerow=True, filetypes=[("*.safetensors *.gguf","*.safetensors *.gguf")],tooltiptxt="PhotoMaker is a model that allows face cloning.\nSelect a .safetensors PhotoMaker file to be loaded (SDXL only).")
 
@@ -6858,7 +6858,9 @@ def show_gui():
             args.sdloramult = float(sd_loramult_var.get())
         else:
             args.sdlora = ""
-        args.sdgendefaults = sd_gen_defaults_var.get()
+
+        if sd_gen_defaults_var.get() != "":
+            args.sdgendefaults = sd_gen_defaults_var.get()
 
         if whisper_model_var.get() != "":
             args.whispermodel = whisper_model_var.get()
@@ -7088,7 +7090,7 @@ def show_gui():
 
         sd_lora_var.set(dict["sdlora"] if ("sdlora" in dict and dict["sdlora"]) else "")
         sd_loramult_var.set(str(dict["sdloramult"]) if ("sdloramult" in dict and dict["sdloramult"]) else "1.0")
-        sd_gen_defaults_var.set(dict.get("sdgendefaults", ""))
+        sd_gen_defaults_var.set(dict["sdgendefaults"] if ("sdgendefaults" in dict and dict["sdgendefaults"]) else "")
 
         whisper_model_var.set(dict["whispermodel"] if ("whispermodel" in dict and dict["whispermodel"]) else "")
 
@@ -7574,10 +7576,13 @@ def reload_from_new_args(newargs):
     except Exception as e:
         print(f"Reload New Config Failed: {e}")
 
-def reload_new_config(filename): #for changing config after launch
+def reload_new_config(filename,defaultargs): #for changing config after launch
     with open(filename, 'r', encoding='utf-8', errors='ignore') as f:
         try:
             config = json.load(f)
+            for key, value in defaultargs.items():   # Fill missing defaults directly into config
+                if key not in config:
+                    config[key] = value
             reload_from_new_args(config)
         except Exception as e:
             print(f"Reload New Config Failed: {e}")
@@ -8030,6 +8035,7 @@ def main(launch_args, default_args):
                         if args.admin and args.admindir:
                             dirpath = os.path.abspath(args.admindir)
                             targetfilepath = os.path.join(dirpath, restart_target)
+                            defaultargs = vars(default_args)
                             if (os.path.exists(targetfilepath) or restart_target=="unload_model"):
                                 print("Terminating old process...")
                                 global_memory["load_complete"] = False
@@ -8039,15 +8045,15 @@ def main(launch_args, default_args):
                                 print("Restarting KoboldCpp...")
                                 fault_recovery_mode = True
                                 if restart_target=="unload_model":
-                                    reload_from_new_args(vars(default_args))
+                                    reload_from_new_args(defaultargs)
                                     args.model_param = None
                                     args.model = None
                                     args.nomodel = True
                                 elif targetfilepath.endswith(".gguf"):
-                                    reload_from_new_args(vars(default_args))
+                                    reload_from_new_args(defaultargs)
                                     args.model_param = targetfilepath
                                 else:
-                                    reload_new_config(targetfilepath)
+                                    reload_new_config(targetfilepath,defaultargs)
 
                                 args.currentConfig = targetfilepath
                                 global_memory["currentConfig"] = targetfilepath
