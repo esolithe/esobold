@@ -776,7 +776,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
 
     //for img2img
     sd_image_t input_image = {0,0,0,nullptr};
-    std::vector<sd_image_t> kontext_imgs;
+    std::vector<sd_image_t> reference_imgs;
     std::vector<sd_image_t> wan_imgs;
     std::vector<sd_image_t> photomaker_imgs;
 
@@ -823,6 +823,20 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
                     wan_imgs.push_back(extraimage_reference);
                 }
             }
+            else if(is_qwenimg)
+            {
+                uint8_t * loaded = load_image_from_b64(extra_image_data[i],nx2,ny2);
+                if(loaded)
+                {
+                    input_extraimage_buffers.push_back(loaded);
+                    sd_image_t extraimage_reference;
+                    extraimage_reference.width = nx2;
+                    extraimage_reference.height = ny2;
+                    extraimage_reference.channel = desiredchannels;
+                    extraimage_reference.data = loaded;
+                    reference_imgs.push_back(extraimage_reference);
+                }
+            }
             else if (is_kontext || photomaker_enabled)
             {
                 uint8_t * loaded = load_image_from_b64(extra_image_data[i],nx2,ny2);
@@ -836,7 +850,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
                     extraimage_reference.data = loaded;
                     if(is_kontext)
                     {
-                        kontext_imgs.push_back(extraimage_reference);
+                        reference_imgs.push_back(extraimage_reference);
                     }
                     else
                     {
@@ -859,7 +873,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
 
         if(!sd_is_quiet && sddebugmode==1)
         {
-            printf("\nImageGen References: Kontext=%d Wan=%d Photomaker=%d\n",kontext_imgs.size(),wan_imgs.size(),photomaker_imgs.size());
+            printf("\nImageGen References: RefImg=%d Wan=%d Photomaker=%d\n",reference_imgs.size(),wan_imgs.size(),photomaker_imgs.size());
         }
     }
 
@@ -887,8 +901,8 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
     params.vae_tiling_params.enabled = dotile;
     params.batch_count = 1;
 
-    params.ref_images = kontext_imgs.data();
-    params.ref_images_count = kontext_imgs.size();
+    params.ref_images = reference_imgs.data();
+    params.ref_images_count = reference_imgs.size();
     params.pm_params.id_images = photomaker_imgs.data();
     params.pm_params.id_images_count = photomaker_imgs.size();
 

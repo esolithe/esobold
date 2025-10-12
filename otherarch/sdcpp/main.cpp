@@ -60,6 +60,7 @@ struct SDParams {
     std::string clip_vision_path;
     std::string t5xxl_path;
     std::string qwen2vl_path;
+    std::string qwen2vl_vision_path;
     std::string diffusion_model_path;
     std::string high_noise_diffusion_model_path;
     std::string vae_path;
@@ -146,6 +147,7 @@ void print_params(SDParams params) {
     printf("    clip_vision_path:                  %s\n", params.clip_vision_path.c_str());
     printf("    t5xxl_path:                        %s\n", params.t5xxl_path.c_str());
     printf("    qwen2vl_path:                      %s\n", params.qwen2vl_path.c_str());
+    printf("    qwen2vl_vision_path:               %s\n", params.qwen2vl_vision_path.c_str());
     printf("    diffusion_model_path:              %s\n", params.diffusion_model_path.c_str());
     printf("    high_noise_diffusion_model_path:   %s\n", params.high_noise_diffusion_model_path.c_str());
     printf("    vae_path:                          %s\n", params.vae_path.c_str());
@@ -218,6 +220,7 @@ void print_usage(int argc, const char* argv[]) {
     printf("  --clip_vision                      path to the clip-vision encoder\n");
     printf("  --t5xxl                            path to the t5xxl text encoder\n");
     printf("  --qwen2vl                          path to the qwen2vl text encoder\n");
+    printf("  --qwen2vl_vision                   path to the qwen2vl vit\n");
     printf("  --vae [VAE]                        path to vae\n");
     printf("  --taesd [TAESD_PATH]               path to taesd. Using Tiny AutoEncoder for fast decoding (low quality)\n");
     printf("  --control-net [CONTROL_PATH]       path to control net model\n");
@@ -488,6 +491,7 @@ void parse_args(int argc, const char** argv, SDParams& params) {
         {"", "--clip_vision", "", &params.clip_vision_path},
         {"", "--t5xxl", "", &params.t5xxl_path},
         {"", "--qwen2vl", "", &params.qwen2vl_path},
+        {"", "--qwen2vl_vision", "", &params.qwen2vl_vision_path},
         {"", "--diffusion-model", "", &params.diffusion_model_path},
         {"", "--high-noise-diffusion-model", "", &params.high_noise_diffusion_model_path},
         {"", "--vae", "", &params.vae_path},
@@ -947,7 +951,7 @@ std::string get_image_params(SDParams params, int64_t seed) {
         parameter_string += " " + std::string(sd_schedule_name(params.sample_params.scheduler));
     }
     parameter_string += ", ";
-    for (const auto& te : {params.clip_l_path, params.clip_g_path, params.t5xxl_path, params.qwen2vl_path}) {
+    for (const auto& te : {params.clip_l_path, params.clip_g_path, params.t5xxl_path, params.qwen2vl_path, params.qwen2vl_vision_path}) {
         if (!te.empty()) {
             parameter_string += "TE: " + sd_basename(te) + ", ";
         }
@@ -1107,10 +1111,19 @@ bool load_images_from_dir(const std::string dir,
         return false;
     }
 
+    std::vector<fs::directory_entry> entries;
     for (const auto& entry : fs::directory_iterator(dir)) {
-        if (!entry.is_regular_file())
-            continue;
+        if (entry.is_regular_file()) {
+            entries.push_back(entry);
+        }
+    }
 
+    std::sort(entries.begin(), entries.end(),
+              [](const fs::directory_entry& a, const fs::directory_entry& b) {
+                  return a.path().filename().string() < b.path().filename().string();
+              });
+
+    for (const auto& entry : entries) {
         std::string path = entry.path().string();
         std::string ext  = entry.path().extension().string();
         std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
@@ -1250,7 +1263,7 @@ int main(int argc, const char* argv[]) {
         }
     }
 
-    if (params.control_net_path.size() > 0 && params.control_image_path.size() > 0) {
+    if (params.control_image_path.size() > 0) {
         int width          = 0;
         int height         = 0;
         control_image.data = load_image(params.control_image_path.c_str(), width, height, params.width, params.height);
@@ -1322,6 +1335,7 @@ int main(int argc, const char* argv[]) {
         params.clip_vision_path.c_str(),
         params.t5xxl_path.c_str(),
         params.qwen2vl_path.c_str(),
+        params.qwen2vl_vision_path.c_str(),
         params.diffusion_model_path.c_str(),
         params.high_noise_diffusion_model_path.c_str(),
         params.vae_path.c_str(),
