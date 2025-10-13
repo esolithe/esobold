@@ -1,0 +1,20 @@
+samplerpresets.push({
+    preset: "Esolithe - Balanced",
+    description: "Eso's tweaked settings - Balanced",
+    temp: 0.8,
+    dynatemp_range: defaultsettings.dynatemp_range,
+    dynatemp_exponent: defaultsettings.dynatemp_exponent,
+    smoothing_factor: defaultsettings.smoothing_factor,
+    nsigma: 0.75,
+    top_k: defaultsettings.top_k,
+    top_p: 1,
+    min_p: 0.05,
+    presence_penalty: 0.05,
+    top_a: defaultsettings.top_a,
+    typical: defaultsettings.typ_s,
+    tfs: defaultsettings.tfs_s,
+    rep_pen: defaultsettings.rep_pen,
+    rep_pen_range: 2048,
+    rep_pen_slope: defaultsettings.rep_pen_slope,
+    sampler_order: defaultsettings.sampler_order
+})

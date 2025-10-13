@@ -1,0 +1,764 @@
+let putAllCharacterManagerData = () => {
+    popupUtils.reset()
+
+    msgboxYesNo("Are you sure you wish to overwrite server data?", "Character manager", () => {
+        inputBox("Save password", "Please input save password (or leave blank for no password):", "", "(Input Save Password)", async () => {
+            let managerSaves = Object.entries(await getServerSaves()).filter(entry => {
+                [key, value] = entry;
+                return value.typeName === "Manager"
+            })
+
+            await Promise.all(managerSaves.map(async entry => {
+                let [key, value] = entry
+                await fetch(`${custom_kobold_endpoint}/api/data/delete`, {
+                    method: "POST",
+                    headers: getAuthHeaders(),
+                    body: JSON.stringify({ filename: value.name })
+                })
+                    .then(resp => resp.json())
+                    .catch(e => {
+                        handleError(e)
+                    })
+            }))
+
+            let userinput = getInputBoxValue(), password = "";
+            userinput = userinput.trim();
+            if (userinput != null && userinput != "") {
+                password = userinput
+            }
+
+            let isEncrypted = false;
+            if (password.trim() !== "") {
+                password = password.trim()
+                isEncrypted = true
+            }
+            waitingToast.show()
+            let allTasks = await Promise.all(allCharacterNames.map(async c => {
+                let { name, type, thumbnail } = c, data = await getCharacterData(name);
+                waitingToast.setText(`Sending data ${name}`)
+                if (thumbnail !== undefined) {
+                    data.thumbnail = thumbnail
+                }
+                if (type !== undefined) {
+                    data.type = type
+                }
+                data = JSON.stringify(data)
+                if (isEncrypted) {
+                    data = encrypt(password, data)
+                }
+
+                let bodyData = {
+                    filename: name.trim(),
+                    data: data,
+                    type: "Save",
+                    isEncrypted: isEncrypted ? "1" : "0",
+                    group: null,
+                    type: "Manager",
+                    thumbnail: null
+                }
+                await fetch(`${custom_kobold_endpoint}/api/data/put`, {
+                    method: "POST",
+                    body: JSON.stringify(bodyData),
+                    headers: getAuthHeaders()
+                })
+                    .then(resp => resp.json())
+                    .catch(e => {
+                        handleError(e)
+                    })
+
+                return true
+
+                // decrypt("test", (await Promise.all(putAllCharacterManagerData()))[0].data)
+                // JSON.parse(decrypt("test", (await Promise.all(putAllCharacterManagerData()))[0].data))
+            }))
+            waitingToast.hide()
+        }, false, false, true);
+    })
+}
+
+let loadAllCharacterManagerData = () => {
+    popupUtils.reset()
+    inputBox("Save password", "Please input save password (or leave blank for no password):", "", "(Input Save Password)", async () => {
+        let userinput = getInputBoxValue(), password = "";
+        userinput = userinput.trim();
+        if (userinput != null && userinput != "") {
+            password = userinput
+        }
+
+        let isEncrypted = false;
+        if (password.trim() !== "") {
+            password = password.trim()
+            isEncrypted = true
+        }
+        let managerSaves = Object.entries(await getServerSaves()).filter(entry => {
+            [key, value] = entry;
+            return value.typeName === "Manager"
+        })
+
+        waitingToast.show()
+        await Promise.all(managerSaves.map(async entry => {
+            let [key, value] = entry
+            waitingToast.setText(`Receiving data ${value.name}`)
+            await fetch(`${custom_kobold_endpoint}/api/data/get`, {
+                method: "POST",
+                headers: getAuthHeaders(),
+                body: JSON.stringify({ filename: value.name })
+            })
+                .then(resp => resp.json())
+                .then(saveData => {
+                    let managerData = isEncrypted ? decrypt(password, saveData) : saveData;
+                    managerData = JSON.parse(managerData)
+                    let { type, thumbnail } = managerData
+                    delete managerData["type"]
+                    delete managerData["thumbnail"]
+                    return indexeddb_save(`character_${managerData.name}`, JSON.stringify(managerData)).then(() => {
+                        let charOverview = { name: managerData.name, type: type }
+                        if (thumbnail !== undefined) {
+                            charOverview.thumbnail = thumbnail
+                        }
+                        allCharacterNames = allCharacterNames.filter(c => c.name !== managerData.name)
+                        allCharacterNames.push(charOverview);
+                        updateCharacterListFromAllDe();
+                    })
+                })
+                .catch(e => {
+                    handleError(e)
+                })
+
+            return true
+        }))
+        waitingToast.hide()
+    }, false, false, true);
+}
+
+let maxLengthForSection = 500, halfMaxLengthForSection = Math.floor(maxLengthForSection / 2);
+let showCharacterList = async () => {
+    let containers = []
+
+    let createIcon = (name, image) => {
+        let charIcon = document.createElement("span");
+        let charText = document.createElement("b");
+        charIcon.classList.add("containAndScaleImage", "tile")
+        charIcon.style.backgroundImage = !!image ? image : "var(--img_esobold)"
+        charIcon.title = name
+        charText.innerText = name
+        charIcon.appendChild(charText)
+        return charIcon
+    }
+    let getContainerForType = (containerName) => {
+        let containerNameAsClass = containerName.replaceAll(/\s/g, "_")
+        let existingContainer = containers.find(container => container.classList.contains(containerNameAsClass));
+        if (!!existingContainer) {
+            return existingContainer;
+        }
+
+        let container = document.createElement("div");
+        container.classList.add("autoGrid")
+        container.style.overflowX = "hidden"
+        container.style.border = "lightcoral"
+        container.style.borderStyle = "dashed"
+        container.style.marginBottom = "10px"
+        container.classList.add(containerNameAsClass)
+        containers.push(container)
+
+        let charIcon = createIcon(containerName, "var(--img_load)")
+        container.appendChild(charIcon);
+        return container
+    }
+
+    let uploadFileHandler = function (result) {
+        let { file, fileName, ext, content, plaintext, dataArr } = result;
+        waitingToast.show()
+        waitingToast.setText(`Loading data ${fileName}`)
+        if (ext === ".png") {
+            let arr = new Uint8Array(dataArr)
+            let res = convertTavernPng(arr)
+        }
+        else if (ext === ".webp") {
+            let arr = new Uint8Array(dataArr)
+            getTavernExifJSON(arr)
+        }
+        else {
+            let data = JSON.parse(plaintext);
+            if (is_kai_json(data) && !data?.scenarioVersion) {
+                // Handle as a regular KLite save
+                saveKLiteSaveToIndexDB(fileName, data)
+            }
+            else {
+                let wiToAdd = data, has_tav_wi_check = has_tavern_wi_check(wiToAdd), wiName = fileName;
+                if (has_tav_wi_check) {
+                    if (wiToAdd?.name !== undefined && wiToAdd.name.trim().length > 0) {
+                        wiName = wiToAdd.name
+                    }
+                    wiToAdd = load_tavern_wi(wiToAdd);
+                    if (wiToAdd && wiToAdd.length > 0) {
+                        wiToAdd.forEach(wi => wi.wigroup = fileName.replace("'", ""))
+                    }
+                }
+                else {
+                    try {
+                        let hasNoGeneralWI = wiToAdd.length === 0 || wiToAdd.find(wi => wi?.wigroup === undefined || wi.wigroup.trim() === null || wi.wigroup === "" || wi.wigroup === "General") === undefined;
+                        if (hasNoGeneralWI) {
+                            let wiAllHaveSameGroup = wiToAdd.find((e, p, a) => a.find(c => c?.wigroup !== e.wigroup)) === undefined
+                            if (wiAllHaveSameGroup) {
+                                wiName = wiToAdd[0].wigroup
+                            }
+                        }
+                    }
+                    catch (e) {
+                        console.error(e)
+                    }
+                }
+                if (Array.isArray(wiToAdd)) {
+                    wiToAdd = wiToAdd.filter(wi => wi?.key !== undefined)
+                    if (wiToAdd.length > 0) {
+                        saveLorebookToIndexDB(wiName, wiToAdd, JSON.parse(plaintext))
+                    }
+                }
+            }
+        }
+    }
+
+
+    let dragIcon = createIcon("Drag characters, saves, lorebooks or world info here to add")
+    getContainerForType("Drop zone").appendChild(dragIcon);
+    getContainerForType("Drop zone").addEventListener(
+        "dragover",
+        (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+        },
+        false
+    );
+    getContainerForType("Drop zone").addEventListener(
+        "drop",
+        (e) => {
+            let draggedData = e.dataTransfer;
+            let files = draggedData.files;
+            console.log(files);
+            if (files && files.length > 0) {
+                e.preventDefault();
+                e.stopPropagation();
+                let allowedTypes = ["image/png", "image/webp", "application/json"]
+                let validFiles = [...files].filter(file => {
+                    return file != null && file.name && file.name != "" && (file.type)
+                })
+                if (validFiles.length > 0) {
+                    popupUtils.reset()
+                    fileInputToFiles(validFiles, uploadFileHandler)
+                }
+            };
+        },
+        false
+    );
+
+    if (allCharacterNames.length === 0) {
+        let charIcon = createIcon("No characters added yet (please add or drag some!)")
+        getContainerForType("Character").appendChild(charIcon);
+    }
+    else {
+        let createDetailsContent = (name) => {
+            let contents = document.createElement("div");
+            contents.style.color = "white";
+            contents.style.padding = "5px";
+            let titleElem = document.createElement("span");
+            titleElem.classList.add("popuptitletext");
+            titleElem.innerText = name;
+            titleElem.style.borderBottom = "solid";
+            contents.appendChild(titleElem);
+            return contents;
+        }
+        let createSection = (containerElem, section, text) => {
+            if (!!text && text.length > 0) {
+                let sectionContainer = document.createElement("span");
+                sectionContainer.style = "width: 100%; display: flex; padding: 10px;";
+                let sectionTitle = document.createElement("span"), sectionElem;
+                sectionTitle.innerText = section;
+                sectionTitle.style = "padding-right: 5px; font-weight: bold;"
+                sectionContainer.appendChild(sectionTitle);
+                if (Array.isArray(text)) {
+                    sectionElem = document.createElement("ul");
+                    text.forEach(listContent => {
+                        let listElem = document.createElement("li");
+                        let summaryOfKey = listContent.length > maxLengthForSection ? `${listContent.substr(0, halfMaxLengthForSection).trim()}...${listContent.substr(-halfMaxLengthForSection).trim()}` : listContent.trim();
+                        listElem.innerText = summaryOfKey
+                        if (listContent.length !== summaryOfKey.length) {
+                            let isShown = false
+                            listElem.onclick = () => {
+                                isShown = !isShown
+                                listElem.innerText = isShown ? listContent : summaryOfKey
+                            }
+                            listElem.title = "Click to show / hide full content"
+                        }
+                        sectionElem.appendChild(listElem)
+                    })
+                }
+                else {
+                    sectionElem = document.createElement("span");
+                    let summaryOfKey = text.length > maxLengthForSection ? `${text.substr(0, halfMaxLengthForSection).trim()}...${text.substr(-halfMaxLengthForSection).trim()}` : text.trim();
+                    sectionElem.innerText = summaryOfKey
+                    if (text.length !== summaryOfKey.length) {
+                        let isShown = false
+                        sectionElem.onclick = () => {
+                            isShown = !isShown
+                            sectionElem.innerText = isShown ? text : summaryOfKey
+                        }
+                        sectionElem.title = "Click to show / hide full content"
+                    }
+                }
+                sectionContainer.appendChild(sectionElem);
+                containerElem.appendChild(sectionContainer);
+            }
+        }
+        let lorebookEntryToString = (entry) => {
+            return `Primary: ${[...entry?.keys].join(", ")}\nSecondary: ${[...entry?.secondary_keys].join(",")}`;
+        }
+        let wiEntryToString = (entry) => {
+            return `Primary: ${entry?.key}\nSecondary: ${entry?.keysecondary}`;
+        }
+        for (let i = 0; i < allCharacterNames.length; i++) {
+            let { name, thumbnail } = allCharacterNames[i], type = getTypeFromAllCharacterData(allCharacterNames[i]);
+            let charIcon = createIcon(name, !!thumbnail ? `url(${thumbnail})` : undefined)
+            charIcon.onclick = async () => {
+                if (type === "Character") {
+                    let contents = document.createElement("span");
+                    try {
+                        let data = await getCharacterData(name), { image } = data;
+                        let { description, first_mes, mes_example, alternate_greetings, character_book, tags, creator, creator_notes, personality } = (data)?.data;
+                        contents = createDetailsContent(name);
+                        if (!!image) {
+                            let imageContainer = document.createElement("span"), imageElem = document.createElement("img");
+                            imageElem.src = image;
+                            imageElem.style = "height: 30%; width: 30%; border-radius: 10px;"
+                            imageContainer.style = "width: 100%; display: flex; justify-content: space-around; padding: 10px;";
+                            imageContainer.appendChild(imageElem);
+                            contents.appendChild(imageContainer);
+                        }
+                        createSection(contents, "Creator", creator);
+                        createSection(contents, "Tags", tags);
+                        createSection(contents, "Creators notes", creator_notes);
+                        createSection(contents, "Memory", description);
+                        createSection(contents, "Temporary memory", formatExampleMessages(mes_example));
+                        createSection(contents, "Alternative greetings", [first_mes, ...(alternate_greetings || [])]);
+                        createSection(contents, "Personality", personality);
+                        createSection(contents, "World info", character_book?.entries?.map(entry => {
+                            return lorebookEntryToString(entry);
+                        }));
+                    }
+                    catch (e) {
+                        console.error(e)
+                    }
+
+                    popupUtils.reset().title("Character Options").content(contents).button("Back", showCharacterList).button("Load character", async () => {
+                        popupUtils.reset()
+                        let charData = await getCharacterData(name)
+                        load_tavern_obj(charData.data);
+                    }).button("Add character to WI", async () => {
+                        popupUtils.reset()
+                        let charData = await getCharacterData(name)
+                        let wiToAdd = importCharacterCardAsWIInternal(charData.data);
+                        current_wi = current_wi.filter(wi => wi?.folder !== name)
+                        current_wi.push(...wiToAdd)
+                        let chatMode = localsettings.opmode == 3 || (localsettings.opmode == 4 && localsettings.inject_chatnames_instruct)
+                        if (chatMode) {
+                            localsettings.chatopponent += `||$||${name}`
+                        }
+                    }).button("Download character", async () => {
+                        popupUtils.reset()
+                        let charData = await getCharacterData(name), { image } = charData;
+                        let a = document.createElement("a");
+                        a.href = image
+                        a.download = `${name}.png`
+                        a.click();
+                        a.remove();
+                        updateCharacterListFromAll()
+                    }).button("Delete character", async () => {
+                        popupUtils.reset()
+                        msgboxYesNo("Are you sure you wish to delete?", "Character manager", async () => {
+                            allCharacterNames = allCharacterNames.filter(c => c.name !== name)
+                            await indexeddb_save(`character_${name}`)
+                            updateCharacterListFromAll()
+                        })
+                    }).button("Close", () => popupUtils.reset()).show();
+                }
+                else if (type === "World Info") {
+                    let contents = document.createElement("span");
+                    try {
+                        let data = await getCharacterData(name);
+                        contents = createDetailsContent(name);
+                        createSection(contents, "World info", data?.data?.map(entry => {
+                            return wiEntryToString(entry);
+                        }));
+                    }
+                    catch (e) {
+                        console.error(e)
+                    }
+
+                    popupUtils.reset().title("World Info Options").content(contents).button("Back", showCharacterList).button("Add to WI", async () => {
+                        popupUtils.reset()
+                        let charData = await getCharacterData(name)
+                        let wiToAdd = charData.data;
+                        current_wi = current_wi.filter(wi => wi?.folder !== name)
+                        current_wi.push(...wiToAdd)
+                    }).button("Delete world info", async () => {
+                        popupUtils.reset()
+                        msgboxYesNo("Are you sure you wish to delete?", "Character manager", async () => {
+                            allCharacterNames = allCharacterNames.filter(c => c.name !== name)
+                            await indexeddb_save(`character_${name}`)
+                            updateCharacterListFromAll()
+                        })
+                    }).button("Close", () => popupUtils.reset()).show();
+                }
+                else if (type === "Save") {
+                    let contents = document.createElement("span");
+                    try {
+                        let data = await getCharacterData(name), { AI_portrait } = data;
+                        let { memory, prompt, tempmemory, worldinfo } = (data)?.data;
+                        contents = createDetailsContent(name);
+                        if (!!AI_portrait) {
+                            let imageContainer = document.createElement("span"), imageElem = document.createElement("img");
+                            imageElem.src = AI_portrait;
+                            imageElem.style = "height: 30%; width: 30%; border-radius: 10px;"
+                            imageContainer.style = "width: 100%; display: flex; justify-content: space-around; padding: 10px;";
+                            imageContainer.appendChild(imageElem);
+                            contents.appendChild(imageContainer);
+                        }
+                        createSection(contents, "Memory", memory);
+                        createSection(contents, "Temporary memory", tempmemory);
+                        createSection(contents, "First message", prompt);
+                        createSection(contents, "World info", worldinfo?.map(entry => {
+                            return wiEntryToString(entry);
+                        }));
+                    }
+                    catch (e) {
+                        console.error(e)
+                    }
+
+                    popupUtils.reset().title("Save Options").content(contents).button("Back", showCharacterList).button("Load save", async () => {
+                        popupUtils.reset()
+                        let charData = await getCharacterData(name)
+                        kai_json_load(charData.data, false);
+                    }).button("Delete save", async () => {
+                        popupUtils.reset()
+                        msgboxYesNo("Are you sure you wish to delete?", "Character manager", async () => {
+                            allCharacterNames = allCharacterNames.filter(c => c.name !== name)
+                            await indexeddb_save(`character_${name}`)
+                            updateCharacterListFromAll()
+                        })
+                    }).button("Close", () => popupUtils.reset()).show();
+                }
+                else {
+                    popupUtils.reset()
+                }
+            }
+            getContainerForType(type).appendChild(charIcon)
+        }
+    }
+    popupUtils.reset().title(`Character List (${allCharacterNames.length})`)
+    containers.forEach(container => popupUtils.content(container))
+    popupUtils
+        .button("New character", () => { try { showCharacterCreator(); } catch (e) { console.error(e); } })
+        .button("Add data", () => {
+            popupUtils.reset()
+            promptUserForLocalFile(async (result) => {
+                uploadFileHandler(result)
+            }, [".png", ".webp", ".json"], true)
+        }).button("Add current save", () => {
+            popupUtils.reset()
+            inputBox("Enter a Filename", "Save File", "", "Input Filename", () => {
+                let userinput = getInputBoxValue();
+                if (userinput != null && userinput.trim() != "") {
+                    waitingToast.show()
+                    waitingToast.setText(`Loading data ${userinput}`)
+                    let data = generate_savefile(true, true, true);
+                    saveKLiteSaveToIndexDB(userinput, data);
+                }
+            }, false);
+        }).button("Delete all data", async () => {
+            popupUtils.reset()
+            msgboxYesNo("Are you sure you wish to delete?", "Character manager", async () => {
+                waitingToast.show()
+                waitingToast.setText(`Deleting all data`)
+                await Promise.all(allCharacterNames.map(elem => indexeddb_save(`character_${elem.name}`)))
+                allCharacterNames = []
+                await updateCharacterListFromAll()
+                waitingToast.hide()
+            })
+        })
+
+    if (is_using_kcpp_with_server_saving()) {
+        popupUtils.button("Overwrite server data", () => putAllCharacterManagerData()).button("Load from server", () => loadAllCharacterManagerData())
+    }
+    popupUtils.button("Close", () => popupUtils.reset()).show();
+}
+
+// Native character creator popup for esobold
+function showCharacterCreator() {
+    const form = document.createElement('div');
+    form.classList.add("characterCreatorGrid")
+
+    const makeLabel = (text) => {
+        const l = document.createElement('label');
+        l.innerText = text;
+        return l;
+    };
+    const makeInput = (type = 'text') => {
+        const i = document.createElement('input');
+        i.type = type;
+        i.classList.add('textbox');
+        return i;
+    };
+    const makeArea = () => {
+        const a = document.createElement('textarea');
+        a.classList.add('textbox');
+        a.rows = 4;
+        return a;
+    };
+    const addOption = (select, value, text) => {
+        const o = document.createElement('option');
+        o.value = value;
+        o.text = text;
+        select.appendChild(o);
+    };
+
+    const nameInp = makeInput();
+    const creatorInp = makeInput();
+    const versionInp = makeInput();
+    versionInp.placeholder = '1.0';
+    const tagsInp = makeInput();
+    tagsInp.placeholder = 'comma,separated,tags';
+    const personalityArea = makeArea();
+    const descriptionArea = makeArea();
+    const mesExampleArea = makeArea();
+    const firstMesArea = makeArea();
+    firstMesArea.rows = 3;
+    const altGreetingsArea = makeArea();
+    altGreetingsArea.placeholder = 'One greeting per line';
+    const creatorNotesArea = makeArea();
+    const systemPromptArea = makeArea();
+    const postHistoryArea = makeArea();
+
+    // World Info group selector
+    const wiGroupSelect = document.createElement('select');
+    wiGroupSelect.classList.add('textbox');
+    const wiCustomGroup = makeInput();
+    wiCustomGroup.placeholder = 'Or enter custom WI group (optional)';
+    addOption(wiGroupSelect, '', '— No WI group —');
+    try {
+        const potentialWIGroups = (current_wi || []).map(w => {
+            return (w?.wigroup || '').trim()
+        }).filter(x => x.length > 0);
+        const distinctWIGroups = [...new Set(potentialWIGroups)].sort();
+        distinctWIGroups.forEach(g => addOption(wiGroupSelect, g, g));
+    }
+    catch (e) {
+        handleError(e)
+    }
+
+    // Image upload and preview
+    let imageFile = null, imagePreview = document.createElement('img');
+    imagePreview.style.maxHeight = '120px';
+    imagePreview.style.borderRadius = '8px';
+    imagePreview.style.display = 'none';
+    const imageInp = makeInput('file');
+    imageInp.accept = 'image/png';
+    imageInp.onchange = () => {
+        const f = imageInp.files?.[0];
+        if (!f) {
+            return;
+        }
+        imageFile = f;
+        try {
+            const url = URL.createObjectURL(f);
+            imagePreview.src = url;
+            imagePreview.style.display = '';
+            // best-effort revoke after load
+            imagePreview.onload = () => {
+                try {
+                    URL.revokeObjectURL(url);
+                }
+                catch (e) {
+                    handleError(e)
+                }
+            };
+        }
+        catch (e) {
+            handleError(e)
+        }
+    };
+
+    // Layout: two columns
+    const col = () => {
+        const d = document.createElement('div');
+        d.style.display = 'flex';
+        d.style.flexDirection = 'column';
+        d.style.gap = '8px';
+        return d;
+    };
+    const leftCol = col();
+    const rightCol = col();
+    const add = (container, label, control, extra = null) => {
+        container.append(label, control);
+        if (extra) {
+            container.append(extra);
+        }
+    };
+
+    // Left (primary)
+    add(leftCol, makeLabel('Name'), nameInp);
+    add(leftCol, makeLabel('Creator'), creatorInp);
+    add(leftCol, makeLabel('Version'), versionInp);
+    add(leftCol, makeLabel('Tags'), tagsInp);
+    add(leftCol, makeLabel('Personality'), personalityArea);
+    add(leftCol, makeLabel('Memory / Description'), descriptionArea);
+    add(leftCol, makeLabel('First message'), firstMesArea);
+
+    // Right (secondary)
+    add(rightCol, makeLabel('Example dialogue'), mesExampleArea);
+    add(rightCol, makeLabel('Alternate greetings (one per line)'), altGreetingsArea);
+    add(rightCol, makeLabel('Creator notes'), creatorNotesArea);
+    add(rightCol, makeLabel('System prompt'), systemPromptArea);
+    add(rightCol, makeLabel('Post history instructions'), postHistoryArea);
+    add(rightCol, makeLabel('World Info group'), wiGroupSelect, wiCustomGroup);
+    add(rightCol, makeLabel('Avatar image'), imageInp, imagePreview);
+
+    form.append(leftCol, rightCol);
+
+    const doSave = async () => {
+        const name = (nameInp.value || '').trim();
+        if (!name) {
+            alert('Character must have a name.');
+            return;
+        }
+        if (!imageFile) {
+            alert('Please choose an avatar image.');
+            return;
+        }
+
+        // Confirm overwrite if needed
+        const exists = (allCharacterNames || []).some(c => c?.name === name);
+        if (exists && !confirm(`Character "${name}" exists. Overwrite?`)) {
+            return;
+        }
+
+        // Build Tavern v2-compatible inner data object (esobold stores inner fields)
+        const tags = (tagsInp.value || '')
+            .split(',')
+            .map(s => s.trim())
+            .filter(s => s.length > 0);
+        const altGreetings = (altGreetingsArea.value || '')
+            .split(/\r?\n/)
+            .map(s => s.trim())
+            .filter(s => s.length > 0);
+
+        const selectedGroup = (wiCustomGroup.value || '').trim() || wiGroupSelect.value;
+        let character_book = null;
+        if (selectedGroup) {
+            try {
+                const entries = (current_wi || []).filter(e => (e?.wigroup || '') === selectedGroup);
+                let id = 0, convertedEntries = entries.map(entry => {
+                    let convertedEntry = Object.assign(entry, {
+                        keys: entry?.key?.split(",").filter(k => k !== "") || [],
+                        secondary_keys: entry?.keysecondary?.split(",").filter(k => k !== "") || [],
+                        uid: id++
+                    });
+                    delete convertedEntry?.key;
+                    delete convertedEntry?.keysecondary;
+                    delete convertedEntry?.wigroup;
+                    return convertedEntry;
+                })
+                character_book = { name: selectedGroup, entries: convertedEntries };
+            }
+            catch (e) {
+                handleError(e)
+            }
+        }
+
+        const charInner = {
+            name,
+            description: descriptionArea.value || '',
+            personality: personalityArea.value || '',
+            mes_example: mesExampleArea.value || '',
+            first_mes: firstMesArea.value || '',
+            creator: creatorInp.value || '',
+            creator_notes: creatorNotesArea.value || '',
+            system_prompt: systemPromptArea.value || '',
+            post_history_instructions: postHistoryArea.value || '',
+            alternate_greetings: altGreetings,
+            character_book,
+            tags,
+            character_version: (versionInp.value || '1.0')
+        };
+
+        try {
+            waitingToast.setText(`Saving character ${name}`);
+            waitingToast.show();
+
+            // Thumbnail and full image
+            const thumbUrl = await generateThumbnail(imageFile, [256, 256]);
+
+            const pngBytes = await new Promise((resolve, reject) => {
+                const fr = new FileReader(), fileByteArray = [];
+                fr.onerror = reject;
+                fr.onloadend = (e) => {
+                    if (e.target.readyState == FileReader.DONE) {
+                        resolve(new Uint8Array(e.target.result))
+                    }
+                    reject()
+                }
+                fr.readAsArrayBuffer(imageFile);
+            });
+
+            const pngOut = tavernTool.embedIntoPng(pngBytes, charInner);
+            var text = '';
+            // Stack size limits apply, so does it in bulk but within reason
+            for (var i = 0; i < Math.ceil(pngOut.length / 32768.0); i++) {
+                text += String.fromCharCode.apply(null, pngOut.slice(i * 32768, Math.min((i + 1) * 32768, pngOut.length)))
+            }
+            let dataUrl = `data:image/png;base64,${btoa(text)}`
+
+            const toSave = { name, data: charInner, image: String(dataUrl) };
+            await indexeddb_save(`character_${name}`, JSON.stringify(toSave));
+
+            // Update list
+            allCharacterNames = (allCharacterNames || []).filter(c => c?.name !== name);
+            allCharacterNames.push({ name, thumbnail: thumbUrl, type: 'Character' });
+            await updateCharacterListFromAll();
+
+            waitingToast.hide();
+            popupUtils.reset();
+            showCharacterList();
+        }
+        catch (e) {
+            handleError(e);
+            waitingToast.hide();
+        }
+    };
+
+    popupUtils.reset()
+        .title('New Character')
+        .content(form)
+        .button('Back', showCharacterList)
+        .button('Save', doSave)
+        .button('Close', () => popupUtils.reset())
+        .show();
+}
+
+// Backwards-compat for existing button in scenarios
+function character_creator() {
+    try {
+        hide_popups();
+        showCharacterCreator();
+    }
+    catch (e) {
+        handleError(e);
+    }
+}
+
+window.extractExampleMessages = (messagesText) => {
+    return messagesText.split("<START>").filter(c => !!c).map(c => c.trim())
+}
+
+window.formatExampleMessages = (messageText) => {
+    return extractExampleMessages(messageText).map(c => `Example messages:\n\n${c}`).join("\n\n")
+}

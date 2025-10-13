@@ -1,0 +1,39 @@
+	/* Slightly odd but mostly fitting text formatting for server side scenarios */
+	.scenarioitem {
+	    text-wrap: auto;
+	    text-indent: 10px;
+	    max-height: 80px;
+	    max-width: 300px;
+	}
+
+	.scenarioTitle {
+	    background-color: grey;
+	    color: white;
+	    border-radius: 50px;
+	    padding: 0 5px 0 5px;
+	    opacity: 0.9;
+	    width: 80%;
+	    float: right;
+	}
+
+	#serverSavesPreviewClear {
+	    height: 20px;
+	    width: 20px;
+	    float: right;
+	    background: grey;
+	    border-radius: 100%;
+	    font-size: var(--theme_font_size_small);
+	    margin-right: 10px;
+	}
+
+	.scenariosearchbox1 {
+	    width: calc(100% - 180px);
+	}
+
+	.scenariosearchbox2 {
+	    width: 174px;
+	}
+
+	.scenariogrid {
+	    grid-auto-rows: unset !important;
+	}
