@@ -4183,6 +4183,29 @@ Change Mode<br>
                         embedded_kailite = embedded_kailite.encode()
 
                 response_body = embedded_kailite
+        
+        elif self.path.startswith(('/static/')): # Resources
+            content_type = 'text/html'
+            embddir = os.path.join(os.path.abspath(os.path.dirname(os.path.realpath(__file__))),"embd_res")
+            resPath = os.path.normpath(embddir + self.path.replace("/static", ""))
+            isInResDirectory = os.path.commonpath([embddir, resPath]) and os.path.exists(resPath)
+            if not isInResDirectory:
+                response_body = (f"Resource not found").encode()
+            else:
+                try:
+                    import mimetypes
+                    with open(resPath, mode='rb') as f:
+                        resData = f.read()
+                        # resData = resData.decode("UTF-8","ignore")
+                        # response_body = resData.encode()
+                        response_body = resData
+                        try:
+                            content_type = mimetypes.guess_type(resPath)[0]
+                        except Exception as e:
+                            utfprint("Error getting resource MIME type, defaulting to HTML: " + str(e))
+                except Exception as e:
+                    utfprint("Error getting resource: " + str(e))
+                    response_body = (f"Resource not found").encode()
 
         elif self.path in ["/noscript", "/noscript?"] or self.path.startswith(('/noscript?','noscript?')): #it's possible for the root url to have ?params without /
             self.noscript_webui()

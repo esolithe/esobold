@@ -1,0 +1,103 @@
+	.containAndScaleImage {
+	    aspect-ratio: 1;
+	    background-clip: content-box;
+	    background-position: 50% 50%;
+	    background-size: 100% 100%;
+	    background-origin: content-box;
+	    background-repeat: no-repeat;
+	}
+
+	#popupContainer>.nspopup {
+	    max-height: 80%;
+	    max-width: 80%;
+	}
+
+	#popupContainer .popuptitlebar {
+	    height: 40px;
+	}
+
+	#popupContainer .popupContent {
+	    overflow-y: auto;
+	    overflow-x: hidden;
+	    height: calc(100% - 40px);
+	}
+
+	#popupContainer .popupfooter {
+	    display: block;
+	}
+
+	#popupContainer .popupfooter button {
+	    width: unset;
+	}
+
+	/* Ensure form fields are readable inside popups */
+	#popupContainer .popupContent input[type="text"],
+	#popupContainer .popupContent input[type="file"],
+	#popupContainer .popupContent textarea,
+	#popupContainer .popupContent select {
+	    background-color: var(--theme_color_input_bg);
+	    border-color: var(--theme_color_border);
+	    color: var(--theme_color_input_text);
+	    border: 1px solid var(--colgrey, #ccc);
+	    border-radius: 6px;
+	    padding: 6px 8px;
+	    box-sizing: border-box;
+	}
+
+	#popupContainer .popupContent input::placeholder,
+	#popupContainer .popupContent textarea::placeholder {
+	    color: #666;
+	}
+
+	.containAndScaleImage.tile {
+	    height: 128px;
+	    aspect-ratio: 1;
+	    border-radius: 25px;
+	    text-align: center;
+	}
+
+	.containAndScaleImage.tile>b {
+	    text-shadow: 2px 2px 5px #ffffff;
+	    color: white;
+	    background-color: black;
+	    border-radius: 4px;
+	    font-weight: bold;
+	    padding: 2px;
+	}
+
+	.fillContainer {
+	    height: 100%;
+	    width: 100%;
+	}
+
+	.autoGrid {
+	    display: grid;
+	    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+	    padding: 12px;
+	    gap: 12px;
+	}
+
+	.autoGrid>* {
+	    display: block;
+	}
+
+	.characterCreatorGrid {
+	    color: white;
+	    padding: 10px;
+	    display: grid;
+	    grid-template-columns: 1fr 1fr;
+	    gap: 8px;
+	    min-width: 600px;
+	}
+
+	@media (max-width: 800px) {
+	    .characterCreatorGrid {
+	        grid-template-columns: 1fr;
+	    }
+	}
+
+	/* Fix for weird sizing issue in sidebars */
+	#settingscontainer.side.popupcontainer,
+	.popupcontainer.sideright {
+	    justify-content: unset;
+	}
