@@ -1,25 +1,105 @@
+let updateMetadata = async () => {
+    
+    await fetch(`${custom_kobold_endpoint}/api/data/metadata`, {
+        method: "POST",
+        body: "{}",
+        headers: getAuthHeaders()
+    })
+        .catch(e => {
+            handleError(e)
+        })
+
+}
+
 let putAllCharacterManagerData = () => {
     popupUtils.reset()
 
     msgboxYesNo("Are you sure you wish to overwrite server data?", "Character manager", () => {
-        inputBox("Save password", "Please input save password (or leave blank for no password):", "", "(Input Save Password)", async () => {
-            let managerSaves = Object.entries(await getServerSaves()).filter(entry => {
-                [key, value] = entry;
-                return value.typeName === "Manager"
-            })
+        promptForAdminPassword(() => {
+            inputBox("Save password", "Please input save password (or leave blank for no password):", "", "(Input Save Password)", async () => {
+                await updateMetadata()
 
-            await Promise.all(managerSaves.map(async entry => {
-                let [key, value] = entry
-                await fetch(`${custom_kobold_endpoint}/api/data/delete`, {
-                    method: "POST",
-                    headers: getAuthHeaders(),
-                    body: JSON.stringify({ filename: value.name })
+                let managerSaves = Object.entries(await getServerSaves()).filter(entry => {
+                    [key, value] = entry;
+                    return value.typeName === "Manager"
                 })
-                    .then(resp => resp.json())
-                    .catch(e => {
-                        handleError(e)
+
+                await Promise.all(managerSaves.map(async entry => {
+                    let [key, value] = entry
+                    await fetch(`${custom_kobold_endpoint}/api/data/delete`, {
+                        method: "POST",
+                        headers: getAuthHeaders(),
+                        body: JSON.stringify({ filename: value.name })
                     })
-            }))
+                        .then(resp => resp.json())
+                        .catch(e => {
+                            handleError(e)
+                        })
+                }))
+
+                let userinput = getInputBoxValue(), password = "";
+                userinput = userinput.trim();
+                if (userinput != null && userinput != "") {
+                    password = userinput
+                }
+
+                let isEncrypted = false;
+                if (password.trim() !== "") {
+                    password = password.trim()
+                    isEncrypted = true
+                }
+                waitingToast.show()
+                let allTasks = await Promise.all(allCharacterNames.map(async c => {
+                    let { name, type, thumbnail } = c, data = await getCharacterData(name);
+                    waitingToast.setText(`Sending data ${name}`)
+                    if (thumbnail !== undefined) {
+                        data.thumbnail = thumbnail
+                    }
+                    if (type !== undefined) {
+                        data.type = type
+                    }
+                    data = JSON.stringify(data)
+                    if (isEncrypted) {
+                        data = encrypt(password, data)
+                    }
+
+                    let bodyData = {
+                        filename: name.trim(),
+                        data: data,
+                        type: "Save",
+                        isEncrypted: isEncrypted ? "1" : "0",
+                        group: null,
+                        type: "Manager",
+                        thumbnail: null
+                    }
+                    await fetch(`${custom_kobold_endpoint}/api/data/put`, {
+                        method: "POST",
+                        body: JSON.stringify(bodyData),
+                        headers: getAuthHeaders()
+                    })
+                        .then(resp => resp.json())
+                        .catch(e => {
+                            handleError(e)
+                        })
+
+                    return true
+
+                    // decrypt("test", (await Promise.all(putAllCharacterManagerData()))[0].data)
+                    // JSON.parse(decrypt("test", (await Promise.all(putAllCharacterManagerData()))[0].data))
+                }))
+                waitingToast.hide()
+            }, false, false, true);
+        })
+    })
+}
+
+let loadAllCharacterManagerData = () => {
+    popupUtils.reset()
+
+    promptForAdminPassword(() => {
+        inputBox("Save password", "Please input save password (or leave blank for no password):", "", "(Input Save Password)", async () => {
+
+            await updateMetadata()
 
             let userinput = getInputBoxValue(), password = "";
             userinput = userinput.trim();
@@ -32,103 +112,46 @@ let putAllCharacterManagerData = () => {
                 password = password.trim()
                 isEncrypted = true
             }
-            waitingToast.show()
-            let allTasks = await Promise.all(allCharacterNames.map(async c => {
-                let { name, type, thumbnail } = c, data = await getCharacterData(name);
-                waitingToast.setText(`Sending data ${name}`)
-                if (thumbnail !== undefined) {
-                    data.thumbnail = thumbnail
-                }
-                if (type !== undefined) {
-                    data.type = type
-                }
-                data = JSON.stringify(data)
-                if (isEncrypted) {
-                    data = encrypt(password, data)
-                }
+            let managerSaves = Object.entries(await getServerSaves()).filter(entry => {
+                [key, value] = entry;
+                return value.typeName === "Manager"
+            })
 
-                let bodyData = {
-                    filename: name.trim(),
-                    data: data,
-                    type: "Save",
-                    isEncrypted: isEncrypted ? "1" : "0",
-                    group: null,
-                    type: "Manager",
-                    thumbnail: null
-                }
-                await fetch(`${custom_kobold_endpoint}/api/data/put`, {
+            waitingToast.show()
+            await Promise.all(managerSaves.map(async entry => {
+                let [key, value] = entry
+                waitingToast.setText(`Receiving data ${value.name}`)
+                await fetch(`${custom_kobold_endpoint}/api/data/get`, {
                     method: "POST",
-                    body: JSON.stringify(bodyData),
-                    headers: getAuthHeaders()
+                    headers: getAuthHeaders(),
+                    body: JSON.stringify({ filename: value.name })
                 })
                     .then(resp => resp.json())
+                    .then(saveData => {
+                        let managerData = isEncrypted ? decrypt(password, saveData) : saveData;
+                        managerData = JSON.parse(managerData)
+                        let { type, thumbnail } = managerData
+                        delete managerData["type"]
+                        delete managerData["thumbnail"]
+                        return indexeddb_save(`character_${managerData.name}`, JSON.stringify(managerData)).then(() => {
+                            let charOverview = { name: managerData.name, type: type }
+                            if (thumbnail !== undefined) {
+                                charOverview.thumbnail = thumbnail
+                            }
+                            allCharacterNames = allCharacterNames.filter(c => c.name !== managerData.name)
+                            allCharacterNames.push(charOverview);
+                            updateCharacterListFromAllDe();
+                        })
+                    })
                     .catch(e => {
                         handleError(e)
                     })
 
                 return true
-
-                // decrypt("test", (await Promise.all(putAllCharacterManagerData()))[0].data)
-                // JSON.parse(decrypt("test", (await Promise.all(putAllCharacterManagerData()))[0].data))
             }))
             waitingToast.hide()
         }, false, false, true);
     })
-}
-
-let loadAllCharacterManagerData = () => {
-    popupUtils.reset()
-    inputBox("Save password", "Please input save password (or leave blank for no password):", "", "(Input Save Password)", async () => {
-        let userinput = getInputBoxValue(), password = "";
-        userinput = userinput.trim();
-        if (userinput != null && userinput != "") {
-            password = userinput
-        }
-
-        let isEncrypted = false;
-        if (password.trim() !== "") {
-            password = password.trim()
-            isEncrypted = true
-        }
-        let managerSaves = Object.entries(await getServerSaves()).filter(entry => {
-            [key, value] = entry;
-            return value.typeName === "Manager"
-        })
-
-        waitingToast.show()
-        await Promise.all(managerSaves.map(async entry => {
-            let [key, value] = entry
-            waitingToast.setText(`Receiving data ${value.name}`)
-            await fetch(`${custom_kobold_endpoint}/api/data/get`, {
-                method: "POST",
-                headers: getAuthHeaders(),
-                body: JSON.stringify({ filename: value.name })
-            })
-                .then(resp => resp.json())
-                .then(saveData => {
-                    let managerData = isEncrypted ? decrypt(password, saveData) : saveData;
-                    managerData = JSON.parse(managerData)
-                    let { type, thumbnail } = managerData
-                    delete managerData["type"]
-                    delete managerData["thumbnail"]
-                    return indexeddb_save(`character_${managerData.name}`, JSON.stringify(managerData)).then(() => {
-                        let charOverview = { name: managerData.name, type: type }
-                        if (thumbnail !== undefined) {
-                            charOverview.thumbnail = thumbnail
-                        }
-                        allCharacterNames = allCharacterNames.filter(c => c.name !== managerData.name)
-                        allCharacterNames.push(charOverview);
-                        updateCharacterListFromAllDe();
-                    })
-                })
-                .catch(e => {
-                    handleError(e)
-                })
-
-            return true
-        }))
-        waitingToast.hide()
-    }, false, false, true);
 }
 
 let maxLengthForSection = 500, halfMaxLengthForSection = Math.floor(maxLengthForSection / 2);
