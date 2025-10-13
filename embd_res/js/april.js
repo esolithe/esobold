@@ -3,10 +3,10 @@ let facts = ["Tunnel Networks: Kobolds live in sprawling tunnel networks. Cyberp
 
 document.getElementById("btnsend").onmouseover = () => {
     document.getElementById("input_text").placeholder = `Enter text here\nOr enjoy this fact: ${getRandomElemFromArray(facts)}`;
-    document.getElementById("btnsend").style.backgroundImage = `url("${getRandomElemFromArray(icons)}")`;
-    document.getElementById("btnsend").style.backgroundSize = "contain"
-    document.getElementById("btnsend").style.backgroundPosition = "center"
-    document.getElementById("btnsend").style.backgroundRepeat = "no-repeat"
+    // document.getElementById("btnsend").style.backgroundImage = `url("${getRandomElemFromArray(icons)}")`;
+    // document.getElementById("btnsend").style.backgroundSize = "contain"
+    // document.getElementById("btnsend").style.backgroundPosition = "center"
+    // document.getElementById("btnsend").style.backgroundRepeat = "no-repeat"
 }
 
 window.addEventListener('load', () => {
