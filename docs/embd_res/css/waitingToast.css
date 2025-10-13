@@ -1,0 +1,23 @@
+div.waitingToast {
+    display: flex;
+    background-color: #4787be;
+    border: solid red 1px;
+    border-radius: 20px;
+    position: absolute;
+    bottom: 15%;
+    right: 5%;
+    padding-right: 20px;
+}
+
+div.waitingIcon {
+    height: 50px;
+    width: 50px;
+    position: unset;
+    margin: 10px;
+}
+
+div.waitingToastText {
+    align-content: center;
+    word-break: break-all;
+    max-width: 300px;
+}
