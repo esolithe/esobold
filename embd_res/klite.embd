@@ -4868,6 +4868,7 @@ Current version indicated by LITEVER below.
 			localsettings.customThemeColours = {};
 			autosave();
 			window.history.replaceState(null, null, window.location.pathname);
+			location.reload();
 		}
 
 		//load custom mods
@@ -15531,7 +15532,8 @@ Current version indicated by LITEVER below.
 			indexeddb_save("savedcustomcss", "");
 			let styleElement = document.getElementById('custom_css');
 			styleElement.innerHTML = "";
-			show_welcome_panel();
+			location.reload();
+			// show_welcome_panel();
 		},null);
 
 	}
