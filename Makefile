@@ -191,7 +191,8 @@ endif
 endif
 
 # it is recommended to use the CMAKE file to build for cublas if you can - will likely work better
-OBJS_CUDA_TEMP_INST = $(patsubst %.cu,%.o,$(wildcard ggml/src/ggml-cuda/template-instances/fattn-mma*.cu))
+OBJS_CUDA_TEMP_INST = $(patsubst %.cu,%.o,$(wildcard ggml/src/ggml-cuda/template-instances/fattn-tile*.cu))
+OBJS_CUDA_TEMP_INST += $(patsubst %.cu,%.o,$(wildcard ggml/src/ggml-cuda/template-instances/fattn-mma*.cu))
 OBJS_CUDA_TEMP_INST += $(patsubst %.cu,%.o,$(wildcard ggml/src/ggml-cuda/template-instances/mmq*.cu))
 OBJS_CUDA_TEMP_INST += $(patsubst %.cu,%.o,$(wildcard ggml/src/ggml-cuda/template-instances/mmf*.cu))
 OBJS_CUDA_TEMP_INST += $(patsubst %.cu,%.o,$(wildcard ggml/src/ggml-cuda/template-instances/fattn-vec*q4_0-q4_0.cu))
@@ -759,6 +760,8 @@ clean:
 # useful tools
 main: tools/main/main.cpp common/arg.cpp build-info.h ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-unops.o llama.o console.o llavaclip_default.o llava.o ggml-backend_default.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
 	$(CXX) $(CXXFLAGS) $(filter-out %.h,$^) -o $@ $(LDFLAGS)
+mainvk: tools/main/main.cpp common/arg.cpp build-info.h ggml_v4_vulkan.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-unops.o llama.o console.o llavaclip_vulkan.o llava.o ggml-backend_vulkan.o ggml-backend-reg_vulkan.o ggml-vulkan.o ggml-vulkan-shaders.o ggml-repack.o $(OBJS_FULL) $(OBJS) lib/vulkan-1.lib
+	$(CXX) $(CXXFLAGS) -DGGML_USE_VULKAN -DSD_USE_VULKAN $(filter-out %.h,$^) -o $@ $(LDFLAGS)
 sdmain: otherarch/sdcpp/util.cpp otherarch/sdcpp/main.cpp otherarch/sdcpp/stable-diffusion.cpp otherarch/sdcpp/upscaler.cpp otherarch/sdcpp/model.cpp otherarch/sdcpp/tokenize_util.cpp otherarch/sdcpp/thirdparty/zip.c build-info.h ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-unops.o llama.o console.o ggml-backend_default.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
 	$(CXX) $(CXXFLAGS) $(filter-out %.h,$^) -DKCPP_BAKE_SD_VOCAB -o $@ $(LDFLAGS)
 whispermain: otherarch/whispercpp/main.cpp otherarch/whispercpp/whisper.cpp build-info.h ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-unops.o llama.o console.o ggml-backend_default.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
@@ -769,10 +772,10 @@ gguf-split: tools/gguf-split/gguf-split.cpp ggml.o ggml-cpu.o ggml-ops.o ggml-ve
 	$(CXX) $(CXXFLAGS) $(filter-out %.h,$^) -o $@ $(LDFLAGS)
 mtmd-cli: tools/mtmd/mtmd-cli.cpp tools/mtmd/mtmd.cpp tools/mtmd/mtmd-helper.cpp tools/mtmd/clip.cpp common/arg.cpp build-info.h ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-unops.o llama.o console.o ggml-backend_default.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
 	$(CXX) $(CXXFLAGS) $(filter-out %.h,$^) -o $@ $(LDFLAGS)
-mainvk: tools/main/main.cpp common/arg.cpp build-info.h ggml_v4_vulkan.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-unops.o llama.o console.o llavaclip_vulkan.o llava.o ggml-backend_vulkan.o ggml-backend-reg_vulkan.o ggml-vulkan.o ggml-vulkan-shaders.o ggml-repack.o $(OBJS_FULL) $(OBJS) lib/vulkan-1.lib
-	$(CXX) $(CXXFLAGS) -DGGML_USE_VULKAN -DSD_USE_VULKAN $(filter-out %.h,$^) -o $@ $(LDFLAGS)
-embedding: examples/embedding/embedding.cpp common/arg.cpp build-info.h ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-unops.o llama.o console.o llavaclip_default.o llava.o ggml-backend_default.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
+embedding: examples/embedding/embedding.cpp common/arg.cpp src/llama-cparams.cpp build-info.h ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-unops.o llama.o console.o llavaclip_default.o llava.o ggml-backend_default.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
 	$(CXX) $(CXXFLAGS) $(filter-out %.h,$^) -o $@ $(LDFLAGS)
+embeddingvk: examples/embedding/embedding.cpp common/arg.cpp src/llama-cparams.cpp build-info.h ggml_v4_vulkan.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-unops.o llama.o console.o llavaclip_vulkan.o llava.o ggml-backend_vulkan.o ggml-backend-reg_vulkan.o ggml-vulkan.o ggml-vulkan-shaders.o ggml-repack.o $(OBJS_FULL) $(OBJS) lib/vulkan-1.lib
+	$(CXX) $(CXXFLAGS) -DGGML_USE_VULKAN -DSD_USE_VULKAN $(filter-out %.h,$^) -o $@ $(LDFLAGS)
 ttscppmain: otherarch/ttscpp/cli/cli.cpp otherarch/ttscpp/cli/playback.cpp otherarch/ttscpp/cli/playback.h otherarch/ttscpp/cli/write_file.cpp otherarch/ttscpp/cli/write_file.h otherarch/ttscpp/cli/vad.cpp otherarch/ttscpp/cli/vad.h otherarch/ttscpp/src/ttscpp.cpp otherarch/ttscpp/src/ttstokenizer.cpp otherarch/ttscpp/src/ttssampler.cpp otherarch/ttscpp/src/parler_model.cpp otherarch/ttscpp/src/dac_model.cpp otherarch/ttscpp/src/ttsutil.cpp otherarch/ttscpp/src/ttsargs.cpp otherarch/ttscpp/src/ttst5_encoder_model.cpp otherarch/ttscpp/src/phonemizer.cpp otherarch/ttscpp/src/tts_model.cpp otherarch/ttscpp/src/kokoro_model.cpp otherarch/ttscpp/src/dia_model.cpp otherarch/ttscpp/src/orpheus_model.cpp otherarch/ttscpp/src/snac_model.cpp otherarch/ttscpp/src/general_neural_audio_codec.cpp ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-unops.o llama.o console.o llavaclip_default.o llava.o ggml-backend_default.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
 	$(CXX) $(CXXFLAGS) $(filter-out %.h,$^) -o $@ $(LDFLAGS)
 

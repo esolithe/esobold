@@ -69,7 +69,7 @@ dry_seq_break_max = 128
 extra_images_max = 4
 
 # global vars
-KcppVersion = "1.100"
+KcppVersion = "1.100.1"
 showdebug = True
 kcpp_instance = None #global running instance
 global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None}
@@ -1944,7 +1944,7 @@ def sd_generate(genparams):
     inputs.sample_steps = sample_steps
     inputs.width = width
     inputs.height = height
-    inputs.seed = seed
+    inputs.seed = ((seed + 2**31) % 2**32) - 2**31
     inputs.sample_method = sample_method.encode("UTF-8")
     inputs.scheduler = scheduler.encode("UTF-8")
     inputs.clip_skip = clip_skip
@@ -4322,7 +4322,7 @@ Change Mode<br>
             if friendlysdmodelname=="inactive" or fullsdmodelpath=="":
                 response_body = (json.dumps([]).encode())
             else:
-                response_body = (json.dumps([{"name":"Euler","aliases":["k_euler"],"options":{}},{"name":"Euler a","aliases":["k_euler_a","k_euler_ancestral"],"options":{}},{"name":"Heun","aliases":["k_heun"],"options":{}},{"name":"DPM2","aliases":["k_dpm_2"],"options":{}},{"name":"DPM++ 2M","aliases":["k_dpmpp_2m"],"options":{}},{"name":"DDIM","aliases":["ddim"],"options":{}},{"name":"LCM","aliases":["k_lcm"],"options":{}}]).encode())
+                response_body = (json.dumps([{"name":"Euler","aliases":["k_euler"],"options":{}},{"name":"Euler a","aliases":["k_euler_a","k_euler_ancestral"],"options":{}},{"name":"Heun","aliases":["k_heun"],"options":{}},{"name":"DPM2","aliases":["k_dpm_2"],"options":{}},{"name":"DPM++ 2M","aliases":["k_dpmpp_2m"],"options":{}},{"name":"DDIM","aliases":["ddim"],"options":{}},{"name":"LCM","aliases":["k_lcm"],"options":{}},{"name":"Default","aliases":["default"],"options":{}}]).encode())
         elif self.path.endswith('/sdapi/v1/latent-upscale-modes'):
            response_body = (json.dumps([]).encode())
         elif self.path.endswith('/sdapi/v1/upscalers'):
@@ -6477,7 +6477,7 @@ def show_gui():
     makelabelentry(model_tab, "Layers: ", draftgpulayers_var, 13, 50,padx=320,singleline=True,tooltip="How many layers to GPU offload for the draft model", labelpadx=270)
     makefileentry(model_tab, "Embeds Model:", "Select Embeddings Model File", embeddings_model_var, 15, width=130,singlerow=True, filetypes=[("*.gguf","*.gguf")], tooltiptxt="Select an embeddings GGUF model that can be used to generate embedding vectors.")
     makelabelentry(model_tab, "ECtx: ", embeddings_ctx_var, 15, 50,padx=335,singleline=True,tooltip="If set above 0, limits max context for embedding model to save memory.", labelpadx=302)
-    makecheckbox(model_tab, "GPU", embeddings_gpu_var, 15, 0,padx=390,tooltiptxt="Uses the GPU for TTS.")
+    makecheckbox(model_tab, "GPU", embeddings_gpu_var, 15, 0,padx=390,tooltiptxt="Uses the GPU for Embeddings.")
     embeddings_gpu_var.trace_add("write", gui_changed_modelfile)
     makefileentry(model_tab, "Preload Story:", "Select Preloaded Story File", preloadstory_var, 17,width=280,singlerow=True,tooltiptxt="Select an optional KoboldAI JSON savefile \nto be served on launch to any client.")
     makefileentry(model_tab, "SaveData File:", "Select or Create New SaveData Database File", savedatafile_var, 19,width=280,filetypes=[("KoboldCpp SaveDB", "*.jsondb")],singlerow=True,dialog_type=1,tooltiptxt="Selecting a file will allow data to be loaded and saved persistently to this KoboldCpp server remotely. File is created if it does not exist.")
