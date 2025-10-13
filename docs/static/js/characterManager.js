@@ -413,7 +413,7 @@ let showCharacterList = async () => {
                     let contents = document.createElement("span");
                     try {
                         let data = await getCharacterData(name), { AI_portrait } = data;
-                        let { memory, prompt, tempmemory, worldinfo } = (data)?.data;
+                        let { memory, prompt, tempmemory, worldinfo } = (data)?.data, { chatname, chatopponent } = (data)?.data?.savedsettings;
                         contents = createDetailsContent(name);
                         if (!!AI_portrait) {
                             let imageContainer = document.createElement("span"), imageElem = document.createElement("img");
@@ -423,6 +423,13 @@ let showCharacterList = async () => {
                             imageContainer.appendChild(imageElem);
                             contents.appendChild(imageContainer);
                         }
+                        if (!!chatname) {
+                            createSection(contents, "User", chatname);
+                        }
+                        if (!!chatopponent) {
+                            createSection(contents, "Characters", chatopponent.split("||$||"));
+                        }
+                        createSection(contents, "Characters", memory);
                         createSection(contents, "Memory", memory);
                         createSection(contents, "Temporary memory", tempmemory);
                         createSection(contents, "First message", prompt);
@@ -438,6 +445,12 @@ let showCharacterList = async () => {
                         popupUtils.reset()
                         let charData = await getCharacterData(name)
                         kai_json_load(charData.data, false);
+                    }).button("Overwrite save", async () => {
+                        popupUtils.reset()
+                        waitingToast.show()
+                        waitingToast.setText(`Overwriting data ${name}`)
+                        let data = generate_savefile(true, true, true);
+                        saveKLiteSaveToIndexDB(name, data);
                     }).button("Delete save", async () => {
                         popupUtils.reset()
                         msgboxYesNo("Are you sure you wish to delete?", "Character manager", async () => {
@@ -469,7 +482,7 @@ let showCharacterList = async () => {
                 let userinput = getInputBoxValue();
                 if (userinput != null && userinput.trim() != "") {
                     waitingToast.show()
-                    waitingToast.setText(`Loading data ${userinput}`)
+                    waitingToast.setText(`Saving data ${userinput}`)
                     let data = generate_savefile(true, true, true);
                     saveKLiteSaveToIndexDB(userinput, data);
                 }
