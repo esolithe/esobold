@@ -113,7 +113,7 @@ Current version indicated by LITEVER below.
 		--theme_font_size_small: 9pt;
 		--theme_font_size_medium: 10pt;
 		--theme_font_size_large: 11pt;
-		--theme_font_size_content: 10pt;
+		--theme_font_size_content: 12pt;
 	}
 
 	body.connected.corpoui .topmenu {
