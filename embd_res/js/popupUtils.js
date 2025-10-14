@@ -5,6 +5,7 @@ class PopupUtils {
     titleElem
     contentElem
     buttonsElem
+    useMobileMenu = false
     createPopup() {
         let popupElem = document.createElement("div");
         popupElem.classList.add("popupcontainer", "flex", "hidden");
@@ -18,7 +19,6 @@ class PopupUtils {
 
 				</div>
 				<div class="popupfooter">
-					
 				</div>
 			</div>`
         document.body.appendChild(popupElem)
@@ -57,20 +57,52 @@ class PopupUtils {
     }
 
     reset() {
+        this.useMobileMenu = false
         document.getElementById("popupContainer")?.remove()
         this.createPopup()
-        this.popupElem.classList.add("hidden");
+        this.popupElem.classList.add("hidden")
         return this;
     }
 
     show() {
         this.popupElem.classList.remove("hidden")
+        
+        if (this.useMobileMenu)
+        {
+            this.popupElem.classList.add("mobileMenu")
+
+            let navToggle = this._createButtonForPopup("", () => {
+                this.popupElem.classList.toggle("expanded")
+                this.autoSize()
+            })
+            navToggle.classList.add("navtoggler")
+            let createLineForNav = () => {
+                let span = document.createElement("span")
+                span.classList.add("navbar-button-bar")
+                return span
+            }
+            navToggle.append(createLineForNav(), createLineForNav(), createLineForNav())
+            this.buttonsElem.append(navToggle)
+        }
         this.autoSize()
         return this;
     }
 
     autoSize() {
-        this.contentElem.style.height = `${this.popupInternalDiv.offsetHeight - this.titleBarElem.offsetHeight - this.buttonsElem.offsetHeight}px`
+        if (document.body.offsetWidth > 800)
+        {
+            this.popupElem.classList.remove("expanded")
+        }
+        if (this.useMobileMenu && this.popupElem.classList.contains("expanded"))
+        {
+            this.contentElem.style.height = "0px";
+            this.buttonsElem.style.height = `${this.popupInternalDiv.offsetHeight - this.titleBarElem.offsetHeight}px`;
+        }
+        else 
+        {
+            this.buttonsElem.style.height = `unset`;
+            this.contentElem.style.height = `${this.popupInternalDiv.offsetHeight - this.titleBarElem.offsetHeight - this.buttonsElem.offsetHeight}px`
+        }
     }
 
     title(title) {
@@ -117,13 +149,18 @@ class PopupUtils {
         scrollUp.classList.add("scrollToButtons")
         this.popupInternalDiv.prepend(scrollDown, scrollUp)
     }
+
+    setMobileMenu(useMobileMenu) {
+        this.useMobileMenu = useMobileMenu
+        return this;
+    }
 }
 
 window.addEventListener("load", () => {
     window.popupUtils = new PopupUtils()
 })
 
-let autoSizeDe = debounce(() => popupUtils.autoSize(), 100);
+let autoSizeDe = debounce(() => popupUtils.autoSize(), 50);
 
 window.addEventListener("resize", () => {
     autoSizeDe()
