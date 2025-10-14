@@ -18,7 +18,18 @@ display_settings = () => {
     document.getElementById("worldTreeDepth").value = localsettings.worldTreeDepth;
     document.getElementById("worldTreeShowAll").checked = localsettings.worldTreeShowAll;
     document.getElementById("useNewEditor").checked = localsettings.useNewEditor;
+    document.getElementById("legacySaveMechanisms").checked = localsettings.legacySaveMechanisms;
     document.getElementById("fullScreenEditorForInputs").checked = localsettings.fullScreenEditorForInputs;
+}
+
+updateLegacySaveButtonState = () => {
+    let legacySaveButtons = [...document.querySelectorAll("#topbtn_save_load, #topbtn_server_saves")]
+    if (localsettings.legacySaveMechanisms) {
+        legacySaveButtons.forEach(elem => elem.classList.remove("hidden"));
+    }
+    else {
+        legacySaveButtons.forEach(elem => elem.classList.add("hidden"));
+    }
 }
 
 confirm_settings = () => {
@@ -34,9 +45,11 @@ confirm_settings = () => {
     localsettings.worldTreeDepth = document.getElementById("worldTreeDepth").value;
     localsettings.worldTreeShowAll = (document.getElementById("worldTreeShowAll").checked ? true : false);
     localsettings.useNewEditor = (document.getElementById("useNewEditor").checked ? true : false);
+    localsettings.legacySaveMechanisms = (document.getElementById("legacySaveMechanisms").checked ? true : false);
     localsettings.fullScreenEditorForInputs = (document.getElementById("fullScreenEditorForInputs").checked ? true : false);
     updateEditorState();
-    originalConfirmSettings()
+    originalConfirmSettings();
+    updateLegacySaveButtonState();
 }
 
 window.addEventListener('load', () => {
@@ -79,6 +92,9 @@ window.addEventListener('load', () => {
     if (localsettings?.fullScreenEditorForInputs == undefined) {
         localsettings.fullScreenEditorForInputs = true
     }
+    if (localsettings?.legacySaveMechanisms == undefined) {
+        localsettings.legacySaveMechanisms = false
+    }    
     if (localsettings?.customThemeColours == undefined) {
         localsettings.customThemeColours = {}
     }
@@ -230,6 +246,9 @@ window.addEventListener('load', () => {
     lastSettingContainer.append(settingLabelElem)
 
     settingLabelElem = createSettingElemBool("fullScreenEditorForInputs", "Full screen editor for inputs", "Adds buttons to open a full screen editor for inputs (experimental)")
+    lastSettingContainer.append(settingLabelElem)
+
+    settingLabelElem = createSettingElemBool("legacySaveMechanisms", "Save options (legacy)", "Shows buttons for saving to slots and server using the non-data manager UI (legacy)")
     lastSettingContainer.append(settingLabelElem)
 
     settingLabelElem = createSettingElemButton("customThemeColours", "Modify theme colours", "Allows modification of the colours used in the default theme", showThemePopup)
