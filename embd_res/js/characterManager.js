@@ -415,7 +415,7 @@ let showCharacterList = async () => {
         label.textContent = "Search"
         label.classList.add("justifyleft", "settingsmall")
         inputContainer.classList.add("justifyleft", "settingsmall")
-        input.classList.add("settinglabel")
+        input.classList.add("settinglabel", "fullScreenTextEditExclude")
         input.title = "Search"
         input.placeholder = "Search"
         input.type = "text"
