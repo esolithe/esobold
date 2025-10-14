@@ -1,5 +1,5 @@
 window.addEventListener('load', () => {
-    let topButton = `<li class="nav-item" id="topbtn_remote_mods">
+    let topButton = `<li class="nav-item hidden" id="topbtn_remote_mods">
 				<a class="nav-link mainnav" href="#" onclick="closeTopNav(); modManager.showModListWarning();" tabindex="0">Third party mods</a>
 			</li>`
     topButton += `<li class="nav-item" id="topbtn_server_saves">

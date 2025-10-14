@@ -767,6 +767,10 @@ let showCharacterList = async () => {
             popupUtils.reset()
             share_story_button()
         })
+        .button("Mods", () => {
+            popupUtils.reset()
+            modManager.showModListWarning()
+        })
         
 
     popupUtils.buttonGroup("Bulk").button("Migrate old data", async () => {
@@ -791,7 +795,7 @@ let showCharacterList = async () => {
         })
 
     if (is_using_kcpp_with_server_saving()) {
-        popupUtils.buttonGroup("Server")
+        popupUtils.buttonGroup("Esobold Server")
         .button("Overwrite", () => putAllCharacterManagerData())
         .button("Load", () => loadAllCharacterManagerData())
         .button("Legacy", () => {
