@@ -185,6 +185,7 @@ let showCharacterList = async () => {
         containers.push(container)
 
         let charIcon = createIcon(containerName, "var(--img_load)")
+        charIcon.classList.add("searchExclude")
         container.appendChild(charIcon);
         return container
     }
@@ -266,6 +267,7 @@ let showCharacterList = async () => {
 
 
     let dragIcon = createIcon("Drag characters, saves, lorebooks, world info or PDFs here to add")
+    dragIcon.classList.add("searchExclude")
     getContainerForType("Drop zone").appendChild(dragIcon);
     getContainerForType("Drop zone").addEventListener(
         "dragover",
@@ -301,8 +303,63 @@ let showCharacterList = async () => {
         false
     );
 
+    let searchData = (searchTerm) => {
+        let allTiles = [...document.querySelectorAll("#popupContainer .tile")], hidableSections = [...document.querySelectorAll("div.autoGrid:not(.Drop_zone)")];
+        try
+        {
+            let results = [...document.querySelectorAll(`#popupContainer .tile`)].filter(elem => !elem.title || elem.title.toLowerCase().indexOf(searchTerm) !== -1);
+            if (results.length > 0)
+            {
+                hidableSections.forEach(elem => elem.style.display = "grid")
+
+                allTiles.forEach(elem => {
+                    if (!elem.classList.contains("searchExclude"))
+                    {
+                        elem.style.display = "none"
+                    }
+                })
+                results.forEach(elem => elem.style.display = "unset")
+                hidableSections.filter(elem => [...elem.querySelectorAll(".tile")].filter(child => child.checkVisibility()).length == 1).forEach(elem => elem.style.display = "none")
+            }
+            else
+            {
+                hidableSections.forEach(elem => elem.style.display = "grid")
+                allTiles.forEach(elem => elem.style.display = "unset")
+            }
+        }
+        catch
+        {
+            hidableSections.forEach(elem => elem.style.display = "grid")
+            allTiles.forEach(elem => elem.style.display = "unset")
+        }
+    }
+
+    let createSearchInput = () => {
+        let containerDiv = document.createElement("div"), label = document.createElement("div"), inputContainer = document.createElement("div"), input = document.createElement("input");
+        containerDiv.classList.add("settinglabel")
+        label.title = "Search data by name"
+        label.textContent = "Search"
+        label.classList.add("justifyleft", "settingsmall")
+        inputContainer.classList.add("justifyleft", "settingsmall")
+        input.classList.add("settinglabel")
+        input.title = "Search"
+        input.placeholder = "Search"
+        input.type = "text"
+        input.style.width = "100%"
+        input.addEventListener("change", () => {
+            searchData(input.value.toLowerCase())
+        })
+        input.addEventListener("input", () => {
+            searchData(input.value.toLowerCase())
+        })
+        inputContainer.appendChild(input)
+        containerDiv.append(label, inputContainer)
+        getContainerForType("Drop zone").appendChild(containerDiv);
+    }
+
     if (allCharacterNames.length === 0) {
         let charIcon = createIcon("No characters added yet (please add or drag some!)")
+        charIcon.classList.add("searchExclude")
         getContainerForType("Character").appendChild(charIcon);
     }
     else {
@@ -372,6 +429,7 @@ let showCharacterList = async () => {
             a.click();
             a.remove();
         }
+        createSearchInput()
         for (let i = 0; i < allCharacterNames.length; i++) {
             let { name, thumbnail } = allCharacterNames[i], type = getTypeFromAllCharacterData(allCharacterNames[i]);
             let charIcon = createIcon(name, !!thumbnail ? `url(${thumbnail})` : undefined)
