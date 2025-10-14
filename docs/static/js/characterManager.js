@@ -1,25 +1,105 @@
+let updateMetadata = async () => {
+    
+    await fetch(`${custom_kobold_endpoint}/api/data/metadata`, {
+        method: "POST",
+        body: "{}",
+        headers: getAuthHeaders()
+    })
+        .catch(e => {
+            handleError(e)
+        })
+
+}
+
 let putAllCharacterManagerData = () => {
     popupUtils.reset()
 
     msgboxYesNo("Are you sure you wish to overwrite server data?", "Character manager", () => {
-        inputBox("Save password", "Please input save password (or leave blank for no password):", "", "(Input Save Password)", async () => {
-            let managerSaves = Object.entries(await getServerSaves()).filter(entry => {
-                [key, value] = entry;
-                return value.typeName === "Manager"
-            })
+        promptForAdminPassword(() => {
+            inputBox("Save password", "Please input save password (or leave blank for no password):", "", "(Input Save Password)", async () => {
+                await updateMetadata()
 
-            await Promise.all(managerSaves.map(async entry => {
-                let [key, value] = entry
-                await fetch(`${custom_kobold_endpoint}/api/data/delete`, {
-                    method: "POST",
-                    headers: getAuthHeaders(),
-                    body: JSON.stringify({ filename: value.name })
+                let managerSaves = Object.entries(await getServerSaves()).filter(entry => {
+                    [key, value] = entry;
+                    return value.typeName === "Manager"
                 })
-                    .then(resp => resp.json())
-                    .catch(e => {
-                        handleError(e)
+
+                await Promise.all(managerSaves.map(async entry => {
+                    let [key, value] = entry
+                    await fetch(`${custom_kobold_endpoint}/api/data/delete`, {
+                        method: "POST",
+                        headers: getAuthHeaders(),
+                        body: JSON.stringify({ filename: value.name })
                     })
-            }))
+                        .then(resp => resp.json())
+                        .catch(e => {
+                            handleError(e)
+                        })
+                }))
+
+                let userinput = getInputBoxValue(), password = "";
+                userinput = userinput.trim();
+                if (userinput != null && userinput != "") {
+                    password = userinput
+                }
+
+                let isEncrypted = false;
+                if (password.trim() !== "") {
+                    password = password.trim()
+                    isEncrypted = true
+                }
+                waitingToast.show()
+                let allTasks = await Promise.all(allCharacterNames.map(async c => {
+                    let { name, type, thumbnail } = c, data = await getCharacterData(name);
+                    waitingToast.setText(`Sending data ${name}`)
+                    if (thumbnail !== undefined) {
+                        data.thumbnail = thumbnail
+                    }
+                    if (type !== undefined) {
+                        data.type = type
+                    }
+                    data = JSON.stringify(data)
+                    if (isEncrypted) {
+                        data = encrypt(password, data)
+                    }
+
+                    let bodyData = {
+                        filename: name.trim(),
+                        data: data,
+                        type: "Save",
+                        isEncrypted: isEncrypted ? "1" : "0",
+                        group: null,
+                        type: "Manager",
+                        thumbnail: null
+                    }
+                    await fetch(`${custom_kobold_endpoint}/api/data/put`, {
+                        method: "POST",
+                        body: JSON.stringify(bodyData),
+                        headers: getAuthHeaders()
+                    })
+                        .then(resp => resp.json())
+                        .catch(e => {
+                            handleError(e)
+                        })
+
+                    return true
+
+                    // decrypt("test", (await Promise.all(putAllCharacterManagerData()))[0].data)
+                    // JSON.parse(decrypt("test", (await Promise.all(putAllCharacterManagerData()))[0].data))
+                }))
+                waitingToast.hide()
+            }, false, false, true);
+        })
+    })
+}
+
+let loadAllCharacterManagerData = () => {
+    popupUtils.reset()
+
+    promptForAdminPassword(() => {
+        inputBox("Save password", "Please input save password (or leave blank for no password):", "", "(Input Save Password)", async () => {
+
+            await updateMetadata()
 
             let userinput = getInputBoxValue(), password = "";
             userinput = userinput.trim();
@@ -32,103 +112,46 @@ let putAllCharacterManagerData = () => {
                 password = password.trim()
                 isEncrypted = true
             }
-            waitingToast.show()
-            let allTasks = await Promise.all(allCharacterNames.map(async c => {
-                let { name, type, thumbnail } = c, data = await getCharacterData(name);
-                waitingToast.setText(`Sending data ${name}`)
-                if (thumbnail !== undefined) {
-                    data.thumbnail = thumbnail
-                }
-                if (type !== undefined) {
-                    data.type = type
-                }
-                data = JSON.stringify(data)
-                if (isEncrypted) {
-                    data = encrypt(password, data)
-                }
+            let managerSaves = Object.entries(await getServerSaves()).filter(entry => {
+                [key, value] = entry;
+                return value.typeName === "Manager"
+            })
 
-                let bodyData = {
-                    filename: name.trim(),
-                    data: data,
-                    type: "Save",
-                    isEncrypted: isEncrypted ? "1" : "0",
-                    group: null,
-                    type: "Manager",
-                    thumbnail: null
-                }
-                await fetch(`${custom_kobold_endpoint}/api/data/put`, {
+            waitingToast.show()
+            await Promise.all(managerSaves.map(async entry => {
+                let [key, value] = entry
+                waitingToast.setText(`Receiving data ${value.name}`)
+                await fetch(`${custom_kobold_endpoint}/api/data/get`, {
                     method: "POST",
-                    body: JSON.stringify(bodyData),
-                    headers: getAuthHeaders()
+                    headers: getAuthHeaders(),
+                    body: JSON.stringify({ filename: value.name })
                 })
                     .then(resp => resp.json())
+                    .then(saveData => {
+                        let managerData = isEncrypted ? decrypt(password, saveData) : saveData;
+                        managerData = JSON.parse(managerData)
+                        let { type, thumbnail } = managerData
+                        delete managerData["type"]
+                        delete managerData["thumbnail"]
+                        return indexeddb_save(`character_${managerData.name}`, JSON.stringify(managerData)).then(() => {
+                            let charOverview = { name: managerData.name, type: type }
+                            if (thumbnail !== undefined) {
+                                charOverview.thumbnail = thumbnail
+                            }
+                            allCharacterNames = allCharacterNames.filter(c => c.name !== managerData.name)
+                            allCharacterNames.push(charOverview);
+                            updateCharacterListFromAllDe();
+                        })
+                    })
                     .catch(e => {
                         handleError(e)
                     })
 
                 return true
-
-                // decrypt("test", (await Promise.all(putAllCharacterManagerData()))[0].data)
-                // JSON.parse(decrypt("test", (await Promise.all(putAllCharacterManagerData()))[0].data))
             }))
             waitingToast.hide()
         }, false, false, true);
     })
-}
-
-let loadAllCharacterManagerData = () => {
-    popupUtils.reset()
-    inputBox("Save password", "Please input save password (or leave blank for no password):", "", "(Input Save Password)", async () => {
-        let userinput = getInputBoxValue(), password = "";
-        userinput = userinput.trim();
-        if (userinput != null && userinput != "") {
-            password = userinput
-        }
-
-        let isEncrypted = false;
-        if (password.trim() !== "") {
-            password = password.trim()
-            isEncrypted = true
-        }
-        let managerSaves = Object.entries(await getServerSaves()).filter(entry => {
-            [key, value] = entry;
-            return value.typeName === "Manager"
-        })
-
-        waitingToast.show()
-        await Promise.all(managerSaves.map(async entry => {
-            let [key, value] = entry
-            waitingToast.setText(`Receiving data ${value.name}`)
-            await fetch(`${custom_kobold_endpoint}/api/data/get`, {
-                method: "POST",
-                headers: getAuthHeaders(),
-                body: JSON.stringify({ filename: value.name })
-            })
-                .then(resp => resp.json())
-                .then(saveData => {
-                    let managerData = isEncrypted ? decrypt(password, saveData) : saveData;
-                    managerData = JSON.parse(managerData)
-                    let { type, thumbnail } = managerData
-                    delete managerData["type"]
-                    delete managerData["thumbnail"]
-                    return indexeddb_save(`character_${managerData.name}`, JSON.stringify(managerData)).then(() => {
-                        let charOverview = { name: managerData.name, type: type }
-                        if (thumbnail !== undefined) {
-                            charOverview.thumbnail = thumbnail
-                        }
-                        allCharacterNames = allCharacterNames.filter(c => c.name !== managerData.name)
-                        allCharacterNames.push(charOverview);
-                        updateCharacterListFromAllDe();
-                    })
-                })
-                .catch(e => {
-                    handleError(e)
-                })
-
-            return true
-        }))
-        waitingToast.hide()
-    }, false, false, true);
 }
 
 let maxLengthForSection = 500, halfMaxLengthForSection = Math.floor(maxLengthForSection / 2);
@@ -162,6 +185,7 @@ let showCharacterList = async () => {
         containers.push(container)
 
         let charIcon = createIcon(containerName, "var(--img_load)")
+        charIcon.classList.add("searchExclude")
         container.appendChild(charIcon);
         return container
     }
@@ -173,10 +197,27 @@ let showCharacterList = async () => {
         if (ext === ".png") {
             let arr = new Uint8Array(dataArr)
             let res = convertTavernPng(arr)
+            if (res === null) {
+                waitingToast.hide()
+                handleError(`${fileName}: PNG is not valid`)
+            }
         }
         else if (ext === ".webp") {
             let arr = new Uint8Array(dataArr)
-            getTavernExifJSON(arr)
+            let res = getTavernExifJSON(arr)
+            if (res === null) {
+                waitingToast.hide()
+                handleError(`${fileName}: WEBP is not valid`)
+            }
+        }
+        else if (ext === ".txt") {
+            let arr = new Uint8Array(dataArr)
+            let res = getTavernExifJSON(arr)
+            saveDocumentToIndexDB(fileName, arr, "text/plain")
+        }
+        else if (ext === ".pdf") {
+            let arr = new Uint8Array(dataArr)
+            saveDocumentToIndexDB(fileName, arr, "application/pdf")
         }
         else {
             let data = JSON.parse(plaintext);
@@ -215,12 +256,18 @@ let showCharacterList = async () => {
                         saveLorebookToIndexDB(wiName, wiToAdd, JSON.parse(plaintext))
                     }
                 }
+                else
+                {
+                    waitingToast.hide()
+                    handleError(`${fileName}: JSON does not contain WI or lorebook`)
+                }
             }
         }
     }
 
 
-    let dragIcon = createIcon("Drag characters, saves, lorebooks or world info here to add")
+    let dragIcon = createIcon("Drag characters, saves, lorebooks, world info or PDFs here to add")
+    dragIcon.classList.add("searchExclude")
     getContainerForType("Drop zone").appendChild(dragIcon);
     getContainerForType("Drop zone").addEventListener(
         "dragover",
@@ -239,7 +286,7 @@ let showCharacterList = async () => {
             if (files && files.length > 0) {
                 e.preventDefault();
                 e.stopPropagation();
-                let allowedTypes = ["image/png", "image/webp", "application/json"]
+                let allowedTypes = ["image/png", "image/webp", "application/json", "text/plain", "application/pdf"]
                 let validFiles = [...files].filter(file => {
                     return file != null && file.name && file.name != "" && (file.type)
                 })
@@ -247,13 +294,72 @@ let showCharacterList = async () => {
                     popupUtils.reset()
                     fileInputToFiles(validFiles, uploadFileHandler)
                 }
+                else
+                {
+                    handleError("No valid files selected")
+                }
             };
         },
         false
     );
 
+    let searchData = (searchTerm) => {
+        let allTiles = [...document.querySelectorAll("#popupContainer .tile")], hidableSections = [...document.querySelectorAll("div.autoGrid:not(.Drop_zone)")];
+        try
+        {
+            let results = [...document.querySelectorAll(`#popupContainer .tile`)].filter(elem => !elem.title || elem.title.toLowerCase().indexOf(searchTerm) !== -1);
+            if (results.length > 0)
+            {
+                hidableSections.forEach(elem => elem.style.display = "grid")
+
+                allTiles.forEach(elem => {
+                    if (!elem.classList.contains("searchExclude"))
+                    {
+                        elem.style.display = "none"
+                    }
+                })
+                results.forEach(elem => elem.style.display = "unset")
+                hidableSections.filter(elem => [...elem.querySelectorAll(".tile")].filter(child => child.checkVisibility()).length == 1).forEach(elem => elem.style.display = "none")
+            }
+            else
+            {
+                hidableSections.forEach(elem => elem.style.display = "grid")
+                allTiles.forEach(elem => elem.style.display = "unset")
+            }
+        }
+        catch
+        {
+            hidableSections.forEach(elem => elem.style.display = "grid")
+            allTiles.forEach(elem => elem.style.display = "unset")
+        }
+    }
+
+    let createSearchInput = () => {
+        let containerDiv = document.createElement("div"), label = document.createElement("div"), inputContainer = document.createElement("div"), input = document.createElement("input");
+        containerDiv.classList.add("settinglabel")
+        label.title = "Search data by name"
+        label.textContent = "Search"
+        label.classList.add("justifyleft", "settingsmall")
+        inputContainer.classList.add("justifyleft", "settingsmall")
+        input.classList.add("settinglabel")
+        input.title = "Search"
+        input.placeholder = "Search"
+        input.type = "text"
+        input.style.width = "100%"
+        input.addEventListener("change", () => {
+            searchData(input.value.toLowerCase())
+        })
+        input.addEventListener("input", () => {
+            searchData(input.value.toLowerCase())
+        })
+        inputContainer.appendChild(input)
+        containerDiv.append(label, inputContainer)
+        getContainerForType("Drop zone").appendChild(containerDiv);
+    }
+
     if (allCharacterNames.length === 0) {
         let charIcon = createIcon("No characters added yet (please add or drag some!)")
+        charIcon.classList.add("searchExclude")
         getContainerForType("Character").appendChild(charIcon);
     }
     else {
@@ -316,6 +422,14 @@ let showCharacterList = async () => {
         let wiEntryToString = (entry) => {
             return `Primary: ${entry?.key}\nSecondary: ${entry?.keysecondary}`;
         }
+        let downloadB64URL = (name, data) => {
+            let a = document.createElement("a");
+            a.href = data
+            a.download = `${name}`
+            a.click();
+            a.remove();
+        }
+        createSearchInput()
         for (let i = 0; i < allCharacterNames.length; i++) {
             let { name, thumbnail } = allCharacterNames[i], type = getTypeFromAllCharacterData(allCharacterNames[i]);
             let charIcon = createIcon(name, !!thumbnail ? `url(${thumbnail})` : undefined)
@@ -366,12 +480,7 @@ let showCharacterList = async () => {
                     }).button("Download character", async () => {
                         popupUtils.reset()
                         let charData = await getCharacterData(name), { image } = charData;
-                        let a = document.createElement("a");
-                        a.href = image
-                        a.download = `${name}.png`
-                        a.click();
-                        a.remove();
-                        updateCharacterListFromAll()
+                        downloadB64URL(`${name}.png`, image)
                     }).button("Delete character", async () => {
                         popupUtils.reset()
                         msgboxYesNo("Are you sure you wish to delete?", "Character manager", async () => {
@@ -400,6 +509,28 @@ let showCharacterList = async () => {
                         let wiToAdd = charData.data;
                         current_wi = current_wi.filter(wi => wi?.folder !== name)
                         current_wi.push(...wiToAdd)
+                    }).button("Download world info", async () => {
+                        popupUtils.reset()
+                        let charData = await getCharacterData(name), { originalData } = charData;
+                        if (!!originalData)
+                        {
+                            try
+                            {
+                                let bytes = new TextEncoder().encode(JSON.stringify(originalData)), text = "";
+                                for (var i = 0; i < Math.ceil(bytes.length / 32768.0); i++) {
+                                    text += String.fromCharCode.apply(null, bytes.slice(i * 32768, Math.min((i + 1) * 32768, bytes.length)))
+                                }
+                                downloadB64URL(`${name}.json`, `data:application/json;base64,${btoa(text)}`)
+                            }
+                            catch (e)
+                            {
+                                handleError(e)
+                            }
+                        }
+                        else
+                        {
+                            handleError("Could not download file")
+                        }
                     }).button("Delete world info", async () => {
                         popupUtils.reset()
                         msgboxYesNo("Are you sure you wish to delete?", "Character manager", async () => {
@@ -451,7 +582,81 @@ let showCharacterList = async () => {
                         waitingToast.setText(`Overwriting data ${name}`)
                         let data = generate_savefile(true, true, true);
                         saveKLiteSaveToIndexDB(name, data);
+                    }).button("Download save", async () => {
+                        popupUtils.reset()
+                        let charData = await getCharacterData(name), { data } = charData;
+                        if (!!data) {
+                            try {
+                                let bytes = new TextEncoder().encode(JSON.stringify(data)), text = "";
+                                for (var i = 0; i < Math.ceil(bytes.length / 32768.0); i++) {
+                                    text += String.fromCharCode.apply(null, bytes.slice(i * 32768, Math.min((i + 1) * 32768, bytes.length)))
+                                }
+                                downloadB64URL(`${name}.json`, `data:application/json;base64,${btoa(text)}`)
+                            }
+                            catch (e) {
+                                handleError(e)
+                            }
+                        }
+                        else {
+                            handleError("Could not download file")
+                        }
                     }).button("Delete save", async () => {
+                        popupUtils.reset()
+                        msgboxYesNo("Are you sure you wish to delete?", "Character manager", async () => {
+                            allCharacterNames = allCharacterNames.filter(c => c.name !== name)
+                            await indexeddb_save(`character_${name}`)
+                            updateCharacterListFromAll()
+                        })
+                    }).button("Close", () => popupUtils.reset()).show();
+                }
+                else if (type === "Document") {
+                    let contents = document.createElement("span");
+                    contents = createDetailsContent(name);
+                    let charData = await getCharacterData(name), { extractedText } = charData;
+                    createSection(contents, "Has text been extracted?", !!extractedText ? "True" : "False");
+
+                    popupUtils.reset().title("Document Options").content(contents).button("Back", showCharacterList).button("Add to TextDB", async () => {
+                        popupUtils.reset()
+                        waitingToast.show()
+                        waitingToast.setText(`Extracting text to add to TextDB`)
+                        let charData = await getCharacterData(name), {extractedText} = charData;
+                        if (extractedText !== undefined)
+                        {
+                            replaceDocumentFromTextDB(name, extractedText)
+                        }
+                        else
+                        {
+                            let extractedText = await documentParser.extractTextFromB64(charData.data)
+                            if (!!extractedText) {
+                                charData.extractedText = extractedText
+                                await indexeddb_save(`character_${name}`, JSON.stringify(charData))
+                                updateCharacterListFromAll()
+                                replaceDocumentFromTextDB(name, extractedText)
+                            }
+                        }
+                        waitingToast.hide()
+                    }).button("Download document", async () => {
+                        popupUtils.reset()
+                        let charData = await getCharacterData(name), { data, dataType } = charData;
+                        if (!!data) {
+                            try {
+                                let ext = ".txt"
+                                switch (dataType)
+                                {
+                                    case "application/pdf":
+                                        ext = ".pdf"
+                                        break
+                                }
+                                downloadB64URL(`${name}${ext}`, data)
+                            }
+                            catch (e) {
+                                handleError(e)
+                            }
+                        }
+                        else {
+                            handleError("Could not download file")
+                        }
+                    }).button("Delete document", async () => {
                         popupUtils.reset()
                         msgboxYesNo("Are you sure you wish to delete?", "Character manager", async () => {
                             allCharacterNames = allCharacterNames.filter(c => c.name !== name)
@@ -475,7 +680,7 @@ let showCharacterList = async () => {
             popupUtils.reset()
             promptUserForLocalFile(async (result) => {
                 uploadFileHandler(result)
-            }, [".png", ".webp", ".json"], true)
+            }, [".png", ".webp", ".json", ".txt", ".pdf"], true)
         }).button("Add current save", () => {
             popupUtils.reset()
             inputBox("Enter a Filename", "Save File", "", "Input Filename", () => {
