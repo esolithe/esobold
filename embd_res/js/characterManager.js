@@ -432,9 +432,9 @@ let showCharacterList = async () => {
     }
 
     if (allCharacterNames.length === 0) {
-        let charIcon = createIcon("No characters added yet (please add or drag some!)")
+        let charIcon = createIcon("No data added yet (please add some!)")
         charIcon.classList.add("searchExclude")
-        getContainerForType("Character").appendChild(charIcon);
+        getContainerForType("Data").appendChild(charIcon);
     }
     else {
         let createDetailsContent = (name) => {
@@ -746,12 +746,12 @@ let showCharacterList = async () => {
             getContainerForType(type).appendChild(charIcon)
         }
     }
-    popupUtils.reset().title(`Character List (${allCharacterNames.length})`).css("height", "80%").css("width", "80%").enableJumpButtons()
+    popupUtils.reset().title(`Data List (${allCharacterNames.length})`).css("height", "80%").css("width", "80%").enableJumpButtons()
     containers.forEach(container => popupUtils.content(container))
         
     popupUtils.buttonGroup("Add")
         .button("New character", () => { try { showCharacterCreator(); } catch (e) { console.error(e); } })
-        .button("Add current save", () => {
+        .button("Save", () => {
             popupUtils.reset()
             inputBox("Enter a Filename", "Save File", "", "Input Filename", () => {
                 let userinput = getInputBoxValue();
@@ -762,6 +762,10 @@ let showCharacterList = async () => {
                     saveKLiteSaveToIndexDB(userinput, data);
                 }
             }, false);
+        })
+        .button("Share", () => {
+            popupUtils.reset()
+            share_story_button()
         })
         
 
@@ -774,9 +778,9 @@ let showCharacterList = async () => {
             setTimeout(() => {
                 waitingToast.hide()
             }, 5000)
-        }).button("Delete all data", async () => {
+        }).button("Delete all", async () => {
             popupUtils.reset()
-            msgboxYesNo("Are you sure you wish to delete?", "Character manager", async () => {
+            msgboxYesNo("Are you sure you wish to delete all data?", "Character manager", async () => {
                 waitingToast.show()
                 waitingToast.setText(`Deleting all data`)
                 await Promise.all(allCharacterNames.map(elem => indexeddb_save(`character_${elem.name}`)))
@@ -787,7 +791,13 @@ let showCharacterList = async () => {
         })
 
     if (is_using_kcpp_with_server_saving()) {
-        popupUtils.buttonGroup("Server").button("Overwrite server data", () => putAllCharacterManagerData()).button("Load from server", () => loadAllCharacterManagerData())
+        popupUtils.buttonGroup("Server")
+        .button("Overwrite", () => putAllCharacterManagerData())
+        .button("Load", () => loadAllCharacterManagerData())
+        .button("Legacy", () => {
+            popupUtils.reset()
+            showServerSavesPopup()
+        })
     }
     popupUtils.resetButtonGroup().button("Close", () => popupUtils.reset()).show();
 }

@@ -5,7 +5,7 @@ class PopupUtils {
     titleElem
     contentElem
     buttonsElem
-    constructor() {
+    createPopup() {
         let popupElem = document.createElement("div");
         popupElem.classList.add("popupcontainer", "flex", "hidden");
         popupElem.id = "popupContainer";
@@ -31,6 +31,10 @@ class PopupUtils {
         this.buttonsElem = popupElem.querySelector(".popupfooter")
     }
 
+    constructor() {
+       this.createPopup()
+    }
+
     _createButtonForPopup(text, onClick) {
         let button = document.createElement("button")
         button.type = "button"
@@ -53,11 +57,9 @@ class PopupUtils {
     }
 
     reset() {
+        document.getElementById("popupContainer")?.remove()
+        this.createPopup()
         this.popupElem.classList.add("hidden");
-        this.popupElem.querySelectorAll(".scrollToButtons").forEach(elem => elem.remove())
-        this.titleElem.innerText = "";
-        this.contentElem.innerHTML = "";
-        this.buttonsElem.innerHTML = "";
         return this;
     }
 
