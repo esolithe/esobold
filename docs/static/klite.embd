@@ -22148,7 +22148,7 @@ Current version indicated by LITEVER below.
 			}
 
 			document.getElementById("topbtn_newgame").classList.remove("hidden");
-			document.getElementById("topbtn_save_load").classList.remove("hidden");
+			// document.getElementById("topbtn_save_load").classList.remove("hidden");
 			document.getElementById("topbtn_scenarios").classList.add("hidden");
 			document.getElementById("topbtn_quickplay").classList.add("hidden");
 		} else {
@@ -22169,7 +22169,7 @@ Current version indicated by LITEVER below.
 				document.getElementById("topbtn_quickplay").classList.remove("hidden");
 			} else {
 				document.getElementById("topbtn_newgame").classList.remove("hidden");
-				document.getElementById("topbtn_save_load").classList.remove("hidden");
+				// document.getElementById("topbtn_save_load").classList.remove("hidden");
 				document.getElementById("topbtn_scenarios").classList.remove("hidden");
 				document.getElementById("topbtn_quickplay").classList.add("hidden");
 			}
@@ -28798,6 +28798,7 @@ else
 <link rel="stylesheet" type="text/css" href="static/css/worldTree.css" />
 <script src="static/js/autosaveToServer.js"></script>
 <script src="static/js/modManager.js"></script>
+<script src="static/js/newTopMenuButtons.js"></script>
 <script src="static/js/execCodeBlocks.js"></script>
 <link rel="stylesheet" type="text/css" href="static/css/popupUtils.css" />
 <script src="static/js/tavernTool.js"></script>

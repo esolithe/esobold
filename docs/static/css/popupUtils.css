@@ -19,7 +19,6 @@
 	#popupContainer .popupContent {
 	    overflow-y: auto;
 	    overflow-x: hidden;
-	    height: calc(100% - 40px);
 	}
 
 	#popupContainer .popupfooter {
@@ -72,6 +71,7 @@
 
 	.autoGrid {
 	    display: grid;
+		border: dashed var(--theme_color_border);
 	    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
 	    padding: 12px;
 	    gap: 12px;
@@ -100,4 +100,18 @@
 	#settingscontainer.side.popupcontainer,
 	.popupcontainer.sideright {
 	    justify-content: unset;
+	}
+
+	.buttonGroup > span {
+		color: var(--theme_color_text);
+		background-color: var(--theme_color_topbtn);
+		border-radius: 10px;
+		text-align: center;
+		padding-top: 10px;
+	}
+
+	.scrollToButtons {
+		position: sticky;
+		top: 0px;
+		float: right;
 	}

@@ -154,6 +154,76 @@ let loadAllCharacterManagerData = () => {
     })
 }
 
+let migrateOldData = async () => {
+    let saveKLiteSaveToIndexDBIfNew = (name, data) => {
+        let nameToCheck = name.replaceAll(/[^\w()_\-'",!\[\].]/g, " ").replaceAll(/\s+/g, " ").trim();
+        if (allCharacterNames.find(meta => nameToCheck === meta.name) === undefined)
+        {
+            saveKLiteSaveToIndexDB(name, data)
+        }
+    }
+
+    // Handle saves from IndexDB slots
+    let slotpromises = [];
+    for (let i = 0; i < SAVE_SLOTS; ++i) {
+        slotpromises.push(Promise.all([indexeddb_load("slot_" + i + "_meta", ""), indexeddb_load("slot_" + i + "_data", "")]));
+    }
+    await Promise.all((await Promise.all(slotpromises)).map(res => {
+        [name, data] = res
+        return {
+            name,
+            data: data
+        }
+    }).filter(res => !!res.name && !!res.data).map(res => saveKLiteSaveToIndexDBIfNew(res.name, JSON.parse(res.data))))
+
+    // Handle saves from server slots
+    let fetchDataForSlot = (slot) => {
+        return fetch(apply_proxy_url(custom_kobold_endpoint + koboldcpp_savedata_load_endpoint), {
+            method: 'POST', // or 'PUT'
+            headers: get_kobold_header(),
+            body: JSON.stringify({
+                "slot": slot,
+            }),
+        })
+            .then((response) => response.json())
+            .then((resp) => {
+                if (!resp.success || !resp.data) {
+                    return "";
+                } else {
+                    let data = decompress_story(resp.data.data)
+                    return {
+                        name: slot,
+                        data: data
+                    };
+                }
+            })
+            .catch((error) => {
+                console.error('Error:', error);
+            });
+    }
+
+    let netsaveslotlabels = []
+    if (is_using_kcpp_with_savedatafile()) {
+        //grab saves
+        netsaveslotlabels = fetch(apply_proxy_url(custom_kobold_endpoint + koboldcpp_savedata_list_endpoint), {
+            method: 'POST', // or 'PUT'
+            headers: get_kobold_header(),
+        })
+            .then((response) => response.json())
+            .then((data) => {
+                return Promise.all(data.filter(name => !!name).map(fetchDataForSlot))
+            })
+            .catch((error) => {
+                console.error('Error:', error);
+            });
+    }
+
+    let netSaveNames = await netsaveslotlabels
+    if (netSaveNames.length > 0){
+        await Promise.all(netSaveNames.map(res => saveKLiteSaveToIndexDBIfNew(res.name, res.data)))
+    }
+}
+
 let maxLengthForSection = 500, halfMaxLengthForSection = Math.floor(maxLengthForSection / 2);
 let showCharacterList = async () => {
     let containers = []
@@ -178,8 +248,6 @@ let showCharacterList = async () => {
         let container = document.createElement("div");
         container.classList.add("autoGrid")
         container.style.overflowX = "hidden"
-        container.style.border = "lightcoral"
-        container.style.borderStyle = "dashed"
         container.style.marginBottom = "10px"
         container.classList.add(containerNameAsClass)
         containers.push(container)
@@ -266,8 +334,14 @@ let showCharacterList = async () => {
     }
 
 
-    let dragIcon = createIcon("Drag characters, saves, lorebooks, world info or PDFs here to add")
+    let dragIcon = createIcon("Click or drag characters, saves, lorebooks, world info or PDFs here to add")
     dragIcon.classList.add("searchExclude")
+    dragIcon.addEventListener("click", () => {
+        popupUtils.reset()
+        promptUserForLocalFile(async (result) => {
+            uploadFileHandler(result)
+        }, [".png", ".webp", ".json", ".txt", ".pdf"], true)
+    })
     getContainerForType("Drop zone").appendChild(dragIcon);
     getContainerForType("Drop zone").addEventListener(
         "dragover",
@@ -358,9 +432,9 @@ let showCharacterList = async () => {
     }
 
     if (allCharacterNames.length === 0) {
-        let charIcon = createIcon("No characters added yet (please add or drag some!)")
+        let charIcon = createIcon("No data added yet (please add some!)")
         charIcon.classList.add("searchExclude")
-        getContainerForType("Character").appendChild(charIcon);
+        getContainerForType("Data").appendChild(charIcon);
     }
     else {
         let createDetailsContent = (name) => {
@@ -672,16 +746,12 @@ let showCharacterList = async () => {
             getContainerForType(type).appendChild(charIcon)
         }
     }
-    popupUtils.reset().title(`Character List (${allCharacterNames.length})`)
+    popupUtils.reset().title(`Data List (${allCharacterNames.length})`).css("height", "80%").css("width", "80%").enableJumpButtons()
     containers.forEach(container => popupUtils.content(container))
-    popupUtils
+        
+    popupUtils.buttonGroup("Add")
         .button("New character", () => { try { showCharacterCreator(); } catch (e) { console.error(e); } })
-        .button("Add data", () => {
-            popupUtils.reset()
-            promptUserForLocalFile(async (result) => {
-                uploadFileHandler(result)
-            }, [".png", ".webp", ".json", ".txt", ".pdf"], true)
-        }).button("Add current save", () => {
+        .button("Save", () => {
             popupUtils.reset()
             inputBox("Enter a Filename", "Save File", "", "Input Filename", () => {
                 let userinput = getInputBoxValue();
@@ -692,9 +762,29 @@ let showCharacterList = async () => {
                     saveKLiteSaveToIndexDB(userinput, data);
                 }
             }, false);
-        }).button("Delete all data", async () => {
+        })
+        .button("Share", () => {
             popupUtils.reset()
-            msgboxYesNo("Are you sure you wish to delete?", "Character manager", async () => {
+            share_story_button()
+        })
+        .button("Mods", () => {
+            popupUtils.reset()
+            modManager.showModListWarning()
+        })
+        
+
+    popupUtils.buttonGroup("Bulk").button("Migrate old data", async () => {
+            popupUtils.reset()
+            waitingToast.show()
+            waitingToast.setText(`Migrating old data`)
+            await migrateOldData()
+            waitingToast.setText(`Migration complete`)
+            setTimeout(() => {
+                waitingToast.hide()
+            }, 5000)
+        }).button("Delete all", async () => {
+            popupUtils.reset()
+            msgboxYesNo("Are you sure you wish to delete all data?", "Character manager", async () => {
                 waitingToast.show()
                 waitingToast.setText(`Deleting all data`)
                 await Promise.all(allCharacterNames.map(elem => indexeddb_save(`character_${elem.name}`)))
@@ -705,9 +795,15 @@ let showCharacterList = async () => {
         })
 
     if (is_using_kcpp_with_server_saving()) {
-        popupUtils.button("Overwrite server data", () => putAllCharacterManagerData()).button("Load from server", () => loadAllCharacterManagerData())
+        popupUtils.buttonGroup("Esobold Server")
+        .button("Overwrite", () => putAllCharacterManagerData())
+        .button("Load", () => loadAllCharacterManagerData())
+        .button("Legacy", () => {
+            popupUtils.reset()
+            showServerSavesPopup()
+        })
     }
-    popupUtils.button("Close", () => popupUtils.reset()).show();
+    popupUtils.resetButtonGroup().button("Close", () => popupUtils.reset()).show();
 }
 
 // Native character creator popup for esobold
