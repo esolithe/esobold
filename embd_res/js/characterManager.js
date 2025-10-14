@@ -154,6 +154,76 @@ let loadAllCharacterManagerData = () => {
     })
 }
 
+let migrateOldData = async () => {
+    let saveKLiteSaveToIndexDBIfNew = (name, data) => {
+        let nameToCheck = name.replaceAll(/[^\w()_\-'",!\[\].]/g, " ").replaceAll(/\s+/g, " ").trim();
+        if (allCharacterNames.find(meta => nameToCheck === meta.name) === undefined)
+        {
+            saveKLiteSaveToIndexDB(name, data)
+        }
+    }
+
+    // Handle saves from IndexDB slots
+    let slotpromises = [];
+    for (let i = 0; i < SAVE_SLOTS; ++i) {
+        slotpromises.push(Promise.all([indexeddb_load("slot_" + i + "_meta", ""), indexeddb_load("slot_" + i + "_data", "")]));
+    }
+    await Promise.all((await Promise.all(slotpromises)).map(res => {
+        [name, data] = res
+        return {
+            name,
+            data: data
+        }
+    }).filter(res => !!res.name && !!res.data).map(res => saveKLiteSaveToIndexDBIfNew(res.name, JSON.parse(res.data))))
+
+    // Handle saves from server slots
+    let fetchDataForSlot = (slot) => {
+        return fetch(apply_proxy_url(custom_kobold_endpoint + koboldcpp_savedata_load_endpoint), {
+            method: 'POST', // or 'PUT'
+            headers: get_kobold_header(),
+            body: JSON.stringify({
+                "slot": slot,
+            }),
+        })
+            .then((response) => response.json())
+            .then((resp) => {
+                if (!resp.success || !resp.data) {
+                    return "";
+                } else {
+                    let data = decompress_story(resp.data.data)
+                    return {
+                        name: slot,
+                        data: data
+                    };
+                }
+            })
+            .catch((error) => {
+                console.error('Error:', error);
+            });
+    }
+
+    let netsaveslotlabels = []
+    if (is_using_kcpp_with_savedatafile()) {
+        //grab saves
+        netsaveslotlabels = fetch(apply_proxy_url(custom_kobold_endpoint + koboldcpp_savedata_list_endpoint), {
+            method: 'POST', // or 'PUT'
+            headers: get_kobold_header(),
+        })
+            .then((response) => response.json())
+            .then((data) => {
+                return Promise.all(data.filter(name => !!name).map(fetchDataForSlot))
+            })
+            .catch((error) => {
+                console.error('Error:', error);
+            });
+    }
+
+    let netSaveNames = await netsaveslotlabels
+    if (netSaveNames.length > 0){
+        await Promise.all(netSaveNames.map(res => saveKLiteSaveToIndexDBIfNew(res.name, res.data)))
+    }
+}
+
 let maxLengthForSection = 500, halfMaxLengthForSection = Math.floor(maxLengthForSection / 2);
 let showCharacterList = async () => {
     let containers = []
@@ -692,6 +762,15 @@ let showCharacterList = async () => {
                     saveKLiteSaveToIndexDB(userinput, data);
                 }
             }, false);
+        }).button("Migrate old data", async () => {
+            popupUtils.reset()
+            waitingToast.show()
+            waitingToast.setText(`Migrating old data`)
+            await migrateOldData()
+            waitingToast.setText(`Migration complete`)
+            setTimeout(() => {
+                waitingToast.hide()
+            }, 5000)
         }).button("Delete all data", async () => {
             popupUtils.reset()
             msgboxYesNo("Are you sure you wish to delete?", "Character manager", async () => {
