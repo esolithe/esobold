@@ -554,15 +554,27 @@ let showCharacterList = async () => {
                 else if (type === "Document") {
                     let contents = document.createElement("span");
                     contents = createDetailsContent(name);
+                    let charData = await getCharacterData(name), { extractedText } = charData;
+                    createSection(contents, "Has text been extracted?", !!extractedText ? "True" : "False");
 
                     popupUtils.reset().title("Document Options").content(contents).button("Back", showCharacterList).button("Add to TextDB", async () => {
                         popupUtils.reset()
                         waitingToast.show()
                         waitingToast.setText(`Extracting text to add to TextDB`)
-                        let charData = await getCharacterData(name)
-                        let extractedText = await documentParser.extractTextFromB64(charData.data)
-                        if (!!extractedText) {
+                        let charData = await getCharacterData(name), {extractedText} = charData;
+                        if (extractedText !== undefined)
+                        {
                             replaceDocumentFromTextDB(name, extractedText)
+                        }
+                        else
+                        {
+                            let extractedText = await documentParser.extractTextFromB64(charData.data)
+                            if (!!extractedText) {
+                                charData.extractedText = extractedText
+                                await indexeddb_save(`character_${name}`, JSON.stringify(charData))
+                                updateCharacterListFromAll()
+                                replaceDocumentFromTextDB(name, extractedText)
+                            }
                         }
                         waitingToast.hide()
                     }).button("Download document", async () => {
