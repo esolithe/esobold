@@ -7,7 +7,7 @@ window.addEventListener('load', () => {
 		</li>`
     topButton += `<li class="nav-item" id="topbtn_data_manager">
 			<a class="nav-link mainnav" href="#" onclick="closeTopNav(); showCharacterList();" tabindex="0">Data</a>
-			<a id="topbtn_save_current" class="nav-link mainnav hidden" href="#" tabindex="0" style="position: absolute; margin-top: 10px;">Save</a>
+			<a id="topbtn_save_current" class="nav-link mainnav hidden" href="#" tabindex="0" style="position: absolute;">Save</a>
 		</li>`
 
     document.querySelector("#navbarNavDropdown > ul").innerHTML += topButton;
