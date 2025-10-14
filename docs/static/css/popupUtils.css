@@ -90,10 +90,27 @@
 	    min-width: 600px;
 	}
 
+	#popupContainer .popupfooter .navtoggler {
+		display: none;
+	}
+
 	@media (max-width: 800px) {
 	    .characterCreatorGrid {
 	        grid-template-columns: 1fr;
 	    }
+		#popupContainer.mobileMenu:not(.expanded) .popupfooter {
+			height: 70px;
+		}
+		#popupContainer.mobileMenu:not(.expanded) .popupfooter > * {
+			display: none;
+		}
+		#popupContainer.mobileMenu .popupfooter {
+			overflow-y: auto;
+		}
+		#popupContainer.mobileMenu .popupfooter .navtoggler {
+			display: block;
+			width: 60px;
+		}
 	}
 
 	/* Fix for weird sizing issue in sidebars */
