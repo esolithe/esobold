@@ -746,7 +746,7 @@ let showCharacterList = async () => {
             getContainerForType(type).appendChild(charIcon)
         }
     }
-    popupUtils.reset().title(`Data List (${allCharacterNames.length})`).css("height", "80%").css("width", "80%").enableJumpButtons()
+    popupUtils.reset().title(`Data List (${allCharacterNames.length})`).css("height", "80%").css("width", "80%").setMobileMenu(true)
     containers.forEach(container => popupUtils.content(container))
         
     popupUtils.buttonGroup("Add")
