@@ -248,8 +248,6 @@ let showCharacterList = async () => {
         let container = document.createElement("div");
         container.classList.add("autoGrid")
         container.style.overflowX = "hidden"
-        container.style.border = "lightcoral"
-        container.style.borderStyle = "dashed"
         container.style.marginBottom = "10px"
         container.classList.add(containerNameAsClass)
         containers.push(container)
@@ -336,8 +334,14 @@ let showCharacterList = async () => {
     }
 
 
-    let dragIcon = createIcon("Drag characters, saves, lorebooks, world info or PDFs here to add")
+    let dragIcon = createIcon("Click or drag characters, saves, lorebooks, world info or PDFs here to add")
     dragIcon.classList.add("searchExclude")
+    dragIcon.addEventListener("click", () => {
+        popupUtils.reset()
+        promptUserForLocalFile(async (result) => {
+            uploadFileHandler(result)
+        }, [".png", ".webp", ".json", ".txt", ".pdf"], true)
+    })
     getContainerForType("Drop zone").appendChild(dragIcon);
     getContainerForType("Drop zone").addEventListener(
         "dragover",
@@ -742,16 +746,12 @@ let showCharacterList = async () => {
             getContainerForType(type).appendChild(charIcon)
         }
     }
-    popupUtils.reset().title(`Character List (${allCharacterNames.length})`)
+    popupUtils.reset().title(`Character List (${allCharacterNames.length})`).css("height", "80%").css("width", "80%").enableJumpButtons()
     containers.forEach(container => popupUtils.content(container))
-    popupUtils
+        
+    popupUtils.buttonGroup("Add")
         .button("New character", () => { try { showCharacterCreator(); } catch (e) { console.error(e); } })
-        .button("Add data", () => {
-            popupUtils.reset()
-            promptUserForLocalFile(async (result) => {
-                uploadFileHandler(result)
-            }, [".png", ".webp", ".json", ".txt", ".pdf"], true)
-        }).button("Add current save", () => {
+        .button("Add current save", () => {
             popupUtils.reset()
             inputBox("Enter a Filename", "Save File", "", "Input Filename", () => {
                 let userinput = getInputBoxValue();
@@ -762,7 +762,10 @@ let showCharacterList = async () => {
                     saveKLiteSaveToIndexDB(userinput, data);
                 }
             }, false);
-        }).button("Migrate old data", async () => {
+        })
+        
+
+    popupUtils.buttonGroup("Bulk").button("Migrate old data", async () => {
             popupUtils.reset()
             waitingToast.show()
             waitingToast.setText(`Migrating old data`)
@@ -784,9 +787,9 @@ let showCharacterList = async () => {
         })
 
     if (is_using_kcpp_with_server_saving()) {
-        popupUtils.button("Overwrite server data", () => putAllCharacterManagerData()).button("Load from server", () => loadAllCharacterManagerData())
+        popupUtils.buttonGroup("Server").button("Overwrite server data", () => putAllCharacterManagerData()).button("Load from server", () => loadAllCharacterManagerData())
     }
-    popupUtils.button("Close", () => popupUtils.reset()).show();
+    popupUtils.resetButtonGroup().button("Close", () => popupUtils.reset()).show();
 }
 
 // Native character creator popup for esobold
