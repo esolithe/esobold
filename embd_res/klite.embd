@@ -5508,6 +5508,30 @@ Current version indicated by LITEVER below.
 		}
 	}
 
+	function saveDocumentToIndexDB(fileName, data, dataType)
+	{
+		try
+		{
+			bufferToBase64(data).then(async (b64) => {
+				let b64Url = `data:${dataType};base64,${b64}`
+				let rawName = !!fileName ? fileName : "No document name", charName = rawName.replaceAll(/[^\w()_\-'",!\[\].]/g, " ").replaceAll(/\s+/g, " ").trim();
+				let dataToSave = {
+					name: charName,
+					data: b64Url,
+					dataType: dataType
+				}
+				indexeddb_save(`character_${charName}`, JSON.stringify(dataToSave)).then(() => {
+					allCharacterNames.push({name: charName, type: "Document"})
+					updateCharacterListFromAllDe();
+				})
+			})
+		}
+		catch (e)
+		{
+			console.error(e)
+		}
+	}
+
 	function saveLorebookToIndexDB(filename, data, originalData)
 	{
 		let charName = filename.replaceAll(/[^\w()_\-'",!\[\].]/g, " ").replaceAll(/\s+/g, " ").trim();
@@ -9107,7 +9131,8 @@ Current version indicated by LITEVER below.
 
 	function replaceDocumentFromTextDB(documentName, documentContent) {
 		//we want to edit the LIVE copy, not the cached var in memory.
-		let curr_doc_db = document.getElementById("documentdb_data").value;
+		let isContextMenuHidden = document.getElementById("memorycontainer").classList.contains("hidden")
+		let curr_doc_db = isContextMenuHidden ? documentdb_data : document.getElementById("documentdb_data").value;
 		if (curr_doc_db.indexOf(`[DOCUMENT BREAK][${documentName}]`) !== -1) {
 			const regex = new RegExp(`(\\[DOCUMENT BREAK\\]\\[${documentName}\\])(.*?)(\\[DOCUMENT BREAK\\]|$)`, "s");
 			curr_doc_db = curr_doc_db.replace(regex, `$1${documentContent.trim()}$3`);
@@ -9115,7 +9140,7 @@ Current version indicated by LITEVER below.
 			curr_doc_db += `[DOCUMENT BREAK][${documentName}]${documentContent.trim()}[DOCUMENT BREAK]`;
 		}
 		document.getElementById("documentdb_data").value = curr_doc_db;
-		if (document.getElementById("memorycontainer").classList.contains("hidden"))
+		if (isContextMenuHidden)
 		{
 			documentdb_data = document.getElementById("documentdb_data").value;
 		}

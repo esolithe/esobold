@@ -196,10 +196,27 @@ let showCharacterList = async () => {
         if (ext === ".png") {
             let arr = new Uint8Array(dataArr)
             let res = convertTavernPng(arr)
+            if (res === null) {
+                waitingToast.hide()
+                handleError(`${fileName}: PNG is not valid`)
+            }
         }
         else if (ext === ".webp") {
             let arr = new Uint8Array(dataArr)
-            getTavernExifJSON(arr)
+            let res = getTavernExifJSON(arr)
+            if (res === null) {
+                waitingToast.hide()
+                handleError(`${fileName}: WEBP is not valid`)
+            }
+        }
+        else if (ext === ".txt") {
+            let arr = new Uint8Array(dataArr)
+            let res = getTavernExifJSON(arr)
+            saveDocumentToIndexDB(fileName, arr, "text/plain")
+        }
+        else if (ext === ".pdf") {
+            let arr = new Uint8Array(dataArr)
+            saveDocumentToIndexDB(fileName, arr, "application/pdf")
         }
         else {
             let data = JSON.parse(plaintext);
@@ -238,12 +255,17 @@ let showCharacterList = async () => {
                         saveLorebookToIndexDB(wiName, wiToAdd, JSON.parse(plaintext))
                     }
                 }
+                else
+                {
+                    waitingToast.hide()
+                    handleError(`${fileName}: JSON does not contain WI or lorebook`)
+                }
             }
         }
     }
 
 
-    let dragIcon = createIcon("Drag characters, saves, lorebooks or world info here to add")
+    let dragIcon = createIcon("Drag characters, saves, lorebooks, world info or PDFs here to add")
     getContainerForType("Drop zone").appendChild(dragIcon);
     getContainerForType("Drop zone").addEventListener(
         "dragover",
@@ -262,13 +284,17 @@ let showCharacterList = async () => {
             if (files && files.length > 0) {
                 e.preventDefault();
                 e.stopPropagation();
-                let allowedTypes = ["image/png", "image/webp", "application/json"]
+                let allowedTypes = ["image/png", "image/webp", "application/json", "text/plain", "application/pdf"]
                 let validFiles = [...files].filter(file => {
                     return file != null && file.name && file.name != "" && (file.type)
                 })
                 if (validFiles.length > 0) {
                     popupUtils.reset()
                     fileInputToFiles(validFiles, uploadFileHandler)
+                }
+                else
+                {
+                    handleError("No valid files selected")
                 }
             };
         },
@@ -339,6 +365,13 @@ let showCharacterList = async () => {
         let wiEntryToString = (entry) => {
             return `Primary: ${entry?.key}\nSecondary: ${entry?.keysecondary}`;
         }
+        let downloadB64URL = (name, data) => {
+            let a = document.createElement("a");
+            a.href = data
+            a.download = `${name}`
+            a.click();
+            a.remove();
+        }
         for (let i = 0; i < allCharacterNames.length; i++) {
             let { name, thumbnail } = allCharacterNames[i], type = getTypeFromAllCharacterData(allCharacterNames[i]);
             let charIcon = createIcon(name, !!thumbnail ? `url(${thumbnail})` : undefined)
@@ -389,12 +422,7 @@ let showCharacterList = async () => {
                     }).button("Download character", async () => {
                         popupUtils.reset()
                         let charData = await getCharacterData(name), { image } = charData;
-                        let a = document.createElement("a");
-                        a.href = image
-                        a.download = `${name}.png`
-                        a.click();
-                        a.remove();
-                        updateCharacterListFromAll()
+                        downloadB64URL(`${name}.png`, image)
                     }).button("Delete character", async () => {
                         popupUtils.reset()
                         msgboxYesNo("Are you sure you wish to delete?", "Character manager", async () => {
@@ -423,6 +451,28 @@ let showCharacterList = async () => {
                         let wiToAdd = charData.data;
                         current_wi = current_wi.filter(wi => wi?.folder !== name)
                         current_wi.push(...wiToAdd)
+                    }).button("Download world info", async () => {
+                        popupUtils.reset()
+                        let charData = await getCharacterData(name), { originalData } = charData;
+                        if (!!originalData)
+                        {
+                            try
+                            {
+                                let bytes = new TextEncoder().encode(JSON.stringify(originalData)), text = "";
+                                for (var i = 0; i < Math.ceil(bytes.length / 32768.0); i++) {
+                                    text += String.fromCharCode.apply(null, bytes.slice(i * 32768, Math.min((i + 1) * 32768, bytes.length)))
+                                }
+                                downloadB64URL(`${name}.json`, `data:application/json;base64,${btoa(text)}`)
+                            }
+                            catch (e)
+                            {
+                                handleError(e)
+                            }
+                        }
+                        else
+                        {
+                            handleError("Could not download file")
+                        }
                     }).button("Delete world info", async () => {
                         popupUtils.reset()
                         msgboxYesNo("Are you sure you wish to delete?", "Character manager", async () => {
@@ -474,7 +524,69 @@ let showCharacterList = async () => {
                         waitingToast.setText(`Overwriting data ${name}`)
                         let data = generate_savefile(true, true, true);
                         saveKLiteSaveToIndexDB(name, data);
+                    }).button("Download save", async () => {
+                        popupUtils.reset()
+                        let charData = await getCharacterData(name), { data } = charData;
+                        if (!!data) {
+                            try {
+                                let bytes = new TextEncoder().encode(JSON.stringify(data)), text = "";
+                                for (var i = 0; i < Math.ceil(bytes.length / 32768.0); i++) {
+                                    text += String.fromCharCode.apply(null, bytes.slice(i * 32768, Math.min((i + 1) * 32768, bytes.length)))
+                                }
+                                downloadB64URL(`${name}.json`, `data:application/json;base64,${btoa(text)}`)
+                            }
+                            catch (e) {
+                                handleError(e)
+                            }
+                        }
+                        else {
+                            handleError("Could not download file")
+                        }
                     }).button("Delete save", async () => {
+                        popupUtils.reset()
+                        msgboxYesNo("Are you sure you wish to delete?", "Character manager", async () => {
+                            allCharacterNames = allCharacterNames.filter(c => c.name !== name)
+                            await indexeddb_save(`character_${name}`)
+                            updateCharacterListFromAll()
+                        })
+                    }).button("Close", () => popupUtils.reset()).show();
+                }
+                else if (type === "Document") {
+                    let contents = document.createElement("span");
+                    contents = createDetailsContent(name);
+
+                    popupUtils.reset().title("Document Options").content(contents).button("Back", showCharacterList).button("Add to TextDB", async () => {
+                        popupUtils.reset()
+                        waitingToast.show()
+                        waitingToast.setText(`Extracting text to add to TextDB`)
+                        let charData = await getCharacterData(name)
+                        let extractedText = await documentParser.extractTextFromB64(charData.data)
+                        if (!!extractedText) {
+                            replaceDocumentFromTextDB(name, extractedText)
+                        }
+                        waitingToast.hide()
+                    }).button("Download document", async () => {
+                        popupUtils.reset()
+                        let charData = await getCharacterData(name), { data, dataType } = charData;
+                        if (!!data) {
+                            try {
+                                let ext = ".txt"
+                                switch (dataType)
+                                {
+                                    case "application/pdf":
+                                        ext = ".pdf"
+                                        break
+                                }
+                                downloadB64URL(`${name}${ext}`, data)
+                            }
+                            catch (e) {
+                                handleError(e)
+                            }
+                        }
+                        else {
+                            handleError("Could not download file")
+                        }
+                    }).button("Delete document", async () => {
                         popupUtils.reset()
                         msgboxYesNo("Are you sure you wish to delete?", "Character manager", async () => {
                             allCharacterNames = allCharacterNames.filter(c => c.name !== name)
@@ -498,7 +610,7 @@ let showCharacterList = async () => {
             popupUtils.reset()
             promptUserForLocalFile(async (result) => {
                 uploadFileHandler(result)
-            }, [".png", ".webp", ".json"], true)
+            }, [".png", ".webp", ".json", ".txt", ".pdf"], true)
         }).button("Add current save", () => {
             popupUtils.reset()
             inputBox("Enter a Filename", "Save File", "", "Input Filename", () => {

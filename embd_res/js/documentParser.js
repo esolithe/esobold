@@ -28,31 +28,34 @@ class DocumentParser {
         }
         promptUserForLocalFile(async (fileDetails) => {
             let { file, fileName, ext, content } = fileDetails
-            let extractedText = undefined
-
-            if (content.startsWith("data:image")) {
-                let analysisPrompt = "Perform OCR on the provided image."
-                extractedText = await generateAndGetTextFromPrompt(`${createInstructPrompt(analysisPrompt)}${instructendplaceholder}${!!localsettings?.inject_jailbreak_instruct ? localsettings.custom_jailbreak_text : ""}`, undefined, [content.split(",")[1]])
-            }
-            else if (content.startsWith("data:application/json") && tryImportLorebookAsTextDB(content)) {
-                return
-            }
-            else if (content.startsWith("data:text/")) {
-                try {
-                    extractedText = atob(content.split(",")[1])
-                }
-                catch (e) {
-                    console.error(e)
-                }
-            }
-            else {
-                extractedText = (await this.extractTextFromDocument(content))?.text
-            }
-
+            let extractedText = await this.extractTextFromDocument(content)
             if (!!extractedText) {
                 replaceDocumentFromTextDB(fileName, extractedText)
             }
         })
     }
+
+    async extractTextFromB64(content) {
+        let extractedText = undefined
+        if (content.startsWith("data:image")) {
+            let analysisPrompt = "Perform OCR on the provided image."
+            extractedText = await generateAndGetTextFromPrompt(`${createInstructPrompt(analysisPrompt)}${instructendplaceholder}${!!localsettings?.inject_jailbreak_instruct ? localsettings.custom_jailbreak_text : ""}`, undefined, [content.split(",")[1]])
+        }
+        else if (content.startsWith("data:application/json") && tryImportLorebookAsTextDB(content)) {
+            return
+        }
+        else if (content.startsWith("data:text/")) {
+            try {
+                extractedText = atob(content.split(",")[1])
+            }
+            catch (e) {
+                console.error(e)
+            }
+        }
+        else {
+            extractedText = (await this.extractTextFromDocument(content))?.text
+        }
+        return extractedText
+    }
 }
-document.documentParser = new DocumentParser()
+window.documentParser = new DocumentParser()
