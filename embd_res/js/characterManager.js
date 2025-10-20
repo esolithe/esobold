@@ -48,10 +48,10 @@ let putAllCharacterManagerData = () => {
                     password = password.trim()
                     isEncrypted = true
                 }
-                waitingToast.show()
                 let allTasks = await Promise.all(allCharacterNames.map(async c => {
                     let { name, type, thumbnail } = c, data = await getCharacterData(name);
                     waitingToast.setText(`Sending data ${name}`)
+                    waitingToast.show()
                     if (thumbnail !== undefined) {
                         data.thumbnail = thumbnail
                     }
@@ -117,10 +117,10 @@ let loadAllCharacterManagerData = () => {
                 return value.typeName === "Manager"
             })
 
-            waitingToast.show()
             await Promise.all(managerSaves.map(async entry => {
                 let [key, value] = entry
                 waitingToast.setText(`Receiving data ${value.name}`)
+                waitingToast.show()
                 await fetch(`${custom_kobold_endpoint}/api/data/get`, {
                     method: "POST",
                     headers: getAuthHeaders(),
@@ -260,8 +260,8 @@ let showCharacterList = async () => {
 
     let uploadFileHandler = function (result) {
         let { file, fileName, ext, content, plaintext, dataArr } = result;
-        waitingToast.show()
         waitingToast.setText(`Loading data ${fileName}`)
+        waitingToast.show()
         if (ext === ".png") {
             let arr = new Uint8Array(dataArr)
             let res = convertTavernPng(arr)
@@ -652,8 +652,8 @@ let showCharacterList = async () => {
                         kai_json_load(charData.data, false);
                     }).button("Overwrite save", async () => {
                         popupUtils.reset()
-                        waitingToast.show()
                         waitingToast.setText(`Overwriting data ${name}`)
+                        waitingToast.show()
                         let data = generate_savefile(true, true, true);
                         saveKLiteSaveToIndexDB(name, data);
                     }).button("Download save", async () => {
@@ -691,8 +691,8 @@ let showCharacterList = async () => {
 
                     popupUtils.reset().title("Document Options").content(contents).button("Back", showCharacterList).button("Add to TextDB", async () => {
                         popupUtils.reset()
-                        waitingToast.show()
                         waitingToast.setText(`Extracting text to add to TextDB`)
+                        waitingToast.show()
                         let charData = await getCharacterData(name), {extractedText} = charData;
                         if (extractedText !== undefined)
                         {
@@ -756,8 +756,8 @@ let showCharacterList = async () => {
             inputBox("Enter a Filename", "Save File", "", "Input Filename", () => {
                 let userinput = getInputBoxValue();
                 if (userinput != null && userinput.trim() != "") {
-                    waitingToast.show()
                     waitingToast.setText(`Saving data ${userinput}`)
+                    waitingToast.show()
                     let data = generate_savefile(true, true, true);
                     saveKLiteSaveToIndexDB(userinput, data);
                 }
@@ -775,8 +775,8 @@ let showCharacterList = async () => {
 
     popupUtils.buttonGroup("Bulk").button("Migrate old data", async () => {
             popupUtils.reset()
-            waitingToast.show()
             waitingToast.setText(`Migrating old data`)
+            waitingToast.show()
             await migrateOldData()
             waitingToast.setText(`Migration complete`)
             setTimeout(() => {
@@ -785,8 +785,8 @@ let showCharacterList = async () => {
         }).button("Delete all", async () => {
             popupUtils.reset()
             msgboxYesNo("Are you sure you wish to delete all data?", "Character manager", async () => {
-                waitingToast.show()
                 waitingToast.setText(`Deleting all data`)
+                waitingToast.show()
                 await Promise.all(allCharacterNames.map(elem => indexeddb_save(`character_${elem.name}`)))
                 allCharacterNames = []
                 await updateCharacterListFromAll()
