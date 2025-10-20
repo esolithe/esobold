@@ -161,9 +161,9 @@ Current version indicated by LITEVER below.
 	}
 	.btn-primary
 	{
-		color: var(--theme_color_text);
-    	background-color: var(--theme_color_main);
-		border-color: var(--theme_color_main);
+		color: var(--theme_color_input_text);
+    	background-color: var(--theme_color_input_bg);
+		border-color: var(--theme_color_border);
 	}
 	.btn-primary:hover,.btn-primary:focus,.btn-primary:active,.btn-primary:active:focus
 	{
@@ -304,7 +304,7 @@ Current version indicated by LITEVER below.
 		justify-content: center;
 		align-items: center;
 		width: 100px;
-		color:#cccccc
+		color: var(--theme_color_text)
 	}
 	.topmenu {
 		background-color: var(--theme_color_disabled_bg);
@@ -317,7 +317,7 @@ Current version indicated by LITEVER below.
 	}
 
 	.nav-link {
-		color: #f2f2f2;
+		color: var(--theme_color_tabs_text);
 		font-weight: bold;
 		margin-right: 5px;
 		background-color: var(--theme_color_disabled_bg);
@@ -325,11 +325,11 @@ Current version indicated by LITEVER below.
 	}
 	body:not(.connected) .nav-link:hover, body:not(.connected) .nav-link:focus, body:not(.connected) .nav-link:active
 	{
-		color: #f2f2f2;
+		color: var(--theme_color_tabs_text);
 		background-color: var(--theme_color_disabled_fg);
 	}
 	body.connected .nav-link{
-		color: #f2f2f2;
+		color: var(--theme_color_tabs_text);
 		background-color: var(--theme_color_topbtn);
 		border-color: var(--theme_color_border);
 	}
