@@ -23,7 +23,7 @@ display_settings = () => {
 }
 
 updateLegacySaveButtonState = () => {
-    let legacySaveButtons = [...document.querySelectorAll("#topbtn_save_load, #topbtn_server_saves")]
+    let legacySaveButtons = [...document.querySelectorAll("#topbtn_save_load, #topbtn_server_saves, #topbtn_scenarios")]
     if (localsettings.legacySaveMechanisms) {
         legacySaveButtons.forEach(elem => elem.classList.remove("hidden"));
     }

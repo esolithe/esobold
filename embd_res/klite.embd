@@ -22397,7 +22397,7 @@ Current version indicated by LITEVER below.
 			} else {
 				document.getElementById("topbtn_newgame").classList.remove("hidden");
 				// document.getElementById("topbtn_save_load").classList.remove("hidden");
-				document.getElementById("topbtn_scenarios").classList.remove("hidden");
+				// document.getElementById("topbtn_scenarios").classList.remove("hidden");
 				document.getElementById("topbtn_quickplay").classList.add("hidden");
 			}
 		}
