@@ -10016,7 +10016,7 @@ Current version indicated by LITEVER below.
 			}
 		}
 	}
-	function confirm_scenario_verify()
+	function confirm_scenario_verify(confirmCallback = confirm_scenario)
 	{
 		if(temp_scenario.show_warning==true && localsettings.passed_ai_warning==false && passed_ai_warning_local==false)
 		{
@@ -10031,7 +10031,7 @@ Current version indicated by LITEVER below.
 				let userinput = getInputBoxValue().toLowerCase().trim();
 				if(userinput.includes("understand"))
 				{
-					confirm_scenario();
+					confirmCallback();
 					localsettings.passed_ai_warning = true; //remember flag for session
 					passed_ai_warning_local = true;
 				}
@@ -10042,7 +10042,7 @@ Current version indicated by LITEVER below.
 				localsettings.passed_ai_warning = true; //remember flag for session
 				passed_ai_warning_local = true;
 			}
-			confirm_scenario();
+			confirmCallback();
 		}
 	}
 	function confirm_scenario()
