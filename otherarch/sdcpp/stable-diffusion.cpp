@@ -145,6 +145,17 @@ public:
         ggml_backend_free(backend);
     }
 
+    std::string toLowerCase(const std::string& str) {
+        std::string result;
+        std::locale loc;
+
+        for (char ch : str) {
+            result += std::tolower(ch, loc); // Use locale-aware tolower
+        }
+
+        return result;
+    }
+
     void init_backend() {
 #ifdef SD_USE_CUDA
         LOG_DEBUG("Using CUDA backend");
@@ -202,6 +213,9 @@ public:
         init_backend();
 
         std::string taesd_path_fixed = taesd_path;
+        std::string t5_path_fixed = SAFE_STR(sd_ctx_params->t5xxl_path);
+        std::string clipl_path_fixed = SAFE_STR(sd_ctx_params->clip_l_path);
+        std::string clipg_path_fixed = SAFE_STR(sd_ctx_params->clip_g_path);
 
         ModelLoader model_loader;
 
@@ -231,39 +245,64 @@ public:
         bool iswan = (tempver==VERSION_WAN2 || tempver==VERSION_WAN2_2_I2V || tempver==VERSION_WAN2_2_TI2V);
         bool isqwenimg = (tempver==VERSION_QWEN_IMAGE);
 
-        if (strlen(SAFE_STR(sd_ctx_params->clip_l_path)) > 0) {
-            LOG_INFO("loading clip_l from '%s'", sd_ctx_params->clip_l_path);
+        //kcpp qol fallback: if qwen image, and they loaded the qwen2vl as t5 by mistake
+        if(isqwenimg && t5_path_fixed!="")
+        {
+            if(clipl_path_fixed=="" && clipg_path_fixed=="")
+            {
+                clipl_path_fixed = t5_path_fixed;
+                t5_path_fixed = "";
+            }
+            else if(clipl_path_fixed=="" && clipg_path_fixed!="")
+            {
+                clipl_path_fixed = t5_path_fixed;
+                t5_path_fixed = "";
+            }
+            else if(clipl_path_fixed!="" && clipg_path_fixed=="")
+            {
+                //very tricky case. see if we can tell if clipl is an mmproj, if so move to right place
+                if(toLowerCase(clipl_path_fixed).find("mmproj") != std::string::npos)
+                {
+                    clipg_path_fixed = clipl_path_fixed;
+                    clipl_path_fixed = t5_path_fixed;
+                    t5_path_fixed = "";
+                }
+            }
+        }
+
+        if (clipl_path_fixed!="") {
+            LOG_INFO("loading clip_l from '%s'", clipl_path_fixed.c_str());
             std::string prefix = is_unet ? "cond_stage_model.transformer." : "text_encoders.clip_l.transformer.";
             if(iswan)
             {
                 prefix = "cond_stage_model.transformer.";
-                LOG_INFO("swap clip_vision from '%s'", sd_ctx_params->clip_l_path);
+                LOG_INFO("swap clip_vision from '%s'", clipl_path_fixed.c_str());
             }
             if(isqwenimg)
             {
                 prefix = "text_encoders.qwen2vl.";
-                LOG_INFO("swap qwen2vl from '%s'", sd_ctx_params->clip_l_path);
+                LOG_INFO("swap qwen2vl from '%s'", clipl_path_fixed.c_str());
             }
-            if (!model_loader.init_from_file(sd_ctx_params->clip_l_path, prefix)) {
-                LOG_WARN("loading clip_l from '%s' failed", sd_ctx_params->clip_l_path);
+            if (!model_loader.init_from_file(clipl_path_fixed.c_str(), prefix)) {
+                LOG_WARN("loading clip_l from '%s' failed", clipl_path_fixed.c_str());
             }
         }
 
-        if (strlen(SAFE_STR(sd_ctx_params->clip_g_path)) > 0) {
-            LOG_INFO("loading clip_g from '%s'", sd_ctx_params->clip_g_path);
+        if (clipg_path_fixed!="") {
+            LOG_INFO("loading clip_g from '%s'", clipg_path_fixed.c_str());
             std::string prefix = is_unet ? "cond_stage_model.1.transformer." : "text_encoders.clip_g.transformer.";
             if(iswan)
             {
                 prefix = "cond_stage_model.transformer.";
-                LOG_INFO("swap clip_vision from '%s'", sd_ctx_params->clip_g_path);
+                LOG_INFO("swap clip_vision from '%s'", clipg_path_fixed.c_str());
             }
             if(isqwenimg)
             {
                 prefix = "text_encoders.qwen2vl.visual.";
-                LOG_INFO("swap qwen2vl mmproj from '%s'", sd_ctx_params->clip_g_path);
+                LOG_INFO("swap qwen2vl mmproj from '%s'", clipg_path_fixed.c_str());
             }
-            if (!model_loader.init_from_file(sd_ctx_params->clip_g_path, prefix)) {
-                LOG_WARN("loading clip_g from '%s' failed", sd_ctx_params->clip_g_path);
+            if (!model_loader.init_from_file(clipg_path_fixed.c_str(), prefix)) {
+                LOG_WARN("loading clip_g from '%s' failed", clipg_path_fixed.c_str());
             }
         }
 
@@ -275,10 +314,10 @@ public:
             }
         }
 
-        if (strlen(SAFE_STR(sd_ctx_params->t5xxl_path)) > 0) {
-            LOG_INFO("loading t5xxl from '%s'", sd_ctx_params->t5xxl_path);
-            if (!model_loader.init_from_file(sd_ctx_params->t5xxl_path, "text_encoders.t5xxl.transformer.")) {
-                LOG_WARN("loading t5xxl from '%s' failed", sd_ctx_params->t5xxl_path);
+        if (t5_path_fixed!="") {
+            LOG_INFO("loading t5xxl from '%s'", t5_path_fixed.c_str());
+            if (!model_loader.init_from_file(t5_path_fixed.c_str(), "text_encoders.t5xxl.transformer.")) {
+                LOG_WARN("loading t5xxl from '%s' failed", t5_path_fixed.c_str());
             }
         }
 
@@ -309,7 +348,7 @@ public:
         if (version == VERSION_COUNT &&
             strlen(SAFE_STR(sd_ctx_params->model_path)) > 0 &&
             strlen(SAFE_STR(sd_ctx_params->diffusion_model_path)) == 0 &&
-            strlen(SAFE_STR(sd_ctx_params->t5xxl_path)) > 0 )
+            t5_path_fixed!="" )
         {
             bool endswithsafetensors = ends_with(sd_ctx_params->model_path, ".safetensors");
             if(endswithsafetensors && !model_loader.has_diffusion_model_tensors())
@@ -413,13 +452,6 @@ public:
 
         if (sd_version_is_sdxl(version)) {
             scale_factor = 0.13025f;
-            if (strlen(SAFE_STR(sd_ctx_params->vae_path)) == 0 && taesd_path_fixed.size() == 0) {
-                LOG_WARN(
-                    "!!!It looks like you are using SDXL model. "
-                    "If you find that the generated images are completely black, "
-                    "try specifying a different VAE. "
-                    "You can find it here: https://huggingface.co/madebyollin/sdxl-vae-fp16-fix/blob/main/sdxl_vae.safetensors");
-            }
         } else if (sd_version_is_sd3(version)) {
             scale_factor = 1.5305f;
         } else if (sd_version_is_flux(version)) {
@@ -437,17 +469,7 @@ public:
         bool clip_on_cpu = sd_ctx_params->keep_clip_on_cpu;
 
         {
-            clip_backend   = backend;
-            bool use_t5xxl = false;
-            if (sd_version_is_dit(version) && !sd_version_is_qwen_image(version)) {
-                use_t5xxl = true;
-            }
-            if (!clip_on_cpu && !ggml_backend_is_cpu(backend) && use_t5xxl) {
-                LOG_WARN(
-                    "!!!It appears that you are using the T5 model. Some backends may encounter issues with it."
-                    "If you notice that the generated images are completely black,"
-                    "try running the T5 model on the CPU using the --clip-on-cpu parameter.");
-            }
+            clip_backend = backend;
             if (clip_on_cpu && !ggml_backend_is_cpu(backend)) {
                 LOG_INFO("CLIP: Using CPU backend");
                 clip_backend = ggml_backend_cpu_init();
@@ -609,6 +631,15 @@ public:
                 if (sd_ctx_params->vae_conv_direct) {
                     LOG_INFO("Using Conv2d direct in the vae model");
                     first_stage_model->enable_conv2d_direct();
+                }
+                if (version == VERSION_SDXL &&
+                    (strlen(SAFE_STR(sd_ctx_params->vae_path)) == 0 || sd_ctx_params->force_sdxl_vae_conv_scale)) {
+                    float vae_conv_2d_scale = 1.f / 32.f;
+                    LOG_WARN(
+                        "No VAE specified with --vae or --force-sdxl-vae-conv-scale flag set, "
+                        "using Conv2D scale %.3f",
+                        vae_conv_2d_scale);
+                    first_stage_model->set_conv2d_scale(vae_conv_2d_scale);
                 }
                 first_stage_model->alloc_params_buffer();
                 first_stage_model->get_param_tensors(tensors, "first_stage_model");
@@ -797,64 +828,102 @@ public:
                 ggml_backend_is_cpu(clip_backend) ? "RAM" : "VRAM");
         }
 
-        // check is_using_v_parameterization_for_sd2
-        if (sd_version_is_sd2(version)) {
-            if (is_using_v_parameterization_for_sd2(ctx, sd_version_is_inpaint(version))) {
-                is_using_v_parameterization = true;
-            }
-        } else if (sd_version_is_sdxl(version)) {
-            if (model_loader.tensor_storages_types.find("edm_vpred.sigma_max") != model_loader.tensor_storages_types.end()) {
-                // CosXL models
-                // TODO: get sigma_min and sigma_max values from file
-                is_using_edm_v_parameterization = true;
-            }
-            if (model_loader.tensor_storages_types.find("v_pred") != model_loader.tensor_storages_types.end()) {
-                is_using_v_parameterization = true;
-            }
-        } else if (version == VERSION_SVD) {
-            // TODO: V_PREDICTION_EDM
-            is_using_v_parameterization = true;
-        }
-
-        if (sd_version_is_sd3(version)) {
-            LOG_INFO("running in FLOW mode");
-            float shift = sd_ctx_params->flow_shift;
-            if (shift == INFINITY) {
-                shift = 3.0;
-            }
-            denoiser = std::make_shared<DiscreteFlowDenoiser>(shift);
-        } else if (sd_version_is_flux(version)) {
-            LOG_INFO("running in Flux FLOW mode");
-            float shift = 1.0f;  // TODO: validate
-            for (auto pair : model_loader.tensor_storages_types) {
-                if (pair.first.find("model.diffusion_model.guidance_in.in_layer.weight") != std::string::npos) {
-                    shift = 1.15f;
+        if (sd_ctx_params->prediction != DEFAULT_PRED) {
+            switch (sd_ctx_params->prediction) {
+                case EPS_PRED:
+                    LOG_INFO("running in eps-prediction mode");
+                    break;
+                case V_PRED:
+                    LOG_INFO("running in v-prediction mode");
+                    denoiser = std::make_shared<CompVisVDenoiser>();
+                    break;
+                case EDM_V_PRED:
+                    LOG_INFO("running in v-prediction EDM mode");
+                    denoiser = std::make_shared<EDMVDenoiser>();
+                    break;
+                case SD3_FLOW_PRED: {
+                    LOG_INFO("running in FLOW mode");
+                    float shift = sd_ctx_params->flow_shift;
+                    if (shift == INFINITY) {
+                        shift = 3.0;
+                    }
+                    denoiser = std::make_shared<DiscreteFlowDenoiser>(shift);
                     break;
                 }
+                case FLUX_FLOW_PRED: {
+                    LOG_INFO("running in Flux FLOW mode");
+                    float shift = sd_ctx_params->flow_shift;
+                    if (shift == INFINITY) {
+                        shift = 3.0;
+                    }
+                    denoiser = std::make_shared<FluxFlowDenoiser>(shift);
+                    break;
+                }
+                default: {
+                    LOG_ERROR("Unknown parametrization %i", sd_ctx_params->prediction);
+                    return false;
+                }
             }
-            denoiser = std::make_shared<FluxFlowDenoiser>(shift);
-        } else if (sd_version_is_wan(version)) {
-            LOG_INFO("running in FLOW mode");
-            float shift = sd_ctx_params->flow_shift;
-            if (shift == INFINITY) {
-                shift = 5.0;
-            }
-            denoiser = std::make_shared<DiscreteFlowDenoiser>(shift);
-        } else if (sd_version_is_qwen_image(version)) {
-            LOG_INFO("running in FLOW mode");
-            float shift = sd_ctx_params->flow_shift;
-            if (shift == INFINITY) {
-                shift = 3.0;
-            }
-            denoiser = std::make_shared<DiscreteFlowDenoiser>(shift);
-        } else if (is_using_v_parameterization) {
-            LOG_INFO("running in v-prediction mode");
-            denoiser = std::make_shared<CompVisVDenoiser>();
-        } else if (is_using_edm_v_parameterization) {
-            LOG_INFO("running in v-prediction EDM mode");
-            denoiser = std::make_shared<EDMVDenoiser>();
         } else {
-            LOG_INFO("running in eps-prediction mode");
+            if (sd_version_is_sd2(version)) {
+                // check is_using_v_parameterization_for_sd2
+                if (is_using_v_parameterization_for_sd2(ctx, sd_version_is_inpaint(version))) {
+                    is_using_v_parameterization = true;
+                }
+            } else if (sd_version_is_sdxl(version)) {
+                if (model_loader.tensor_storages_types.find("edm_vpred.sigma_max") != model_loader.tensor_storages_types.end()) {
+                    // CosXL models
+                    // TODO: get sigma_min and sigma_max values from file
+                    is_using_edm_v_parameterization = true;
+                }
+                if (model_loader.tensor_storages_types.find("v_pred") != model_loader.tensor_storages_types.end()) {
+                    is_using_v_parameterization = true;
+                }
+            } else if (version == VERSION_SVD) {
+                // TODO: V_PREDICTION_EDM
+                is_using_v_parameterization = true;
+            }
+
+            if (sd_version_is_sd3(version)) {
+                LOG_INFO("running in FLOW mode");
+                float shift = sd_ctx_params->flow_shift;
+                if (shift == INFINITY) {
+                    shift = 3.0;
+                }
+                denoiser = std::make_shared<DiscreteFlowDenoiser>(shift);
+            } else if (sd_version_is_flux(version)) {
+                LOG_INFO("running in Flux FLOW mode");
+                float shift = 1.0f;  // TODO: validate
+                for (auto pair : model_loader.tensor_storages_types) {
+                    if (pair.first.find("model.diffusion_model.guidance_in.in_layer.weight") != std::string::npos) {
+                        shift = 1.15f;
+                        break;
+                    }
+                }
+                denoiser = std::make_shared<FluxFlowDenoiser>(shift);
+            } else if (sd_version_is_wan(version)) {
+                LOG_INFO("running in FLOW mode");
+                float shift = sd_ctx_params->flow_shift;
+                if (shift == INFINITY) {
+                    shift = 5.0;
+                }
+                denoiser = std::make_shared<DiscreteFlowDenoiser>(shift);
+            } else if (sd_version_is_qwen_image(version)) {
+                LOG_INFO("running in FLOW mode");
+                float shift = sd_ctx_params->flow_shift;
+                if (shift == INFINITY) {
+                    shift = 3.0;
+                }
+                denoiser = std::make_shared<DiscreteFlowDenoiser>(shift);
+            } else if (is_using_v_parameterization) {
+                LOG_INFO("running in v-prediction mode");
+                denoiser = std::make_shared<CompVisVDenoiser>();
+            } else if (is_using_edm_v_parameterization) {
+                LOG_INFO("running in v-prediction EDM mode");
+                denoiser = std::make_shared<EDMVDenoiser>();
+            } else {
+                LOG_INFO("running in eps-prediction mode");
+            }
         }
 
         auto comp_vis_denoiser = std::dynamic_pointer_cast<CompVisDenoiser>(denoiser);
@@ -909,7 +978,9 @@ public:
                 denoiser->scheduler = std::make_shared<SmoothStepSchedule>();
                 break;
             case DEFAULT:
-                // Don't touch anything.
+                // Reset back to discrete
+                LOG_INFO("running with discrete scheduler");
+                denoiser->scheduler = std::make_shared<DiscreteSchedule>();
                 break;
             default:
                 LOG_ERROR("Unknown scheduler %i", scheduler);
@@ -1240,7 +1311,7 @@ public:
         std::vector<int> skip_layers(guidance.slg.layers, guidance.slg.layers + guidance.slg.layer_count);
 
         float cfg_scale     = guidance.txt_cfg;
-        float img_cfg_scale = guidance.img_cfg;
+        float img_cfg_scale = isfinite(guidance.img_cfg) ? guidance.img_cfg : guidance.txt_cfg;
         float slg_scale     = guidance.slg.scale;
 
         if (img_cfg_scale != cfg_scale && !sd_version_is_inpaint_or_unet_edit(version)) {
@@ -1284,11 +1355,12 @@ public:
         }
         struct ggml_tensor* denoised = ggml_dup_tensor(work_ctx, x);
 
+        int64_t t0 = ggml_time_us();
+
         auto denoise = [&](ggml_tensor* input, float sigma, int step) -> ggml_tensor* {
-            if (step == 1) {
+            if (step == 1 || step == -1) {
                 pretty_progress(0, (int)steps, 0);
             }
-            int64_t t0 = ggml_time_us();
 
             std::vector<float> scaling = denoiser->get_scalings(sigma);
             GGML_ASSERT(scaling.size() == 3);
@@ -1442,8 +1514,9 @@ public:
             }
 
             int64_t t1 = ggml_time_us();
-            if (step > 0) {
-                pretty_progress(step, (int)steps, (t1 - t0) / 1000000.f);
+            if (step > 0 || step == -(int)steps) {
+                int showstep = std::abs(step);
+                pretty_progress(showstep, (int)steps, (t1 - t0) / 1000000.f / showstep);
                 // LOG_INFO("step %d sampling completed taking %.2fs", step, (t1 - t0) * 1.0f / 1000000);
             }
             if (denoise_mask != nullptr) {
@@ -1584,19 +1657,19 @@ public:
         if (vae_tiling_params.enabled && !encode_video) {
             // TODO wan2.2 vae support?
             int C = sd_version_is_dit(version) ? 16 : 4;
-            int NE2, NE3;
+            int ne2;
+            int ne3;
             if (sd_version_is_qwen_image(version)) {
-                NE2 = x->ne[3];
-                NE3 = C;
-            }
-            else {
+                ne2 = 1;
+                ne3 = C * x->ne[3];
+            } else {
                 if (!use_tiny_autoencoder) {
                     C *= 2;
                 }
-                NE2 = C;
-                NE3 = x->ne[3];
+                ne2 = C;
+                ne3 = x->ne[3];
             }
-            result = ggml_new_tensor_4d(work_ctx, GGML_TYPE_F32, W, H, NE2, NE3);
+            result = ggml_new_tensor_4d(work_ctx, GGML_TYPE_F32, W, H, ne2, ne3);
         }
 
         if (sd_version_is_qwen_image(version)) {
@@ -1870,6 +1943,31 @@ enum scheduler_t str_to_schedule(const char* str) {
     return SCHEDULE_COUNT;
 }
 
+const char* prediction_to_str[] = {
+    "default",
+    "eps",
+    "v",
+    "edm_v",
+    "sd3_flow",
+    "flux_flow",
+};
+
+const char* sd_prediction_name(enum prediction_t prediction) {
+    if (prediction < PREDICTION_COUNT) {
+        return prediction_to_str[prediction];
+    }
+    return NONE_STR;
+}
+
+enum prediction_t str_to_prediction(const char* str) {
+    for (int i = 0; i < PREDICTION_COUNT; i++) {
+        if (!strcmp(str, prediction_to_str[i])) {
+            return (enum prediction_t)i;
+        }
+    }
+    return PREDICTION_COUNT;
+}
+
 void sd_ctx_params_init(sd_ctx_params_t* sd_ctx_params) {
     *sd_ctx_params                         = {};
     sd_ctx_params->vae_decode_only         = true;
@@ -1877,6 +1975,7 @@ void sd_ctx_params_init(sd_ctx_params_t* sd_ctx_params) {
     sd_ctx_params->n_threads               = sd_get_num_physical_cores();
     sd_ctx_params->wtype                   = SD_TYPE_COUNT;
     sd_ctx_params->rng_type                = CUDA_RNG;
+    sd_ctx_params->prediction              = DEFAULT_PRED;
     sd_ctx_params->offload_params_to_cpu   = false;
     sd_ctx_params->keep_clip_on_cpu        = false;
     sd_ctx_params->keep_control_net_on_cpu = false;
@@ -1916,6 +2015,7 @@ char* sd_ctx_params_to_str(const sd_ctx_params_t* sd_ctx_params) {
              "n_threads: %d\n"
              "wtype: %s\n"
              "rng_type: %s\n"
+             "prediction: %s\n"
              "offload_params_to_cpu: %s\n"
              "keep_clip_on_cpu: %s\n"
              "keep_control_net_on_cpu: %s\n"
@@ -1944,6 +2044,7 @@ char* sd_ctx_params_to_str(const sd_ctx_params_t* sd_ctx_params) {
              sd_ctx_params->n_threads,
              sd_type_name(sd_ctx_params->wtype),
              sd_rng_type_name(sd_ctx_params->rng_type),
+             sd_prediction_name(sd_ctx_params->prediction),
              BOOL_STR(sd_ctx_params->offload_params_to_cpu),
              BOOL_STR(sd_ctx_params->keep_clip_on_cpu),
              BOOL_STR(sd_ctx_params->keep_control_net_on_cpu),
@@ -1990,7 +2091,9 @@ char* sd_sample_params_to_str(const sd_sample_params_t* sample_params) {
              "eta: %.2f, "
              "shifted_timestep: %d)",
              sample_params->guidance.txt_cfg,
-             sample_params->guidance.img_cfg,
+             isfinite(sample_params->guidance.img_cfg)
+                 ? sample_params->guidance.img_cfg
+                 : sample_params->guidance.txt_cfg,
              sample_params->guidance.distilled_guidance,
              sample_params->guidance.slg.layer_count,
              sample_params->guidance.slg.layer_start,
@@ -2039,6 +2142,7 @@ char* sd_img_gen_params_to_str(const sd_img_gen_params_t* sd_img_gen_params) {
              "seed: %" PRId64
              "batch_count: %d\n"
              "ref_images_count: %d\n"
+             "auto_resize_ref_image: %s\n"
              "increase_ref_index: %s\n"
              "control_strength: %.2f\n"
              "photo maker: {style_strength = %.2f, id_images_count = %d, id_embed_path = %s}\n"
@@ -2053,6 +2157,7 @@ char* sd_img_gen_params_to_str(const sd_img_gen_params_t* sd_img_gen_params) {
              sd_img_gen_params->seed,
              sd_img_gen_params->batch_count,
              sd_img_gen_params->ref_images_count,
+             BOOL_STR(sd_img_gen_params->auto_resize_ref_image),
              BOOL_STR(sd_img_gen_params->increase_ref_index),
              sd_img_gen_params->control_strength,
              sd_img_gen_params->pm_params.style_strength,
@@ -2150,6 +2255,10 @@ sd_image_t* generate_image_internal(sd_ctx_t* sd_ctx,
         // by a third party with a seed <0, let's incorporate randomization here.
         srand((int)time(NULL));
         seed = rand();
+    }
+
+    if (!isfinite(guidance.img_cfg)) {
+        guidance.img_cfg = guidance.txt_cfg;
     }
 
     // for (auto v : sigmas) {
@@ -2689,14 +2798,20 @@ sd_image_t* generate_image(sd_ctx_t* sd_ctx, const sd_img_gen_params_t* sd_img_g
     std::vector<ggml_tensor*> ref_latents;
     for (int i = 0; i < ref_images.size(); i++) {
         ggml_tensor* img;
-        if (sd_version_is_qwen_image(sd_ctx->sd->version)) {
+        if (sd_img_gen_params->auto_resize_ref_image) {
+            LOG_DEBUG("auto resize ref images");
             sd_image_f32_t ref_image = sd_image_t_to_sd_image_f32_t(*ref_images[i]);
             int VAE_IMAGE_SIZE       = std::min(1024 * 1024, width * height);
             double vae_width         = sqrt(VAE_IMAGE_SIZE * ref_image.width / ref_image.height);
             double vae_height        = vae_width * ref_image.height / ref_image.width;
 
-            vae_height = round(vae_height / 32) * 32;
-            vae_width  = round(vae_width / 32) * 32;
+            int factor = 16;
+            if (sd_version_is_qwen_image(sd_ctx->sd->version)) {
+                factor = 32;
+            }
+
+            vae_height = round(vae_height / factor) * factor;
+            vae_width  = round(vae_width / factor) * factor;
 
             sd_image_f32_t resized_image = resize_sd_image_f32_t(ref_image, static_cast<int>(vae_width), static_cast<int>(vae_height));
             free(ref_image.data);

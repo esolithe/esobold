@@ -17,7 +17,7 @@
 #include "model.h"
 #include "stable-diffusion.h"
 #include "util.h"
-#ifdef KCPP_BAKE_SD_VOCAB
+#ifndef KCPP_NO_BAKE_SD_VOCAB
 #include "vocab.hpp"
 #include "vocab_qwen.hpp"
 #include "vocab_umt5.hpp"
@@ -244,6 +244,17 @@ std::unordered_map<std::string, std::string> qwenvl_vision_name_map{
     {"ln1.", "norm1."},
     {"ln2.", "norm2."},
 };
+
+std::string kcpp_fix_wrong_img_tensor_name(const std::string& name) //kcpp function that fixes common wrong tensor names
+{
+    if (starts_with(name, "text_encoders.qwen25_7b.transformer.model.")) {
+        return "text_encoders.qwen2vl.model." + name.substr(strlen("text_encoders.qwen25_7b.transformer.model."));
+    }
+    if (starts_with(name, "text_encoders.qwen25_7b.transformer.visual.")) {
+        return "text_encoders.qwen2vl.visual." + name.substr(strlen("text_encoders.qwen25_7b.transformer.visual."));
+    }
+    return name;
+}
 
 std::string convert_cond_model_name(const std::string& name) {
     std::string new_name = name;
@@ -1343,6 +1354,8 @@ bool ModelLoader::init_from_safetensors_file(const std::string& file_path, const
             name = prefix + name;
         }
 
+        name = kcpp_fix_wrong_img_tensor_name(name);
+
         TensorStorage tensor_storage(name, type, ne, n_dims, file_index, ST_HEADER_SIZE_LEN + header_size_ + begin);
         tensor_storage.reverse_ne();
 
@@ -2043,7 +2056,7 @@ void ModelLoader::set_wtype_override(ggml_type wtype, std::string prefix) {
 }
 
 std::string ModelLoader::load_merges() {
-#ifdef KCPP_BAKE_SD_VOCAB
+#ifndef KCPP_NO_BAKE_SD_VOCAB
     std::string merges_utf8_str(reinterpret_cast<const char*>(merges_utf8_c_str), sizeof(merges_utf8_c_str));
     return merges_utf8_str;
 #else
@@ -2052,7 +2065,7 @@ std::string ModelLoader::load_merges() {
 }
 
 std::string ModelLoader::load_qwen2_merges() {
-#ifdef KCPP_BAKE_SD_VOCAB
+#ifndef KCPP_NO_BAKE_SD_VOCAB
     std::string merges_utf8_str(reinterpret_cast<const char*>(qwen2_merges_utf8_c_str), sizeof(qwen2_merges_utf8_c_str));
     return merges_utf8_str;
 #else
@@ -2061,7 +2074,7 @@ std::string ModelLoader::load_qwen2_merges() {
 }
 
 std::string ModelLoader::load_t5_tokenizer_json() {
-#ifdef KCPP_BAKE_SD_VOCAB
+#ifndef KCPP_NO_BAKE_SD_VOCAB
     std::string json_str(reinterpret_cast<const char*>(t5_tokenizer_json_str), sizeof(t5_tokenizer_json_str));
     return json_str;
 #else
@@ -2070,7 +2083,7 @@ std::string ModelLoader::load_t5_tokenizer_json() {
 }
 
 std::string ModelLoader::load_umt5_tokenizer_json() {
-#ifdef KCPP_BAKE_SD_VOCAB
+#ifndef KCPP_NO_BAKE_SD_VOCAB
     std::string json_str(reinterpret_cast<const char*>(umt5_tokenizer_json_str), sizeof(umt5_tokenizer_json_str));
     return json_str;
 #else

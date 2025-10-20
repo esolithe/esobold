@@ -119,6 +119,7 @@ const char * llm_type_name(llm_type type) {
         case LLM_TYPE_17B_16E:       return "17Bx16E (Scout)";
         case LLM_TYPE_17B_128E:      return "17Bx128E (Maverick)";
         case LLM_TYPE_A13B:          return "A13B";
+        case LLM_TYPE_7B_A1B:        return "7B.A1B";
         case LLM_TYPE_8B_A1B:        return "8B.A1B";
         case LLM_TYPE_21B_A3B:       return "21B.A3B";
         case LLM_TYPE_30B_A3B:       return "30B.A3B";
@@ -426,11 +427,8 @@ struct llama_model::impl {
     llama_mlocks mlock_bufs;
     llama_mlocks mlock_mmaps;
 
-    // contexts where the model tensors metadata is stored
-    std::vector<ggml_context_ptr> ctxs;
-
-    // the model memory buffers for the tensor data
-    std::vector<ggml_backend_buffer_ptr> bufs;
+    // contexts where the model tensors metadata is stored as well ass the corresponding buffers:
+    std::vector<std::pair<ggml_context_ptr, ggml_backend_buffer_ptr>> ctxs_bufs;
 
     buft_list_t cpu_buft_list;
     std::map<ggml_backend_dev_t, buft_list_t> gpu_buft_list;
@@ -483,7 +481,8 @@ void llama_model::load_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_GENERAL_NAME, name, false);
 
     // everything past this point is not vocab-related
-    if (hparams.vocab_only) {
+    // for CLIP models, we only need to load tensors, no hparams
+    if (hparams.vocab_only || ml.get_arch() == LLM_ARCH_CLIP) {
         return;
     }
 
@@ -1850,8 +1849,10 @@ void llama_model::load_hparams(llama_model_loader & ml) {
 
                 ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS, hparams.f_norm_rms_eps);
 
-                switch (hparams.n_layer) {
-                    // TODO: Add llm type label (not sure this is useful)
+                switch (hparams.n_embd) {
+                    case 1536: type = LLM_TYPE_7B_A1B; break;
+                    case 2048: case 2560: type = LLM_TYPE_3B; break;
+                    case 4096: type = LLM_TYPE_32B; break;
                     default: type = LLM_TYPE_UNKNOWN;
                 }
 
@@ -2193,7 +2194,14 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
     max_n_tensors += n_layer*2; // duplicated rope freq tensors
     const size_t ctx_size = ggml_tensor_overhead()*max_n_tensors;
 
-    std::map<ggml_backend_buffer_type_t, ggml_context *> ctx_map;
+    // define a comparator for the buft -> ctx map to ensure that the order is well-defined:
+    struct ggml_backend_buft_comparator {
+        bool operator()(const ggml_backend_buffer_type_t & lhs, const ggml_backend_buffer_type_t & rhs) const {
+            return ggml_backend_buft_name(lhs) < ggml_backend_buft_name(rhs);
+        }
+    };
+    std::map<ggml_backend_buffer_type_t, ggml_context_ptr, ggml_backend_buft_comparator> ctx_map;
+
     auto ctx_for_buft = [&](ggml_backend_buffer_type_t buft) -> ggml_context * {
         auto it = ctx_map.find(buft);
         if (it == ctx_map.end()) {
@@ -2208,12 +2216,11 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
                 throw std::runtime_error(format("failed to create ggml context"));
             }
 
-            ctx_map[buft] = ctx;
-            pimpl->ctxs.emplace_back(ctx);
+            ctx_map.emplace(buft, ctx);
 
             return ctx;
         }
-        return it->second;
+        return it->second.get();
     };
 
     const auto TENSOR_DUPLICATED   = llama_model_loader::TENSOR_DUPLICATED;
@@ -6095,16 +6102,15 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
     pimpl->mappings.reserve(ml.mappings.size());
 
     // create the backend buffers
-    std::vector<std::pair<ggml_context *, llama_buf_map>> ctx_bufs;
-    ctx_bufs.reserve(ctx_map.size());
+    std::vector<std::pair<ggml_context *, llama_buf_map>> ctx_buf_maps;
+    ctx_buf_maps.reserve(ctx_map.size());
 
     // Ensure we have enough capacity for the maximum backend buffer we will potentially create
     const size_t n_max_backend_buffer = ctx_map.size() * ml.files.size();
-    pimpl->bufs.reserve(n_max_backend_buffer);
+    pimpl->ctxs_bufs.reserve(n_max_backend_buffer);
 
-    for (auto & it : ctx_map) {
-        ggml_backend_buffer_type_t buft = it.first;
-        ggml_context * ctx              = it.second;
+    for (auto & [buft, ctx_ptr] : ctx_map) {
+        ggml_context * ctx = ctx_ptr.get();
 
         // skip contexts without tensors
         if (ggml_get_first_tensor(ctx) == nullptr) {
@@ -6128,6 +6134,7 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
         bool buffer_from_host_ptr_supported = props.caps.buffer_from_host_ptr;
         bool is_default_buft = buft == ggml_backend_dev_buffer_type(dev);
 
+        ggml_backend_buffer_t buf = nullptr;
         if (ml.use_mmap && use_mmap_buffer && buffer_from_host_ptr_supported && is_default_buft) {
             for (uint32_t idx = 0; idx < ml.files.size(); idx++) {
                 // only the mmap region containing the tensors in the model is mapped to the backend buffer
@@ -6140,20 +6147,18 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
                     continue;
                 }
                 const size_t max_size = ggml_get_max_tensor_size(ctx);
-                ggml_backend_buffer_t buf = ggml_backend_dev_buffer_from_host_ptr(dev, (char *) addr + first, last - first, max_size);
+                buf = ggml_backend_dev_buffer_from_host_ptr(dev, (char *) addr + first, last - first, max_size);
                 if (buf == nullptr) {
                     throw std::runtime_error(format("unable to allocate %s buffer", ggml_backend_buft_name(buft)));
                 }
-                pimpl->bufs.emplace_back(buf);
                 buf_map.emplace(idx, buf);
             }
         }
         else {
-            ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx, buft);
+            buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx, buft);
             if (buf == nullptr) {
                 throw std::runtime_error(format("unable to allocate %s buffer", ggml_backend_buft_name(buft)));
             }
-            pimpl->bufs.emplace_back(buf);
             if (use_mlock && ggml_backend_buffer_is_host(buf)) {
                 pimpl->mlock_bufs.emplace_back(new llama_mlock);
                 auto & mlock_buf = pimpl->mlock_bufs.back();
@@ -6164,10 +6169,7 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
                 buf_map.emplace(idx, buf);
             }
         }
-
-        if (pimpl->bufs.empty()) {
-            throw std::runtime_error("failed to allocate buffer");
-        }
+        pimpl->ctxs_bufs.emplace_back(std::move(ctx_ptr), buf);
 
         for (auto & buf : buf_map) {
             // indicate that this buffer contains weights
@@ -6175,7 +6177,7 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
             ggml_backend_buffer_set_usage(buf.second, GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
         }
 
-        ctx_bufs.emplace_back(ctx, buf_map);
+        ctx_buf_maps.emplace_back(ctx, buf_map);
     }
 
     if (llama_supports_gpu_offload()) {
@@ -6193,22 +6195,20 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
     }
 
     // print memory requirements per buffer type
-    for (auto & buf : pimpl->bufs) {
+    for (auto & [_, buf] : pimpl->ctxs_bufs) {
         LLAMA_LOG_INFO("%s: %12s model buffer size = %8.2f MiB\n", __func__, ggml_backend_buffer_name(buf.get()), ggml_backend_buffer_get_size(buf.get()) / 1024.0 / 1024.0);
     }
 
     // populate tensors_by_name
-    for (auto & ctx : pimpl->ctxs) {
+    for (auto & [ctx, _] : pimpl->ctxs_bufs) {
         for (auto * cur = ggml_get_first_tensor(ctx.get()); cur != NULL; cur = ggml_get_next_tensor(ctx.get(), cur)) {
             tensors_by_name.emplace_back(ggml_get_name(cur), cur);
         }
     }
 
     // load tensor data
-    for (auto & it : ctx_bufs) {
-        ggml_context * ctx = it.first;
-        auto & bufs = it.second;
-        if (!ml.load_all_data(ctx, bufs, use_mlock ? &pimpl->mlock_mmaps : NULL, params.progress_callback, params.progress_callback_user_data)) {
+    for (auto & [ctx, buf_map] : ctx_buf_maps) {
+        if (!ml.load_all_data(ctx, buf_map, use_mlock ? &pimpl->mlock_mmaps : NULL, params.progress_callback, params.progress_callback_user_data)) {
             return false;
         }
     }
@@ -6248,8 +6248,8 @@ size_t llama_model::n_devices() const {
 
 std::map<ggml_backend_buffer_type_t, size_t> llama_model::memory_breakdown() const {
     std::map<ggml_backend_buffer_type_t, size_t> ret;
-    for (const ggml_backend_buffer_ptr & buf_ptr : pimpl->bufs) {
-        ret[ggml_backend_buffer_get_type(buf_ptr.get())] += ggml_backend_buffer_get_size(buf_ptr.get());
+    for (const auto & [_, buf] : pimpl->ctxs_bufs) {
+        ret[ggml_backend_buffer_get_type(buf.get())] += ggml_backend_buffer_get_size(buf.get());
     }
     return ret;
 }
@@ -11420,8 +11420,8 @@ struct llm_build_gemma3n_iswa : public llm_graph_context {
     }
 };
 
-struct llm_build_gemma_embedding_iswa : public llm_graph_context {
-    llm_build_gemma_embedding_iswa(const llama_model & model, const llm_graph_params & params) : llm_graph_context(params) {
+struct llm_build_gemma_embedding : public llm_graph_context {
+    llm_build_gemma_embedding(const llama_model & model, const llm_graph_params & params) : llm_graph_context(params) {
         const int64_t n_embd_head = hparams.n_embd_head_k;
 
         ggml_tensor * cur;
@@ -19732,7 +19732,7 @@ ggml_cgraph * llama_model::build_graph(const llm_graph_params & params) const {
             } break;
         case LLM_ARCH_GEMMA_EMBEDDING:
             {
-                llm = std::make_unique<llm_build_gemma_embedding_iswa>(*this, params);
+                llm = std::make_unique<llm_build_gemma_embedding>(*this, params);
             } break;
         case LLM_ARCH_STARCODER2:
             {
@@ -20075,6 +20075,7 @@ int32_t llama_n_head(const llama_model * model) {
 llama_rope_type llama_model_rope_type(const llama_model * model) {
     switch (model->arch) {
         // these models do not use RoPE
+        case LLM_ARCH_CLIP:
         case LLM_ARCH_GPT2:
         case LLM_ARCH_GPTJ:
         case LLM_ARCH_MPT:

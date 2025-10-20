@@ -4,7 +4,7 @@
 		Funnel,
 		AlertTriangle,
 		Brain,
-		Cog,
+		Code,
 		Monitor,
 		Sun,
 		Moon,
@@ -14,8 +14,7 @@
 	import { ChatSettingsFooter, ChatSettingsFields } from '$lib/components/app';
 	import * as Dialog from '$lib/components/ui/dialog';
 	import { ScrollArea } from '$lib/components/ui/scroll-area';
-	import { SETTING_CONFIG_DEFAULT } from '$lib/constants/settings-config';
-	import { config, updateMultipleConfig, resetConfig } from '$lib/stores/settings.svelte';
+	import { config, updateMultipleConfig } from '$lib/stores/settings.svelte';
 	import { setMode } from 'mode-watcher';
 	import type { Component } from 'svelte';
 
@@ -89,9 +88,59 @@
 			]
 		},
 		{
-			title: 'Samplers',
+			title: 'Sampling',
 			icon: Funnel,
 			fields: [
+				{
+					key: 'temperature',
+					label: 'Temperature',
+					type: 'input'
+				},
+				{
+					key: 'dynatemp_range',
+					label: 'Dynamic temperature range',
+					type: 'input'
+				},
+				{
+					key: 'dynatemp_exponent',
+					label: 'Dynamic temperature exponent',
+					type: 'input'
+				},
+				{
+					key: 'top_k',
+					label: 'Top K',
+					type: 'input'
+				},
+				{
+					key: 'top_p',
+					label: 'Top P',
+					type: 'input'
+				},
+				{
+					key: 'min_p',
+					label: 'Min P',
+					type: 'input'
+				},
+				{
+					key: 'xtc_probability',
+					label: 'XTC probability',
+					type: 'input'
+				},
+				{
+					key: 'xtc_threshold',
+					label: 'XTC threshold',
+					type: 'input'
+				},
+				{
+					key: 'typ_p',
+					label: 'Typical P',
+					type: 'input'
+				},
+				{
+					key: 'max_tokens',
+					label: 'Max tokens',
+					type: 'input'
+				},
 				{
 					key: 'samplers',
 					label: 'Samplers',
@@ -153,68 +202,17 @@
 					key: 'showThoughtInProgress',
 					label: 'Show thought in progress',
 					type: 'checkbox'
-				},
-				{
-					key: 'disableReasoningFormat',
-					label:
-						'Show raw LLM output without backend parsing and frontend Markdown rendering to inspect streaming across different models.',
-					type: 'checkbox'
 				}
 			]
 		},
 		{
-			title: 'Advanced',
-			icon: Cog,
+			title: 'Developer',
+			icon: Code,
 			fields: [
 				{
-					key: 'temperature',
-					label: 'Temperature',
-					type: 'input'
-				},
-				{
-					key: 'dynatemp_range',
-					label: 'Dynamic temperature range',
-					type: 'input'
-				},
-				{
-					key: 'dynatemp_exponent',
-					label: 'Dynamic temperature exponent',
-					type: 'input'
-				},
-				{
-					key: 'top_k',
-					label: 'Top K',
-					type: 'input'
-				},
-				{
-					key: 'top_p',
-					label: 'Top P',
-					type: 'input'
-				},
-				{
-					key: 'min_p',
-					label: 'Min P',
-					type: 'input'
-				},
-				{
-					key: 'xtc_probability',
-					label: 'XTC probability',
-					type: 'input'
-				},
-				{
-					key: 'xtc_threshold',
-					label: 'XTC threshold',
-					type: 'input'
-				},
-				{
-					key: 'typ_p',
-					label: 'Typical P',
-					type: 'input'
-				},
-				{
-					key: 'max_tokens',
-					label: 'Max tokens',
-					type: 'input'
+					key: 'disableReasoningFormat',
+					label: 'Show raw LLM output',
+					type: 'checkbox'
 				},
 				{
 					key: 'custom',
@@ -267,16 +265,13 @@
 	}
 
 	function handleReset() {
-		resetConfig();
+		localConfig = { ...config() };
 
-		localConfig = { ...SETTING_CONFIG_DEFAULT };
-
-		setMode(SETTING_CONFIG_DEFAULT.theme as 'light' | 'dark' | 'system');
-		originalTheme = SETTING_CONFIG_DEFAULT.theme as string;
+		setMode(localConfig.theme as 'light' | 'dark' | 'system');
+		originalTheme = localConfig.theme as string;
 	}
 
 	function handleSave() {
-		// Validate custom JSON if provided
 		if (localConfig.custom && typeof localConfig.custom === 'string' && localConfig.custom.trim()) {
 			try {
 				JSON.parse(localConfig.custom);
