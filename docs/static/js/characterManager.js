@@ -48,10 +48,10 @@ let putAllCharacterManagerData = () => {
                     password = password.trim()
                     isEncrypted = true
                 }
-                waitingToast.show()
                 let allTasks = await Promise.all(allCharacterNames.map(async c => {
                     let { name, type, thumbnail } = c, data = await getCharacterData(name);
                     waitingToast.setText(`Sending data ${name}`)
+                    waitingToast.show()
                     if (thumbnail !== undefined) {
                         data.thumbnail = thumbnail
                     }
@@ -117,10 +117,10 @@ let loadAllCharacterManagerData = () => {
                 return value.typeName === "Manager"
             })
 
-            waitingToast.show()
             await Promise.all(managerSaves.map(async entry => {
                 let [key, value] = entry
                 waitingToast.setText(`Receiving data ${value.name}`)
+                waitingToast.show()
                 await fetch(`${custom_kobold_endpoint}/api/data/get`, {
                     method: "POST",
                     headers: getAuthHeaders(),
@@ -224,6 +224,163 @@ let migrateOldData = async () => {
     }
 }
 
+let createSection = (containerElem, section, text) => {
+    if (!!text && text.length > 0) {
+        let sectionContainer = document.createElement("span");
+        sectionContainer.style = "width: 100%; display: flex; padding: 10px;";
+        let sectionTitle = document.createElement("span"), sectionElem;
+        sectionTitle.innerText = section;
+        sectionTitle.style = "padding-right: 5px; font-weight: bold;"
+        sectionContainer.appendChild(sectionTitle);
+        if (Array.isArray(text)) {
+            sectionElem = document.createElement("ul");
+            text.forEach(listContent => {
+                let listElem = document.createElement("li");
+                let summaryOfKey = listContent.length > maxLengthForSection ? `${listContent.substr(0, halfMaxLengthForSection).trim()}...${listContent.substr(-halfMaxLengthForSection).trim()}` : listContent.trim();
+                listElem.innerText = summaryOfKey
+                if (listContent.length !== summaryOfKey.length) {
+                    let isShown = false
+                    listElem.onclick = () => {
+                        isShown = !isShown
+                        listElem.innerText = isShown ? listContent : summaryOfKey
+                    }
+                    listElem.title = "Click to show / hide full content"
+                }
+                sectionElem.appendChild(listElem)
+            })
+        }
+        else {
+            sectionElem = document.createElement("span");
+            let summaryOfKey = text.length > maxLengthForSection ? `${text.substr(0, halfMaxLengthForSection).trim()}...${text.substr(-halfMaxLengthForSection).trim()}` : text.trim();
+            sectionElem.innerText = summaryOfKey
+            if (text.length !== summaryOfKey.length) {
+                let isShown = false
+                sectionElem.onclick = () => {
+                    isShown = !isShown
+                    sectionElem.innerText = isShown ? text : summaryOfKey
+                }
+                sectionElem.title = "Click to show / hide full content"
+            }
+        }
+        sectionContainer.appendChild(sectionElem);
+        containerElem.appendChild(sectionContainer);
+    }
+}
+
+let createDetailsContent = (name) => {
+    let contents = document.createElement("div");
+    contents.style.color = "white";
+    contents.style.padding = "5px";
+    let titleElem = document.createElement("span");
+    titleElem.classList.add("popuptitletext");
+    titleElem.innerText = name;
+    titleElem.style.borderBottom = "solid";
+    contents.appendChild(titleElem);
+    return contents;
+}
+
+let getScenariosAndLegacyServerSaves = async () => {
+    preview_temp_scenario = () => {
+
+        popupUtils.reset()
+        try {
+            let { memory, prompt, tempmemory, worldinfo, chatname, chatopponent, AI_portrait } = temp_scenario;
+            contents = createDetailsContent(temp_scenario.title);
+            let image = AI_portrait || temp_scenario?.image
+            if (!!image) {
+                let imageContainer = document.createElement("span"), imageElem = document.createElement("img");
+                imageElem.src = image;
+                imageElem.style = "height: 30%; width: 30%; border-radius: 10px;"
+                imageContainer.style = "width: 100%; display: flex; justify-content: space-around; padding: 10px;";
+                imageContainer.appendChild(imageElem);
+                contents.appendChild(imageContainer);
+            }
+            if (!!chatname) {
+                createSection(contents, "User", chatname);
+            }
+            if (!!chatopponent) {
+                createSection(contents, "Characters", chatopponent.split("||$||"));
+            }
+            createSection(contents, "Characters", memory);
+            createSection(contents, "Memory", memory);
+            createSection(contents, "Temporary memory", tempmemory);
+            createSection(contents, "First message", prompt);
+            createSection(contents, "World info", worldinfo?.map(entry => {
+                return wiEntryToString(entry);
+            }));
+
+            popupUtils.reset().title("Scenario Options").content(contents).css("min-height", "50%").css("min-width", "50%").button("Back", showCharacterList).button("Load scenario", async () => {
+                popupUtils.reset()
+                confirm_scenario_verify(() => {
+                    hide_popups();
+                    complete_load_scenario();
+                    temp_scenario = null;
+                })
+            }).show()
+        }
+        catch (e) {
+            handleError(e)
+        }
+    }
+
+    if (is_using_kcpp_with_server_saving())
+    {
+        // Clean up scenario DB and the scenario dropdown options
+        scenario_db = scenario_db.filter(scenario => !(scenario?.serverSave === true))
+        Array.from(scenarioDropdown.children).filter(elem => !/^\d+$/.test(elem.value)).forEach(elem => elem.remove())
+        serverSideTypes = []
+
+        await new Promise((resolve) => promptForAdminPassword(resolve));
+
+        let saves = await getServerSaves()
+        for (save in saves) {
+            if (!!saves[save].name && saves[save]?.typeName !== "Manager") {
+                let name = saves[save].name, isPublic = saves[save].isPublic, isEncrypted = saves[save].isEncrypted
+                let displayText = `${name} ${!!isPublic ? "(Public)" : "(Private)"} ${!!isEncrypted ? "🔒" : ""}`
+                let typeName = saves[save].typeName
+                let scenario = {
+                    title: displayText,
+                    desc: displayText,
+                    serverSave: true,
+                    serverSaveData: saves[save],
+                    serverSaveTypeName: typeName
+                }
+
+                if (!!saves[save]?.previewContent) {
+                    scenario.image = saves[save]?.previewContent,
+                    scenario.image_aspect = 1
+                }
+                scenario_db.push(scenario)
+            }
+        }
+    }
+
+    let scenarios = [];
+    for (let i = 0; i < scenario_sources.length; ++i) {
+        scenarios.push({
+            name: scenario_sources[i].name,
+            handler: () => {
+                popupUtils.reset()
+                import_scenario(scenario_sources[i])
+            }
+        })
+    }
+
+    for (let i = 0; i < scenario_db.length; ++i) {
+        let curr = scenario_db[i];
+        scenarios.push({
+            name: curr.title,
+            handler: async () => {
+                temp_scenario = curr
+                preview_temp_scenario()
+            },
+            thumbnail: curr?.image
+        })
+    }
+
+    return scenarios
+}
+
 let maxLengthForSection = 500, halfMaxLengthForSection = Math.floor(maxLengthForSection / 2);
 let showCharacterList = async () => {
     let containers = []
@@ -260,8 +417,8 @@ let showCharacterList = async () => {
 
     let uploadFileHandler = function (result) {
         let { file, fileName, ext, content, plaintext, dataArr } = result;
-        waitingToast.show()
         waitingToast.setText(`Loading data ${fileName}`)
+        waitingToast.show()
         if (ext === ".png") {
             let arr = new Uint8Array(dataArr)
             let res = convertTavernPng(arr)
@@ -333,6 +490,7 @@ let showCharacterList = async () => {
         }
     }
 
+    let scenarios = await getScenariosAndLegacyServerSaves()
 
     let dragIcon = createIcon("Click or drag characters, saves, lorebooks, world info or PDFs here to add")
     dragIcon.classList.add("searchExclude")
@@ -437,59 +595,6 @@ let showCharacterList = async () => {
         getContainerForType("Data").appendChild(charIcon);
     }
     else {
-        let createDetailsContent = (name) => {
-            let contents = document.createElement("div");
-            contents.style.color = "white";
-            contents.style.padding = "5px";
-            let titleElem = document.createElement("span");
-            titleElem.classList.add("popuptitletext");
-            titleElem.innerText = name;
-            titleElem.style.borderBottom = "solid";
-            contents.appendChild(titleElem);
-            return contents;
-        }
-        let createSection = (containerElem, section, text) => {
-            if (!!text && text.length > 0) {
-                let sectionContainer = document.createElement("span");
-                sectionContainer.style = "width: 100%; display: flex; padding: 10px;";
-                let sectionTitle = document.createElement("span"), sectionElem;
-                sectionTitle.innerText = section;
-                sectionTitle.style = "padding-right: 5px; font-weight: bold;"
-                sectionContainer.appendChild(sectionTitle);
-                if (Array.isArray(text)) {
-                    sectionElem = document.createElement("ul");
-                    text.forEach(listContent => {
-                        let listElem = document.createElement("li");
-                        let summaryOfKey = listContent.length > maxLengthForSection ? `${listContent.substr(0, halfMaxLengthForSection).trim()}...${listContent.substr(-halfMaxLengthForSection).trim()}` : listContent.trim();
-                        listElem.innerText = summaryOfKey
-                        if (listContent.length !== summaryOfKey.length) {
-                            let isShown = false
-                            listElem.onclick = () => {
-                                isShown = !isShown
-                                listElem.innerText = isShown ? listContent : summaryOfKey
-                            }
-                            listElem.title = "Click to show / hide full content"
-                        }
-                        sectionElem.appendChild(listElem)
-                    })
-                }
-                else {
-                    sectionElem = document.createElement("span");
-                    let summaryOfKey = text.length > maxLengthForSection ? `${text.substr(0, halfMaxLengthForSection).trim()}...${text.substr(-halfMaxLengthForSection).trim()}` : text.trim();
-                    sectionElem.innerText = summaryOfKey
-                    if (text.length !== summaryOfKey.length) {
-                        let isShown = false
-                        sectionElem.onclick = () => {
-                            isShown = !isShown
-                            sectionElem.innerText = isShown ? text : summaryOfKey
-                        }
-                        sectionElem.title = "Click to show / hide full content"
-                    }
-                }
-                sectionContainer.appendChild(sectionElem);
-                containerElem.appendChild(sectionContainer);
-            }
-        }
         let lorebookEntryToString = (entry) => {
             return `Primary: ${[...entry?.keys].join(", ")}\nSecondary: ${[...entry?.secondary_keys].join(",")}`;
         }
@@ -537,7 +642,7 @@ let showCharacterList = async () => {
                         console.error(e)
                     }
 
-                    popupUtils.reset().title("Character Options").content(contents).button("Back", showCharacterList).button("Load character", async () => {
+                    popupUtils.reset().title("Character Options").content(contents).css("min-height", "50%").css("min-width", "50%").button("Back", showCharacterList).button("Load character", async () => {
                         popupUtils.reset()
                         let charData = await getCharacterData(name)
                         load_tavern_obj(charData.data);
@@ -577,7 +682,7 @@ let showCharacterList = async () => {
                         console.error(e)
                     }
 
-                    popupUtils.reset().title("World Info Options").content(contents).button("Back", showCharacterList).button("Add to WI", async () => {
+                    popupUtils.reset().title("World Info Options").content(contents).css("min-height", "50%").css("min-width", "50%").button("Back", showCharacterList).button("Add to WI", async () => {
                         popupUtils.reset()
                         let charData = await getCharacterData(name)
                         let wiToAdd = charData.data;
@@ -646,14 +751,14 @@ let showCharacterList = async () => {
                         console.error(e)
                     }
 
-                    popupUtils.reset().title("Save Options").content(contents).button("Back", showCharacterList).button("Load save", async () => {
+                    popupUtils.reset().title("Save Options").content(contents).css("min-height", "50%").css("min-width", "50%").button("Back", showCharacterList).button("Load save", async () => {
                         popupUtils.reset()
                         let charData = await getCharacterData(name)
                         kai_json_load(charData.data, false);
                     }).button("Overwrite save", async () => {
                         popupUtils.reset()
-                        waitingToast.show()
                         waitingToast.setText(`Overwriting data ${name}`)
+                        waitingToast.show()
                         let data = generate_savefile(true, true, true);
                         saveKLiteSaveToIndexDB(name, data);
                     }).button("Download save", async () => {
@@ -689,10 +794,10 @@ let showCharacterList = async () => {
                     let charData = await getCharacterData(name), { extractedText } = charData;
                     createSection(contents, "Has text been extracted?", !!extractedText ? "True" : "False");
 
-                    popupUtils.reset().title("Document Options").content(contents).button("Back", showCharacterList).button("Add to TextDB", async () => {
+                    popupUtils.reset().title("Document Options").content(contents).css("min-height", "50%").css("min-width", "50%").button("Back", showCharacterList).button("Add to TextDB", async () => {
                         popupUtils.reset()
-                        waitingToast.show()
                         waitingToast.setText(`Extracting text to add to TextDB`)
+                        waitingToast.show()
                         let charData = await getCharacterData(name), {extractedText} = charData;
                         if (extractedText !== undefined)
                         {
@@ -746,6 +851,18 @@ let showCharacterList = async () => {
             getContainerForType(type).appendChild(charIcon)
         }
     }
+
+    // Add icons for scenarios and legacy server data
+    for (scenario of scenarios) {
+        let image = undefined
+        if (scenario?.thumbnail !== undefined) {
+            image = `url('${scenario.thumbnail}')`
+        }
+        let icon = createIcon(scenario.name, image)
+        icon.addEventListener("click", scenario.handler)
+        getContainerForType("Scenarios").appendChild(icon);
+    }
+
     popupUtils.reset().title(`Data List (${allCharacterNames.length})`).css("height", "80%").css("width", "80%").setMobileMenu(true)
     containers.forEach(container => popupUtils.content(container))
         
@@ -756,8 +873,8 @@ let showCharacterList = async () => {
             inputBox("Enter a Filename", "Save File", "", "Input Filename", () => {
                 let userinput = getInputBoxValue();
                 if (userinput != null && userinput.trim() != "") {
-                    waitingToast.show()
                     waitingToast.setText(`Saving data ${userinput}`)
+                    waitingToast.show()
                     let data = generate_savefile(true, true, true);
                     saveKLiteSaveToIndexDB(userinput, data);
                 }
@@ -775,8 +892,8 @@ let showCharacterList = async () => {
 
     popupUtils.buttonGroup("Bulk").button("Migrate old data", async () => {
             popupUtils.reset()
-            waitingToast.show()
             waitingToast.setText(`Migrating old data`)
+            waitingToast.show()
             await migrateOldData()
             waitingToast.setText(`Migration complete`)
             setTimeout(() => {
@@ -785,8 +902,8 @@ let showCharacterList = async () => {
         }).button("Delete all", async () => {
             popupUtils.reset()
             msgboxYesNo("Are you sure you wish to delete all data?", "Character manager", async () => {
-                waitingToast.show()
                 waitingToast.setText(`Deleting all data`)
+                waitingToast.show()
                 await Promise.all(allCharacterNames.map(elem => indexeddb_save(`character_${elem.name}`)))
                 allCharacterNames = []
                 await updateCharacterListFromAll()
@@ -798,10 +915,6 @@ let showCharacterList = async () => {
         popupUtils.buttonGroup("Esobold Server")
         .button("Overwrite", () => putAllCharacterManagerData())
         .button("Load", () => loadAllCharacterManagerData())
-        .button("Legacy", () => {
-            popupUtils.reset()
-            showServerSavesPopup()
-        })
     }
     popupUtils.resetButtonGroup().button("Close", () => popupUtils.reset()).show();
 }

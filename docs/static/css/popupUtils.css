@@ -49,10 +49,11 @@
 	}
 
 	.containAndScaleImage.tile {
-	    height: 128px;
-	    aspect-ratio: 1;
-	    border-radius: 25px;
-	    text-align: center;
+		height: 128px;
+		width: 128px;
+		border-radius: 25px;
+		text-align: center;
+		word-wrap: break-word;
 	}
 
 	.containAndScaleImage.tile>b {

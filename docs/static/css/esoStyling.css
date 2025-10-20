@@ -57,3 +57,34 @@
 	#enhancedchatinterface {
 		font-size: var(--theme_font_size_content);
 	}
+
+	hr {
+		border-color: var(--theme_color_border) 
+	}
+
+	input[type=checkbox] {
+		width: 15px;
+		height: 15px;
+		appearance: none;
+		border: solid thin var(--theme_color_border);
+		background-color: var(--theme_color_input_bg);
+		cursor: pointer;
+		position: relative;
+	}
+
+	input[type="checkbox"]:checked::after {
+		content: "";
+		position: absolute;
+		left: 5px;
+		top: 1px;
+		width: 6px;
+		height: 12px;
+		border-width: 0 3px 3px 0;
+		transform: rotate(45deg);
+		border-color: var(--theme_color_input_text);
+		border-style: solid;
+	}
+
+	#connectstatus {
+		color: var(--theme_color_text) !important
+	}
