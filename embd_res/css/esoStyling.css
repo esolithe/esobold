@@ -40,7 +40,7 @@
 	.workerpopup,
 	.scenariopopup,
 	#settingscontainerfg {
-		margin-top: unset;
+		margin-top: unset !important;
 	}
 
 	@media (min-width: 600px) {
@@ -86,5 +86,29 @@
 	}
 
 	#connectstatus {
-		color: var(--theme_color_text) !important
+		color: var(--theme_color_glow_text) !important
+	}
+
+	::placeholder, textarea::placeholder, .form-control::placeholder, label[for=allowediting] {
+		color: var(--theme_color_input_text);
+	}
+
+	.text_highlight {
+		color: var(--theme_color_glow_text);
+	}
+
+	input[type=range] {
+		accent-color: var(--theme_color_input_text);
+	}
+
+	.btn.btn-primary {
+		background-color: var(--theme_color_input_bg) !important;
+	}
+
+	#corpo_cht_inp::placeholder {
+		color: unset;
+	}
+
+	body.connected.darkmode.corpoui .topmenu, body.connected.corpoui .topmenu, body.connected.darkmode.corpoui .nav-link, body.connected.corpoui .nav-link {
+		background-color: unset;
 	}
