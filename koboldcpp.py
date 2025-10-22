@@ -3545,6 +3545,13 @@ def prepDataDB():
                 """
                 cursor.execute(sql)
 
+            result = cursor.execute("SELECT typeName FROM saveType WHERE typeName='Autosave';").fetchall()
+            if result == []:
+                sql = """INSERT INTO saveType(typeName)
+                VALUES ('Autosave');
+                """
+                cursor.execute(sql)
+
             # Remake views
             sql = "drop view if exists saveOverview;"
             cursor.execute(sql)

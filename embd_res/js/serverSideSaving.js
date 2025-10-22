@@ -16,6 +16,11 @@ let serverSavesLabel = document.getElementById("serverSavesLabel"), serverSavesT
 
 let lastUsedAdminPassword = "", lastUsedSavePassword = "";
 
+getRemoteDataEndpoint = async () => {
+    let remoteDataSettings = JSON.parse(await indexeddb_load("remoteDataSettings")), remoteDataURL = remoteDataSettings?.remoteDataStorageUrl || custom_kobold_endpoint;
+    return remoteDataURL
+}
+
 getAuthHeaders = () => {
     let header = {};
     let adminKey = lastUsedAdminPassword;
@@ -154,7 +159,7 @@ deleteFromDB.onclick = () => {
 }
 
 promptForAdminPassword = (callback) => {
-    if (koboldcpp_admin_type == 2) {
+    if (koboldcpp_admin_type == 2 && lastUsedAdminPassword == "") {
         inputBox("Please input admin password:", "Admin Password Required", lastUsedAdminPassword, "(Input Admin Password - leave blank for public)", () => {
             let userinput = getInputBoxValue();
             userinput = userinput.trim();
@@ -535,3 +540,4 @@ preview_temp_scenario = () => {
         `<p><b>Mode:</b> ` + modeSelection + author + `</p>`
         + `<p>` + (temp_scenario.desc != "" ? escape_html(temp_scenario.desc).replace(/\n/g, '<br>') : "[No Description Given]") + `</p>`;
 }
+

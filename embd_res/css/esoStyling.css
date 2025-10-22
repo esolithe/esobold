@@ -89,13 +89,6 @@
 		color: var(--theme_color_glow_text) !important
 	}
 
-	::placeholder,
-	textarea::placeholder,
-	.form-control::placeholder,
-	label[for=allowediting] {
-		color: var(--theme_color_input_text);
-	}
-
 	.text_highlight {
 		color: var(--theme_color_glow_text);
 	}
@@ -104,8 +97,21 @@
 		accent-color: var(--theme_color_input_text);
 	}
 
-	.btn.btn-primary {
-		background-color: var(--theme_color_input_bg) !important;
+	.btn.btn-primary,
+	button,
+	input,
+	select,
+	textarea {
+		background-color: var(--theme_color_input_bg);
+		color: var(--theme_color_input_text);
+	}
+
+	::placeholder,
+	textarea::placeholder,
+	.form-control::placeholder,
+	label[for=allowediting],
+	input::placeholder {
+		color: var(--theme_color_input_text);
 	}
 
 	#corpo_cht_inp::placeholder {
