@@ -1126,6 +1126,10 @@ let showCharacterList = async () => {
                 }
             }, false);
         })
+        .button("Download", () => {
+            popupUtils.reset()
+            save_file_button()
+        })
         .button("Share", () => {
             popupUtils.reset()
             share_story_button()

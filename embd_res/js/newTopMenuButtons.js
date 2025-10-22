@@ -7,7 +7,10 @@ window.addEventListener('load', () => {
 		</li>`
     topButton += `<li class="nav-item" id="topbtn_data_manager">
 			<a class="nav-link mainnav" href="#" onclick="closeTopNav(); showCharacterList();" tabindex="0">Data</a>
-			<a id="topbtn_save_current" class="nav-link mainnav hidden" href="#" tabindex="0" style="position: absolute;">Save</a>
+            <span id="additionalSameOptions" class="hidden" style="position: absolute;">
+                <a id="topbtn_save_current" class="nav-link mainnav" href="#" tabindex="0">Q.Save</a>
+                <a id="topbtn_download_current" class="nav-link mainnav" href="#" tabindex="0">Download</a>
+            </span>
 		</li>`
 
     document.querySelector("#navbarNavDropdown > ul").innerHTML += topButton;
@@ -16,10 +19,10 @@ window.addEventListener('load', () => {
 
     let dataElem = document.querySelector("#topbtn_data_manager")
     dataElem.addEventListener("mouseenter", () => {
-        document.querySelector("#topbtn_save_current").classList.remove("hidden")
+        document.querySelector("#additionalSameOptions").classList.remove("hidden")
     })
     dataElem.addEventListener("mouseleave", () => {
-        document.querySelector("#topbtn_save_current").classList.add("hidden")
+        document.querySelector("#additionalSameOptions").classList.add("hidden")
     })
 
     document.querySelector("#topbtn_save_current").addEventListener("click", () => {
@@ -32,5 +35,9 @@ window.addEventListener('load', () => {
                 saveKLiteSaveToIndexDB(userinput, data);
             }
         }, false);
+    })
+
+    document.querySelector("#topbtn_save_current").addEventListener("click", () => {
+        save_file_button()
     })
 })
