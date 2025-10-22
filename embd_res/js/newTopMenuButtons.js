@@ -37,7 +37,7 @@ window.addEventListener('load', () => {
         }, false);
     })
 
-    document.querySelector("#topbtn_save_current").addEventListener("click", () => {
+    document.querySelector("#topbtn_download_current").addEventListener("click", () => {
         save_file_button()
     })
 })
