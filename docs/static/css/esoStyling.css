@@ -59,7 +59,7 @@
 	}
 
 	hr {
-		border-color: var(--theme_color_border) 
+		border-color: var(--theme_color_border)
 	}
 
 	input[type=checkbox] {
@@ -89,7 +89,10 @@
 		color: var(--theme_color_glow_text) !important
 	}
 
-	::placeholder, textarea::placeholder, .form-control::placeholder, label[for=allowediting] {
+	::placeholder,
+	textarea::placeholder,
+	.form-control::placeholder,
+	label[for=allowediting] {
 		color: var(--theme_color_input_text);
 	}
 
@@ -107,8 +110,4 @@
 
 	#corpo_cht_inp::placeholder {
 		color: unset;
-	}
-
-	body.connected.darkmode.corpoui .topmenu, body.connected.corpoui .topmenu, body.connected.darkmode.corpoui .nav-link, body.connected.corpoui .nav-link {
-		background-color: unset;
 	}
