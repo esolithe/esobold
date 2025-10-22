@@ -17,8 +17,37 @@ let serverSavesLabel = document.getElementById("serverSavesLabel"), serverSavesT
 let lastUsedAdminPassword = "", lastUsedSavePassword = "";
 
 getRemoteDataEndpoint = async () => {
-    let remoteDataSettings = JSON.parse(await indexeddb_load("remoteDataSettings")), remoteDataURL = remoteDataSettings?.remoteDataStorageUrl || custom_kobold_endpoint;
+    let remoteDataSettings = JSON.parse(await indexeddb_load("remoteDataSettings")), remoteDataURL = custom_kobold_endpoint;
+    if (!!remoteDataSettings?.remoteDataStorageUrl && remoteDataSettings.remoteDataStorageUrl.trim().length > 0)
+    {
+        remoteDataURL = remoteDataSettings.remoteDataStorageUrl.trim()
+    }
     return remoteDataURL
+}
+
+lastEndpointValidatedForRemoteSaving = null;
+validateRemoteDataEndpoint = async () => {
+    let remoteDataURL = await getRemoteDataEndpoint()
+    return fetch(apply_proxy_url(remoteDataURL + koboldcpp_version_endpoint),
+    {
+        method: 'GET',
+        headers: get_kobold_header(),
+    })
+    .then(x => x.json())
+    .then(data => {
+        if (data && data != "" && data.version && data.version != "") {
+            lastEndpointValidatedForRemoteSaving = (data.hasServerSaving ? true : false)
+        }
+    })
+}
+
+is_using_kcpp_with_server_saving = () => {
+    if (lastEndpointValidatedForRemoteSaving == null)
+    {
+        // This will fail at first - this is fine as the situations which this should occur in are very low
+        validateRemoteDataEndpoint()
+    }
+    return lastEndpointValidatedForRemoteSaving || false
 }
 
 getAuthHeaders = () => {
@@ -42,8 +71,9 @@ handleError = (e) => {
     msgbox(!!e?.message ? e.message : (!!e?.error ? e.error : e))
 }
 
-getServerSaves = (filter = {}) => {
-    return fetch(`${custom_kobold_endpoint}/api/data/list`, {
+getServerSaves = async (filter = {}) => {
+    let remoteEndpoint = await getRemoteDataEndpoint();
+    return fetch(`${remoteEndpoint}/api/data/list`, {
         method: "POST",
         headers: getAuthHeaders(),
         body: JSON.stringify(filter)
@@ -76,8 +106,9 @@ createStyledSaveOption = (name, value, isPublic, isEncrypted) => {
     return optElem
 }
 
-reloadSaveMetadata = () => {
-    return fetch(`${custom_kobold_endpoint}/api/data/metadata`, {
+reloadSaveMetadata = async () => {
+    let remoteEndpoint = await getRemoteDataEndpoint();
+    return fetch(`${remoteEndpoint}/api/data/metadata`, {
         method: "POST",
         headers: getAuthHeaders()
     })
@@ -106,8 +137,9 @@ reloadSaveMetadata = () => {
 }
 
 
-loadServerSave = (saveName, isEncrypted) => {
-    fetch(`${custom_kobold_endpoint}/api/data/get`, {
+loadServerSave = async (saveName, isEncrypted) => {
+    let remoteEndpoint = await getRemoteDataEndpoint();
+    fetch(`${remoteEndpoint}/api/data/get`, {
         method: "POST",
         headers: getAuthHeaders(),
         body: JSON.stringify({ filename: saveName })
@@ -143,8 +175,9 @@ saveToDB.onclick = () => {
     showServerSavingTypePopup()
 }
 
-deleteFromDB.onclick = () => {
-    fetch(`${custom_kobold_endpoint}/api/data/delete`, {
+deleteFromDB.onclick = async () => {
+    let remoteEndpoint = await getRemoteDataEndpoint();
+    fetch(`${remoteEndpoint}/api/data/delete`, {
         method: "POST",
         headers: getAuthHeaders(),
         body: JSON.stringify({ filename: saveOptions.value })
@@ -309,7 +342,7 @@ hideServerSavingPopup = () => {
     serverSavingPopup.classList.add("hidden")
 }
 
-submitSaveToDB.onclick = () => {
+submitSaveToDB.onclick = async () => {
     // /api/data/metadata
     // serverSavesLabel, serverSavesType, serverSavesGroup, serverSavesPassword
 
@@ -336,7 +369,8 @@ submitSaveToDB.onclick = () => {
         }
         lastFileData = ""
         lastThumbnailData = null
-        fetch(`${custom_kobold_endpoint}/api/data/put`, {
+        let remoteEndpoint = await getRemoteDataEndpoint();
+        fetch(`${remoteEndpoint}/api/data/put`, {
             method: "POST",
             body: JSON.stringify(bodyData),
             headers: getAuthHeaders()

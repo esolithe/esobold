@@ -55,7 +55,10 @@ let themes = {
         "--theme_color_main": "#32496d",
         "--theme_color_bg_outer": "#182330",
         "--theme_color_bg": "#182330",
-        "--theme_color_bg_dark": "#0b141a"
+        "--theme_color_bg_dark": "#0b141a",
+        "--theme_color_topmenu_text": "#d1d1d1",
+        "--theme_color_button_bg": "#32496d",
+        "--theme_color_button_text": "#d1d1d1"
     },
     "Old colour theme (Cedo)": {
         "--theme_color_topmenu": "#337ab7",
@@ -78,7 +81,10 @@ let themes = {
         "--theme_color_bg_dark": "#262626",
         "--theme_color_input_text": "#e0e0e0",
         "--theme_color_tabs_text": "#e0e0e0",
-        "--theme_color_placeholder_text": "#9e9e9e"
+        "--theme_color_placeholder_text": "#9e9e9e",
+        "--theme_color_topmenu_text": "#e0e0e0",
+        "--theme_color_button_bg": "#337ab7",
+        "--theme_color_button_text": "#e0e0e0"
     },
     "Night (TwistedShadows)": {
         "--theme_color_bg": "#000000",
@@ -101,7 +107,10 @@ let themes = {
         "--theme_color_text": "#ffffff",
         "--theme_color_topbtn": "#000000",
         "--theme_color_topbtn_highlight": "#596985",
-        "--theme_color_topmenu": "#000000"
+        "--theme_color_topmenu": "#000000",
+        "--theme_color_topmenu_text": "#ffffff",
+        "--theme_color_button_bg": "#000000",
+        "--theme_color_button_text": "#ffffff"
     },
     "Tako (Lakius)": {
         "--theme_color_bg": "rgba(47.000000000000014, 34, 49.00000000000001, 1)",
@@ -124,7 +133,10 @@ let themes = {
         "--theme_color_text": "rgba(255, 255, 255, 1)",
         "--theme_color_topbtn": "rgba(200.00000000000003, 130.99999999999994, 51.00000000000003, 1)",
         "--theme_color_topbtn_highlight": "rgba(217, 137.00000000000006, 7.999999999999989, 1)",
-        "--theme_color_topmenu": "rgba(41.55767102869011, 30.678912543109437, 51.22767857142856, 1)"
+        "--theme_color_topmenu": "rgba(41.55767102869011, 30.678912543109437, 51.22767857142856, 1)",
+        "--theme_color_topmenu_text": "rgba(255, 255, 255, 1)",
+        "--theme_color_button_bg": "rgba(206, 148.0000000000001, 70.99999999999999, 1)",
+        "--theme_color_button_text": "rgba(255, 255, 255, 1)"
     },
     "Aqua blue (Dr. Toaster)": {
         "--theme_color_topmenu": "rgba(0, 42.99999999999997, 54, 1)",
@@ -147,7 +159,10 @@ let themes = {
         "--theme_color_main": "rgba(0, 42.99999999999997, 54, 1)",
         "--theme_color_bg_outer": "rgba(99.61690629571874, 116.44981681374678, 117.70984922136579, 1)",
         "--theme_color_bg": "rgba(35.99999999999999, 71.00000000000004, 81.99999999999999, 1)",
-        "--theme_color_bg_dark": "rgba(35.999999999999986, 71.00000000000001, 81.99999999999996, 0.68)"
+        "--theme_color_bg_dark": "rgba(35.999999999999986, 71.00000000000001, 81.99999999999996, 0.68)",
+        "--theme_color_topmenu_text": "rgba(160, 190, 190, 1)",
+        "--theme_color_button_bg": "rgba(0, 42.99999999999997, 54, 1)",
+        "--theme_color_button_text": "rgba(160, 190, 190, 1)"
     },
     "CandyUI (Peter)": {
         "--theme_color_bg": "#182330",
@@ -170,7 +185,10 @@ let themes = {
         "--theme_color_text": "#d1d1d1",
         "--theme_color_topbtn": "rgba(255, 105, 179.99999999999997, 0.7)",
         "--theme_color_topbtn_highlight": "rgba(0, 191, 255, 0.8)",
-        "--theme_color_topmenu": "rgba(255, 105, 179.99999999999997, 0.7)"
+        "--theme_color_topmenu": "rgba(255, 105, 179.99999999999997, 0.7)",
+        "--theme_color_topmenu_text": "#d1d1d1",
+        "--theme_color_button_bg": "rgba(255, 105, 179.99999999999997, 0.6)",
+        "--theme_color_button_text": "#d1d1d1"
     }
 }
 

@@ -1,6 +1,6 @@
 let updateMetadata = async () => {
-
-    await fetch(`${custom_kobold_endpoint}/api/data/metadata`, {
+    let remoteEndpoint = await getRemoteDataEndpoint();
+    await fetch(`${remoteEndpoint}/api/data/metadata`, {
         method: "POST",
         body: "{}",
         headers: getAuthHeaders()
@@ -14,7 +14,7 @@ let updateMetadata = async () => {
 let getAutosavesForName = async (charName, shouldAlsoSave = false) => {
     let remoteDataSettings = JSON.parse(await indexeddb_load("remoteDataSettings"))
     if (!!remoteDataSettings) {
-        let { remoteDataStorageUrl, autosaveMaxNumber, autosaveRemoteSync } = remoteDataSettings;
+        let { autosaveMaxNumber, autosaveRemoteSync } = remoteDataSettings;
         let existingAutosaves = await getCharacterData(charName)
         if (!Array.isArray(existingAutosaves?.data)) {
             existingAutosaves = []
@@ -28,7 +28,8 @@ let getAutosavesForName = async (charName, shouldAlsoSave = false) => {
                 await new Promise((resolve) => promptForAdminPassword(resolve));
                 let autoSaves = await getServerSaves({ typeName: "Autosave" })
                 if (autoSaves[charName] !== undefined) {
-                    let autosaveData = await fetch(`${custom_kobold_endpoint}/api/data/get`, {
+                    let remoteEndpoint = await getRemoteDataEndpoint();
+                    let autosaveData = await fetch(`${remoteEndpoint}/api/data/get`, {
                         method: "POST",
                         headers: getAuthHeaders(),
                         body: JSON.stringify({ filename: charName })
@@ -72,7 +73,8 @@ let saveAutosaveToServer = async (charName, existingAutosaves = undefined) => {
         let { remoteDataStorageUrl, autosaveMaxNumber, autosaveRemoteSync } = remoteDataSettings;
         if (is_using_kcpp_with_server_saving() && autosaveRemoteSync) {
             try {
-                await fetch(`${custom_kobold_endpoint}/api/data/delete`, {
+                let remoteEndpoint = await getRemoteDataEndpoint();
+                await fetch(`${remoteEndpoint}/api/data/delete`, {
                     method: "POST",
                     headers: getAuthHeaders(),
                     body: JSON.stringify({ filename: charName })
@@ -81,8 +83,7 @@ let saveAutosaveToServer = async (charName, existingAutosaves = undefined) => {
 
                     })
 
-                if (existingAutosaves !== undefined)
-                {
+                if (existingAutosaves !== undefined) {
                     let bodyData = {
                         filename: charName,
                         data: JSON.stringify(existingAutosaves),
@@ -90,7 +91,8 @@ let saveAutosaveToServer = async (charName, existingAutosaves = undefined) => {
                         isEncrypted: "0",
                         thumbnail: null
                     };
-                    fetch(`${custom_kobold_endpoint}/api/data/put`, {
+                    let remoteEndpoint = await getRemoteDataEndpoint();
+                    fetch(`${remoteEndpoint}/api/data/put`, {
                         method: "POST",
                         body: JSON.stringify(bodyData),
                         headers: getAuthHeaders()
@@ -138,7 +140,8 @@ let putAllCharacterManagerData = () => {
 
                 await Promise.all(managerSaves.map(async entry => {
                     let [key, value] = entry
-                    await fetch(`${custom_kobold_endpoint}/api/data/delete`, {
+                    let remoteEndpoint = await getRemoteDataEndpoint();
+                    await fetch(`${remoteEndpoint}/api/data/delete`, {
                         method: "POST",
                         headers: getAuthHeaders(),
                         body: JSON.stringify({ filename: value.name })
@@ -184,7 +187,8 @@ let putAllCharacterManagerData = () => {
                         type: "Manager",
                         thumbnail: null
                     }
-                    await fetch(`${custom_kobold_endpoint}/api/data/put`, {
+                    let remoteEndpoint = await getRemoteDataEndpoint();
+                    await fetch(`${remoteEndpoint}/api/data/put`, {
                         method: "POST",
                         body: JSON.stringify(bodyData),
                         headers: getAuthHeaders()
@@ -233,7 +237,8 @@ let loadAllCharacterManagerData = () => {
                 let [key, value] = entry
                 waitingToast.setText(`Receiving data ${value.name}`)
                 waitingToast.show()
-                await fetch(`${custom_kobold_endpoint}/api/data/get`, {
+                let remoteEndpoint = await getRemoteDataEndpoint();
+                await fetch(`${remoteEndpoint}/api/data/get`, {
                     method: "POST",
                     headers: getAuthHeaders(),
                     body: JSON.stringify({ filename: value.name })
@@ -476,6 +481,8 @@ let controlRemoteDataStore = async () => {
         popupUtils.reset()
         await indexeddb_save("remoteDataSettings", JSON.stringify(data))
         if (data.autosaveRemoteSync) {
+            lastEndpointValidatedForRemoteSaving = null;
+            await validateRemoteDataEndpoint();
             let autosaveNames = allCharacterNames.filter(data => data?.type === "Autosave").map(data => data.name)
             for (let i = 0; i < autosaveNames.length; i++) {
                 await syncAutosave(autosaveNames[i])
@@ -1072,10 +1079,8 @@ let showCharacterList = async () => {
         }
     }
 
-    if (is_using_kcpp_with_server_saving())
-    {
-        try
-        {
+    if (is_using_kcpp_with_server_saving()) {
+        try {
             let autoSaves = await getServerSaves({ typeName: "Autosave" })
             let localAutosaveNames = allCharacterNames.filter(data => data?.type === "Autosave").map(data => data.name)
             Object.keys(autoSaves).filter(saveName => !localAutosaveNames.includes(saveName)).forEach(name => {
@@ -1084,8 +1089,7 @@ let showCharacterList = async () => {
                 getContainerForType("Autosave").appendChild(charIcon)
             })
         }
-        catch (e)
-        {
+        catch (e) {
             console.error("Could not get server autosaves", e)
         }
     }
@@ -1093,14 +1097,13 @@ let showCharacterList = async () => {
     // Add icons for scenarios and legacy server data
     for (let i = scenario_sources.length; i < scenarios.length; i++) {
         let scenario = scenarios[i]
-        if (scenario_db[i - scenario_sources.length]?.serverSaveTypeName === "Autosave")
-        {
+        if (scenario_db[i - scenario_sources.length]?.serverSaveTypeName === "Autosave") {
             continue
         }
         let image = undefined
         if (scenario?.thumbnail !== undefined) {
             image = `url('${scenario.thumbnail}')`
-        }   
+        }
         let icon = createIcon(scenario.name, image)
         icon.addEventListener("click", scenario.handler)
         getContainerForType("Scenarios").appendChild(icon);
@@ -1154,9 +1157,10 @@ let showCharacterList = async () => {
         })
     })
 
+    popupUtils.buttonGroup("Esobold Server")
+        .button("Control", () => controlRemoteDataStore())
     if (is_using_kcpp_with_server_saving()) {
-        popupUtils.buttonGroup("Esobold Server")
-            .button("Control", () => controlRemoteDataStore())
+        popupUtils
             .button("Overwrite", () => putAllCharacterManagerData())
             .button("Load", () => loadAllCharacterManagerData())
     }
