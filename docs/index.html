@@ -5619,6 +5619,17 @@ Current version indicated by LITEVER below.
 		})
 	}
 
+	function saveKLiteAutosaveToIndexDB(filename, data) {
+		let charName = filename.replaceAll(/[^\w()_\-'",!\[\].]/g, " ").replaceAll(/\s+/g, " ").trim();
+		let dataToSave = {
+			name: charName,
+			data: data
+		}
+		indexeddb_save(`character_${charName}`, JSON.stringify(dataToSave)).then(() => {
+			allCharacterNames.push({ name: charName, type: "Autosave" })
+			updateCharacterListFromAllDe();
+		})
+	}
 
 	function getTypeFromAllCharacterData(data)
 	{
@@ -8503,6 +8514,7 @@ Current version indicated by LITEVER below.
 	function generate_savefile(save_images,export_settings,export_aesthetic_settings) //takes the current loaded story and generates a new savefile json object
 	{
 		let new_save_storyobj = generate_base_storyobj();
+		new_save_storyobj.saveCreationDate = new Date().toUTCString();
 
 		let export_arr = gametext_arr;
 		let export_arr_no_img = [];
@@ -24995,7 +25007,8 @@ Current version indicated by LITEVER below.
 	
 	function getCharacterData(characterName)
 	{
-		return indexeddb_load(`character_${characterName}`, "{}").then(charData => {
+		let charName = characterName.replaceAll(/[^\w()_\-'",!\[\].]/g, " ").replaceAll(/\s+/g, " ").trim()
+		return indexeddb_load(`character_${charName}`, "{}").then(charData => {
 			return JSON.parse(charData);
 		});
 	}

@@ -43,11 +43,6 @@
 	    box-sizing: border-box;
 	}
 
-	#popupContainer .popupContent input::placeholder,
-	#popupContainer .popupContent textarea::placeholder {
-	    color: #666;
-	}
-
 	.containAndScaleImage.tile {
 		height: 128px;
 		width: 128px;
@@ -83,7 +78,7 @@
 	}
 
 	.characterCreatorGrid {
-	    color: white;
+	    color: var(--theme_color_text);
 	    padding: 10px;
 	    display: grid;
 	    grid-template-columns: 1fr 1fr;

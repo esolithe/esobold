@@ -1,5 +1,5 @@
 let updateMetadata = async () => {
-    
+
     await fetch(`${custom_kobold_endpoint}/api/data/metadata`, {
         method: "POST",
         body: "{}",
@@ -9,6 +9,118 @@ let updateMetadata = async () => {
             handleError(e)
         })
 
+}
+
+let getAutosavesForName = async (charName, shouldAlsoSave = false) => {
+    let remoteDataSettings = JSON.parse(await indexeddb_load("remoteDataSettings"))
+    if (!!remoteDataSettings) {
+        let { remoteDataStorageUrl, autosaveMaxNumber, autosaveRemoteSync } = remoteDataSettings;
+        let existingAutosaves = await getCharacterData(charName)
+        if (!Array.isArray(existingAutosaves?.data)) {
+            existingAutosaves = []
+        }
+        else {
+            existingAutosaves = existingAutosaves.data
+        }
+        if (is_using_kcpp_with_server_saving() && autosaveRemoteSync) {
+            await updateMetadata()
+            try {
+                await new Promise((resolve) => promptForAdminPassword(resolve));
+                let autoSaves = await getServerSaves({ typeName: "Autosave" })
+                if (autoSaves[charName] !== undefined) {
+                    let autosaveData = await fetch(`${custom_kobold_endpoint}/api/data/get`, {
+                        method: "POST",
+                        headers: getAuthHeaders(),
+                        body: JSON.stringify({ filename: charName })
+                    })
+                        .then(resp => resp.json())
+                        .then(JSON.parse)
+
+                    existingAutosaves.push(...autosaveData)
+                }
+            }
+            catch (e) {
+                console.error("Cannot retrieve autosaves from server", e)
+            }
+        }
+        if (shouldAlsoSave) {
+            let save = generate_savefile(true, true, true)
+            existingAutosaves.push(save)
+        }
+        existingAutosaves = existingAutosaves.filter((v, i, a) => i === a.findIndex(c => c.saveCreationDate === v.saveCreationDate))
+        // Sort from newest to oldest
+        existingAutosaves = existingAutosaves.sort((a, b) => {
+            try {
+                return new Date(a?.saveCreationDate) > new Date(b?.saveCreationDate) ? -1 : 1
+            }
+            catch (e) {
+                console.error("Cannot sort autosave dates", e)
+                return 0;
+            }
+        })
+        while (existingAutosaves.length > autosaveMaxNumber) {
+            existingAutosaves.pop();
+        }
+        return existingAutosaves
+    }
+    return []
+}
+
+let saveAutosaveToServer = async (charName, existingAutosaves = undefined) => {
+    let remoteDataSettings = JSON.parse(await indexeddb_load("remoteDataSettings"))
+    if (!!remoteDataSettings) {
+        let { remoteDataStorageUrl, autosaveMaxNumber, autosaveRemoteSync } = remoteDataSettings;
+        if (is_using_kcpp_with_server_saving() && autosaveRemoteSync) {
+            try {
+                await fetch(`${custom_kobold_endpoint}/api/data/delete`, {
+                    method: "POST",
+                    headers: getAuthHeaders(),
+                    body: JSON.stringify({ filename: charName })
+                })
+                    .catch(e => {
+
+                    })
+
+                if (existingAutosaves !== undefined)
+                {
+                    let bodyData = {
+                        filename: charName,
+                        data: JSON.stringify(existingAutosaves),
+                        type: "Autosave",
+                        isEncrypted: "0",
+                        thumbnail: null
+                    };
+                    fetch(`${custom_kobold_endpoint}/api/data/put`, {
+                        method: "POST",
+                        body: JSON.stringify(bodyData),
+                        headers: getAuthHeaders()
+                    })
+                        .then(resp => resp.json())
+                        .catch(e => {
+                            handleError(e)
+                        })
+                }
+            }
+            catch (e) {
+                console.error("Cannot sent autosaves to server", e)
+            }
+        }
+    }
+}
+
+let syncAutosave = async (autosaveName, shouldAlsoSave = false) => {
+    let charName = autosaveName.replaceAll(/[^\w()_\-'",!\[\].]/g, " ").replaceAll(/\s+/g, " ").trim().replace(" (Auto)", "") + " (Auto)"
+    let existingAutosaves = await getAutosavesForName(charName, shouldAlsoSave)
+    await saveKLiteAutosaveToIndexDB(charName, existingAutosaves)
+    await saveAutosaveToServer(charName, existingAutosaves)
+    return existingAutosaves
+}
+
+let removeAutosave = async (autosaveName) => {
+    let charName = autosaveName.replaceAll(/[^\w()_\-'",!\[\].]/g, " ").replaceAll(/\s+/g, " ").trim().replace(" (Auto)", "") + " (Auto)"
+    await indexeddb_save(`character_${charName}`)
+    updateCharacterListFromAll()
+    await saveAutosaveToServer(charName, undefined)
 }
 
 let putAllCharacterManagerData = () => {
@@ -157,8 +269,7 @@ let loadAllCharacterManagerData = () => {
 let migrateOldData = async () => {
     let saveKLiteSaveToIndexDBIfNew = (name, data) => {
         let nameToCheck = name.replaceAll(/[^\w()_\-'",!\[\].]/g, " ").replaceAll(/\s+/g, " ").trim();
-        if (allCharacterNames.find(meta => nameToCheck === meta.name) === undefined)
-        {
+        if (allCharacterNames.find(meta => nameToCheck === meta.name) === undefined) {
             saveKLiteSaveToIndexDB(name, data)
         }
     }
@@ -219,22 +330,25 @@ let migrateOldData = async () => {
     }
 
     let netSaveNames = await netsaveslotlabels
-    if (netSaveNames.length > 0){
+    if (netSaveNames.length > 0) {
         await Promise.all(netSaveNames.map(res => saveKLiteSaveToIndexDBIfNew(res.name, res.data)))
     }
 }
 
-let createSection = (containerElem, section, text) => {
-    if (!!text && text.length > 0) {
+let createSection = (containerElem, section, textOrElem) => {
+    if (!!textOrElem && (textOrElem.length > 0 || textOrElem instanceof Element)) {
         let sectionContainer = document.createElement("span");
         sectionContainer.style = "width: 100%; display: flex; padding: 10px;";
         let sectionTitle = document.createElement("span"), sectionElem;
         sectionTitle.innerText = section;
         sectionTitle.style = "padding-right: 5px; font-weight: bold;"
         sectionContainer.appendChild(sectionTitle);
-        if (Array.isArray(text)) {
+        if (textOrElem instanceof Element) {
+            sectionElem = textOrElem
+        }
+        else if (Array.isArray(textOrElem)) {
             sectionElem = document.createElement("ul");
-            text.forEach(listContent => {
+            textOrElem.forEach(listContent => {
                 let listElem = document.createElement("li");
                 let summaryOfKey = listContent.length > maxLengthForSection ? `${listContent.substr(0, halfMaxLengthForSection).trim()}...${listContent.substr(-halfMaxLengthForSection).trim()}` : listContent.trim();
                 listElem.innerText = summaryOfKey
@@ -251,13 +365,13 @@ let createSection = (containerElem, section, text) => {
         }
         else {
             sectionElem = document.createElement("span");
-            let summaryOfKey = text.length > maxLengthForSection ? `${text.substr(0, halfMaxLengthForSection).trim()}...${text.substr(-halfMaxLengthForSection).trim()}` : text.trim();
+            let summaryOfKey = textOrElem.length > maxLengthForSection ? `${textOrElem.substr(0, halfMaxLengthForSection).trim()}...${textOrElem.substr(-halfMaxLengthForSection).trim()}` : textOrElem.trim();
             sectionElem.innerText = summaryOfKey
-            if (text.length !== summaryOfKey.length) {
+            if (textOrElem.length !== summaryOfKey.length) {
                 let isShown = false
                 sectionElem.onclick = () => {
                     isShown = !isShown
-                    sectionElem.innerText = isShown ? text : summaryOfKey
+                    sectionElem.innerText = isShown ? textOrElem : summaryOfKey
                 }
                 sectionElem.title = "Click to show / hide full content"
             }
@@ -277,6 +391,97 @@ let createDetailsContent = (name) => {
     titleElem.style.borderBottom = "solid";
     contents.appendChild(titleElem);
     return contents;
+}
+
+let createTextInputSection = (container, id, sectionName, placeholder, value = "") => {
+    let input = document.createElement("input")
+    input.id = id
+    input.type = "text"
+    input.placeholder = placeholder
+    input.value = value
+    input.style.width = "inherit"
+    createSection(container, sectionName, input)
+}
+
+let createCheckboxInputSection = (container, id, sectionName, value = false) => {
+    let input = document.createElement("input")
+    input.id = id
+    input.type = "checkbox"
+    input.checked = value
+    createSection(container, sectionName, input)
+}
+
+let createNumberInputSection = (container, id, sectionName, value = "", validation = undefined) => {
+    let input = document.createElement("input")
+    input.id = id
+    input.type = "number"
+    input.value = value
+    input.style.width = "inherit"
+    if (!!validation) {
+        input.lastInput = input.value
+        input.addEventListener("input", () => {
+            if (validation(input.value)) {
+                input.lastInput = input.value
+            }
+            else {
+                input.value = input.lastInput
+            }
+        })
+    }
+    createSection(container, sectionName, input)
+}
+
+let createButtonInputSection = (container, id, sectionName, buttonText, clickHandler = undefined) => {
+    let input = document.createElement("button")
+    input.id = id
+    input.type = "button"
+    input.classList.add("btn", "btn-primary")
+    input.textContent = buttonText
+    input.addEventListener("click", (e) => {
+        if (!!clickHandler) {
+            clickHandler(e)
+        }
+    })
+    createSection(container, sectionName, input)
+}
+
+indexeddb_load("remoteDataSettings").then(data => {
+    if (data === undefined) {
+        indexeddb_save("remoteDataSettings", JSON.stringify({
+            remoteDataStorageUrl: "",
+            autosaveName: "Autosave",
+            autosaveMaxNumber: 1,
+            autosaveRemoteSync: false
+        }))
+    }
+})
+
+let controlRemoteDataStore = async () => {
+    let remoteDataSettings = JSON.parse(await indexeddb_load("remoteDataSettings"))
+
+    let contents = createDetailsContent("Remote KCPP settings")
+    createTextInputSection(contents, "remoteDataStorageUrl", "KCPP URL to use", "Leave blank to use the default", remoteDataSettings?.remoteDataStorageUrl)
+    createTextInputSection(contents, "autosaveName", "Name to autosave to", "Leave blank to use the default (Autosave)", remoteDataSettings?.autosaveName)
+    createNumberInputSection(contents, "autosaveMaxNumber", "Max number of autosaves (zero means autosaving is disabled)", remoteDataSettings?.autosaveMaxNumber, (v) => /^\d{1,2}$/.test(v))
+    createCheckboxInputSection(contents, "autosaveRemoteSync", "Sync autosaves with server", remoteDataSettings?.autosaveRemoteSync)
+    createSection(contents, "Note", "Autosaves on the server are not encrypted and will be overwritten. Be sure when you enable the remote sync setting.")
+
+    popupUtils.reset().title("Control Options").content(contents).css("min-height", "50%").css("min-width", "50%").button("Back", showCharacterList).button("Save", async () => {
+        let data = {
+            remoteDataStorageUrl: document.querySelector("#remoteDataStorageUrl").value,
+            autosaveName: document.querySelector("#autosaveName").value,
+            autosaveMaxNumber: document.querySelector("#autosaveMaxNumber").value,
+            autosaveRemoteSync: document.querySelector("#autosaveRemoteSync").checked
+        }
+        popupUtils.reset()
+        await indexeddb_save("remoteDataSettings", JSON.stringify(data))
+        if (data.autosaveRemoteSync) {
+            let autosaveNames = allCharacterNames.filter(data => data?.type === "Autosave").map(data => data.name)
+            for (let i = 0; i < autosaveNames.length; i++) {
+                await syncAutosave(autosaveNames[i])
+            }
+        }
+    }).show()
 }
 
 let getScenariosAndLegacyServerSaves = async () => {
@@ -323,8 +528,7 @@ let getScenariosAndLegacyServerSaves = async () => {
         }
     }
 
-    if (is_using_kcpp_with_server_saving())
-    {
+    if (is_using_kcpp_with_server_saving()) {
         // Clean up scenario DB and the scenario dropdown options
         scenario_db = scenario_db.filter(scenario => !(scenario?.serverSave === true))
         Array.from(scenarioDropdown.children).filter(elem => !/^\d+$/.test(elem.value)).forEach(elem => elem.remove())
@@ -348,7 +552,7 @@ let getScenariosAndLegacyServerSaves = async () => {
 
                 if (!!saves[save]?.previewContent) {
                     scenario.image = saves[save]?.previewContent,
-                    scenario.image_aspect = 1
+                        scenario.image_aspect = 1
                 }
                 scenario_db.push(scenario)
             }
@@ -481,8 +685,7 @@ let showCharacterList = async () => {
                         saveLorebookToIndexDB(wiName, wiToAdd, JSON.parse(plaintext))
                     }
                 }
-                else
-                {
+                else {
                     waitingToast.hide()
                     handleError(`${fileName}: JSON does not contain WI or lorebook`)
                 }
@@ -526,8 +729,7 @@ let showCharacterList = async () => {
                     popupUtils.reset()
                     fileInputToFiles(validFiles, uploadFileHandler)
                 }
-                else
-                {
+                else {
                     handleError("No valid files selected")
                 }
             };
@@ -537,30 +739,25 @@ let showCharacterList = async () => {
 
     let searchData = (searchTerm) => {
         let allTiles = [...document.querySelectorAll("#popupContainer .tile")], hidableSections = [...document.querySelectorAll("div.autoGrid:not(.Drop_zone)")];
-        try
-        {
+        try {
             let results = [...document.querySelectorAll(`#popupContainer .tile`)].filter(elem => !elem.title || elem.title.toLowerCase().indexOf(searchTerm) !== -1);
-            if (results.length > 0)
-            {
+            if (results.length > 0) {
                 hidableSections.forEach(elem => elem.style.display = "grid")
 
                 allTiles.forEach(elem => {
-                    if (!elem.classList.contains("searchExclude"))
-                    {
+                    if (!elem.classList.contains("searchExclude")) {
                         elem.style.display = "none"
                     }
                 })
                 results.forEach(elem => elem.style.display = "unset")
                 hidableSections.filter(elem => [...elem.querySelectorAll(".tile")].filter(child => child.checkVisibility()).length == 1).forEach(elem => elem.style.display = "none")
             }
-            else
-            {
+            else {
                 hidableSections.forEach(elem => elem.style.display = "grid")
                 allTiles.forEach(elem => elem.style.display = "unset")
             }
         }
-        catch
-        {
+        catch {
             hidableSections.forEach(elem => elem.style.display = "grid")
             allTiles.forEach(elem => elem.style.display = "unset")
         }
@@ -587,6 +784,33 @@ let showCharacterList = async () => {
         inputContainer.appendChild(input)
         containerDiv.append(label, inputContainer)
         getContainerForType("Drop zone").appendChild(containerDiv);
+    }
+
+    let autosaveFromClick = async (name) => {
+        let contents;
+        try {
+            let data = await syncAutosave(name);
+            contents = createDetailsContent(name);
+            data.forEach(autosave => {
+                createButtonInputSection(contents, undefined, "Autosave", autosave.saveCreationDate, () => {
+                    popupUtils.reset()
+                    kai_json_load(autosave)
+                })
+            })
+        }
+        catch (e) {
+            console.error(e)
+        }
+        createButtonInputSection
+
+        popupUtils.reset().title("Save Options").content(contents).css("min-height", "50%").css("min-width", "50%")
+            .button("Delete autosave", async () => {
+                popupUtils.reset()
+                msgboxYesNo("Are you sure you wish to delete?", "Autosave manager", async () => {
+                    allCharacterNames = allCharacterNames.filter(c => c.name !== name)
+                    removeAutosave(name)
+                })
+            }).button("Close", () => popupUtils.reset()).show();
     }
 
     if (allCharacterNames.length === 0) {
@@ -691,23 +915,19 @@ let showCharacterList = async () => {
                     }).button("Download world info", async () => {
                         popupUtils.reset()
                         let charData = await getCharacterData(name), { originalData } = charData;
-                        if (!!originalData)
-                        {
-                            try
-                            {
+                        if (!!originalData) {
+                            try {
                                 let bytes = new TextEncoder().encode(JSON.stringify(originalData)), text = "";
                                 for (var i = 0; i < Math.ceil(bytes.length / 32768.0); i++) {
                                     text += String.fromCharCode.apply(null, bytes.slice(i * 32768, Math.min((i + 1) * 32768, bytes.length)))
                                 }
                                 downloadB64URL(`${name}.json`, `data:application/json;base64,${btoa(text)}`)
                             }
-                            catch (e)
-                            {
+                            catch (e) {
                                 handleError(e)
                             }
                         }
-                        else
-                        {
+                        else {
                             handleError("Could not download file")
                         }
                     }).button("Delete world info", async () => {
@@ -798,13 +1018,11 @@ let showCharacterList = async () => {
                         popupUtils.reset()
                         waitingToast.setText(`Extracting text to add to TextDB`)
                         waitingToast.show()
-                        let charData = await getCharacterData(name), {extractedText} = charData;
-                        if (extractedText !== undefined)
-                        {
+                        let charData = await getCharacterData(name), { extractedText } = charData;
+                        if (extractedText !== undefined) {
                             replaceDocumentFromTextDB(name, extractedText)
                         }
-                        else
-                        {
+                        else {
                             let extractedText = await documentParser.extractTextFromB64(charData.data)
                             if (!!extractedText) {
                                 charData.extractedText = extractedText
@@ -820,8 +1038,7 @@ let showCharacterList = async () => {
                         if (!!data) {
                             try {
                                 let ext = ".txt"
-                                switch (dataType)
-                                {
+                                switch (dataType) {
                                     case "application/pdf":
                                         ext = ".pdf"
                                         break
@@ -844,6 +1061,9 @@ let showCharacterList = async () => {
                         })
                     }).button("Close", () => popupUtils.reset()).show();
                 }
+                else if ("Autosave") {
+                    autosaveFromClick(name)
+                }
                 else {
                     popupUtils.reset()
                 }
@@ -852,12 +1072,35 @@ let showCharacterList = async () => {
         }
     }
 
+    if (is_using_kcpp_with_server_saving())
+    {
+        try
+        {
+            let autoSaves = await getServerSaves({ typeName: "Autosave" })
+            let localAutosaveNames = allCharacterNames.filter(data => data?.type === "Autosave").map(data => data.name)
+            Object.keys(autoSaves).filter(saveName => !localAutosaveNames.includes(saveName)).forEach(name => {
+                let charIcon = createIcon(name, undefined)
+                charIcon.onclick = () => autosaveFromClick(name)
+                getContainerForType("Autosave").appendChild(charIcon)
+            })
+        }
+        catch (e)
+        {
+            console.error("Could not get server autosaves", e)
+        }
+    }
+
     // Add icons for scenarios and legacy server data
-    for (scenario of scenarios) {
+    for (let i = scenario_sources.length; i < scenarios.length; i++) {
+        let scenario = scenarios[i]
+        if (scenario_db[i - scenario_sources.length]?.serverSaveTypeName === "Autosave")
+        {
+            continue
+        }
         let image = undefined
         if (scenario?.thumbnail !== undefined) {
             image = `url('${scenario.thumbnail}')`
-        }
+        }   
         let icon = createIcon(scenario.name, image)
         icon.addEventListener("click", scenario.handler)
         getContainerForType("Scenarios").appendChild(icon);
@@ -865,7 +1108,7 @@ let showCharacterList = async () => {
 
     popupUtils.reset().title(`Data List (${allCharacterNames.length})`).css("height", "80%").css("width", "80%").setMobileMenu(true)
     containers.forEach(container => popupUtils.content(container))
-        
+
     popupUtils.buttonGroup("Add")
         .button("New character", () => { try { showCharacterCreator(); } catch (e) { console.error(e); } })
         .button("Save", () => {
@@ -888,33 +1131,34 @@ let showCharacterList = async () => {
             popupUtils.reset()
             modManager.showModListWarning()
         })
-        
+
 
     popupUtils.buttonGroup("Bulk").button("Migrate old data", async () => {
-            popupUtils.reset()
-            waitingToast.setText(`Migrating old data`)
+        popupUtils.reset()
+        waitingToast.setText(`Migrating old data`)
+        waitingToast.show()
+        await migrateOldData()
+        waitingToast.setText(`Migration complete`)
+        setTimeout(() => {
+            waitingToast.hide()
+        }, 5000)
+    }).button("Delete all", async () => {
+        popupUtils.reset()
+        msgboxYesNo("Are you sure you wish to delete all data?", "Character manager", async () => {
+            waitingToast.setText(`Deleting all data`)
             waitingToast.show()
-            await migrateOldData()
-            waitingToast.setText(`Migration complete`)
-            setTimeout(() => {
-                waitingToast.hide()
-            }, 5000)
-        }).button("Delete all", async () => {
-            popupUtils.reset()
-            msgboxYesNo("Are you sure you wish to delete all data?", "Character manager", async () => {
-                waitingToast.setText(`Deleting all data`)
-                waitingToast.show()
-                await Promise.all(allCharacterNames.map(elem => indexeddb_save(`character_${elem.name}`)))
-                allCharacterNames = []
-                await updateCharacterListFromAll()
-                waitingToast.hide()
-            })
+            await Promise.all(allCharacterNames.map(elem => indexeddb_save(`character_${elem.name}`)))
+            allCharacterNames = []
+            await updateCharacterListFromAll()
+            waitingToast.hide()
         })
+    })
 
     if (is_using_kcpp_with_server_saving()) {
         popupUtils.buttonGroup("Esobold Server")
-        .button("Overwrite", () => putAllCharacterManagerData())
-        .button("Load", () => loadAllCharacterManagerData())
+            .button("Control", () => controlRemoteDataStore())
+            .button("Overwrite", () => putAllCharacterManagerData())
+            .button("Load", () => loadAllCharacterManagerData())
     }
     popupUtils.resetButtonGroup().button("Close", () => popupUtils.reset()).show();
 }

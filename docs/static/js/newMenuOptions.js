@@ -13,7 +13,6 @@ display_settings = () => {
     document.getElementById("agentCOTRepeatsMaxnumeric").value = localsettings.agentCOTRepeatsMax;
     document.getElementById("disableSaveCompressionLocally").checked = localsettings.disableSaveCompressionLocally;
     document.getElementById("enableRunningMemory").checked = localsettings.enableRunningMemory;
-    document.getElementById("enableAutosaveToServer").checked = localsettings.enableAutosaveToServer;
     document.getElementById("worldTreePrune").checked = localsettings.worldTreePrune;
     document.getElementById("worldTreeDepth").value = localsettings.worldTreeDepth;
     document.getElementById("worldTreeShowAll").checked = localsettings.worldTreeShowAll;
@@ -40,7 +39,6 @@ confirm_settings = () => {
     localsettings.agentCOTRepeatsMax = document.getElementById("agentCOTRepeatsMax").value;
     localsettings.disableSaveCompressionLocally = (document.getElementById("disableSaveCompressionLocally").checked ? true : false);
     localsettings.enableRunningMemory = (document.getElementById("enableRunningMemory").checked ? true : false);
-    localsettings.enableAutosaveToServer = (document.getElementById("enableAutosaveToServer").checked ? true : false);
     localsettings.worldTreePrune = (document.getElementById("worldTreePrune").checked ? true : false);
     localsettings.worldTreeDepth = document.getElementById("worldTreeDepth").value;
     localsettings.worldTreeShowAll = (document.getElementById("worldTreeShowAll").checked ? true : false);
@@ -73,9 +71,6 @@ window.addEventListener('load', () => {
     }
     if (localsettings?.enableRunningMemory == undefined) {
         localsettings.enableRunningMemory = false
-    }
-    if (localsettings?.enableAutosaveToServer == undefined) {
-        localsettings.enableAutosaveToServer = false
     }
     if (localsettings?.worldTreePrune == undefined) {
         localsettings.worldTreePrune = false
@@ -228,9 +223,6 @@ window.addEventListener('load', () => {
     lastSettingContainer.append(settingLabelElem)
 
     settingLabelElem = createSettingElemBool("enableRunningMemory", "Enable running memory", "Enables running memory, an experimental version of autogenerating memory which triggers every time the context length changes by half its maximum. The summaries it generates can be found under world info.")
-    lastSettingContainer.append(settingLabelElem)
-
-    settingLabelElem = createSettingElemBool("enableAutosaveToServer", "Enable autosave to server", "Enables autosaving to server (can be found under scenarios) - this requires the admin data directory to be set. It will autosave every few actions and can be loaded.")
     lastSettingContainer.append(settingLabelElem)
 
     settingLabelElem = createSettingElemBool("worldTreePrune", "Prune branches on world tree", "Prune branches on world tree to make it easier to navigate.")
