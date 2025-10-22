@@ -109,6 +109,9 @@ Current version indicated by LITEVER below.
 		--theme_color_glow_text: rgba(160, 190, 190, 1);
 		--theme_color_placeholder_text:rgba(197.42672003224254, 212.76565279279438, 212.76565279279438, 1);
 		--theme_color_topmenu: rgba(0, 42.99999999999997, 54, 1);
+		--theme_color_topmenu_text: rgba(160, 190, 190, 1);
+		--theme_color_button_bg:rgba(6.000000000000007, 50.00000000000004, 61, 1);
+		--theme_color_button_text:rgba(160, 190, 190, 1);
 		--theme_font_family: "Helvetica", sans-serif;
 		--theme_font_size_small: 9pt;
 		--theme_font_size_medium: 10pt;
@@ -298,7 +301,7 @@ Current version indicated by LITEVER below.
 	}
 
 	.nav-link {
-		color: var(--theme_color_tabs_text);
+		color: var(--theme_color_topmenu_text);
 		font-weight: bold;
 		margin-right: 5px;
 		background-color: var(--theme_color_disabled_bg);
@@ -306,11 +309,11 @@ Current version indicated by LITEVER below.
 	}
 	body:not(.connected) .nav-link:hover, body:not(.connected) .nav-link:focus, body:not(.connected) .nav-link:active
 	{
-		color: var(--theme_color_tabs_text);
+		color: var(--theme_color_topmenu_text);
 		background-color: var(--theme_color_disabled_fg);
 	}
 	body.connected .nav-link{
-		color: var(--theme_color_tabs_text);
+		color: var(--theme_color_topmenu_text);
 		background-color: var(--theme_color_topbtn);
 		border-color: var(--theme_color_border);
 	}
