@@ -662,39 +662,46 @@ let showCharacterList = async () => {
                 saveKLiteSaveToIndexDB(fileName, data)
             }
             else {
-                let wiToAdd = data, has_tav_wi_check = has_tavern_wi_check(wiToAdd), wiName = fileName;
-                if (has_tav_wi_check) {
-                    if (wiToAdd?.name !== undefined && wiToAdd.name.trim().length > 0) {
-                        wiName = wiToAdd.name
-                    }
-                    wiToAdd = load_tavern_wi(wiToAdd);
-                    if (wiToAdd && wiToAdd.length > 0) {
-                        wiToAdd.forEach(wi => wi.wigroup = fileName.replace("'", ""))
-                    }
+                if (!data.scenarioVersion && (data.name != null || data.description != null ||
+                    data.personality != null || (data.spec == "chara_card_v2" || data.spec == "chara_card_v3") || has_tav_wi_check)) {
+                    saveCharacterDataToIndexDB(undefined, data, fileName)
                 }
-                else {
-                    try {
-                        let hasNoGeneralWI = wiToAdd.length === 0 || wiToAdd.find(wi => wi?.wigroup === undefined || wi.wigroup.trim() === null || wi.wigroup === "" || wi.wigroup === "General") === undefined;
-                        if (hasNoGeneralWI) {
-                            let wiAllHaveSameGroup = wiToAdd.find((e, p, a) => a.find(c => c?.wigroup !== e.wigroup)) === undefined
-                            if (wiAllHaveSameGroup) {
-                                wiName = wiToAdd[0].wigroup
-                            }
+                else
+                {
+                    let wiToAdd = data, has_tav_wi_check = has_tavern_wi_check(wiToAdd), wiName = fileName;
+                    if (has_tav_wi_check) {
+                        if (wiToAdd?.name !== undefined && wiToAdd.name.trim().length > 0) {
+                            wiName = wiToAdd.name
+                        }
+                        wiToAdd = load_tavern_wi(wiToAdd);
+                        if (wiToAdd && wiToAdd.length > 0) {
+                            wiToAdd.forEach(wi => wi.wigroup = fileName.replace("'", ""))
                         }
                     }
-                    catch (e) {
-                        console.error(e)
+                    else {
+                        try {
+                            let hasNoGeneralWI = wiToAdd.length === 0 || wiToAdd.find(wi => wi?.wigroup === undefined || wi.wigroup.trim() === null || wi.wigroup === "" || wi.wigroup === "General") === undefined;
+                            if (hasNoGeneralWI) {
+                                let wiAllHaveSameGroup = wiToAdd.find((e, p, a) => a.find(c => c?.wigroup !== e.wigroup)) === undefined
+                                if (wiAllHaveSameGroup) {
+                                    wiName = wiToAdd[0].wigroup
+                                }
+                            }
+                        }
+                        catch (e) {
+                            console.error(e)
+                        }
                     }
-                }
-                if (Array.isArray(wiToAdd)) {
-                    wiToAdd = wiToAdd.filter(wi => wi?.key !== undefined)
-                    if (wiToAdd.length > 0) {
-                        saveLorebookToIndexDB(wiName, wiToAdd, JSON.parse(plaintext))
+                    if (Array.isArray(wiToAdd)) {
+                        wiToAdd = wiToAdd.filter(wi => wi?.key !== undefined)
+                        if (wiToAdd.length > 0) {
+                            saveLorebookToIndexDB(wiName, wiToAdd, JSON.parse(plaintext))
+                        }
                     }
-                }
-                else {
-                    waitingToast.hide()
-                    handleError(`${fileName}: JSON does not contain WI or lorebook`)
+                    else {
+                        waitingToast.hide()
+                        handleError(`${fileName}: JSON does not contain WI or lorebook`)
+                    }
                 }
             }
         }
@@ -839,6 +846,13 @@ let showCharacterList = async () => {
             a.click();
             a.remove();
         }
+        let jsObjToBytes = (data) => {
+            let bytes = new TextEncoder().encode(JSON.stringify(data)), text = "";
+            for (var i = 0; i < Math.ceil(bytes.length / 32768.0); i++) {
+                text += String.fromCharCode.apply(null, bytes.slice(i * 32768, Math.min((i + 1) * 32768, bytes.length)))
+            }
+            return text
+        }
         createSearchInput()
         for (let i = 0; i < allCharacterNames.length; i++) {
             let { name, thumbnail } = allCharacterNames[i], type = getTypeFromAllCharacterData(allCharacterNames[i]);
@@ -889,8 +903,19 @@ let showCharacterList = async () => {
                         }
                     }).button("Download character", async () => {
                         popupUtils.reset()
-                        let charData = await getCharacterData(name), { image } = charData;
-                        downloadB64URL(`${name}.png`, image)
+                        let charData = await getCharacterData(name);
+                        if (!!charData?.image) {
+                            downloadB64URL(`${name}.png`, charData.image)
+                        }
+                        else
+                        {
+                            try {
+                                downloadB64URL(`${name}.json`, `data:application/json;base64,${btoa(jsObjToBytes(charData.data))}`)
+                            }
+                            catch (e) {
+                                handleError(e)
+                            }
+                        }
                     }).button("Delete character", async () => {
                         popupUtils.reset()
                         msgboxYesNo("Are you sure you wish to delete?", "Character manager", async () => {
@@ -924,11 +949,7 @@ let showCharacterList = async () => {
                         let charData = await getCharacterData(name), { originalData } = charData;
                         if (!!originalData) {
                             try {
-                                let bytes = new TextEncoder().encode(JSON.stringify(originalData)), text = "";
-                                for (var i = 0; i < Math.ceil(bytes.length / 32768.0); i++) {
-                                    text += String.fromCharCode.apply(null, bytes.slice(i * 32768, Math.min((i + 1) * 32768, bytes.length)))
-                                }
-                                downloadB64URL(`${name}.json`, `data:application/json;base64,${btoa(text)}`)
+                                downloadB64URL(`${name}.json`, `data:application/json;base64,${btoa(jsObjToBytes(originalData))}`)
                             }
                             catch (e) {
                                 handleError(e)
