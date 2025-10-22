@@ -5521,10 +5521,12 @@ Current version indicated by LITEVER below.
 	}
 
 	function debounce(func, delay) {
-		let timeout;
+		let timeout, functionName = func?.prototype?.constructor?.name, debounceVar = `debounce_pending_${functionName || "generic"}`;;
 		return function (...args) {
+			window[debounceVar] = true
 			clearTimeout(timeout);
 			timeout = setTimeout(() => {
+				window[debounceVar] = false
 				func.apply(this, args);
 			}, delay);
 		};

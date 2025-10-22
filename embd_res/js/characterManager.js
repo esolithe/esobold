@@ -594,6 +594,13 @@ let getScenariosAndLegacyServerSaves = async () => {
 
 let maxLengthForSection = 500, halfMaxLengthForSection = Math.floor(maxLengthForSection / 2);
 let showCharacterList = async () => {
+    // Still processing characters
+    if (!!window?.debounce_pending_updateCharacterListFromAll || !!window?.pending_encrypt)
+    {
+        handleError("Please wait - data is still being loaded")
+        return
+    }
+
     let containers = []
 
     let createIcon = (name, image) => {
