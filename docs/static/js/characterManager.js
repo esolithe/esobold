@@ -669,13 +669,13 @@ let showCharacterList = async () => {
                 saveKLiteSaveToIndexDB(fileName, data)
             }
             else {
+                let wiToAdd = data, has_tav_wi_check = has_tavern_wi_check(wiToAdd), wiName = fileName;
                 if (!data.scenarioVersion && (data.name != null || data.description != null ||
                     data.personality != null || (data.spec == "chara_card_v2" || data.spec == "chara_card_v3") || has_tav_wi_check)) {
                     saveCharacterDataToIndexDB(undefined, data, fileName)
                 }
                 else
                 {
-                    let wiToAdd = data, has_tav_wi_check = has_tavern_wi_check(wiToAdd), wiName = fileName;
                     if (has_tav_wi_check) {
                         if (wiToAdd?.name !== undefined && wiToAdd.name.trim().length > 0) {
                             wiName = wiToAdd.name
