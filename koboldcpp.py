@@ -40,6 +40,7 @@ from datetime import datetime, timezone
 from typing import Tuple
 import shutil
 import subprocess
+import gzip
 
 # PDF extraction logic
 import logging
@@ -60,16 +61,17 @@ net_save_slots = 12
 savestate_limit = 3 #3 savestate slots
 default_vae_tile_threshold = 768
 default_native_ctx = 16384
+overridekv_max = 4
 
 # abuse prevention
 stop_token_max = 256
 ban_token_max = 768
 logit_bias_max = 512
 dry_seq_break_max = 128
-extra_images_max = 4
+extra_images_max = 4 # for kontext/qwen img
 
 # global vars
-KcppVersion = "1.101"
+KcppVersion = "1.102"
 showdebug = True
 kcpp_instance = None #global running instance
 global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None}
@@ -125,8 +127,12 @@ preloaded_story = None
 chatcompl_adapter = None
 chatcompl_adapter_list = None #if using autoguess, will populate this will potential adapters
 embedded_kailite = None
+embedded_kailite_gz = None
 embedded_kcpp_docs = None
+embedded_kcpp_docs_gz = None
 embedded_kcpp_sdui = None
+embedded_kcpp_sdui_gz = None
+embedded_lcpp_ui_gz = None
 sslvalid = False
 nocertify = False
 start_time = time.time()
@@ -198,7 +204,7 @@ class load_model_inputs(ctypes.Structure):
                 ("clblast_info", ctypes.c_int),
                 ("kcpp_main_gpu", ctypes.c_int),
                 ("vulkan_info", ctypes.c_char_p),
-                ("blasbatchsize", ctypes.c_int),
+                ("batchsize", ctypes.c_int),
                 ("forceversion", ctypes.c_int),
                 ("gpulayers", ctypes.c_int),
                 ("rope_freq_scale", ctypes.c_float),
@@ -208,7 +214,7 @@ class load_model_inputs(ctypes.Structure):
                 ("moecpu", ctypes.c_int),
                 ("no_bos_token", ctypes.c_bool),
                 ("load_guidance", ctypes.c_bool),
-                ("override_kv", ctypes.c_char_p),
+                ("override_kv", ctypes.c_char_p * overridekv_max),
                 ("override_tensors", ctypes.c_char_p),
                 ("flash_attention", ctypes.c_bool),
                 ("tensor_split", ctypes.c_float * tensor_split_max),
@@ -1191,7 +1197,7 @@ def autoset_gpu_layers(ctxsize, sdquanted, bbs, qkv_level): #shitty algo to dete
                 headkvlen = (ggufmeta[2] if ggufmeta[2] > 0 else 128)
                 ratio = (mem-usedmem)/(fsize*csmul*1.6*(1.0 if bbs <= 512 else 1.2))
                 if headcount > 0:
-                    # rubbish random formula. apply blasbatchsize calculations if over 512
+                    # rubbish random formula. apply batchsize calculations if over 512
                     fattn_discount = 1.0/(3.2 if qkv_level==2 else (1.6 if qkv_level==1 else 1.0))
                     mem1 = layers*(4 if bbs <= 512 else (bbs/128))*headkvlen*cs*fattn_discount*4*1.45
                     mem2 = layers*headcount*headkvlen*cs*fattn_discount*4*1.15
@@ -1437,7 +1443,7 @@ def load_model(model_filename):
             print("\nWarning: quantkv was used without flashattention! This is NOT RECOMMENDED!\nOnly K cache can be quantized, and performance can suffer.\nIn some cases, it might even use more VRAM when doing a full offload.\nYou are strongly encouraged to use flashattention if you want to use quantkv.")
     else:
         inputs.quant_k = inputs.quant_v = 0
-    inputs.blasbatchsize = args.blasbatchsize
+    inputs.batchsize = args.batchsize
     inputs.forceversion = args.forceversion
     inputs.gpulayers = args.gpulayers
     if args.overridenativecontext and args.overridenativecontext>0:
@@ -1461,7 +1467,17 @@ def load_model(model_filename):
     inputs.moe_experts = args.moeexperts
     inputs.no_bos_token = args.nobostoken
     inputs.load_guidance = args.enableguidance
-    inputs.override_kv = args.overridekv.encode("UTF-8") if args.overridekv else "".encode("UTF-8")
+    okv = []
+    if args.overridekv and str(args.overridekv).count(",")>0 and str(args.overridekv).count("=")>1 and str(args.overridekv).count(":")==str(args.overridekv).count("="):
+        okv = [x.strip() for x in str(args.overridekv).split(",")]
+        okv = [item for item in okv if item and item.strip()]
+    elif args.overridekv:
+        okv = [args.overridekv]
+    for n in range(overridekv_max):
+        if not okv or n >= len(okv):
+            inputs.override_kv[n] = "".encode("UTF-8")
+        else:
+            inputs.override_kv[n] = okv[n].encode("UTF-8")
     inputs.override_tensors = args.overridetensors.encode("UTF-8") if args.overridetensors else "".encode("UTF-8")
     inputs.moecpu = (200 if args.moecpu > 200 else args.moecpu)
     inputs.check_slowness = (not args.highpriority and os.name == 'nt' and 'Intel' in platform.processor())
@@ -3044,8 +3060,9 @@ def determine_tool_json_to_use(genparams, curr_ctx, assistant_message_start, is_
                     for name in toolnames:
                         pollgrammar += ("" if pollgrammar=="" else " | ")
                         pollgrammar += "\"" + name + "\""
+                    pollgrammar += " | \"no_tool\""
                     pollgrammar = r'root ::= ' + pollgrammar
-                    decide_tool_prompt = "Which of the listed tools should be used next? Pick exactly one. (Reply directly with the selected tool's name):"
+                    decide_tool_prompt = "Which of the listed tools should be used next? Pick exactly one. If no tool is suitable, reply no_tool. (Reply directly with the selected tool's name):"
                     temp_poll = {
                         "prompt": f"{curr_ctx}\n\nTool List:\n{tools_string}\n\n{decide_tool_prompt}{assistant_message_start}",
                         "max_length":16,
@@ -3058,12 +3075,15 @@ def determine_tool_json_to_use(genparams, curr_ctx, assistant_message_start, is_
                     temp_poll_result = generate(genparams=temp_poll)
                     if temp_poll_result:
                         raw = temp_poll_result['text'].lower()
-                        for name in toolnames:
-                            if name.lower() in raw:
-                                used_tool_json = extract_tool_info_from_tool_array(name, tools_array)
-                                if not args.quiet:
-                                    print(f"\nAttempting to use tool: {name}")
-                                break
+                        if "no_tool" in raw:
+                            print(f"\nNo suitable tool found.")
+                        else:
+                            for name in toolnames:
+                                if name.lower() in raw:
+                                    used_tool_json = extract_tool_info_from_tool_array(name, tools_array)
+                                    if not args.quiet:
+                                        print(f"\nAttempting to use tool: {name}")
+                                    break
 
     return used_tool_json
 
@@ -3147,6 +3167,8 @@ ws ::= | " " | "\n" [ \t]{0,20}
         adapter_obj = genparams.get('adapter', default_adapter)
         default_max_tok = (adapter_obj.get("max_length", args.defaultgenamt) if (api_format==4 or api_format==7) else args.defaultgenamt)
         genparams["max_length"] = tryparseint(genparams.get('max_tokens', genparams.get('max_completion_tokens', default_max_tok)),default_max_tok)
+        if genparams["max_length"] <= 0:
+            genparams["max_length"] = default_max_tok
         presence_penalty = genparams.get('presence_penalty', genparams.get('frequency_penalty', 0.0))
         genparams["presence_penalty"] = tryparsefloat(presence_penalty,0.0)
         # openai allows either a string or a list as a stop sequence
@@ -3424,6 +3446,14 @@ def LaunchWebbrowser(target_url, failedmsg):
         except Exception:
             print(failedmsg)
             print(f"Please manually open your browser to {target_url}")
+
+def get_my_epurl():
+    global sslvalid
+    httpsaffix = ("https" if sslvalid else "http")
+    epurl = f"{httpsaffix}://localhost:{args.port}"
+    if args.host!="":
+        epurl = f"{httpsaffix}://{args.host}:{args.port}"
+    return epurl
 
 def getDBPath():
     return os.path.join(args.admindatadir, "kcpp.db")
@@ -4057,10 +4087,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             else:
                 if max_length>512:
                     max_length = 512
-                httpsaffix = ("https" if sslvalid else "http")
-                epurl = f"{httpsaffix}://localhost:{args.port}"
-                if args.host!="":
-                    epurl = f"{httpsaffix}://{args.host}:{args.port}"
+                epurl = get_my_epurl()
                 if imgmode and imgprompt:
                     gen_payload = {"prompt":{"3":{"class_type": "KSampler","inputs":{"cfg":cfg,"steps":steps,"latent_image":["5", 0],"positive": ["6", 0]}},"5":{"class_type": "EmptyLatentImage","inputs":{"height":512,"width":512}},"6":{"class_type": "CLIPTextEncode","inputs":{"text":imgprompt}}}}
                     respjson = make_url_request(f'{epurl}/prompt', gen_payload)
@@ -4174,18 +4201,27 @@ Change Mode<br>
         self.wfile.write(finalhtml)
 
     def do_GET(self):
-        global embedded_kailite, embedded_kcpp_docs, embedded_kcpp_sdui
+        global embedded_kailite, embedded_kcpp_docs, embedded_kcpp_sdui, embedded_kailite_gz, embedded_kcpp_docs_gz, embedded_kcpp_sdui_gz, embedded_lcpp_ui_gz
         global last_req_time, start_time
         global savedata_obj, has_multiplayer, multiplayer_turn_major, multiplayer_turn_minor, multiplayer_story_data_compressed, multiplayer_dataformat, multiplayer_lastactive, maxctx, maxhordelen, friendlymodelname, lastuploadedcomfyimg, lastgeneratedcomfyimg, KcppVersion, totalgens, preloaded_story, exitcounter, currentusergenkey, friendlysdmodelname, fullsdmodelpath, password, friendlyembeddingsmodelname
         self.path = self.path.rstrip('/')
         response_body = None
         content_type = 'application/json'
+        content_encoding = None
+
+        # Check if browser supports gzip
+        accept_encoding = self.headers.get('Accept-Encoding', '')
+        supports_gzip = 'gzip' in accept_encoding.lower()
+
+        if self.path!="/lcpp" and self.path.startswith("/lcpp/"):
+            self.path = self.path[5:] #adapt lcpp paths to the root
 
         if self.path in ["", "/?"] or self.path.startswith(('/?','?')): #it's possible for the root url to have ?params without /
             content_type = 'text/html'
-            if embedded_kailite is None:
-                response_body = (f"Embedded KoboldAI Lite is not found.<br>You will have to connect via the main KoboldAI client, or <a href='https://lite.koboldai.net?local=1&port={self.port}'>use this URL</a> to connect.").encode()
-            else:
+            if not args.developerMode and supports_gzip and embedded_kailite_gz is not None:
+                response_body = embedded_kailite_gz
+                content_encoding = 'gzip'
+            elif embedded_kailite is not None:
                 if args.developerMode:
                     embddir = os.path.join(os.path.abspath(os.path.dirname(os.path.realpath(__file__))),"embd_res")
                     with open(os.path.join(embddir, "", "klite.embd"), mode='rb') as f:
@@ -4200,6 +4236,9 @@ Change Mode<br>
                         embedded_kailite = embedded_kailite.encode()
 
                 response_body = embedded_kailite
+            else:
+                response_body = (f"Embedded KoboldAI Lite is not found.<br>You will have to connect via the main KoboldAI client, or <a href='https://lite.koboldai.net?local=1&port={self.port}'>use this URL</a> to connect.").encode()
+            
         
         elif self.path.startswith(('/static/')): # Resources
             content_type = 'text/html'
@@ -4368,6 +4407,21 @@ Change Mode<br>
         elif self.path.endswith('/sdapi/v1/upscalers'):
            response_body = (json.dumps([]).encode())
 
+        #vits compatible
+        elif self.path.startswith('/voice/check?'):
+            response_body = (json.dumps({"id":4,"lang":["en"],"name":"KoboldCppTTS","status":"success"}).encode())
+        elif self.path=='/voice/speakers':
+            response_body = (json.dumps({"VITS":[{"id":4,"lang":["en"],"name":"KoboldCppTTS"}]}).encode())
+        elif self.path.startswith('/voice/vits?'):
+            parsed_url = urllib.parse.urlparse(self.path)
+            parsed_dict = urllib.parse.parse_qs(parsed_url.query)
+            prompt = str(parsed_dict['text'][0]) if 'text' in parsed_dict else ""
+            if prompt:
+                epurl = get_my_epurl()
+                content_type = 'audio/wav'
+                response_body = make_url_request(f'{epurl}/api/extra/tts', {"input": prompt})
+            pass
+
         elif self.path.endswith('/speakers_list'): #xtts compatible
             response_body = (json.dumps(["kobo","cheery","sleepy","shouty","chatty"]).encode()) #some random voices for them to enjoy
         elif self.path.endswith('/speakers'): #xtts compatible
@@ -4433,25 +4487,50 @@ Change Mode<br>
             chat_template = ctypes.string_at(ctbytes).decode("UTF-8","ignore")
             response_body = (json.dumps({
                 "chat_template": chat_template,
+                "id": 0,
+		        "id_task": -1,
                 "total_slots": 1,
+                "model_path": "local_model.gguf",
+                "n_ctx": maxctx,
                 "default_generation_settings": {
                     "n_ctx": maxctx,
                 },
             }).encode())
 
+        elif self.path=="/slots":
+            self.send_response(501)
+            self.end_headers(content_type='application/json')
+            self.wfile.write(json.dumps({"error":{"code":501,"message":"This server does not support slots endpoint.","type":"not_supported_error"}}).encode())
+            return
+
         elif self.path=="/api" or self.path=="/docs" or self.path.startswith(('/api/?json=','/api?json=','/docs/?json=','/docs?json=')):
             content_type = 'text/html'
-            if embedded_kcpp_docs is None:
-                response_body = ("KoboldCpp API is running!\n\nAPI usage reference can be found at the wiki: https://github.com/LostRuins/koboldcpp/wiki").encode()
-            else:
+            if supports_gzip and embedded_kcpp_docs_gz is not None:
+                response_body = embedded_kcpp_docs_gz
+                content_encoding = 'gzip'
+            elif embedded_kcpp_docs is not None:
                 response_body = embedded_kcpp_docs
-
+            else:
+                response_body = ("KoboldCpp API is running!\n\nAPI usage reference can be found at the wiki: https://github.com/LostRuins/koboldcpp/wiki").encode()
+           
+        elif self.path=="/lcpp":
+            content_type = 'text/html'
+            # IMPORTANT: svelte needs a patch to accept this as a non-redirect path. Search for `r.pathname === e + "/index.html"` and add desired path there.
+            if supports_gzip and embedded_lcpp_ui_gz is not None:
+                response_body = embedded_lcpp_ui_gz
+                content_encoding = 'gzip'           
+            else:
+                response_body = ("Llama.cpp UI is not available. Please use the KoboldAI Lite UI instead.").encode()
+           
         elif self.path.startswith(("/sdui")):
             content_type = 'text/html'
-            if embedded_kcpp_sdui is None:
-                response_body = ("KoboldCpp API is running, but KCPP SDUI is not loaded").encode()
-            else:
+            if supports_gzip and embedded_kcpp_sdui_gz is not None:
+                response_body = embedded_kcpp_sdui_gz
+                content_encoding = 'gzip'
+            elif embedded_kcpp_sdui is not None:
                 response_body = embedded_kcpp_sdui
+            else:
+                response_body = ("KoboldCpp API is running, but KCPP SDUI is not loaded").encode()               
 
         elif self.path=="/v1":
             content_type = 'text/html'
@@ -4497,6 +4576,8 @@ Change Mode<br>
         else:
             self.send_response(200)
             self.send_header('content-length', str(len(response_body)))
+            if content_encoding:
+                self.send_header('Content-Encoding', content_encoding)
             self.end_headers(content_type=content_type)
             self.wfile.write(response_body)
         return
@@ -5400,8 +5481,7 @@ Change Mode<br>
         return super(KcppServerRequestHandler, self).end_headers()
 
 def RunServerMultiThreaded(addr, port, server_handler):
-    global exitcounter, sslvalid
-    global embedded_kailite, embedded_kcpp_docs, embedded_kcpp_sdui, global_memory
+    global exitcounter, sslvalid, global_memory
     if is_port_in_use(port):
         print(f"Warning: Port {port} already appears to be in use by another program.")
 
@@ -5772,8 +5852,8 @@ def show_gui():
 
     tabcontent = {}
     # slider data
-    blasbatchsize_values = ["-1","16","32","64","128","256","512","1024","2048","4096"]
-    blasbatchsize_text = ["Don't Batch","16","32","64","128","256","512","1024","2048","4096"]
+    batchsize_values = ["-1","16","32","64","128","256","512","1024","2048","4096"]
+    batchsize_text = ["Don't Batch","16","32","64","128","256","512","1024","2048","4096"]
     contextsize_text = ["256", "512", "1024", "2048", "3072", "4096", "6144", "8192", "10240", "12288", "14336", "16384", "20480", "24576", "28672", "32768", "40960", "49152", "57344", "65536", "81920", "98304", "114688", "131072"]
     antirunopts = [opt.replace("Use ", "") for lib, opt in lib_option_pairs if opt not in runopts]
     quantkv_text = ["F16 (Off)","8-Bit","4-Bit"]
@@ -6226,7 +6306,7 @@ def show_gui():
         pass
 
     def changed_gpulayers_estimate(*args):
-        predicted_gpu_layers = autoset_gpu_layers(int(contextsize_text[context_var.get()]),sd_quant_option(sd_quant_var.get()),int(blasbatchsize_values[int(blas_size_var.get())]),(quantkv_var.get() if flashattention_var.get()==1 else 0))
+        predicted_gpu_layers = autoset_gpu_layers(int(contextsize_text[context_var.get()]),sd_quant_option(sd_quant_var.get()),int(batchsize_values[int(blas_size_var.get())]),(quantkv_var.get() if flashattention_var.get()==1 else 0))
         max_gpu_layers = (f"/{modelfile_extracted_meta[1][0]+1}" if (modelfile_extracted_meta and modelfile_extracted_meta[1] and modelfile_extracted_meta[1][0]!=0) else "")
         index = runopts_var.get()
         gpu_be = (index == "Use Vulkan" or index == "Use Vulkan (Old CPU)" or index == "Use CLBlast" or index == "Use CLBlast (Old CPU)" or index == "Use CLBlast (Older CPU)" or index == "Use CUDA" or index == "Use hipBLAS (ROCm)")
@@ -6482,7 +6562,7 @@ def show_gui():
     # blas thread specifier
     makelabelentry(hardware_tab, "Batch Threads:" , blas_threads_var, 14, 50,tooltip="How many threads to use during batched processing.\nIf left blank, uses same value as regular thread count.")
     # blas batch size
-    makeslider(hardware_tab, "Batch Size:", blasbatchsize_text, blas_size_var, 0, len(blasbatchsize_values)-1, 16,width=200, set=6,tooltip="How many tokens to process at once per batch.\nLarger values use more memory.")
+    makeslider(hardware_tab, "Batch Size:", batchsize_text, blas_size_var, 0, len(batchsize_values)-1, 16,width=200, set=6,tooltip="How many tokens to process at once per batch.\nLarger values use more memory.")
     blas_size_var.trace_add("write", changed_gpulayers_estimate)
 
     # force version
@@ -6537,9 +6617,9 @@ def show_gui():
     makecheckbox(tokens_tab, "No BOS Token", nobostoken_var, 43, tooltiptxt="Prevents BOS token from being added at the start of any prompt. Usually NOT recommended for most models.")
     makecheckbox(tokens_tab, "Enable Guidance", enableguidance_var, 43,padx=(200 if corrupt_scaler else 140), tooltiptxt="Enables the use of Classifier-Free-Guidance, which allows the use of negative prompts. Has performance and memory impact.")
     makelabelentry(tokens_tab, "MoE Experts:", moeexperts_var, row=55, padx=(220 if corrupt_scaler else 120), singleline=True, tooltip="Override number of MoE experts.")
-    makelabelentry(tokens_tab, "MoE CPU Layers:", moecpu_var, row=55, padx=(490 if corrupt_scaler else 320), singleline=True, tooltip="Keep Mixture of Experts (MoE) weights of the first N layers in the CPU.", labelpadx=(300 if corrupt_scaler else 210))
-    makelabelentry(tokens_tab, "Override KV:", override_kv_var, row=57, padx=(220 if corrupt_scaler else 120), singleline=True, width=150, tooltip="Advanced option to override model metadata by key, same as in llama.cpp. Mainly for debugging, not intended for general use. Types: int, float, bool, str")
-    makelabelentry(tokens_tab, "Override Tensors:", override_tensors_var, row=59, padx=(220 if corrupt_scaler else 120), singleline=True, width=150, tooltip="Advanced option to override tensor backend selection, same as in llama.cpp.")
+    makelabelentry(tokens_tab, "MoE CPU Layers:", moecpu_var, row=55, padx=(490 if corrupt_scaler else 320), singleline=True, tooltip="Force Mixture of Experts (MoE) weights of the first N layers to the CPU.\nSetting it higher than GPU layers has no effect.", labelpadx=(300 if corrupt_scaler else 210))
+    makelabelentry(tokens_tab, "Override KV:", override_kv_var, row=57, padx=(220 if corrupt_scaler else 120), singleline=True, width=150, tooltip="Override metadata value by key. Separate multiple values with commas. Format is name=type:value. Types: int, float, bool, str")
+    makelabelentry(tokens_tab, "Override Tensors:", override_tensors_var, row=59, padx=(220 if corrupt_scaler else 120), singleline=True, width=150, tooltip="Override selected backend for specific tensors matching tensor_name_regex_pattern=buffer_type, same as in llama.cpp.")
 
     # Model Tab
     model_tab = tabcontent["Loaded Files"]
@@ -6832,7 +6912,7 @@ def show_gui():
 
         args.maingpu = -1 if maingpu_var.get()=="" else int(maingpu_var.get())
         args.blasthreads = None if blas_threads_var.get()=="" else int(blas_threads_var.get())
-        args.blasbatchsize = int(blasbatchsize_values[int(blas_size_var.get())])
+        args.batchsize = int(batchsize_values[int(blas_size_var.get())])
         args.forceversion = 0 if version_var.get()=="" else int(version_var.get())
         args.contextsize = int(contextsize_text[context_var.get()])
         if customrope_var.get()==1:
@@ -7098,8 +7178,8 @@ def show_gui():
         if "overridetensors" in dict and dict["overridetensors"]:
             override_tensors_var.set(dict["overridetensors"])
 
-        if "blasbatchsize" in dict and dict["blasbatchsize"]:
-            blas_size_var.set(blasbatchsize_values.index(str(dict["blasbatchsize"])))
+        if "batchsize" in dict and dict["batchsize"]:
+            blas_size_var.set(batchsize_values.index(str(dict["batchsize"])))
 
         version_var.set(str(dict["forceversion"]) if ("forceversion" in dict and dict["forceversion"]) else "0")
         model_var.set(dict["model_param"] if ("model_param" in dict and dict["model_param"]) else "")
@@ -7330,9 +7410,13 @@ def make_url_request(url, data, method='POST', headers={}, timeout=300):
             request = urllib.request.Request(url, headers=headers, method=method)
         response_data = ""
         with urllib.request.urlopen(request,timeout=timeout) as response:
-            response_data = response.read().decode('utf-8',"ignore")
-            json_response = json.loads(response_data)
-            return json_response
+            content_type = response.headers.get('Content-Type', '')
+            response_data = response.read()
+            if 'audio/wav' in content_type:
+                return response_data #raw binary
+            else:
+                json_response = json.loads(response_data.decode('utf-8',"ignore"))
+                return json_response
     except urllib.error.HTTPError as e:
         try:
             errmsg = e.read().decode('utf-8',"ignore")
@@ -7347,10 +7431,7 @@ def make_url_request(url, data, method='POST', headers={}, timeout=300):
 #A very simple and stripped down embedded horde worker with no dependencies
 def run_horde_worker(args, api_key, worker_name):
     global friendlymodelname, maxhordectx, maxhordelen, exitcounter, punishcounter, modelbusy, session_starttime, sslvalid
-    httpsaffix = ("https" if sslvalid else "http")
-    epurl = f"{httpsaffix}://localhost:{args.port}"
-    if args.host!="":
-        epurl = f"{httpsaffix}://{args.host}:{args.port}"
+    epurl = get_my_epurl()
 
     def submit_completed_generation(url, jobid, sessionstart, submit_dict):
         global exitcounter, punishcounter, session_kudos_earned, session_jobs, rewardcounter
@@ -7363,13 +7444,16 @@ def run_horde_worker(args, api_key, worker_name):
             session_kudos_earned += reward
             session_jobs += 1
             curtime = datetime.now()
-            elapsedtime=curtime-sessionstart
-            hrs = int(elapsedtime.total_seconds()) // 3600
+            elapsedtime = curtime - sessionstart
+            hrs_float = elapsedtime.total_seconds() / 3600
+            hrs = int(hrs_float)
             mins = elapsedtime.seconds // 60 % 60
             secs = elapsedtime.seconds % 60
             elapsedtimestr = f"{hrs:03d}h:{mins:02d}m:{secs:02d}s"
-            earnrate = session_kudos_earned/(elapsedtime.total_seconds()/3600)
-            print_with_time(f'Submitted {jobid} and earned {reward:.0f} kudos\n[Total:{session_kudos_earned:.0f} kudos, Time:{elapsedtimestr}, Jobs:{session_jobs}, EarnRate:{earnrate:.0f} kudos/hr]')
+            earnrate = session_kudos_earned / hrs_float
+            jobrate = session_jobs / hrs_float
+            jobcost = session_kudos_earned / session_jobs
+            print_with_time(f'Submitted {jobid} and earned {reward:.0f} kudos\n[Total:{session_kudos_earned:.0f} kudos, Time:{elapsedtimestr}, Jobs:{session_jobs}, EarnRate:{earnrate:.2f} kudos/hr, JobRate:{jobrate:.2f} jobs/hr, JobCost:{jobcost:.2f} kudos/job]')
             rewardcounter += 1
             if rewardcounter > 50:
                 rewardcounter = 0
@@ -7509,6 +7593,8 @@ def convert_invalid_args(args):
         dict["usecuda"] = dict["usecublas"]
     if "usecuda" in dict and dict["usecuda"] and "lowvram" in dict["usecuda"]:
         dict["lowvram"] = True
+    if "batchsize" not in dict and "blasbatchsize" in dict and dict["blasbatchsize"]:
+        dict["batchsize"] = dict["blasbatchsize"]
     if "sdconfig" in dict and dict["sdconfig"] and len(dict["sdconfig"])>0:
         dict["sdmodel"] = dict["sdconfig"][0]
         if dict["sdconfig"] and len(dict["sdconfig"]) > 1:
@@ -8164,7 +8250,7 @@ def main(launch_args, default_args):
                 input()
 
 def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
-    global embedded_kailite, embedded_kcpp_docs, embedded_kcpp_sdui, start_time, exitcounter, global_memory, using_gui_launcher
+    global embedded_kailite, embedded_kcpp_docs, embedded_kcpp_sdui, embedded_kailite_gz, embedded_kcpp_docs_gz, embedded_kcpp_sdui_gz, embedded_lcpp_ui_gz, start_time, exitcounter, global_memory, using_gui_launcher
     global libname, args, friendlymodelname, friendlysdmodelname, fullsdmodelpath, password, fullwhispermodelpath, ttsmodelpath, embeddingsmodelpath, friendlyembeddingsmodelname, has_audio_support, has_vision_support
 
     start_server = True
@@ -8444,7 +8530,7 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
             if args.gpulayers==-1:
                 if MaxMemory[0] > 0 and (not args.usecpu) and ((args.usecuda is not None) or (args.usevulkan is not None) or (args.useclblast is not None) or sys.platform=="darwin"):
                     extract_modelfile_params(args.model_param,args.sdmodel,args.whispermodel,args.mmproj,args.draftmodel,args.ttsmodel if args.ttsgpu else "",args.embeddingsmodel if args.embeddingsgpu else "")
-                    layeramt = autoset_gpu_layers(args.contextsize,args.sdquant,args.blasbatchsize,(args.quantkv if args.flashattention else 0))
+                    layeramt = autoset_gpu_layers(args.contextsize,args.sdquant,args.batchsize,(args.quantkv if args.flashattention else 0))
                     print(f"Auto Recommended GPU Layers: {layeramt}")
                     args.gpulayers = layeramt
                 else:
@@ -8693,6 +8779,7 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
             for p in patches:
                 embedded_kailite = embedded_kailite.replace(p["find"], p["replace"])
             embedded_kailite = embedded_kailite.encode()
+            embedded_kailite_gz = gzip.compress(embedded_kailite)
             print("Embedded KoboldAI Lite loaded.")
     except Exception:
         print("Could not find KoboldAI Lite. Embedded KoboldAI Lite will not be available.")
@@ -8700,6 +8787,7 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
     try:
         with open(os.path.join(embddir, "kcpp_docs.embd"), mode='rb') as f:
             embedded_kcpp_docs = f.read()
+            embedded_kcpp_docs_gz = gzip.compress(embedded_kcpp_docs)
             print("Embedded API docs loaded.")
     except Exception:
         print("Could not find Embedded KoboldCpp API docs.")
@@ -8707,10 +8795,18 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
     try:
         with open(os.path.join(embddir, "kcpp_sdui.embd"), mode='rb') as f:
             embedded_kcpp_sdui = f.read()
+            embedded_kcpp_sdui_gz = gzip.compress(embedded_kcpp_sdui)
             if args.sdmodel:
                 print("Embedded SDUI loaded.")
     except Exception:
         print("Could not find Embedded SDUI.")
+
+    try:
+        with open(os.path.join(embddir, "lcpp.gz.embd"), mode='rb') as f:
+            embedded_lcpp_ui_gz = f.read()
+            print("Llama.cpp UI loaded.")
+    except Exception:
+        print("Could not find Embedded llama.cpp UI.")
 
     # print enabled modules
     caps = get_capabilities()
@@ -8875,7 +8971,7 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
                 s_pp = float(benchmaxctx-benchlen)/t_pp
                 s_gen = float(benchlen)/t_gen
                 datetimestamp = datetime.now(timezone.utc)
-                benchflagstr = f"NoAVX2={args.noavx2} Threads={args.threads} HighPriority={args.highpriority} Cuda_Args={args.usecuda} Tensor_Split={args.tensor_split} BlasThreads={args.blasthreads} BlasBatchSize={args.blasbatchsize} FlashAttention={args.flashattention} KvCache={args.quantkv}"
+                benchflagstr = f"NoAVX2={args.noavx2} Threads={args.threads} HighPriority={args.highpriority} Cuda_Args={args.usecuda} Tensor_Split={args.tensor_split} BlasThreads={args.blasthreads} BatchSize={args.batchsize} FlashAttention={args.flashattention} KvCache={args.quantkv}"
                 print(f"\nBenchmark Completed - v{KcppVersion} Results:\n======")
                 print(f"Flags: {benchflagstr}")
                 print(f"Timestamp: {datetimestamp}")
@@ -8955,7 +9051,7 @@ if __name__ == '__main__':
     advparser.add_argument("--version", help="Prints version and exits.", action='store_true')
     advparser.add_argument("--analyze", metavar=('[filename]'), help="Reads the metadata, weight types and tensor names in any GGUF file.", default="")
     advparser.add_argument("--maingpu","--main-gpu","-mg", help="Only used in a multi-gpu setup. Sets the index of the main GPU that will be used.",metavar=('[Device ID]'), type=int, default=-1)
-    advparser.add_argument("--blasbatchsize","--batchsize","--batch-size","-b", help="Sets the batch size used in batched processing (default 512). Setting it to -1 disables batched mode, but keeps other benefits like GPU offload.", type=int,choices=[-1,16,32,64,128,256,512,1024,2048,4096], default=512)
+    advparser.add_argument("--batchsize","--blasbatchsize","--batch-size","-b", help="Sets the batch size used in batched processing (default 512). Setting it to -1 disables batched mode, but keeps other benefits like GPU offload.", type=int,choices=[-1,16,32,64,128,256,512,1024,2048,4096], default=512)
     advparser.add_argument("--blasthreads","--batchthreads","--threadsbatch","--threads-batch", help="Use a different number of threads during batching if specified. Otherwise, has the same value as --threads",metavar=('[threads]'), type=int, default=0)
     advparser.add_argument("--lora", help="GGUF models only, applies a lora file on top of model.", metavar=('[lora_filename]'), nargs='+')
     advparser.add_argument("--loramult", metavar=('[amount]'), help="Multiplier for the Text LORA model to be applied.", type=float, default=1.0)
@@ -9012,8 +9108,8 @@ if __name__ == '__main__':
     advparser.add_argument("--nobostoken", help="Prevents BOS token from being added at the start of any prompt. Usually NOT recommended for most models.", action='store_true')
     advparser.add_argument("--enableguidance", help="Enables the use of Classifier-Free-Guidance, which allows the use of negative prompts. Has performance and memory impact.", action='store_true')
     advparser.add_argument("--maxrequestsize", metavar=('[size in MB]'), help="Specify a max request payload size. Any requests to the server larger than this size will be dropped. Do not change if unsure.", type=int, default=32)
-    advparser.add_argument("--overridekv","--override-kv", metavar=('[name=type:value]'), help="Advanced option to override a metadata by key, same as in llama.cpp. Mainly for debugging, not intended for general use. Types: int, float, bool, str", default="")
-    advparser.add_argument("--overridetensors","--override-tensor","-ot", metavar=('[tensor name pattern=buffer type]'), help="Advanced option to override tensor backend selection, same as in llama.cpp.", default="")
+    advparser.add_argument("--overridekv","--override-kv", metavar=('[name=type:value]'), help="Override metadata value by key. Separate multiple values with commas. Format is name=type:value. Types: int, float, bool, str", default="")
+    advparser.add_argument("--overridetensors","--override-tensor","-ot", metavar=('[tensor name pattern=buffer type]'), help="Override selected backend for specific tensors matching tensor_name_regex_pattern=buffer_type, same as in llama.cpp.", default="")
     advparser.add_argument("--developerMode", help="Enables developer utilities, such as hot reloading of Kobold Lite.", default=False, type=bool)
     compatgroup2 = parser.add_mutually_exclusive_group()
     compatgroup2.add_argument("--showgui", help="Always show the GUI instead of launching the model right away when loading settings from a .kcpps file.", action='store_true')
