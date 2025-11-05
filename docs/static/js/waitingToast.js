@@ -2,6 +2,7 @@
 class WaitingToast {
     #waitingDiv
     #waitingText
+    lock = false
     constructor() {
         this.waitingDiv = document.createElement("div")
         this.waitingDiv.classList.add("waitingToast", "hidden")
@@ -18,10 +19,25 @@ class WaitingToast {
     }
 
     show() {
-        this.waitingDiv.classList.remove("hidden")
+        if (!this.lock)
+        {
+            this.waitingDiv.classList.remove("hidden")
+        }
     }
 
     hide() {
+        if (!this.lock) {
+            this.waitingDiv.classList.add("hidden")
+        }
+    }
+
+    showLock() {
+        this.lock = true
+        this.waitingDiv.classList.remove("hidden")
+    }
+
+    hideUnlock() {
+        this.lock = false
         this.waitingDiv.classList.add("hidden")
     }
 

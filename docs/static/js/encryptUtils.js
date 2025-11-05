@@ -1,4 +1,8 @@
 window.encrypt = (key, data) => {
+	waitingToast.setText("Encrypting")
+	waitingToast.show()
+	window["pending_encrypt"] = true
+
 	var iv = forge.random.getBytesSync(16)
 	var salt = forge.random.getBytesSync(128)
 	var saltedKey = forge.pkcs5.pbkdf2(key, salt, 10, 16)
@@ -13,10 +17,18 @@ window.encrypt = (key, data) => {
 		iv: btoa(iv),
 		text: cipher.output.toHex(),
 	}
-	return btoa(JSON.stringify(encryptedObj))
+	let returnValue = btoa(JSON.stringify(encryptedObj))
+
+	window["pending_encrypt"] = false
+	waitingToast.hide()
+	return returnValue
 }
 
 window.decrypt = (key, data) => {
+	waitingToast.setText("Decrypting")
+	waitingToast.show()
+	window["pending_encrypt"] = true
+
 	data = JSON.parse(atob(data))
 	var encryptedBytes = forge.util.hexToBytes(data.text)
 	var saltedKey = forge.pkcs5.pbkdf2(key, atob(data.salt), 10, 16)
@@ -34,5 +46,8 @@ window.decrypt = (key, data) => {
 	} while (index < length)
 	var result = decipher.finish()
 	decrypted += decipher.output.getBytes()
+
+	window["pending_encrypt"] = false
+	waitingToast.hide()
 	return decrypted
 }

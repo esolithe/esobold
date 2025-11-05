@@ -131,3 +131,13 @@
 	.hlchunk {
 		color: var(--theme_color_highlight);
 	}
+
+	#additionalSameOptions {
+		padding-top: 15px;
+		padding-bottom: 15px;
+	}
+
+	#additionalSameOptions > a {
+		padding-top: 15px;
+		padding-bottom: 15px;
+	}

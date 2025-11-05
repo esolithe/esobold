@@ -5521,10 +5521,12 @@ Current version indicated by LITEVER below.
 	}
 
 	function debounce(func, delay) {
-		let timeout;
+		let timeout, functionName = func?.prototype?.constructor?.name, debounceVar = `debounce_pending_${functionName || "generic"}`;;
 		return function (...args) {
+			window[debounceVar] = true
 			clearTimeout(timeout);
 			timeout = setTimeout(() => {
+				window[debounceVar] = false
 				func.apply(this, args);
 			}, delay);
 		};
@@ -5548,22 +5550,36 @@ Current version indicated by LITEVER below.
 	{
 		try
 		{
-			bufferToBase64(data).then(async (b64) => {
-				let b64Url = `data:image/png;base64,${b64}`
-				let charData = !!decoded?.data ? decoded.data : decoded;
-				let rawName = !!charData?.name ? charData?.name : (!!filename ? filename : "No character name"), charName = rawName.replaceAll(/[^\w()_\-'",!\[\].]/g, " ").replaceAll(/\s+/g, " ").trim();
-				charData.name = charName;
-				let dataUrl = await generateThumbnail(b64Url, [256, 256])
+			let charData = !!decoded?.data ? decoded.data : decoded;
+			let rawName = !!charData?.name ? charData?.name : (!!filename ? filename : "No character name"), charName = rawName.replaceAll(/[^\w()_\-'",!\[\].]/g, " ").replaceAll(/\s+/g, " ").trim();
+			charData.name = charName;			
+			if (!!data)
+			{
+				bufferToBase64(data).then(async (b64) => {
+					let b64Url = `data:image/png;base64,${b64}`
+					let dataUrl = await generateThumbnail(b64Url, [256, 256])
+					let dataToSave = {
+						name: charName,
+						data: charData,
+						image: b64Url
+					}
+					indexeddb_save(`character_${charName}`, JSON.stringify(dataToSave)).then(() => {
+						allCharacterNames.push({name: charName, thumbnail: dataUrl, type: "Character"})
+						updateCharacterListFromAllDe();
+					})
+				})
+			}
+			else
+			{
 				let dataToSave = {
 					name: charName,
-					data: charData,
-					image: b64Url
+					data: charData
 				}
 				indexeddb_save(`character_${charName}`, JSON.stringify(dataToSave)).then(() => {
-					allCharacterNames.push({name: charName, thumbnail: dataUrl, type: "Character"})
+					allCharacterNames.push({name: charName, type: "Character"})
 					updateCharacterListFromAllDe();
 				})
-			})
+			}
 		}
 		catch (e)
 		{
