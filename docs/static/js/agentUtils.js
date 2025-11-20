@@ -664,6 +664,11 @@ let getEnabledCommands = (overrides = []) => {
 }
 
 let getReasoningCommand = (overrides = []) => {
+	let whoToRespondAsOptions = (localsettings.inject_chatnames_instruct ? localsettings.chatopponent.split("||$||") : undefined)
+	if (localsettings.inject_chatnames_instruct && window.eso.currentChatOpponentOverride !== null) {
+		whoToRespondAsOptions = [window.eso.currentChatOpponentOverride]
+	}
+	window.eso.currentChatOpponentOverride = null;
 	return [
 		{
 			"name": "plan_actions",
@@ -671,7 +676,7 @@ let getReasoningCommand = (overrides = []) => {
 			"args": {
 				"whoToRespondAs": {
 					description: "<whose perspective is the response going to be written from>",
-					enum: (localsettings.inject_chatnames_instruct ? localsettings.chatopponent.split("||$||") : undefined),
+					enum: whoToRespondAsOptions,
 					type: "string",
 					skip: !localsettings.inject_chatnames_instruct
 				},
