@@ -592,6 +592,19 @@ let getScenariosAndLegacyServerSaves = async () => {
     return scenarios
 }
 
+window.loadByCharacterNameIntoWI = async (name) => {
+    let charData = await getCharacterData(name)
+    let wiToAdd = importCharacterCardAsWIInternal(charData.data);
+    wiToAdd.forEach(wi => wi.folder = name)
+    current_wi = current_wi.filter(wi => wi?.folder !== name)
+    current_wi.push(...wiToAdd)
+    let chatMode = localsettings.opmode == 3 || (localsettings.opmode == 4 && localsettings.inject_chatnames_instruct)
+    let isNameAlreadyInScene = (nameToCheck) => (localsettings?.chatname == nameToCheck || localsettings.chatopponent.split("||$||").includes(nameToCheck))
+    if (chatMode && !isNameAlreadyInScene(name)) {
+        localsettings.chatopponent += `||$||${name}`
+    }
+}
+
 let maxLengthForSection = 500, halfMaxLengthForSection = Math.floor(maxLengthForSection / 2);
 let showCharacterList = async () => {
     // Still processing characters
@@ -900,14 +913,7 @@ let showCharacterList = async () => {
                         load_tavern_obj(charData.data);
                     }).button("Add character to WI", async () => {
                         popupUtils.reset()
-                        let charData = await getCharacterData(name)
-                        let wiToAdd = importCharacterCardAsWIInternal(charData.data);
-                        current_wi = current_wi.filter(wi => wi?.folder !== name)
-                        current_wi.push(...wiToAdd)
-                        let chatMode = localsettings.opmode == 3 || (localsettings.opmode == 4 && localsettings.inject_chatnames_instruct)
-                        if (chatMode) {
-                            localsettings.chatopponent += `||$||${name}`
-                        }
+                        await window.loadByCharacterNameIntoWI(name)
                     }).button("Download character", async () => {
                         popupUtils.reset()
                         let charData = await getCharacterData(name);
