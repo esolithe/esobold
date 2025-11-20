@@ -115,6 +115,7 @@ importvars_in_progress = False
 has_multiplayer = False
 has_audio_support = False
 has_vision_support = False
+cached_chat_template = None
 savedata_obj = None
 multiplayer_story_data_compressed = None #stores the full compressed story of the current multiplayer session
 multiplayer_turn_major = 1 # to keep track of when a client needs to sync their stories
@@ -266,6 +267,7 @@ class generation_inputs(ctypes.Structure):
                 ("dynatemp_range", ctypes.c_float),
                 ("dynatemp_exponent", ctypes.c_float),
                 ("smoothing_factor", ctypes.c_float),
+                ("smoothing_curve", ctypes.c_float),
                 ("dry_multiplier", ctypes.c_float),
                 ("dry_base", ctypes.c_float),
                 ("dry_allowed_length", ctypes.c_int),
@@ -947,10 +949,11 @@ def get_capabilities():
     except:
         embeddingModel = ""
     has_guidance = True if args.enableguidance else False
+    has_jinja = True if args.jinja else False
     has_server_saving = args.admin and not (args.admindatadir == "")
     had_admin_with_hf = args.adminallowhf
     admin_type = (2 if args.admin and args.admindir and args.adminpassword else (1 if args.admin and args.admindir else 0))
-    return {"result":"KoboldCpp", "version":KcppVersion, "protected":has_password, "llm":has_llm, "txt2img":has_txt2img,"vision":has_vision_support,"audio":has_audio_support,"transcribe":has_whisper,"multiplayer":has_multiplayer,"websearch":has_search,"tts":has_tts, "embeddings":has_embeddings, "savedata":(savedata_obj is not None), "admin": admin_type, "guidance": has_guidance, "hasServerSaving": has_server_saving, "hasAdminWithHF": had_admin_with_hf, "embeddingModel": embeddingModel}
+    return {"result":"KoboldCpp", "version":KcppVersion, "protected":has_password, "llm":has_llm, "txt2img":has_txt2img,"vision":has_vision_support,"audio":has_audio_support,"transcribe":has_whisper,"multiplayer":has_multiplayer,"websearch":has_search,"tts":has_tts, "embeddings":has_embeddings, "savedata":(savedata_obj is not None), "admin": admin_type, "guidance": has_guidance, "jinja": has_jinja, "hasServerSaving": has_server_saving, "hasAdminWithHF": had_admin_with_hf, "embeddingModel": embeddingModel}
 
 def dump_gguf_metadata(file_path): #if you're gonna copy this into your own project at least credit concedo
     chunk_size = 1024*1024*12  # read first 12mb of file
@@ -1208,11 +1211,7 @@ def autoset_gpu_layers(ctxsize, sdquanted, bbs, qkv_level): #shitty algo to dete
     except Exception:
         return 0
 
-def fetch_gpu_properties(testCL,testCU,testVK):
-    gpumem_ignore_limit_min = 1024*1024*600 #600 mb min
-    gpumem_ignore_limit_max = 1024*1024*1024*300 #300 gb max
-
-    if testCU:
+def detect_memory_cu(gpumem_ignore_limit_min, gpumem_ignore_limit_max):
         FetchedCUdevices = []
         FetchedCUdeviceMem = []
         FetchedCUfreeMem = []
@@ -1289,10 +1288,11 @@ def fetch_gpu_properties(testCL,testCU,testVK):
             lowestcumem = 0
             lowestfreecumem = 0
 
-        MaxMemory[0] = max(lowestcumem,MaxMemory[0])
-        MaxFreeMemory[0] = max(lowestfreecumem,MaxFreeMemory[0])
+        return lowestcumem, lowestfreecumem
 
-    if testVK:
+
+def detect_memory_vk(gpumem_ignore_limit_min, gpumem_ignore_limit_max):
+
         try: # Get Vulkan names
             foundVkGPU = False
             lowestvkmem = 0
@@ -1331,11 +1331,15 @@ def fetch_gpu_properties(testCL,testCU,testVK):
                         gpuidx += 1
                 except Exception: # failed to get vulkan vram
                     pass
-            MaxMemory[0] = max(lowestvkmem,MaxMemory[0])
+            return lowestvkmem
         except Exception:
             pass
 
-    if testCL:
+        return 0
+
+
+def detect_memory_cl(gpumem_ignore_limit_min, gpumem_ignore_limit_max):
+
         try: # Get OpenCL GPU names on windows using a special binary. overwrite at known index if found.
             basepath = os.path.abspath(os.path.dirname(__file__))
             output = ""
@@ -1361,9 +1365,36 @@ def fetch_gpu_properties(testCL,testCU,testVK):
                             lowestclmem = dmem if lowestclmem==0 else (dmem if dmem<lowestclmem else lowestclmem)
                     dev += 1
                 plat += 1
-            MaxMemory[0] = max(lowestclmem,MaxMemory[0])
+            return lowestclmem
         except Exception:
             pass
+
+        return 0
+
+
+def fetch_gpu_properties(testCL,testCU,testVK,testmemory=False):
+    gpumem_ignore_limit_min = 1024*1024*600 #600 mb min
+    gpumem_ignore_limit_max = 1024*1024*1024*300 #300 gb max
+
+    if testCU:
+        cumem, freecumem = detect_memory_cu(gpumem_ignore_limit_min, gpumem_ignore_limit_max)
+        MaxMemory[0] = max(cumem,MaxMemory[0])
+        MaxFreeMemory[0] = max(freecumem,MaxFreeMemory[0])
+        if testmemory:
+            print(f'detected CUDA memory: {cumem/(1024*1024)} MB, {freecumem/(1024*102)} MB free')
+
+    if testVK:
+        vkmem = detect_memory_vk(gpumem_ignore_limit_min, gpumem_ignore_limit_max)
+        MaxMemory[0] = max(vkmem,MaxMemory[0])
+        if testmemory:
+            print(f'detected Vulkan memory: {vkmem/(1024*1024)} MB')
+
+    if testCL:
+        clmem = detect_memory_cl(gpumem_ignore_limit_min, gpumem_ignore_limit_max)
+        MaxMemory[0] = max(clmem,MaxMemory[0])
+        if testmemory:
+            print(f'detected OpenCL memory: {clmem/(1024*1024)} MB')
+
 
     # Check VRAM detection after all backends have been tested
     if MaxMemory[0] < (1024*1024*256):
@@ -1542,6 +1573,7 @@ def generate(genparams, stream_flag=False):
     dynatemp_range = tryparsefloat(genparams.get('dynatemp_range', 0.0),0.0)
     dynatemp_exponent = tryparsefloat(genparams.get('dynatemp_exponent', 1.0),1.0)
     smoothing_factor = tryparsefloat(genparams.get('smoothing_factor', 0.0),0.0)
+    smoothing_curve = tryparsefloat(genparams.get('smoothing_curve', 1.0),1.0)
     logit_biases = genparams.get('logit_bias', {})
     render_special = genparams.get('render_special', False)
     banned_strings = genparams.get('banned_strings', []) # SillyTavern uses that name
@@ -1604,6 +1636,7 @@ def generate(genparams, stream_flag=False):
     inputs.dynatemp_range = dynatemp_range
     inputs.dynatemp_exponent = dynatemp_exponent
     inputs.smoothing_factor = smoothing_factor
+    inputs.smoothing_curve = smoothing_curve
     inputs.grammar = grammar.encode("UTF-8")
     inputs.grammar_retain_state = grammar_retain_state
     inputs.allow_eos_token = not ban_eos_token
@@ -2915,9 +2948,71 @@ def is_ipv6_supported():
     except Exception:
         return False
 
+def format_jinja(messages, tools):
+    try:
+        def strftime_now(format='%Y-%m-%d %H:%M:%S'):
+            return datetime.now().strftime(format)
+        def tojson(x, ensure_ascii=False, indent=None, separators=None, sort_keys=False):
+            return json.dumps(x, ensure_ascii=ensure_ascii, indent=indent, separators=separators, sort_keys=sort_keys)
+        global cached_chat_template
+        from jinja2.sandbox import ImmutableSandboxedEnvironment
+        jinja_env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True)
+        jinja_env.globals['strftime_now'] = strftime_now
+        jinja_env.filters["tojson"] = tojson
+        jinja_compiled_template = jinja_env.from_string(cached_chat_template)
+        text = None
+        if tools and len(tools)>0:
+            text = jinja_compiled_template.render(messages=messages, tools=tools, add_generation_prompt=True, bos_token="", eos_token="")
+        else:
+            text = jinja_compiled_template.render(messages=messages, add_generation_prompt=True, bos_token="", eos_token="")
+        return text if text else None
+    except Exception as e:
+        print(f"Jinja formatting failed: {e}")
+        return None
+
+def remove_outer_tags(inputstr):
+    try:
+        stripped = inputstr.strip()
+        match = re.match(r'^<([^\s<>]+)>(.*?)</\1>\s*$', stripped, re.DOTALL) # Try angle brackets first
+        if match:
+            return match.group(2).strip()
+        match = re.match(r'^\[([^\s<>]+)\](.*?)\[/\1]\s*$', stripped, re.DOTALL) # Then try square brackets
+        if match:
+            return match.group(2).strip()
+        return stripped # If no match, return original string
+    except Exception:
+        return stripped
+
+def normalize_tool_call(obj): # Normalize various tool call formats to OpenAI format
+    if "type" in obj and "function" in obj: # Already in OpenAI format
+        return obj
+    if "name" in obj and ("arguments" in obj or "parameters" in obj):
+        args = obj.get("arguments", obj.get("parameters", {}))
+        return {
+            "type": "function",
+            "function": {
+                "name": obj["name"],
+                "arguments": args
+            }
+        }
+    if "function" in obj and isinstance(obj["function"], dict):
+        func = obj["function"]
+        if "name" in func:
+            return {
+                "type": "function",
+                "function": {
+                    "name": func["name"],
+                    "arguments": func.get("arguments", func.get("parameters", {}))
+                }
+            }
+
+    return obj
+
 # Used to parse json for openai tool calls
 def extract_json_from_string(input_string):
     parsed_json = None
+    input_string = remove_outer_tags(input_string) #if we detected wrapper tags, remove them
+
     try: # First check if model exported perfect json
         parsed_json = json.loads(input_string)
         if not isinstance(parsed_json, list):
@@ -3087,7 +3182,7 @@ def determine_tool_json_to_use(genparams, curr_ctx, assistant_message_start, is_
 
     return used_tool_json
 
-def transform_genparams(genparams, api_format):
+def transform_genparams(genparams, api_format, use_jinja):
     global chatcompl_adapter, maxctx
 
     if api_format < 0: #not text gen, do nothing
@@ -3226,85 +3321,94 @@ ws ::= | " " | "\n" [ \t]{0,20}
             message_index = 0
             attachedimgid = 0
             attachedaudid = 0
-            for message in messages_array:
-                message_index += 1
-                if message['role'] == "system":
-                    messages_string += system_message_start
-                elif message['role'] == "user":
-                    messages_string += user_message_start
-                elif message['role'] == "assistant":
-                    messages_string += assistant_message_start
-                elif message['role'] == "tool":
-                    messages_string += tools_message_start
+            jinja_output = None
+            jinjatools = genparams.get('tools', [])
+            if use_jinja and cached_chat_template:
+                jinja_output = format_jinja(messages_array,jinjatools)
+            if jinja_output:
+                messages_string = jinja_output
+                if jinjatools and len(jinjatools)>0:
+                    genparams["using_openai_tools"] = True
+            else:
+                for message in messages_array:
+                    message_index += 1
+                    if message['role'] == "system":
+                        messages_string += system_message_start
+                    elif message['role'] == "user":
+                        messages_string += user_message_start
+                    elif message['role'] == "assistant":
+                        messages_string += assistant_message_start
+                    elif message['role'] == "tool":
+                        messages_string += tools_message_start
 
-                # content can be a string or an array of objects
-                curr_content = message.get("content",None)
-                if api_format==7: #ollama handle vision
-                    imgs = message.get("images",None)
-                    if imgs and len(imgs) > 0:
-                        for img in imgs:
-                            images_added.append(img)
-                if not curr_content:
-                    if "tool_calls" in message:
-                        try:
-                            if len(message.get("tool_calls"))>0:
-                                tcfnname = message.get("tool_calls")[0].get("function").get("name")
-                                messages_string += f"\n(Made a function call to {tcfnname})\n"
-                        except Exception:
-                            messages_string += "\n(Made a function call)\n"
-                    pass  # do nothing
-                elif isinstance(curr_content, str):
-                    messages_string += curr_content
-                elif isinstance(curr_content, list): #is an array
-                    for item in curr_content:
-                        if item['type']=="text":
-                                messages_string += item['text']
-                        elif item['type']=="image_url":
-                            if 'image_url' in item and item['image_url'] and item['image_url']['url'] and item['image_url']['url'].startswith("data:image"):
-                                images_added.append(item['image_url']['url'].split(",", 1)[1])
-                                attachedimgid += 1
-                                messages_string += f"\n(Attached Image {attachedimgid})\n"
-                        elif item['type']=="input_audio":
-                            if 'input_audio' in item and item['input_audio'] and item['input_audio']['data']:
-                                audio_added.append(item['input_audio']['data'])
-                                attachedaudid += 1
-                                messages_string += f"\n(Attached Audio {attachedaudid})\n"
-                # If last message, add any tools calls after message content and before message end token if any
-                if message_index == len(messages_array):
-                    used_tool_json = determine_tool_json_to_use(genparams, messages_string, assistant_message_start, (message['role'] == "tool"))
+                    # content can be a string or an array of objects
+                    curr_content = message.get("content",None)
+                    if api_format==7: #ollama handle vision
+                        imgs = message.get("images",None)
+                        if imgs and len(imgs) > 0:
+                            for img in imgs:
+                                images_added.append(img)
+                    if not curr_content:
+                        if "tool_calls" in message:
+                            try:
+                                if len(message.get("tool_calls"))>0:
+                                    tcfnname = message.get("tool_calls")[0].get("function").get("name")
+                                    messages_string += f"\n(Made a function call to {tcfnname})\n"
+                            except Exception:
+                                messages_string += "\n(Made a function call)\n"
+                        pass  # do nothing
+                    elif isinstance(curr_content, str):
+                        messages_string += curr_content
+                    elif isinstance(curr_content, list): #is an array
+                        for item in curr_content:
+                            if item['type']=="text":
+                                    messages_string += item['text']
+                            elif item['type']=="image_url":
+                                if 'image_url' in item and item['image_url'] and item['image_url']['url'] and item['image_url']['url'].startswith("data:image"):
+                                    images_added.append(item['image_url']['url'].split(",", 1)[1])
+                                    attachedimgid += 1
+                                    messages_string += f"\n(Attached Image {attachedimgid})\n"
+                            elif item['type']=="input_audio":
+                                if 'input_audio' in item and item['input_audio'] and item['input_audio']['data']:
+                                    audio_added.append(item['input_audio']['data'])
+                                    attachedaudid += 1
+                                    messages_string += f"\n(Attached Audio {attachedaudid})\n"
+                    # If last message, add any tools calls after message content and before message end token if any
+                    if message_index == len(messages_array):
+                        used_tool_json = determine_tool_json_to_use(genparams, messages_string, assistant_message_start, (message['role'] == "tool"))
 
-                    if used_tool_json:
-                        toolparamjson = None
-                        toolname = None
-                        # Set temperature lower automatically if function calling, cannot exceed 0.5
-                        genparams["temperature"] = (1.0 if genparams.get("temperature", 0.5) > 1.0 else genparams.get("temperature", 0.5))
-                        genparams["using_openai_tools"] = True
-                        # Set grammar to llamacpp example grammar to force json response (see https://github.com/ggerganov/llama.cpp/blob/master/grammars/json_arr.gbnf)
-                        genparams["grammar"] = jsongrammar
-                        try:
-                            toolname = used_tool_json.get('function').get('name')
-                            toolparamjson = used_tool_json.get('function').get('parameters')
-                            bettergrammarjson = {"type":"array","items":{"type":"object","properties":{"id":{"type":"string","enum":["call_001"]},"type":{"type":"string","enum":["function"]},"function":{"type":"object","properties":{"name":{"type":"string"},"arguments":{}},"required":["name","arguments"],"additionalProperties":False}},"required":["id","type","function"],"additionalProperties":False}}
-                            bettergrammarjson["items"]["properties"]["function"]["properties"]["arguments"] = toolparamjson
-                            decoded = convert_json_to_gbnf(bettergrammarjson)
-                            if decoded:
-                                genparams["grammar"] = decoded
-                        except Exception:
-                            pass
-                        tool_json_formatting_instruction = f"\nPlease use the provided schema to fill the parameters to create a function call for {toolname}, in the following format: " + json.dumps([{"id": "call_001", "type": "function", "function": {"name": f"{toolname}", "arguments": {"first property key": "first property value", "second property key": "second property value"}}}], indent=0)
-                        messages_string += f"\n\nJSON Schema:\n{used_tool_json}\n\n{tool_json_formatting_instruction}{assistant_message_start}"
+                        if used_tool_json:
+                            toolparamjson = None
+                            toolname = None
+                            # Set temperature lower automatically if function calling, cannot exceed 0.5
+                            genparams["temperature"] = (1.0 if genparams.get("temperature", 0.5) > 1.0 else genparams.get("temperature", 0.5))
+                            genparams["using_openai_tools"] = True
+                            # Set grammar to llamacpp example grammar to force json response (see https://github.com/ggerganov/llama.cpp/blob/master/grammars/json_arr.gbnf)
+                            genparams["grammar"] = jsongrammar
+                            try:
+                                toolname = used_tool_json.get('function').get('name')
+                                toolparamjson = used_tool_json.get('function').get('parameters')
+                                bettergrammarjson = {"type":"array","items":{"type":"object","properties":{"id":{"type":"string","enum":["call_001"]},"type":{"type":"string","enum":["function"]},"function":{"type":"object","properties":{"name":{"type":"string"},"arguments":{}},"required":["name","arguments"],"additionalProperties":False}},"required":["id","type","function"],"additionalProperties":False}}
+                                bettergrammarjson["items"]["properties"]["function"]["properties"]["arguments"] = toolparamjson
+                                decoded = convert_json_to_gbnf(bettergrammarjson)
+                                if decoded:
+                                    genparams["grammar"] = decoded
+                            except Exception:
+                                pass
+                            tool_json_formatting_instruction = f"\nPlease use the provided schema to fill the parameters to create a function call for {toolname}, in the following format: " + json.dumps([{"id": "call_001", "type": "function", "function": {"name": f"{toolname}", "arguments": {"first property key": "first property value", "second property key": "second property value"}}}], indent=0)
+                            messages_string += f"\n\nJSON Schema:\n{used_tool_json}\n\n{tool_json_formatting_instruction}{assistant_message_start}"
 
 
-                if message['role'] == "system":
-                    messages_string += system_message_end
-                elif message['role'] == "user":
-                    messages_string += user_message_end
-                elif message['role'] == "assistant":
-                    messages_string += assistant_message_end
-                elif message['role'] == "tool":
-                    messages_string += tools_message_end
+                    if message['role'] == "system":
+                        messages_string += system_message_end
+                    elif message['role'] == "user":
+                        messages_string += user_message_end
+                    elif message['role'] == "assistant":
+                        messages_string += assistant_message_end
+                    elif message['role'] == "tool":
+                        messages_string += tools_message_end
+                messages_string += assistant_message_gen
 
-            messages_string += assistant_message_gen
             genparams["prompt"] = messages_string
             if len(images_added)>0:
                 genparams["images"] = images_added
@@ -3819,6 +3923,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             if using_openai_tools:
                 tool_calls = extract_json_from_string(recvtxt)
                 if tool_calls and len(tool_calls)>0:
+                    tool_calls = [normalize_tool_call(obj) for obj in tool_calls]
                     for tc in tool_calls:
                         tcarg = tc.get("function",{}).get("arguments",None)
                         tc["id"] = f"call_{random.randint(10000, 99999)}"
@@ -3854,8 +3959,8 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             print(f"Generate: Error while generating: {e}")
 
     async def send_oai_sse_event(self, data):
-        if data=="[DONE]":
-            self.wfile.write(f'data: {data}'.encode())
+        if data and data.strip()=="[DONE]":
+            self.wfile.write(f'data: {data.strip()}\n\n'.encode())
         else:
             self.wfile.write(f'data: {data}\n\n'.encode())
         self.wfile.flush()
@@ -3966,6 +4071,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                 if streamDone:
                     if api_format == 4 or api_format == 3:  # if oai chat, send last [DONE] message consistent with openai format
                         await self.send_oai_sse_event('[DONE]')
+                        await asyncio.sleep(async_sleep_short)
                     break
         except Exception as ex:
             print("Token streaming was interrupted or aborted!")
@@ -4202,7 +4308,7 @@ Change Mode<br>
 
     def do_GET(self):
         global embedded_kailite, embedded_kcpp_docs, embedded_kcpp_sdui, embedded_kailite_gz, embedded_kcpp_docs_gz, embedded_kcpp_sdui_gz, embedded_lcpp_ui_gz
-        global last_req_time, start_time
+        global last_req_time, start_time, cached_chat_template, has_vision_support, has_audio_support, has_whisper, friendlymodelname
         global savedata_obj, has_multiplayer, multiplayer_turn_major, multiplayer_turn_minor, multiplayer_story_data_compressed, multiplayer_dataformat, multiplayer_lastactive, maxctx, maxhordelen, friendlymodelname, lastuploadedcomfyimg, lastgeneratedcomfyimg, KcppVersion, totalgens, preloaded_story, exitcounter, currentusergenkey, friendlysdmodelname, fullsdmodelpath, password, friendlyembeddingsmodelname
         self.path = self.path.rstrip('/')
         response_body = None
@@ -4238,7 +4344,6 @@ Change Mode<br>
                 response_body = embedded_kailite
             else:
                 response_body = (f"Embedded KoboldAI Lite is not found.<br>You will have to connect via the main KoboldAI client, or <a href='https://lite.koboldai.net?local=1&port={self.port}'>use this URL</a> to connect.").encode()
-            
         
         elif self.path.startswith(('/static/')): # Resources
             content_type = 'text/html'
@@ -4483,14 +4588,16 @@ Change Mode<br>
             response_body = (json.dumps({"version":"0.2","software":{"name":"KoboldCpp","version":KcppVersion,"repository":"https://github.com/LostRuins/koboldcpp","homepage":"https://github.com/LostRuins/koboldcpp","logo":"https://raw.githubusercontent.com/LostRuins/koboldcpp/refs/heads/concedo/niko.ico"},"api":{"koboldai":{"name":"KoboldAI API","rel_url":"/api","documentation":"https://lite.koboldai.net/koboldcpp_api","version":KcppVersion},"openai":{"name":"OpenAI API","rel_url ":"/v1","documentation":"https://openai.com/documentation/api","version":KcppVersion}}}).encode())
 
         elif self.path=="/props":
-            ctbytes = handle.get_chat_template()
-            chat_template = ctypes.string_at(ctbytes).decode("UTF-8","ignore")
             response_body = (json.dumps({
-                "chat_template": chat_template,
+                "chat_template": cached_chat_template,
                 "id": 0,
 		        "id_task": -1,
                 "total_slots": 1,
-                "model_path": "local_model.gguf",
+                "modalities": {
+                    "vision": has_vision_support,
+                    "audio": has_audio_support
+                },
+                "model_path": friendlymodelname,
                 "n_ctx": maxctx,
                 "default_generation_settings": {
                     "n_ctx": maxctx,
@@ -4512,16 +4619,16 @@ Change Mode<br>
                 response_body = embedded_kcpp_docs
             else:
                 response_body = ("KoboldCpp API is running!\n\nAPI usage reference can be found at the wiki: https://github.com/LostRuins/koboldcpp/wiki").encode()
-           
+
         elif self.path=="/lcpp":
             content_type = 'text/html'
             # IMPORTANT: svelte needs a patch to accept this as a non-redirect path. Search for `r.pathname === e + "/index.html"` and add desired path there.
             if supports_gzip and embedded_lcpp_ui_gz is not None:
                 response_body = embedded_lcpp_ui_gz
-                content_encoding = 'gzip'           
+                content_encoding = 'gzip'
             else:
                 response_body = ("Llama.cpp UI is not available. Please use the KoboldAI Lite UI instead.").encode()
-           
+
         elif self.path.startswith(("/sdui")):
             content_type = 'text/html'
             if supports_gzip and embedded_kcpp_sdui_gz is not None:
@@ -4530,7 +4637,7 @@ Change Mode<br>
             elif embedded_kcpp_sdui is not None:
                 response_body = embedded_kcpp_sdui
             else:
-                response_body = ("KoboldCpp API is running, but KCPP SDUI is not loaded").encode()               
+                response_body = ("KoboldCpp API is running, but KCPP SDUI is not loaded").encode()
 
         elif self.path=="/v1":
             content_type = 'text/html'
@@ -5166,6 +5273,11 @@ Change Mode<br>
             is_tts = False
             is_embeddings = False
             response_body = None
+            use_jinja = args.jinja
+            if use_jinja and not args.jinja_tools:
+                tmptools = genparams.get('tools', [])
+                if tmptools and len(tmptools) > 0:
+                    use_jinja = False # not allowed to use tools with jinja
 
             if self.path.endswith('/api/admin/check_state'):
                 if global_memory and args.admin and args.admindir and os.path.exists(args.admindir) and self.check_header_password(args.adminpassword):
@@ -5308,7 +5420,7 @@ Change Mode<br>
                 utfprint("\nInput: " + json.dumps(printablegenparams_raw,ensure_ascii=False),1)
 
                 # transform genparams (only used for text gen) first
-                genparams = transform_genparams(genparams, api_format)
+                genparams = transform_genparams(genparams, api_format, use_jinja)
 
                 if args.debugmode >= 1:
                     printablegenparams = truncate_long_json(genparams,trunc_len)
@@ -5338,6 +5450,8 @@ Change Mode<br>
                             self.send_header("cache-control", "no-cache")
                             self.send_header("connection", "keep-alive")
                             self.end_headers(content_type='text/event-stream')
+
+                            content_text = None
                             toolsdata_res = []
                             try:
                                 toolsdata_res = gendat['choices'][0]['message']['tool_calls']
@@ -5345,11 +5459,83 @@ Change Mode<br>
                                     toolsdata_res[0]["index"] = 0 # need to add an index for OWUI
                             except Exception:
                                 toolsdata_res = []
-                            toolsdata_p1 = json.dumps({"id":"koboldcpp","object":"chat.completion.chunk","created":int(time.time()),"model":friendlymodelname,"choices":[{"index":0,"finish_reason":None,"delta":{'role':'assistant','content':None, "tool_calls":toolsdata_res}}]})
-                            toolsdata_p2 = json.dumps({"id":"koboldcpp","object":"chat.completion.chunk","created":int(time.time()),"model":friendlymodelname,"choices":[{"index":0,"finish_reason":"tool_calls","delta":{}}]})
-                            self.wfile.write(f'data: {toolsdata_p1}\n\n'.encode())
-                            self.wfile.write(f'data: {toolsdata_p2}\n\n'.encode())
-                            self.wfile.write('data: [DONE]'.encode())
+                            try:
+                                content_text = gendat['choices'][0]['message'].get('content', None)
+                            except Exception:
+                                content_text = None
+
+                           # Send role chunk first
+                            chunk_role = json.dumps({
+                                "id": "koboldcpp",
+                                "object": "chat.completion.chunk",
+                                "created": int(time.time()),
+                                "model": friendlymodelname,
+                                "choices": [{"index": 0, "finish_reason": None, "delta": {"role": "assistant"}}]
+                            })
+                            self.wfile.write(f"data: {chunk_role}\n\n".encode())
+                            self.wfile.flush()
+
+                            # Send content if present
+                            if content_text:
+                                chunk_content = json.dumps({
+                                    "id": "koboldcpp",
+                                    "object": "chat.completion.chunk",
+                                    "created": int(time.time()),
+                                    "model": friendlymodelname,
+                                    "choices": [{"index": 0, "finish_reason": None, "delta": {"content": content_text}}]
+                                })
+                                self.wfile.write(f"data: {chunk_content}\n\n".encode())
+                                self.wfile.flush()
+
+                            # Send tool calls incrementally in OpenAI format
+                            if toolsdata_res and len(toolsdata_res) > 0:
+                                for idx, tool_call in enumerate(toolsdata_res):
+                                    tc_meta = {
+                                        "index": idx,
+                                        "id": tool_call.get("id", f"call_{idx}"),
+                                        "type": "function",
+                                        "function": {
+                                            "name": tool_call.get("function", {}).get("name", ""),
+                                            "arguments": ""
+                                        }
+                                    }
+                                    chunk_meta = json.dumps({
+                                        "id": "koboldcpp",
+                                        "object": "chat.completion.chunk",
+                                        "created": int(time.time()),
+                                        "model": friendlymodelname,
+                                        "choices": [{"index": 0, "finish_reason": None, "delta": {"tool_calls": [tc_meta]}}]
+                                    })
+                                    self.wfile.write(f"data: {chunk_meta}\n\n".encode())
+                                    self.wfile.flush()
+
+                                    args_str = tool_call.get("function", {}).get("arguments", "{}")
+                                    if isinstance(args_str, dict):
+                                        args_str = json.dumps(args_str)
+                                    tc_args = {
+                                        "index": idx,
+                                        "function": {"arguments": args_str}
+                                    }
+                                    chunk_args = json.dumps({
+                                        "id": "koboldcpp",
+                                        "object": "chat.completion.chunk",
+                                        "created": int(time.time()),
+                                        "model": friendlymodelname,
+                                        "choices": [{"index": 0, "finish_reason": None, "delta": {"tool_calls": [tc_args]}}]
+                                    })
+                                    self.wfile.write(f"data: {chunk_args}\n\n".encode())
+                                    self.wfile.flush()
+
+                            # Final chunk
+                            chunk_final = json.dumps({
+                                "id": "koboldcpp",
+                                "object": "chat.completion.chunk",
+                                "created": int(time.time()),
+                                "model": friendlymodelname,
+                                "choices": [{"index": 0, "finish_reason": "tool_calls", "delta": {}}]
+                            })
+                            self.wfile.write(f"data: {chunk_final}\n\n".encode())
+                            self.wfile.write("data: [DONE]\n\n".encode())
                             self.wfile.flush()
                             self.close_connection = True
                     except Exception as ex:
@@ -5803,6 +5989,7 @@ def show_gui():
                     togglectxshift(1,1,1)
                     togglehorde(1,1,1)
                     toggletaesd(1,1,1)
+                    togglejinja(1,1,1)
                     tabbuttonaction(tabnames[curr_tab_idx])
 
     if sys.platform=="darwin":
@@ -5901,6 +6088,8 @@ def show_gui():
     customrope_base = ctk.StringVar(value="10000")
     customrope_nativectx = ctk.StringVar(value=str(default_native_ctx))
     chatcompletionsadapter_var = ctk.StringVar(value="AutoGuess")
+    jinja_var = ctk.IntVar(value=0)
+    jinja_tools_var = ctk.IntVar(value=0)
     moeexperts_var = ctk.StringVar(value=str(-1))
     moecpu_var = ctk.StringVar(value=str(0))
     defaultgenamt_var = ctk.StringVar(value=str(768))
@@ -6616,6 +6805,16 @@ def show_gui():
     quantkv_var.trace_add("write", toggleflashattn)
     makecheckbox(tokens_tab, "No BOS Token", nobostoken_var, 43, tooltiptxt="Prevents BOS token from being added at the start of any prompt. Usually NOT recommended for most models.")
     makecheckbox(tokens_tab, "Enable Guidance", enableguidance_var, 43,padx=(200 if corrupt_scaler else 140), tooltiptxt="Enables the use of Classifier-Free-Guidance, which allows the use of negative prompts. Has performance and memory impact.")
+    def togglejinja(a,b,c):
+        if jinja_var.get()==1:
+            jinjatoolsbox.grid()
+        else:
+            jinja_tools_var.set(0)
+            jinjatoolsbox.grid_remove()
+        changed_gpulayers_estimate()
+    makecheckbox(tokens_tab, "Use Jinja", jinja_var, row=45, command=togglejinja, tooltiptxt="Enables using jinja chat template formatting for chat completions endpoint. Other endpoints are unaffected.")
+    jinjatoolsbox = makecheckbox(tokens_tab, "Jinja for Tools", jinja_tools_var, row=45 ,padx=(200 if corrupt_scaler else 140), tooltiptxt="Allows jinja even with tool calls. If unchecked, jinja will be disabled when tools are used.")
+    jinja_var.trace_add("write", togglejinja)
     makelabelentry(tokens_tab, "MoE Experts:", moeexperts_var, row=55, padx=(220 if corrupt_scaler else 120), singleline=True, tooltip="Override number of MoE experts.")
     makelabelentry(tokens_tab, "MoE CPU Layers:", moecpu_var, row=55, padx=(490 if corrupt_scaler else 320), singleline=True, tooltip="Force Mixture of Experts (MoE) weights of the first N layers to the CPU.\nSetting it higher than GPU layers has no effect.", labelpadx=(300 if corrupt_scaler else 210))
     makelabelentry(tokens_tab, "Override KV:", override_kv_var, row=57, padx=(220 if corrupt_scaler else 120), singleline=True, width=150, tooltip="Override metadata value by key. Separate multiple values with commas. Format is name=type:value. Types: int, float, bool, str")
@@ -6819,6 +7018,7 @@ def show_gui():
     toggleflashattn(1,1,1)
     togglectxshift(1,1,1)
     togglehorde(1,1,1)
+    togglejinja(1,1,1)
 
     # launch
     def guilaunch():
@@ -6930,6 +7130,8 @@ def show_gui():
         args.defaultgenamt = int(defaultgenamt_var.get()) if defaultgenamt_var.get()!="" else 768
         args.genlimit = int(genlimit_var.get()) if genlimit_var.get()!="" else 0
         args.nobostoken = (nobostoken_var.get()==1)
+        args.jinja = (jinja_var.get()==1)
+        args.jinja_tools = (jinja_tools_var.get()==1)
         args.enableguidance = (enableguidance_var.get()==1)
         args.overridekv = None if override_kv_var.get() == "" else override_kv_var.get()
         args.overridetensors = None if override_tensors_var.get() == "" else override_tensors_var.get()
@@ -7172,6 +7374,8 @@ def show_gui():
         else:
             genlimit_var.set(str(0))
         nobostoken_var.set(dict["nobostoken"] if ("nobostoken" in dict) else 0)
+        jinja_var.set(dict["jinja"] if ("jinja" in dict) else 0)
+        jinja_tools_var.set(dict["jinja_tools"] if ("jinja_tools" in dict) else 0)
         enableguidance_var.set(dict["enableguidance"] if ("enableguidance" in dict) else 0)
         if "overridekv" in dict and dict["overridekv"]:
             override_kv_var.set(dict["overridekv"])
@@ -7498,6 +7702,7 @@ def run_horde_worker(args, api_key, worker_name):
                 print_with_time(f"Horde Worker Paused for {penaltytime} min - Too many errors. It will resume automatically, but you should restart it.")
                 print_with_time("Caution: Too many failed jobs may lead to entering maintenance mode.")
                 time.sleep(60 * penaltytime)
+                print_with_time("Horde Worker Resumed")
             else:
                  print_with_time("Horde Worker Exit limit reached, too many errors.")
 
@@ -7634,6 +7839,8 @@ def convert_invalid_args(args):
         dict["sdclip1"] = dict["sdclipl"]
     if "sdclipg" in dict and "sdclip2" not in dict:
         dict["sdclip2"] = dict["sdclipg"]
+    if "jinja_tools" in dict and dict["jinja_tools"]:
+        dict["jinja"] = True
     return args
 
 def setuptunnel(global_memory, has_sd):
@@ -7689,6 +7896,7 @@ def setuptunnel(global_memory, has_sd):
                         if global_memory and global_memory["load_complete"]:
                             print(f"Your remote Kobold API can be found at {tunneloutput}/api")
                             print(f"Your remote OpenAI Compatible API can be found at {tunneloutput}/v1")
+                            print(f"Your remote llama.cpp secondary WebUI at {tunneloutput}/lcpp/")
                             if has_sd:
                                 print(f"StableUI is available at {tunneloutput}/sdui/")
                             print("======\n")
@@ -8038,6 +8246,10 @@ def main(launch_args, default_args):
         print(f"{KcppVersion}") # just print version and exit
         return
 
+    if args.testmemory:
+        fetch_gpu_properties(True, True, True, testmemory=True)
+        return
+
     #prevent disallowed combos
     if (args.nomodel or args.benchmark or args.launch or args.admin) and args.cli:
         exit_with_error(1, "Error: --cli cannot be combined with --launch, --nomodel, --admin or --benchmark")
@@ -8251,7 +8463,7 @@ def main(launch_args, default_args):
 
 def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
     global embedded_kailite, embedded_kcpp_docs, embedded_kcpp_sdui, embedded_kailite_gz, embedded_kcpp_docs_gz, embedded_kcpp_sdui_gz, embedded_lcpp_ui_gz, start_time, exitcounter, global_memory, using_gui_launcher
-    global libname, args, friendlymodelname, friendlysdmodelname, fullsdmodelpath, password, fullwhispermodelpath, ttsmodelpath, embeddingsmodelpath, friendlyembeddingsmodelname, has_audio_support, has_vision_support
+    global libname, args, friendlymodelname, friendlysdmodelname, fullsdmodelpath, password, fullwhispermodelpath, ttsmodelpath, embeddingsmodelpath, friendlyembeddingsmodelname, has_audio_support, has_vision_support, cached_chat_template
 
     start_server = True
 
@@ -8312,15 +8524,19 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
             ccadapter_path = os.path.abspath(args.chatcompletionsadapter)
         elif isinstance(args.chatcompletionsadapter, str) and adapt_dir:
             filename = args.chatcompletionsadapter
-            if filename.lower().strip()=="autoguess":
-                filename = "AutoGuess"
             if not filename.endswith(".json"):
                 filename += ".json"
             #strip to just the filename
             filename = os.path.basename(filename)
-            premade_adapt_path = os.path.join(adapt_dir,filename)
-            if premade_adapt_path and os.path.exists(premade_adapt_path):
-                ccadapter_path = os.path.abspath(premade_adapt_path)
+            # Case-insensitive match inside adapt_dir
+            matched = None
+            if adapt_dir:
+                for f in os.listdir(adapt_dir):
+                    if f.lower().strip() == filename.lower().strip():
+                        matched = os.path.join(adapt_dir, f)
+                        break
+            if matched and os.path.exists(matched):
+                ccadapter_path = os.path.abspath(matched)
         if ccadapter_path:
             print(f"Loading Chat Completions Adapter: {ccadapter_path}")
             with open(ccadapter_path, 'r', encoding='utf-8', errors='replace') as f:
@@ -8629,15 +8845,14 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
             exitcounter = 999
             exit_with_error(3,"Could not load text model: " + modelname)
 
-    if (chatcompl_adapter_list is not None and isinstance(chatcompl_adapter_list, list)):
         # The chat completions adapter is a list that needs derivation from chat templates
         # Try to derive chat completions adapter from chat template, now that we have the model loaded
         if not args.nomodel and args.model_param:
             ctbytes = handle.get_chat_template()
-            chat_template = ctypes.string_at(ctbytes).decode("UTF-8","ignore")
-            if chat_template != "":
+            cached_chat_template = ctypes.string_at(ctbytes).decode("UTF-8","ignore")
+            if cached_chat_template != "" and (chatcompl_adapter_list is not None and isinstance(chatcompl_adapter_list, list)):
                 for entry in chatcompl_adapter_list:
-                    if all(s in chat_template for s in entry['search']):
+                    if all(s in cached_chat_template for s in entry['search']):
                         print(f"Chat completion heuristic: {entry['name']}")
                         chatcompl_adapter = entry['adapter']
                         break
@@ -8860,6 +9075,7 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
         if not args.remotetunnel:
             print(f"Starting Kobold API on port {args.port} at {endpoint_url}/api/")
             print(f"Starting OpenAI Compatible API on port {args.port} at {endpoint_url}/v1/")
+            print(f"Starting llama.cpp secondary WebUI at {endpoint_url}/lcpp/")
             if args.sdmodel:
                 print(f"StableUI is available at {endpoint_url}/sdui/")
         elif global_memory:
@@ -8869,6 +9085,7 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
                 remote_url = val
                 print(f"Your remote Kobold API can be found at {endpoint_url}/api")
                 print(f"Your remote OpenAI Compatible API can be found at {endpoint_url}/v1")
+                print(f"Starting llama.cpp secondary WebUI at {endpoint_url}/lcpp/")
                 if args.sdmodel:
                     print(f"StableUI is available at {endpoint_url}/sdui/")
             global_memory["load_complete"] = True
@@ -8909,7 +9126,7 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
                     continue
                 lastturns.append({"role":"user","content":lastuserinput})
                 payload = {"messages":lastturns,"rep_pen":1.07,"temperature":0.8}
-                payload = transform_genparams(payload, 4) #to chat completions
+                payload = transform_genparams(payload, 4, False) #to chat completions
                 if args.debugmode < 1:
                     suppress_stdout()
                 genout = generate(genparams=payload)
@@ -9093,6 +9310,8 @@ if __name__ == '__main__':
     advparser.add_argument("--ratelimit", metavar=('[seconds]'), help="If enabled, rate limit generative request by IP address. Each IP can only send a new request once per X seconds.", type=int, default=0)
     advparser.add_argument("--ignoremissing", help="Ignores all missing non-essential files, just skipping them instead.", action='store_true')
     advparser.add_argument("--chatcompletionsadapter", metavar=('[filename]'), help="Select an optional ChatCompletions Adapter JSON file to force custom instruct tags.", default="AutoGuess")
+    advparser.add_argument("--jinja", help="Enables using jinja chat template formatting for chat completions endpoint. Other endpoints are unaffected. Tool calls are done without jinja.", action='store_true')
+    advparser.add_argument("--jinja_tools","--jinja-tools", help="Enables using jinja chat template formatting for chat completions endpoint. Other endpoints are unaffected. Tool calls are done with jinja.", action='store_true')
     advparser.add_argument("--flashattention","--flash-attn","-fa", help="Enables flash attention.", action='store_true')
     advparser.add_argument("--lowvram","-nkvo","--no-kv-offload", help="If supported by the backend, do not offload KV to GPU (lowvram mode). Not recommended, will be slow.", action='store_true')
     advparser.add_argument("--quantkv", help="Sets the KV cache data type quantization, 0=f16, 1=q8, 2=q4. Requires Flash Attention for full effect, otherwise only K cache is quantized.",metavar=('[quantization level 0/1/2]'), type=int, choices=[0,1,2], default=0)
@@ -9175,5 +9394,8 @@ if __name__ == '__main__':
     compatgroup.add_argument("--noblas", help=argparse.SUPPRESS, action='store_true')
     compatgroup3.add_argument("--nommap","--no-mmap", help=argparse.SUPPRESS, action='store_true')
     deprecatedgroup.add_argument("--sdnotile", help=argparse.SUPPRESS, action='store_true') # legacy option, see sdtiledvae
+
+    debuggroup = parser.add_argument_group('Debug Commands')
+    debuggroup.add_argument("--testmemory", help=argparse.SUPPRESS, action='store_true')
 
     main(launch_args=parser.parse_args(),default_args=parser.parse_args([]))
