@@ -22431,7 +22431,8 @@ Current version indicated by LITEVER below.
 						}
 						else
 						{
-							if (i == 0) {
+							// To do: Investigate further if this breaks other modes - currently causes the first message to show twice
+							if (i == 0 && true === false) {
 								fulltxt += `${currmsg}`;
 								putRaw = true;
 							} 
