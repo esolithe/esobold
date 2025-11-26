@@ -6,7 +6,7 @@ window.addEventListener('load', () => {
 			<a class="nav-link mainnav" href="#" onclick="closeTopNav(); showServerSavesPopup();" tabindex="0">Server saves</a>
 		</li>`
     topButton += `<li class="nav-item" id="topbtn_data_manager">
-			<a class="nav-link mainnav" href="#" onclick="closeTopNav(); showCharacterList();" tabindex="0">Data</a>
+			<a class="nav-link mainnav" href="#" onclick="closeTopNav(); showCharacterList(undefined, true);" tabindex="0">Data</a>
             <span id="additionalSameOptions" class="hidden" style="position: absolute;">
                 <a id="topbtn_save_current" class="nav-link mainnav" href="#" tabindex="0">Q.Save</a>
                 <a id="topbtn_download_current" class="nav-link mainnav" href="#" tabindex="0">Download</a>

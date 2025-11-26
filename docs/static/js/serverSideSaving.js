@@ -68,6 +68,7 @@ hideAllServerSavingPopups = () => {
 handleError = (e) => {
     console.error(e)
     hideAllServerSavingPopups()
+    waitingToast.hide()
     msgbox(!!e?.message ? e.message : (!!e?.error ? e.error : e))
 }
 
