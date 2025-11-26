@@ -545,7 +545,7 @@ let controlRemoteDataStore = async () => {
     let remoteDataSettings = JSON.parse(await indexeddb_load("remoteDataSettings"))
 
     let contents = createDetailsContent("Remote KCPP settings")
-    createTextInputSection(contents, "remoteDataStorageUrl", "KCPP URL to use", "Leave blank to use the default", remoteDataSettings?.remoteDataStorageUrl)
+    createTextInputSection(contents, "remoteDataStorageUrl", "KCPP URL to use", "Leave blank to use the default - If changed, please reload the page.", remoteDataSettings?.remoteDataStorageUrl)
     createTextInputSection(contents, "autosaveName", "Name to autosave to", "Leave blank to use the default (Autosave)", remoteDataSettings?.autosaveName)
     createNumberInputSection(contents, "autosaveMaxNumber", "Max number of autosaves (zero means autosaving is disabled)", remoteDataSettings?.autosaveMaxNumber, (v) => /^\d{1,2}$/.test(v))
     createCheckboxInputSection(contents, "autosaveRemoteSync", "Sync autosaves with server", remoteDataSettings?.autosaveRemoteSync)
