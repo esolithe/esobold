@@ -125,69 +125,95 @@ let removeAutosave = async (autosaveName) => {
     await saveAutosaveToServer(charName, undefined)
 }
 
+let removeFileFromServer = async (remoteEndpoint, fileName) => {
+    await fetch(`${remoteEndpoint}/api/data/delete`, {
+        method: "POST",
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ filename: fileName.trim() })
+    })
+        .then(resp => resp.json())
+        .catch(e => {
+            handleError(e)
+        })
+}
+
+let doesObjectHaveKeys = (data) => {
+    return typeof data === "object" && Object.keys(data).length > 0
+}
+
 let putAllCharacterManagerData = () => {
     popupUtils.reset()
 
-    msgboxYesNo("Are you sure you wish to overwrite server data?", "Character manager", () => {
+    msgboxYesNo("Are you sure you wish to add / update server data?", "Character manager", () => {
         promptForAdminPassword(() => {
-            inputBox("Save password", "Please input save password (or leave blank for no password):", "", "(Input Save Password)", async () => {
+            promptForSavePassword(async (passwordData) => {
+                let { password, isEncrypted } = passwordData
                 await updateMetadata()
 
-                let managerSaves = Object.entries(await getServerSaves()).filter(entry => {
-                    [key, value] = entry;
-                    return value.typeName === "Manager"
-                })
+                let allTasks = await Promise.all([...allCharacterNames.map(async c => {
+                    let { name, type, thumbnail } = c, data = await getCharacterData(name, true);
+                    if (doesObjectHaveKeys(data))
+                    {
+                        waitingToast.setText(`Sending data ${name}`)
+                        waitingToast.show()
+                        data.type = type
+                        data.thumbnail = thumbnail
+                        data = JSON.stringify(data)
+                        if (isEncrypted) {
+                            data = encrypt(password, data)
+                        }
 
-                await Promise.all(managerSaves.map(async entry => {
-                    let [key, value] = entry
-                    let remoteEndpoint = await getRemoteDataEndpoint();
-                    await fetch(`${remoteEndpoint}/api/data/delete`, {
-                        method: "POST",
-                        headers: getAuthHeaders(),
-                        body: JSON.stringify({ filename: value.name })
-                    })
-                        .then(resp => resp.json())
-                        .catch(e => {
-                            handleError(e)
+                        // Clear old data
+                        let remoteEndpoint = await getRemoteDataEndpoint();
+                        await removeFileFromServer(remoteEndpoint, name)
+
+                        // Save to server
+                        let bodyData = {
+                            filename: name.trim(),
+                            data: data,
+                            isEncrypted: isEncrypted ? "1" : "0",
+                            group: null,
+                            type: "Manager",
+                            thumbnail: null
+                        }
+                        await fetch(`${remoteEndpoint}/api/data/put`, {
+                            method: "POST",
+                            body: JSON.stringify(bodyData),
+                            headers: getAuthHeaders()
                         })
-                }))
+                            .then(resp => resp.json())
+                            .catch(e => {
+                                handleError(e)
+                            })
+                    }                    
 
-                let userinput = getInputBoxValue(), password = "";
-                userinput = userinput.trim();
-                if (userinput != null && userinput != "") {
-                    password = userinput
-                }
+                    return true
 
-                let isEncrypted = false;
-                if (password.trim() !== "") {
-                    password = password.trim()
-                    isEncrypted = true
-                }
-                let allTasks = await Promise.all(allCharacterNames.map(async c => {
-                    let { name, type, thumbnail } = c, data = await getCharacterData(name);
+                    // decrypt("test", (await Promise.all(putAllCharacterManagerData()))[0].data)
+                    // JSON.parse(decrypt("test", (await Promise.all(putAllCharacterManagerData()))[0].data))
+                }), (async () => {
+                    // Push metadata
+                    let name = "allCharacterMetadata", data = allCharacterNames;
                     waitingToast.setText(`Sending data ${name}`)
                     waitingToast.show()
-                    if (thumbnail !== undefined) {
-                        data.thumbnail = thumbnail
-                    }
-                    if (type !== undefined) {
-                        data.type = type
-                    }
                     data = JSON.stringify(data)
                     if (isEncrypted) {
                         data = encrypt(password, data)
                     }
 
                     let bodyData = {
-                        filename: name.trim(),
+                        filename: name,
                         data: data,
-                        type: "Save",
                         isEncrypted: isEncrypted ? "1" : "0",
                         group: null,
                         type: "Manager",
                         thumbnail: null
                     }
+                    // Clear old data
                     let remoteEndpoint = await getRemoteDataEndpoint();
+                    await removeFileFromServer(remoteEndpoint, name)
+
+                    // Save to server
                     await fetch(`${remoteEndpoint}/api/data/put`, {
                         method: "POST",
                         body: JSON.stringify(bodyData),
@@ -197,77 +223,131 @@ let putAllCharacterManagerData = () => {
                         .catch(e => {
                             handleError(e)
                         })
-
-                    return true
-
-                    // decrypt("test", (await Promise.all(putAllCharacterManagerData()))[0].data)
-                    // JSON.parse(decrypt("test", (await Promise.all(putAllCharacterManagerData()))[0].data))
-                }))
+                })()])
                 waitingToast.hide()
-            }, false, false, true);
+            });
         })
     })
 }
 
+let promptForSavePassword = (callback) => {
+    inputBox("Save password", "Please input save password (or leave blank for no password):", (window.lastUsedSavePassword || ""), "(Input Save Password)", async () => {
+        let userinput = getInputBoxValue(), password = "";
+        userinput = userinput.trim();
+        if (userinput != null && userinput != "") {
+            password = userinput
+        }
+
+        let isEncrypted = false;
+        if (password.trim() !== "") {
+            password = password.trim()
+            isEncrypted = true
+        }
+        window.lastUsedSavePassword = password
+        callback({ password, isEncrypted })
+    }, false, false, true);
+}
+
 let loadAllCharacterManagerData = () => {
-    popupUtils.reset()
-
-    promptForAdminPassword(() => {
-        inputBox("Save password", "Please input save password (or leave blank for no password):", "", "(Input Save Password)", async () => {
-
-            await updateMetadata()
-
-            let userinput = getInputBoxValue(), password = "";
-            userinput = userinput.trim();
-            if (userinput != null && userinput != "") {
-                password = userinput
-            }
-
-            let isEncrypted = false;
-            if (password.trim() !== "") {
-                password = password.trim()
-                isEncrypted = true
-            }
-            let managerSaves = Object.entries(await getServerSaves()).filter(entry => {
-                [key, value] = entry;
-                return value.typeName === "Manager"
-            })
-
-            await Promise.all(managerSaves.map(async entry => {
-                let [key, value] = entry
-                waitingToast.setText(`Receiving data ${value.name}`)
-                waitingToast.show()
-                let remoteEndpoint = await getRemoteDataEndpoint();
-                await fetch(`${remoteEndpoint}/api/data/get`, {
-                    method: "POST",
-                    headers: getAuthHeaders(),
-                    body: JSON.stringify({ filename: value.name })
-                })
-                    .then(resp => resp.json())
-                    .then(saveData => {
-                        let managerData = isEncrypted ? decrypt(password, saveData) : saveData;
-                        managerData = JSON.parse(managerData)
-                        let { type, thumbnail } = managerData
-                        delete managerData["type"]
-                        delete managerData["thumbnail"]
-                        return indexeddb_save(`character_${managerData.name}`, JSON.stringify(managerData)).then(() => {
-                            let charOverview = { name: managerData.name, type: type }
-                            if (thumbnail !== undefined) {
-                                charOverview.thumbnail = thumbnail
-                            }
-                            allCharacterNames = allCharacterNames.filter(c => c.name !== managerData.name)
-                            allCharacterNames.push(charOverview);
-                            updateCharacterListFromAllDe();
+    popupUtils.reset();
+    return new Promise(resolve => {
+        validateRemoteDataEndpoint().then(() => {
+            if (is_using_kcpp_with_server_saving()) {
+                promptForAdminPassword(() => {
+                    promptForSavePassword(async (passwordData) => {
+                        let { password, isEncrypted } = passwordData
+                        await updateMetadata()
+                        let name = "allCharacterMetadata"
+                        waitingToast.setText(`Receiving data ${name}`)
+                        waitingToast.show()
+                        let remoteEndpoint = await getRemoteDataEndpoint();
+                        let saveData = await fetch(`${remoteEndpoint}/api/data/get`, {
+                            method: "POST",
+                            headers: getAuthHeaders(),
+                            body: JSON.stringify({ filename: name })
                         })
-                    })
-                    .catch(e => {
-                        handleError(e)
-                    })
+                            .then(resp => resp.json())
+                            .catch(e => {
+                                console.error(e)
+                            })
 
-                return true
-            }))
-            waitingToast.hide()
-        }, false, false, true);
+                        let managerStoredData = []
+                        if (!!saveData) {
+                            try
+                            {
+                                let managerData = isEncrypted ? decrypt(password, saveData) : saveData;
+                                managerData = JSON.parse(managerData)
+                                if (Array.isArray(managerData)) {
+                                    managerStoredData = managerData
+                                }
+                            }
+                            catch (e) {
+                                console.error(e)
+                            }
+                        }
+                        let managerSaves = await getServerSaves();
+                        if (!!managerSaves) {
+                            managerSaves = Object.entries(managerSaves).filter((entry) => {
+                                let [key, save] = entry
+                                return !!save.name && save?.typeName === "Manager"
+                            }).map((entry) => {
+                                let [key, save] = entry
+                                return save.name
+                            })
+                            for (key of managerSaves)    
+                            {
+                                if (allCharacterNames.find(c => c.name === key) === undefined) {
+                                    let cachedData = managerStoredData.find(data => data.name === key)
+                                    if (cachedData !== undefined) {
+                                        await indexeddb_save(`character_${key}`)
+                                        allCharacterNames.push(cachedData);
+                                    }
+                                    else
+                                    {
+                                        await fetch(`${remoteEndpoint}/api/data/get`, {
+                                            method: "POST",
+                                            headers: getAuthHeaders(),
+                                            body: JSON.stringify({ filename: key })
+                                        })
+                                            .then(resp => resp.json())
+                                            .then(saveData => {
+                                                let handler = () => {
+                                                    let data = !!isEncrypted ? decrypt(window.lastUsedSavePassword, saveData) : saveData;
+                                                    data = JSON.parse(data)
+                                                    let { name, type, thumbnail } = data
+
+                                                    if (name !== undefined)
+                                                    {
+                                                        allCharacterNames.push({ name, type, thumbnail });
+                                                        return indexeddb_save(`character_${data.name}`, JSON.stringify(data))
+                                                    }
+                                                }
+                                                if (isEncrypted && window?.lastUsedSavePassword == undefined) {
+                                                    return (new Promise(resolve => promptForSavePassword(resolve))).then(handler)
+                                                }
+                                                else {
+                                                    return handler()
+                                                }
+                                            }).catch(e => {
+                                                console.error(e)
+                                            })
+                                    }
+                                }
+                            }
+                        }
+                        updateCharacterListFromAll()
+
+                        waitingToast.hide()
+                        resolve()
+                    })
+                })
+            }
+            else {
+                resolve()
+            }
+        }).catch(e => {
+            console.error(e)
+        })
     })
 }
 
@@ -605,13 +685,30 @@ window.loadByCharacterNameIntoWI = async (name) => {
     }
 }
 
+let cleanupAllCharacterList = async () => {
+    await Promise.all(allCharacterNames.map(async char => { 
+        return { 
+            name: char.name, 
+            valid: doesObjectHaveKeys(await getCharacterData(char.name, true)) 
+        } 
+    })).then(rows => rows.forEach(data => { 
+        if (!data.valid) allCharacterNames = allCharacterNames.filter(c => c.name !== data.name) 
+    }))
+}
+
 let maxLengthForSection = 500, halfMaxLengthForSection = Math.floor(maxLengthForSection / 2);
-let showCharacterList = async () => {
+let showCharacterList = async (event = undefined, serverLoad = false) => {
     // Still processing characters
     if (!!window?.debounce_pending_updateCharacterListFromAll || !!window?.pending_encrypt)
     {
         handleError("Please wait - data is still being loaded")
         return
+    }
+
+    if (!!serverLoad)
+    {
+        await cleanupAllCharacterList()
+        await loadAllCharacterManagerData()
     }
 
     let containers = []
@@ -878,6 +975,7 @@ let showCharacterList = async () => {
             let { name, thumbnail } = allCharacterNames[i], type = getTypeFromAllCharacterData(allCharacterNames[i]);
             let charIcon = createIcon(name, !!thumbnail ? `url(${thumbnail})` : undefined)
             charIcon.onclick = async () => {
+                popupUtils.reset()
                 if (type === "Character") {
                     let contents = document.createElement("span");
                     try {
@@ -931,7 +1029,12 @@ let showCharacterList = async () => {
                         }
                     }).button("Delete character", async () => {
                         popupUtils.reset()
-                        msgboxYesNo("Are you sure you wish to delete?", "Character manager", async () => {
+                        msgboxYesNo("Are you sure you wish to delete?  This will remove the server data if it is stored there as well.", "Character manager", async () => {
+                            if (is_using_kcpp_with_server_saving()) {
+                                await new Promise(resolve => promptForAdminPassword(resolve))
+                                let remoteEndpoint = await getRemoteDataEndpoint();
+                                await removeFileFromServer(remoteEndpoint, name)
+                            }
                             allCharacterNames = allCharacterNames.filter(c => c.name !== name)
                             await indexeddb_save(`character_${name}`)
                             updateCharacterListFromAll()
@@ -973,7 +1076,12 @@ let showCharacterList = async () => {
                         }
                     }).button("Delete world info", async () => {
                         popupUtils.reset()
-                        msgboxYesNo("Are you sure you wish to delete?", "Character manager", async () => {
+                        msgboxYesNo("Are you sure you wish to delete?  This will remove the server data if it is stored there as well.", "Character manager", async () => {
+                            if (is_using_kcpp_with_server_saving()) {
+                                await new Promise(resolve => promptForAdminPassword(resolve))
+                                let remoteEndpoint = await getRemoteDataEndpoint();
+                                await removeFileFromServer(remoteEndpoint, name)
+                            }
                             allCharacterNames = allCharacterNames.filter(c => c.name !== name)
                             await indexeddb_save(`character_${name}`)
                             updateCharacterListFromAll()
@@ -1042,7 +1150,12 @@ let showCharacterList = async () => {
                         }
                     }).button("Delete save", async () => {
                         popupUtils.reset()
-                        msgboxYesNo("Are you sure you wish to delete?", "Character manager", async () => {
+                        msgboxYesNo("Are you sure you wish to delete?  This will remove the server data if it is stored there as well.", "Character manager", async () => {
+                            if (is_using_kcpp_with_server_saving()) {
+                                await new Promise(resolve => promptForAdminPassword(resolve))
+                                let remoteEndpoint = await getRemoteDataEndpoint();
+                                await removeFileFromServer(remoteEndpoint, name)
+                            }
                             allCharacterNames = allCharacterNames.filter(c => c.name !== name)
                             await indexeddb_save(`character_${name}`)
                             updateCharacterListFromAll()
@@ -1095,10 +1208,17 @@ let showCharacterList = async () => {
                         }
                     }).button("Delete document", async () => {
                         popupUtils.reset()
-                        msgboxYesNo("Are you sure you wish to delete?", "Character manager", async () => {
+                        msgboxYesNo("Are you sure you wish to delete?  This will remove the server data if it is stored there as well.", "Character manager", async () => {
+                            if (is_using_kcpp_with_server_saving())
+                            {
+                                await new Promise(resolve => promptForAdminPassword(resolve))
+                                let remoteEndpoint = await getRemoteDataEndpoint();
+                                await removeFileFromServer(remoteEndpoint, name)
+                            }
                             allCharacterNames = allCharacterNames.filter(c => c.name !== name)
                             await indexeddb_save(`character_${name}`)
                             updateCharacterListFromAll()
+
                         })
                     }).button("Close", () => popupUtils.reset()).show();
                 }
@@ -1185,8 +1305,8 @@ let showCharacterList = async () => {
         }, 5000)
     }).button("Delete all", async () => {
         popupUtils.reset()
-        msgboxYesNo("Are you sure you wish to delete all data?", "Character manager", async () => {
-            waitingToast.setText(`Deleting all data`)
+        msgboxYesNo("Are you sure you wish to delete all local data?", "Character manager", async () => {
+            waitingToast.setText(`Deleting all local data`)
             waitingToast.show()
             await Promise.all(allCharacterNames.map(elem => indexeddb_save(`character_${elem.name}`)))
             allCharacterNames = []
@@ -1199,8 +1319,7 @@ let showCharacterList = async () => {
         .button("Control", () => controlRemoteDataStore())
     if (is_using_kcpp_with_server_saving()) {
         popupUtils
-            .button("Overwrite", () => putAllCharacterManagerData())
-            .button("Load", () => loadAllCharacterManagerData())
+            .button("Sync", () => putAllCharacterManagerData())
     }
     popupUtils.resetButtonGroup().button("Close", () => popupUtils.reset()).show();
 }
