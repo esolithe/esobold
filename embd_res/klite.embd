@@ -692,7 +692,6 @@ Current version indicated by LITEVER below.
 		color: var(--theme_color_text);
 		font-size: var(--theme_font_size_content);
 		font-family: var(--theme_font_family);
-		border-radius: 8px;
 	}
 	#gamescreen span {
 		align-self: flex-end;
