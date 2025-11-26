@@ -312,7 +312,6 @@ export class ChatService {
 		let aggregatedContent = '';
 		let fullReasoningContent = '';
 		let aggregatedToolCalls: ApiChatCompletionToolCall[] = [];
-		let hasReceivedData = false;
 		let lastTimings: ChatMessageTimings | undefined;
 		let streamFinished = false;
 		let modelEmitted = false;
@@ -352,8 +351,6 @@ export class ChatService {
 				return;
 			}
 
-			hasReceivedData = true;
-
 			if (!abortSignal?.aborted) {
 				onToolCallChunk?.(serializedToolCalls);
 			}
@@ -365,7 +362,11 @@ export class ChatService {
 				if (abortSignal?.aborted) break;
 
 				const { done, value } = await reader.read();
-				if (done) break;
+				if (done)
+				{
+					streamFinished = true;
+					break;
+				}
 
 				if (abortSignal?.aborted) break;
 
@@ -415,7 +416,6 @@ export class ChatService {
 
 							if (content) {
 								finalizeOpenToolCallBatch();
-								hasReceivedData = true;
 								aggregatedContent += content;
 								if (!abortSignal?.aborted) {
 									onChunk?.(content);
@@ -424,7 +424,6 @@ export class ChatService {
 
 							if (reasoningContent) {
 								finalizeOpenToolCallBatch();
-								hasReceivedData = true;
 								fullReasoningContent += reasoningContent;
 								if (!abortSignal?.aborted) {
 									onReasoningChunk?.(reasoningContent);
@@ -445,15 +444,6 @@ export class ChatService {
 
 			if (streamFinished) {
 				finalizeOpenToolCallBatch();
-
-				if (
-					!hasReceivedData &&
-					aggregatedContent.length === 0 &&
-					aggregatedToolCalls.length === 0
-				) {
-					const noResponseError = new Error('No response received from server. Please try again.');
-					throw noResponseError;
-				}
 
 				const finalToolCalls =
 					aggregatedToolCalls.length > 0 ? JSON.stringify(aggregatedToolCalls) : undefined;

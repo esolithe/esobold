@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <cctype>
 #include <filesystem>
 #include <functional>
 #include <iostream>
@@ -45,6 +46,13 @@ const char* modes_str[] = {
     "upscale",
 };
 #define SD_ALL_MODES_STR "img_gen, vid_gen, convert, upscale"
+
+const char* previews_str[] = {
+    "none",
+    "proj",
+    "tae",
+    "vae",
+};
 
 enum SDMode {
     IMG_GEN,
@@ -98,26 +106,30 @@ struct SDParams {
     std::vector<int> high_noise_skip_layers = {7, 8, 9};
     sd_sample_params_t high_noise_sample_params;
 
+    std::string easycache_option;
+    sd_easycache_params_t easycache_params;
+
     float moe_boundary  = 0.875f;
     int video_frames    = 1;
     int fps             = 16;
     float vace_strength = 1.f;
 
-    float strength             = 0.75f;
-    float control_strength     = 0.9f;
-    rng_type_t rng_type        = CUDA_RNG;
-    int64_t seed               = 42;
-    bool verbose               = false;
-    bool offload_params_to_cpu = false;
-    bool control_net_cpu       = false;
-    bool clip_on_cpu           = false;
-    bool vae_on_cpu            = false;
-    bool diffusion_flash_attn  = false;
-    bool diffusion_conv_direct = false;
-    bool vae_conv_direct       = false;
-    bool canny_preprocess      = false;
-    bool color                 = false;
-    int upscale_repeats        = 1;
+    float strength              = 0.75f;
+    float control_strength      = 0.9f;
+    rng_type_t rng_type         = CUDA_RNG;
+    rng_type_t sampler_rng_type = RNG_TYPE_COUNT;
+    int64_t seed                = 42;
+    bool verbose                = false;
+    bool offload_params_to_cpu  = false;
+    bool control_net_cpu        = false;
+    bool clip_on_cpu            = false;
+    bool vae_on_cpu             = false;
+    bool diffusion_flash_attn   = false;
+    bool diffusion_conv_direct  = false;
+    bool vae_conv_direct        = false;
+    bool canny_preprocess       = false;
+    bool color                  = false;
+    int upscale_repeats         = 1;
 
     // Photo Maker
     std::string photo_maker_path;
@@ -130,15 +142,23 @@ struct SDParams {
     int chroma_t5_mask_pad   = 1;
     float flow_shift         = INFINITY;
 
-    prediction_t prediction = DEFAULT_PRED;
+    prediction_t prediction           = DEFAULT_PRED;
+    lora_apply_mode_t lora_apply_mode = LORA_APPLY_AUTO;
 
     sd_tiling_params_t vae_tiling_params = {false, 0, 0, 0.5f, 0.0f, 0.0f};
     bool force_sdxl_vae_conv_scale       = false;
+
+    preview_t preview_method = PREVIEW_NONE;
+    int preview_interval     = 1;
+    std::string preview_path = "preview.png";
+    bool taesd_preview       = false;
+    bool preview_noisy       = false;
 
     SDParams() {
         sd_sample_params_init(&sample_params);
         sd_sample_params_init(&high_noise_sample_params);
         high_noise_sample_params.sample_steps = -1;
+        sd_easycache_params_init(&easycache_params);
     }
 };
 
@@ -196,9 +216,11 @@ void print_params(SDParams params) {
     printf("    high_noise_sample_params:          %s\n", SAFE_STR(high_noise_sample_params_str));
     printf("    moe_boundary:                      %.3f\n", params.moe_boundary);
     printf("    prediction:                        %s\n", sd_prediction_name(params.prediction));
+    printf("    lora_apply_mode:                   %s\n", sd_lora_apply_mode_name(params.lora_apply_mode));
     printf("    flow_shift:                        %.2f\n", params.flow_shift);
     printf("    strength(img2img):                 %.2f\n", params.strength);
     printf("    rng:                               %s\n", sd_rng_type_name(params.rng_type));
+    printf("    sampler rng:                       %s\n", sd_rng_type_name(params.sampler_rng_type));
     printf("    seed:                              %zd\n", params.seed);
     printf("    batch_count:                       %d\n", params.batch_count);
     printf("    vae_tiling:                        %s\n", params.vae_tiling_params.enabled ? "true" : "false");
@@ -208,8 +230,15 @@ void print_params(SDParams params) {
     printf("    chroma_use_t5_mask:                %s\n", params.chroma_use_t5_mask ? "true" : "false");
     printf("    chroma_t5_mask_pad:                %d\n", params.chroma_t5_mask_pad);
     printf("    video_frames:                      %d\n", params.video_frames);
+    printf("    easycache:                         %s (threshold=%.3f, start=%.2f, end=%.2f)\n",
+           params.easycache_params.enabled ? "enabled" : "disabled",
+           params.easycache_params.reuse_threshold,
+           params.easycache_params.start_percent,
+           params.easycache_params.end_percent);
     printf("    vace_strength:                     %.2f\n", params.vace_strength);
     printf("    fps:                               %d\n", params.fps);
+    printf("    preview_mode:                      %s (%s)\n", previews_str[params.preview_method], params.preview_noisy ? "noisy" : "denoised");
+    printf("    preview_interval:                  %d\n", params.preview_interval);
     free(sample_params_str);
     free(high_noise_sample_params_str);
 }
@@ -590,6 +619,10 @@ void parse_args(int argc, const char** argv, SDParams& params) {
          "the negative prompt (default: \"\")",
          &params.negative_prompt},
         {"",
+         "--preview-path",
+         "path to write preview image to (default: ./preview.png)",
+         &params.preview_path},
+        {"",
          "--upscale-model",
          "path to esrgan model.",
          &params.esrgan_path},
@@ -647,6 +680,10 @@ void parse_args(int argc, const char** argv, SDParams& params) {
          "shift timestep for NitroFusion models (default: 0). "
          "recommended N for NitroSD-Realism around 250 and 500 for NitroSD-Vibrant",
          &params.sample_params.shifted_timestep},
+        {"",
+         "--preview-interval",
+         "interval in denoising steps between consecutive updates of the image preview file (default is 1, meaning updating at every step)",
+         &params.preview_interval},
     };
 
     options.float_options = {
@@ -801,7 +838,14 @@ void parse_args(int argc, const char** argv, SDParams& params) {
          "--disable-auto-resize-ref-image",
          "disable auto resize of ref images",
          false, &params.auto_resize_ref_image},
-    };
+        {"",
+         "--taesd-preview-only",
+         std::string("prevents usage of taesd for decoding the final image. (for use with --preview ") + previews_str[PREVIEW_TAE] + ")",
+         true, &params.taesd_preview},
+        {"",
+         "--preview-noisy",
+         "enables previewing noisy inputs of the models rather than the denoised outputs",
+         true, &params.preview_noisy}};
 
     auto on_mode_arg = [&](int argc, const char** argv, int index) {
         if (++index >= argc) {
@@ -854,28 +898,28 @@ void parse_args(int argc, const char** argv, SDParams& params) {
         return 1;
     };
 
-    auto on_schedule_arg = [&](int argc, const char** argv, int index) {
+    auto on_sampler_rng_arg = [&](int argc, const char** argv, int index) {
         if (++index >= argc) {
             return -1;
         }
-        const char* arg                = argv[index];
-        params.sample_params.scheduler = str_to_schedule(arg);
-        if (params.sample_params.scheduler == SCHEDULE_COUNT) {
-            fprintf(stderr, "error: invalid scheduler %s\n",
+        const char* arg         = argv[index];
+        params.sampler_rng_type = str_to_rng_type(arg);
+        if (params.sampler_rng_type == RNG_TYPE_COUNT) {
+            fprintf(stderr, "error: invalid sampler rng type %s\n",
                     arg);
             return -1;
         }
         return 1;
     };
 
-    auto on_high_noise_schedule_arg = [&](int argc, const char** argv, int index) {
+    auto on_scheduler_arg = [&](int argc, const char** argv, int index) {
         if (++index >= argc) {
             return -1;
         }
-        const char* arg                           = argv[index];
-        params.high_noise_sample_params.scheduler = str_to_schedule(arg);
-        if (params.high_noise_sample_params.scheduler == SCHEDULE_COUNT) {
-            fprintf(stderr, "error: invalid high noise scheduler %s\n",
+        const char* arg                = argv[index];
+        params.sample_params.scheduler = str_to_scheduler(arg);
+        if (params.sample_params.scheduler == SCHEDULER_COUNT) {
+            fprintf(stderr, "error: invalid scheduler %s\n",
                     arg);
             return -1;
         }
@@ -890,6 +934,20 @@ void parse_args(int argc, const char** argv, SDParams& params) {
         params.prediction = str_to_prediction(arg);
         if (params.prediction == PREDICTION_COUNT) {
             fprintf(stderr, "error: invalid prediction type %s\n",
+                    arg);
+            return -1;
+        }
+        return 1;
+    };
+
+    auto on_lora_apply_mode_arg = [&](int argc, const char** argv, int index) {
+        if (++index >= argc) {
+            return -1;
+        }
+        const char* arg        = argv[index];
+        params.lora_apply_mode = str_to_lora_apply_mode(arg);
+        if (params.lora_apply_mode == LORA_APPLY_MODE_COUNT) {
+            fprintf(stderr, "error: invalid lora apply model %s\n",
                     arg);
             return -1;
         }
@@ -1046,6 +1104,58 @@ void parse_args(int argc, const char** argv, SDParams& params) {
         return 1;
     };
 
+    auto on_preview_arg = [&](int argc, const char** argv, int index) {
+        if (++index >= argc) {
+            return -1;
+        }
+        const char* preview = argv[index];
+        int preview_method  = -1;
+        for (int m = 0; m < PREVIEW_COUNT; m++) {
+            if (!strcmp(preview, previews_str[m])) {
+                preview_method = m;
+            }
+        }
+        if (preview_method == -1) {
+            fprintf(stderr, "error: preview method %s\n",
+                    preview);
+            return -1;
+        }
+        params.preview_method = (preview_t)preview_method;
+        return 1;
+    };
+
+    auto on_easycache_arg = [&](int argc, const char** argv, int index) {
+        const std::string default_values = "0.2,0.15,0.95";
+        auto looks_like_value            = [](const std::string& token) {
+            if (token.empty()) {
+                return false;
+            }
+            if (token[0] != '-') {
+                return true;
+            }
+            if (token.size() == 1) {
+                return false;
+            }
+            unsigned char next = static_cast<unsigned char>(token[1]);
+            return std::isdigit(next) || token[1] == '.';
+        };
+
+        std::string option_value;
+        int consumed = 0;
+        if (index + 1 < argc) {
+            std::string next_arg = argv[index + 1];
+            if (looks_like_value(next_arg)) {
+                option_value = argv_to_utf8(index + 1, argv);
+                consumed     = 1;
+            }
+        }
+        if (option_value.empty()) {
+            option_value = default_values;
+        }
+        params.easycache_option = option_value;
+        return consumed;
+    };
+
     options.manual_options = {
         {"-M",
          "--mode",
@@ -1058,8 +1168,12 @@ void parse_args(int argc, const char** argv, SDParams& params) {
          on_type_arg},
         {"",
          "--rng",
-         "RNG, one of [std_default, cuda], default: cuda",
+         "RNG, one of [std_default, cuda, cpu], default: cuda(sd-webui), cpu(comfyui)",
          on_rng_arg},
+        {"",
+         "--sampler-rng",
+         "sampler RNG, one of [std_default, cuda, cpu]. If not specified, use --rng",
+         on_sampler_rng_arg},
         {"-s",
          "--seed",
          "RNG seed (default: 42, use random seed for < 0)",
@@ -1074,9 +1188,17 @@ void parse_args(int argc, const char** argv, SDParams& params) {
          "prediction type override, one of [eps, v, edm_v, sd3_flow, flux_flow]",
          on_prediction_arg},
         {"",
+         "--lora-apply-mode",
+         "the way to apply LoRA, one of [auto, immediately, at_runtime], default is auto. "
+         "In auto mode, if the model weights contain any quantized parameters, the at_runtime mode will be used; otherwise, immediately will be used."
+         "The immediately mode may have precision and compatibility issues with quantized parameters, "
+         "but it usually offers faster inference speed and, in some cases, lower memory usage. "
+         "The at_runtime mode, on the other hand, is exactly the opposite.",
+         on_lora_apply_mode_arg},
+        {"",
          "--scheduler",
-         "denoiser sigma scheduler, one of [discrete, karras, exponential, ays, gits, smoothstep, sgm_uniform, simple], default: discrete",
-         on_schedule_arg},
+         "denoiser sigma scheduler, one of [discrete, karras, exponential, ays, gits, smoothstep, sgm_uniform, simple, lcm], default: discrete",
+         on_scheduler_arg},
         {"",
          "--skip-layers",
          "layers to skip for SLG steps (default: [7,8,9])",
@@ -1086,10 +1208,6 @@ void parse_args(int argc, const char** argv, SDParams& params) {
          "(high noise) sampling method, one of [euler, euler_a, heun, dpm2, dpm++2s_a, dpm++2m, dpm++2mv2, ipndm, ipndm_v, lcm, ddim_trailing, tcd]"
          " default: euler for Flux/SD3/Wan, euler_a otherwise",
          on_high_noise_sample_method_arg},
-        {"",
-         "--high-noise-scheduler",
-         "(high noise) denoiser sigma scheduler, one of [discrete, karras, exponential, ays, gits, smoothstep, sgm_uniform, simple], default: discrete",
-         on_high_noise_schedule_arg},
         {"",
          "--high-noise-skip-layers",
          "(high noise) layers to skip for SLG steps (default: [7,8,9])",
@@ -1110,11 +1228,72 @@ void parse_args(int argc, const char** argv, SDParams& params) {
          "--vae-relative-tile-size",
          "relative tile size for vae tiling, format [X]x[Y], in fraction of image size if < 1, in number of tiles per dim if >=1 (overrides --vae-tile-size)",
          on_relative_tile_size_arg},
+        {"",
+         "--preview",
+         std::string("preview method. must be one of the following [") + previews_str[0] + ", " + previews_str[1] + ", " + previews_str[2] + ", " + previews_str[3] + "] (default is " + previews_str[PREVIEW_NONE] + ")\n",
+         on_preview_arg},
+        {"",
+         "--easycache",
+         "enable EasyCache for DiT models with optional \"threshold,start_percent,end_percent\" (default: 0.2,0.15,0.95)",
+         on_easycache_arg},
     };
 
     if (!parse_options(argc, argv, options)) {
         print_usage(argc, argv, options);
         exit(1);
+    }
+
+    if (!params.easycache_option.empty()) {
+        float values[3] = {0.0f, 0.0f, 0.0f};
+        std::stringstream ss(params.easycache_option);
+        std::string token;
+        int idx = 0;
+        while (std::getline(ss, token, ',')) {
+            auto trim = [](std::string& s) {
+                const char* whitespace = " \t\r\n";
+                auto start             = s.find_first_not_of(whitespace);
+                if (start == std::string::npos) {
+                    s.clear();
+                    return;
+                }
+                auto end = s.find_last_not_of(whitespace);
+                s        = s.substr(start, end - start + 1);
+            };
+            trim(token);
+            if (token.empty()) {
+                fprintf(stderr, "error: invalid easycache option '%s'\n", params.easycache_option.c_str());
+                exit(1);
+            }
+            if (idx >= 3) {
+                fprintf(stderr, "error: easycache expects exactly 3 comma-separated values (threshold,start,end)\n");
+                exit(1);
+            }
+            try {
+                values[idx] = std::stof(token);
+            } catch (const std::exception&) {
+                fprintf(stderr, "error: invalid easycache value '%s'\n", token.c_str());
+                exit(1);
+            }
+            idx++;
+        }
+        if (idx != 3) {
+            fprintf(stderr, "error: easycache expects exactly 3 comma-separated values (threshold,start,end)\n");
+            exit(1);
+        }
+        if (values[0] < 0.0f) {
+            fprintf(stderr, "error: easycache threshold must be non-negative\n");
+            exit(1);
+        }
+        if (values[1] < 0.0f || values[1] >= 1.0f || values[2] <= 0.0f || values[2] > 1.0f || values[1] >= values[2]) {
+            fprintf(stderr, "error: easycache start/end percents must satisfy 0.0 <= start < end <= 1.0\n");
+            exit(1);
+        }
+        params.easycache_params.enabled         = true;
+        params.easycache_params.reuse_threshold = values[0];
+        params.easycache_params.start_percent   = values[1];
+        params.easycache_params.end_percent     = values[2];
+    } else {
+        params.easycache_params.enabled = false;
     }
 
     if (params.n_threads <= 0) {
@@ -1161,10 +1340,6 @@ void parse_args(int argc, const char** argv, SDParams& params) {
     if (params.strength < 0.f || params.strength > 1.f) {
         fprintf(stderr, "error: can only work with strength in [0.0, 1.0]\n");
         exit(1);
-    }
-
-    if (params.mode != CONVERT && params.tensor_type_rules.size() > 0) {
-        fprintf(stderr, "warning: --tensor-type-rules is currently supported only for conversion\n");
     }
 
     if (params.mode == VID_GEN && params.video_frames <= 0) {
@@ -1245,9 +1420,12 @@ std::string get_image_params(SDParams params, int64_t seed) {
     parameter_string += "Size: " + std::to_string(params.width) + "x" + std::to_string(params.height) + ", ";
     parameter_string += "Model: " + sd_basename(params.model_path) + ", ";
     parameter_string += "RNG: " + std::string(sd_rng_type_name(params.rng_type)) + ", ";
+    if (params.sampler_rng_type != RNG_TYPE_COUNT) {
+        parameter_string += "Sampler RNG: " + std::string(sd_rng_type_name(params.sampler_rng_type)) + ", ";
+    }
     parameter_string += "Sampler: " + std::string(sd_sample_method_name(params.sample_params.sample_method));
-    if (params.sample_params.scheduler != DEFAULT) {
-        parameter_string += " " + std::string(sd_schedule_name(params.sample_params.scheduler));
+    if (params.sample_params.scheduler != SCHEDULER_COUNT) {
+        parameter_string += " " + std::string(sd_scheduler_name(params.sample_params.scheduler));
     }
     parameter_string += ", ";
     for (const auto& te : {params.clip_l_path, params.clip_g_path, params.t5xxl_path, params.qwen2vl_path, params.qwen2vl_vision_path}) {
@@ -1452,15 +1630,49 @@ bool load_images_from_dir(const std::string dir,
     return true;
 }
 
+std::string preview_path;
+float preview_fps;
+
+void step_callback(int step, int frame_count, sd_image_t* image, bool is_noisy) {
+    (void)step;
+    (void)is_noisy;
+    // is_noisy is set to true if the preview corresponds to noisy latents, false if it's denoised latents
+    // unused in this app, it will either be always noisy or always denoised here
+    if (frame_count == 1) {
+        stbi_write_png(preview_path.c_str(), image->width, image->height, image->channel, image->data, 0);
+    } else {
+        create_mjpg_avi_from_sd_images(preview_path.c_str(), image, frame_count, preview_fps);
+    }
+}
+
 int main(int argc, const char* argv[]) {
     SDParams params;
     parse_args(argc, argv, params);
+    preview_path = params.preview_path;
+    if (params.video_frames > 4) {
+        size_t last_dot_pos   = params.preview_path.find_last_of(".");
+        std::string base_path = params.preview_path;
+        std::string file_ext  = "";
+        if (last_dot_pos != std::string::npos) {  // filename has extension
+            base_path = params.preview_path.substr(0, last_dot_pos);
+            file_ext  = params.preview_path.substr(last_dot_pos);
+            std::transform(file_ext.begin(), file_ext.end(), file_ext.begin(), ::tolower);
+        }
+        if (file_ext == ".png") {
+            preview_path = base_path + ".avi";
+        }
+    }
+    preview_fps = params.fps;
+    if (params.preview_method == PREVIEW_PROJ)
+        preview_fps /= 4.0f;
+
     params.sample_params.guidance.slg.layers                 = params.skip_layers.data();
     params.sample_params.guidance.slg.layer_count            = params.skip_layers.size();
     params.high_noise_sample_params.guidance.slg.layers      = params.high_noise_skip_layers.data();
     params.high_noise_sample_params.guidance.slg.layer_count = params.high_noise_skip_layers.size();
 
     sd_set_log_callback(sd_log_cb, (void*)&params);
+    sd_set_preview_callback((sd_preview_cb_t)step_callback, params.preview_method, params.preview_interval, !params.preview_noisy, params.preview_noisy);
 
     if (params.verbose) {
         print_params(params);
@@ -1643,17 +1855,21 @@ int main(int argc, const char* argv[]) {
         params.lora_model_dir.c_str(),
         params.embedding_dir.c_str(),
         params.photo_maker_path.c_str(),
+        params.tensor_type_rules.c_str(),
         vae_decode_only,
         true,
         params.n_threads,
         params.wtype,
         params.rng_type,
+        params.sampler_rng_type,
         params.prediction,
+        params.lora_apply_mode,
         params.offload_params_to_cpu,
         params.clip_on_cpu,
         params.control_net_cpu,
         params.vae_on_cpu,
         params.diffusion_flash_attn,
+        params.taesd_preview,
         params.diffusion_conv_direct,
         params.vae_conv_direct,
         params.force_sdxl_vae_conv_scale,
@@ -1686,8 +1902,16 @@ int main(int argc, const char* argv[]) {
             return 1;
         }
 
-        if (params.sample_params.sample_method == SAMPLE_METHOD_DEFAULT) {
+        if (params.sample_params.sample_method == SAMPLE_METHOD_COUNT) {
             params.sample_params.sample_method = sd_get_default_sample_method(sd_ctx);
+        }
+
+        if (params.high_noise_sample_params.sample_method == SAMPLE_METHOD_COUNT) {
+            params.high_noise_sample_params.sample_method = sd_get_default_sample_method(sd_ctx);
+        }
+
+        if (params.sample_params.scheduler == SCHEDULER_COUNT) {
+            params.sample_params.scheduler = sd_get_default_scheduler(sd_ctx);
         }
 
         if (params.mode == IMG_GEN) {
@@ -1716,6 +1940,7 @@ int main(int argc, const char* argv[]) {
                     params.pm_style_strength,
                 },  // pm_params
                 params.vae_tiling_params,
+                params.easycache_params,
             };
 
             results     = generate_image(sd_ctx, &img_gen_params);
@@ -1738,6 +1963,7 @@ int main(int argc, const char* argv[]) {
                 params.seed,
                 params.video_frames,
                 params.vace_strength,
+                params.easycache_params,
             };
 
             results = generate_video(sd_ctx, &vid_gen_params, &num_results);
@@ -1830,15 +2056,16 @@ int main(int argc, const char* argv[]) {
             if (results[i].data == nullptr) {
                 continue;
             }
+            int write_ok;
             std::string final_image_path = i > 0 ? base_path + "_" + std::to_string(i + 1) + file_ext : base_path + file_ext;
             if (is_jpg) {
-                stbi_write_jpg(final_image_path.c_str(), results[i].width, results[i].height, results[i].channel,
-                               results[i].data, 90, get_image_params(params, params.seed + i).c_str());
-                printf("save result JPEG image to '%s'\n", final_image_path.c_str());
+                write_ok = stbi_write_jpg(final_image_path.c_str(), results[i].width, results[i].height, results[i].channel,
+                                          results[i].data, 90, get_image_params(params, params.seed + i).c_str());
+                printf("save result JPEG image to '%s' (%s)\n", final_image_path.c_str(), write_ok == 0 ? "failure" : "success");
             } else {
-                stbi_write_png(final_image_path.c_str(), results[i].width, results[i].height, results[i].channel,
-                               results[i].data, 0, get_image_params(params, params.seed + i).c_str());
-                printf("save result PNG image to '%s'\n", final_image_path.c_str());
+                write_ok = stbi_write_png(final_image_path.c_str(), results[i].width, results[i].height, results[i].channel,
+                                          results[i].data, 0, get_image_params(params, params.seed + i).c_str());
+                printf("save result PNG image to '%s' (%s)\n", final_image_path.c_str(), write_ok == 0 ? "failure" : "success");
             }
         }
     }
