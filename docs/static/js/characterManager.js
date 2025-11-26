@@ -336,17 +336,20 @@ let loadAllCharacterManagerData = () => {
                             }
                         }
                         updateCharacterListFromAll()
-
                         waitingToast.hide()
                         resolve()
                     })
                 })
             }
             else {
+                updateCharacterListFromAll()
+                waitingToast.hide()
                 resolve()
             }
         }).catch(e => {
             console.error(e)
+            waitingToast.hide()
+            resolve()
         })
     })
 }
