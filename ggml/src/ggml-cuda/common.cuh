@@ -95,12 +95,6 @@
 #    define GGML_CUDA_USE_CUB
 #endif  // !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && CUDART_VERSION >= 11070
 
-#ifndef __CUDA_ARCH_LIST__
-#ifdef KCPP_BACKUP_CUDA_ARCH_REF
-#define __CUDA_ARCH_LIST__ KCPP_BACKUP_CUDA_ARCH_REF
-#endif
-#endif
-
 #ifdef __CUDA_ARCH_LIST__
 constexpr bool ggml_cuda_has_arch_impl(int) {
     return false;
