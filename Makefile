@@ -229,7 +229,7 @@ NVCCFLAGS += -Wno-deprecated-gpu-targets \
              -gencode arch=compute_70,code=compute_70 \
              -gencode arch=compute_75,code=compute_75 \
              -DKCPP_LIMIT_CUDA_MAX_ARCH=750 \
-			 -DKCPP_BACKUP_CUDA_ARCH_REF="35,50,61,70,75"
+			 -DKCPP_BACKUP_CUDA_ARCH_REF=\"35,50,61,70,75\"
 
 else ifdef LLAMA_ARCHES_CU12
 NVCCFLAGS += -Wno-deprecated-gpu-targets \
@@ -238,14 +238,14 @@ NVCCFLAGS += -Wno-deprecated-gpu-targets \
              -gencode arch=compute_70,code=compute_70 \
              -gencode arch=compute_75,code=compute_75 \
              -gencode arch=compute_80,code=compute_80 \
-			 -DKCPP_BACKUP_CUDA_ARCH_REF="50,61,70,75,80"
+			 -DKCPP_BACKUP_CUDA_ARCH_REF=\"50,61,70,75,80\"
 
 else ifdef LLAMA_ARCHES_CU13
 NVCCFLAGS += -Wno-deprecated-gpu-targets \
              -gencode arch=compute_75,code=compute_75 \
              -gencode arch=compute_80,code=compute_80 \
              -gencode arch=compute_86,code=compute_86 \
-			 -DKCPP_BACKUP_CUDA_ARCH_REF="75,80,86"
+			 -DKCPP_BACKUP_CUDA_ARCH_REF=\"75,80,86\"
 
 else
 NVCCFLAGS += -Wno-deprecated-gpu-targets -arch=all
