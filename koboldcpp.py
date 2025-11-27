@@ -71,7 +71,7 @@ dry_seq_break_max = 128
 extra_images_max = 4 # for kontext/qwen img
 
 # global vars
-KcppVersion = "1.102"
+KcppVersion = "1.102.2"
 showdebug = True
 kcpp_instance = None #global running instance
 global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None}
@@ -3220,6 +3220,28 @@ def compress_tools_array(tools_array):
 
     return tools_array_filtered
 
+def sweep_media_from_messages(messages_array):
+    images = []
+    audio = []
+    for message in messages_array:
+        curr_content = message.get("content", None)
+        if isinstance(curr_content, list):
+            for item in curr_content:
+                if item.get("type") == "image_url":
+                    url = item.get("image_url", {}).get("url", "")
+                    if url.startswith("data:image"):
+                        images.append(url.split(",", 1)[1])
+                elif item.get("type") == "input_audio":
+                    data = item.get("input_audio", {}).get("data")
+                    if data:
+                        audio.append(data)
+        imgs_ollama = message.get("images", None)
+        if imgs_ollama:
+            for img in imgs_ollama:
+                images.append(img)
+    return images, audio
+
+
 def transform_genparams(genparams, api_format, use_jinja):
     global chatcompl_adapter, maxctx
 
@@ -3367,6 +3389,8 @@ ws ::= | " " | "\n" [ \t]{0,20}
                 messages_string = jinja_output
                 if jinjatools and len(jinjatools)>0:
                     genparams["using_openai_tools"] = True
+                # handle media
+                images_added, audio_added = sweep_media_from_messages(messages_array)
             else:
                 if jinjatools:
                     # inject the tools list at the top of the context window, even if context has shifted
@@ -4569,6 +4593,11 @@ Change Mode<br>
                 response_body = (json.dumps([]).encode())
             else:
                 response_body = (json.dumps([{"name":"Euler","aliases":["k_euler"],"options":{}},{"name":"Euler a","aliases":["k_euler_a","k_euler_ancestral"],"options":{}},{"name":"Heun","aliases":["k_heun"],"options":{}},{"name":"DPM2","aliases":["k_dpm_2"],"options":{}},{"name":"DPM++ 2M","aliases":["k_dpmpp_2m"],"options":{}},{"name":"DDIM","aliases":["ddim"],"options":{}},{"name":"LCM","aliases":["k_lcm"],"options":{}},{"name":"Default","aliases":["default"],"options":{}}]).encode())
+        elif self.path.endswith('/sdapi/v1/schedulers'):
+            if friendlysdmodelname=="inactive" or fullsdmodelpath=="":
+                response_body = (json.dumps([]).encode())
+            else:
+                response_body = (json.dumps([{"name":name,"label":name} for name in ["default","discrete","karras","exponential","ays","gits","sgm_uniform","simple","smoothstep","lcm"]]).encode())
         elif self.path.endswith('/sdapi/v1/latent-upscale-modes'):
            response_body = (json.dumps([]).encode())
         elif self.path.endswith('/sdapi/v1/upscalers'):
@@ -4740,7 +4769,7 @@ Change Mode<br>
         if response_body is None:
             self.send_response(404)
             self.end_headers(content_type='text/html')
-            rp = 'Error: KoboldCpp HTTP Server is running, but this endpoint does not exist. Please check the URL.'
+            rp = f"Error: KoboldCpp HTTP Server is running, but this endpoint does not exist. Please check the URL.<br>Current path: {self.path}"
             self.wfile.write(rp.encode())
         else:
             self.send_response(200)
@@ -6052,13 +6081,15 @@ def show_gui():
                     lastpos = ("+"+str(lparr[1])) if (len(lparr)==2) else ""
                     previous_event_width = new_width
                     previous_event_height = new_height
-                    windowwidth = math.floor(original_windowwidth*max(smallratio,min(incr_w,smallratio*1.2))) #allow slight extension past legal width
+                    windowwidth = math.floor(original_windowwidth*smallratio)
                     windowwidth = max(256, min(1024, windowwidth))
                     windowheight = math.floor(original_windowheight*smallratio)
                     windowheight = max(256, min(1024, windowheight))
                     root.geometry(str(windowwidth) + "x" + str(windowheight) + str(lastpos))
+                    if corrupt_scaler:
+                        smallratio = min(smallratio, 1)*0.98 #don't allow scaling beyond normal
                     ctk.set_widget_scaling(smallratio)
-                    root.after(20, clearesizing)
+                    root.after(5, clearesizing)
                     changerunmode(1,1,1)
                     togglerope(1,1,1)
                     toggleflashattn(1,1,1)
@@ -9387,7 +9418,7 @@ if __name__ == '__main__':
     advparser.add_argument("--ignoremissing", help="Ignores all missing non-essential files, just skipping them instead.", action='store_true')
     advparser.add_argument("--chatcompletionsadapter", metavar=('[filename]'), help="Select an optional ChatCompletions Adapter JSON file to force custom instruct tags.", default="AutoGuess")
     advparser.add_argument("--jinja", help="Enables using jinja chat template formatting for chat completions endpoint. Other endpoints are unaffected. Tool calls are done without jinja.", action='store_true')
-    advparser.add_argument("--jinja_tools","--jinja-tools", help="Enables using jinja chat template formatting for chat completions endpoint. Other endpoints are unaffected. Tool calls are done with jinja.", action='store_true')
+    advparser.add_argument("--jinja_tools","--jinja-tools","--jinjatools", help="Enables using jinja chat template formatting for chat completions endpoint. Other endpoints are unaffected. Tool calls are done with jinja.", action='store_true')
     advparser.add_argument("--flashattention","--flash-attn","-fa", help="Enables flash attention.", action='store_true')
     advparser.add_argument("--lowvram","-nkvo","--no-kv-offload", help="If supported by the backend, do not offload KV to GPU (lowvram mode). Not recommended, will be slow.", action='store_true')
     advparser.add_argument("--quantkv", help="Sets the KV cache data type quantization, 0=f16, 1=q8, 2=q4. Requires Flash Attention for full effect, otherwise only K cache is quantized.",metavar=('[quantization level 0/1/2]'), type=int, choices=[0,1,2], default=0)

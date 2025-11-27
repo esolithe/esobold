@@ -306,7 +306,14 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
 
         //kcpp: use wmma to fix cu11 incoherence
         if (ggml_cuda_should_use_wmma_fattn(cc) && (ggml_cuda_highest_compiled_arch(cc) <= GGML_CUDA_CC_TURING || cc == GGML_CUDA_CC_TURING)) {
-            return BEST_FATTN_KERNEL_WMMA_F16;
+            if(Q->ne[0] != 40 && Q->ne[0] != 72 && Q->ne[0] != 576) //kcpp: these sizes not supported in wmma
+            {
+                return BEST_FATTN_KERNEL_WMMA_F16;
+            }
+            else
+            {
+                return BEST_FATTN_KERNEL_NONE;
+            }
         }
 
         return BEST_FATTN_KERNEL_MMA_F16;
@@ -322,10 +329,15 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
 
     //kcpp: always force WMMA for Turing and Volta if above check fails, fix "FlashAttention without tensor cores only supports head sizes 64 and 128."
     if (cc == GGML_CUDA_CC_TURING || cc == GGML_CUDA_CC_VOLTA) {
-        return BEST_FATTN_KERNEL_WMMA_F16;
+        if(Q->ne[0] != 40 && Q->ne[0] != 72 && Q->ne[0] != 576) //kcpp: these sizes not supported in wmma
+        {
+            return BEST_FATTN_KERNEL_WMMA_F16;
+        } else {
+            return BEST_FATTN_KERNEL_NONE;
+        }
     }
     //kcpp: patch from previous version for my sanity. it worked before, idk it should work now.
-    if (Q->ne[1] <= 8 || Q->ne[0] == 256) {
+    if ((Q->ne[1] <= 8 || Q->ne[0] == 256) && can_use_vector_kernel) {
         return BEST_FATTN_KERNEL_VEC;
     }
 
@@ -348,19 +360,28 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
 
 void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     ggml_cuda_set_device(ctx.device);
+    int cc;
     switch (ggml_cuda_get_best_fattn_kernel(ggml_cuda_get_device(), dst)) {
         case BEST_FATTN_KERNEL_NONE:
             GGML_ABORT("fatal error");
         case BEST_FATTN_KERNEL_TILE:
+            cc = ggml_cuda_info().devices[device].cc;
+            GGML_LOG_WARN("\nCC=%d, TILE_KERNEL\n",cc);
             ggml_cuda_flash_attn_ext_tile(ctx, dst);
             break;
         case BEST_FATTN_KERNEL_VEC:
+            cc = ggml_cuda_info().devices[device].cc;
+            GGML_LOG_WARN("\nCC=%d, VEC_KERNEL\n",cc);
             ggml_cuda_flash_attn_ext_vec(ctx, dst);
             break;
         case BEST_FATTN_KERNEL_WMMA_F16:
+            cc = ggml_cuda_info().devices[device].cc;
+            GGML_LOG_WARN("\nCC=%d, WMMA_KERNEL\n",cc);
             ggml_cuda_flash_attn_ext_wmma_f16(ctx, dst);
             break;
         case BEST_FATTN_KERNEL_MMA_F16:
+            cc = ggml_cuda_info().devices[device].cc;
+            GGML_LOG_WARN("\nCC=%d, MMA_KERNEL\n",cc);
             ggml_cuda_flash_attn_ext_mma_f16(ctx, dst);
             break;
     }

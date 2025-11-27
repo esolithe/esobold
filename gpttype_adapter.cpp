@@ -2258,6 +2258,8 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
         std::vector<llama_model_kv_override> kvos; //ensure it keeps in scope until model is created
         std::vector<llama_model_tensor_buft_override> tenos; //ensure it keeps in scope until model is created
         std::vector<std::string> temp_tensor_names; //store temp tensor names to have mem references.
+        temp_tensor_names.reserve(32); //very important, prevents vector from reallocating
+        tenos.reserve(32);
         if(inputs.moe_experts>0)
         {
             printf("\nOverriding number of experts to %d\n",inputs.moe_experts);
@@ -2333,14 +2335,14 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
                 }
             }
             printf("\n\n");
-            for (const auto & override : string_split<std::string>(tensoroverrides, ',')) {
-                std::string::size_type pos = override.find('=');
+            for (const auto & overrider : string_split<std::string>(tensoroverrides, ',')) {
+                std::string::size_type pos = overrider.find('=');
                 if (pos == std::string::npos) {
-                    printf("\nInvalid Override Tensor: %s\n",override.c_str());
+                    printf("\nInvalid Override Tensor: %s\n",overrider.c_str());
                     continue;
                 }
-                std::string tensor_name = override.substr(0, pos);
-                std::string buffer_type = override.substr(pos + 1);
+                std::string tensor_name = overrider.substr(0, pos);
+                std::string buffer_type = overrider.substr(pos + 1);
 
                 if (buft_list.find(buffer_type) == buft_list.end()) {
                     printf("\nUnknown Buffer Type: %s\n",buffer_type.c_str());
@@ -2470,7 +2472,7 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
             }
             clip_context_params ctx_clip_params {
                 /* use_gpu           */ true,
-                /* flash_attn_type   */ (kcpp_data->flash_attn?CLIP_FLASH_ATTN_TYPE_ENABLED:CLIP_FLASH_ATTN_TYPE_DISABLED),
+                /* flash_attn_type   */ CLIP_FLASH_ATTN_TYPE_DISABLED, //kcpp: disabled in 1.102.2 as some headsizes break on turing
                 /* image_min_tokens  */ -1,
                 /* image_max_tokens  */ -1,
             };
