@@ -360,26 +360,27 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
 
 void ggml_cuda_flash_attn_ext(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     ggml_cuda_set_device(ctx.device);
+    int cc;
     switch (ggml_cuda_get_best_fattn_kernel(ggml_cuda_get_device(), dst)) {
         case BEST_FATTN_KERNEL_NONE:
             GGML_ABORT("fatal error");
         case BEST_FATTN_KERNEL_TILE:
-            const int cc = ggml_cuda_info().devices[device].cc;
+            cc = ggml_cuda_info().devices[device].cc;
             GGML_LOG_WARN("\nCC=%d, TILE_KERNEL\n",cc);
             ggml_cuda_flash_attn_ext_tile(ctx, dst);
             break;
         case BEST_FATTN_KERNEL_VEC:
-            const int cc = ggml_cuda_info().devices[device].cc;
+            cc = ggml_cuda_info().devices[device].cc;
             GGML_LOG_WARN("\nCC=%d, VEC_KERNEL\n",cc);
             ggml_cuda_flash_attn_ext_vec(ctx, dst);
             break;
         case BEST_FATTN_KERNEL_WMMA_F16:
-            const int cc = ggml_cuda_info().devices[device].cc;
+            cc = ggml_cuda_info().devices[device].cc;
             GGML_LOG_WARN("\nCC=%d, WMMA_KERNEL\n",cc);
             ggml_cuda_flash_attn_ext_wmma_f16(ctx, dst);
             break;
         case BEST_FATTN_KERNEL_MMA_F16:
-            const int cc = ggml_cuda_info().devices[device].cc;
+            cc = ggml_cuda_info().devices[device].cc;
             GGML_LOG_WARN("\nCC=%d, MMA_KERNEL\n",cc);
             ggml_cuda_flash_attn_ext_mma_f16(ctx, dst);
             break;
