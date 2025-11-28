@@ -96,11 +96,8 @@ let getDownloadDataFromManager = async (charName) => {
 }
 
 let generateZipExport = async () => {
-    let dataForZip = await Promise.all(allCharacterNames.map(c => getDownloadDataFromManager(c.name)))
-
     const zipWriter = new zip.ZipWriter(new zip.Data64URIWriter("application/zip"));
-
-    await Promise.all(dataForZip.map(data => zipWriter.add(data.fileName, new zip.Data64URIReader(data.b64Url))))
+    await Promise.all(allCharacterNames.map(c => getDownloadDataFromManager(c.name)).map(promise => promise.then(data => zipWriter.add(data.fileName, new zip.Data64URIReader(data.b64Url))).catch(handleError)))
     return zipWriter.close();
 }
 
@@ -113,7 +110,7 @@ let uploadZipImport = async () => {
         let { file, fileName, ext, content, plaintext, dataArr } = result;
         const zipReader = new zip.ZipReader(new zip.Data64URIReader(content));
         let entries = await zipReader.getEntries()
-        let managerPreppedData = await Promise.all(entries.map(async entry => {
+        await Promise.all(entries.map(async entry => {
             let filename = entry.filename
             let text = await entry.getData(new zip.TextWriter())
             let uInt8 = await entry.getData(new zip.Uint8ArrayWriter())
@@ -124,10 +121,7 @@ let uploadZipImport = async () => {
                 plaintext: text,
                 dataArr: uInt8
             }
-        }))
-        managerPreppedData.forEach(managerUploadHandler)
-        //   const firstEntry = (await zipReader.getEntries()).shift();
-        //   const helloWorldText = await firstEntry.getData(helloWorldWriter);
+        }).map(promise => promise.then(managerUploadHandler)))
         await zipReader.close();
     })
 }
