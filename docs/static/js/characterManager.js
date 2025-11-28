@@ -699,6 +699,86 @@ let cleanupAllCharacterList = async () => {
     }))
 }
 
+let managerUploadHandler = function (result) {
+    let { file, fileName, ext, content, plaintext, dataArr } = result;
+    waitingToast.setText(`Loading data ${fileName}`)
+    waitingToast.show()
+    if (ext === ".png") {
+        let arr = new Uint8Array(dataArr)
+        let res = convertTavernPng(arr)
+        if (res === null) {
+            waitingToast.hide()
+            handleError(`${fileName}: PNG is not valid`)
+        }
+    }
+    else if (ext === ".webp") {
+        let arr = new Uint8Array(dataArr)
+        let res = getTavernExifJSON(arr)
+        if (res === null) {
+            waitingToast.hide()
+            handleError(`${fileName}: WEBP is not valid`)
+        }
+    }
+    else if (ext === ".txt") {
+        let arr = new Uint8Array(dataArr)
+        let res = getTavernExifJSON(arr)
+        saveDocumentToIndexDB(fileName, arr, "text/plain")
+    }
+    else if (ext === ".pdf") {
+        let arr = new Uint8Array(dataArr)
+        saveDocumentToIndexDB(fileName, arr, "application/pdf")
+    }
+    else {
+        let data = JSON.parse(plaintext);
+        if (is_kai_json(data) && !data?.scenarioVersion) {
+            // Handle as a regular KLite save
+            saveKLiteSaveToIndexDB(fileName, data)
+        }
+        else {
+            let wiToAdd = data, has_tav_wi_check = has_tavern_wi_check(wiToAdd), wiName = fileName;
+            if (!data.scenarioVersion && (data.name != null || data.description != null ||
+                data.personality != null || (data.spec == "chara_card_v2" || data.spec == "chara_card_v3") || has_tav_wi_check)) {
+                saveCharacterDataToIndexDB(undefined, data, fileName)
+            }
+            else {
+                if (has_tav_wi_check) {
+                    if (wiToAdd?.name !== undefined && wiToAdd.name.trim().length > 0) {
+                        wiName = wiToAdd.name
+                    }
+                    wiToAdd = load_tavern_wi(wiToAdd);
+                    if (wiToAdd && wiToAdd.length > 0) {
+                        wiToAdd.forEach(wi => wi.wigroup = fileName.replace("'", ""))
+                    }
+                }
+                else {
+                    try {
+                        let hasNoGeneralWI = wiToAdd.length === 0 || wiToAdd.find(wi => wi?.wigroup === undefined || wi.wigroup.trim() === null || wi.wigroup === "" || wi.wigroup === "General") === undefined;
+                        if (hasNoGeneralWI) {
+                            let wiAllHaveSameGroup = wiToAdd.find((e, p, a) => a.find(c => c?.wigroup !== e.wigroup)) === undefined
+                            if (wiAllHaveSameGroup) {
+                                wiName = wiToAdd[0].wigroup
+                            }
+                        }
+                    }
+                    catch (e) {
+                        console.error(e)
+                    }
+                }
+                if (Array.isArray(wiToAdd)) {
+                    wiToAdd = wiToAdd.filter(wi => wi?.key !== undefined)
+                    if (wiToAdd.length > 0) {
+                        saveLorebookToIndexDB(wiName, wiToAdd, JSON.parse(plaintext))
+                    }
+                }
+                else {
+                    waitingToast.hide()
+                    handleError(`${fileName}: JSON does not contain WI or lorebook`)
+                }
+            }
+        }
+    }
+}
+
 let maxLengthForSection = 500, halfMaxLengthForSection = Math.floor(maxLengthForSection / 2);
 let showCharacterList = async (event = undefined, serverLoad = false) => {
     // Still processing characters
@@ -746,87 +826,6 @@ let showCharacterList = async (event = undefined, serverLoad = false) => {
         return container
     }
 
-    let uploadFileHandler = function (result) {
-        let { file, fileName, ext, content, plaintext, dataArr } = result;
-        waitingToast.setText(`Loading data ${fileName}`)
-        waitingToast.show()
-        if (ext === ".png") {
-            let arr = new Uint8Array(dataArr)
-            let res = convertTavernPng(arr)
-            if (res === null) {
-                waitingToast.hide()
-                handleError(`${fileName}: PNG is not valid`)
-            }
-        }
-        else if (ext === ".webp") {
-            let arr = new Uint8Array(dataArr)
-            let res = getTavernExifJSON(arr)
-            if (res === null) {
-                waitingToast.hide()
-                handleError(`${fileName}: WEBP is not valid`)
-            }
-        }
-        else if (ext === ".txt") {
-            let arr = new Uint8Array(dataArr)
-            let res = getTavernExifJSON(arr)
-            saveDocumentToIndexDB(fileName, arr, "text/plain")
-        }
-        else if (ext === ".pdf") {
-            let arr = new Uint8Array(dataArr)
-            saveDocumentToIndexDB(fileName, arr, "application/pdf")
-        }
-        else {
-            let data = JSON.parse(plaintext);
-            if (is_kai_json(data) && !data?.scenarioVersion) {
-                // Handle as a regular KLite save
-                saveKLiteSaveToIndexDB(fileName, data)
-            }
-            else {
-                let wiToAdd = data, has_tav_wi_check = has_tavern_wi_check(wiToAdd), wiName = fileName;
-                if (!data.scenarioVersion && (data.name != null || data.description != null ||
-                    data.personality != null || (data.spec == "chara_card_v2" || data.spec == "chara_card_v3") || has_tav_wi_check)) {
-                    saveCharacterDataToIndexDB(undefined, data, fileName)
-                }
-                else
-                {
-                    if (has_tav_wi_check) {
-                        if (wiToAdd?.name !== undefined && wiToAdd.name.trim().length > 0) {
-                            wiName = wiToAdd.name
-                        }
-                        wiToAdd = load_tavern_wi(wiToAdd);
-                        if (wiToAdd && wiToAdd.length > 0) {
-                            wiToAdd.forEach(wi => wi.wigroup = fileName.replace("'", ""))
-                        }
-                    }
-                    else {
-                        try {
-                            let hasNoGeneralWI = wiToAdd.length === 0 || wiToAdd.find(wi => wi?.wigroup === undefined || wi.wigroup.trim() === null || wi.wigroup === "" || wi.wigroup === "General") === undefined;
-                            if (hasNoGeneralWI) {
-                                let wiAllHaveSameGroup = wiToAdd.find((e, p, a) => a.find(c => c?.wigroup !== e.wigroup)) === undefined
-                                if (wiAllHaveSameGroup) {
-                                    wiName = wiToAdd[0].wigroup
-                                }
-                            }
-                        }
-                        catch (e) {
-                            console.error(e)
-                        }
-                    }
-                    if (Array.isArray(wiToAdd)) {
-                        wiToAdd = wiToAdd.filter(wi => wi?.key !== undefined)
-                        if (wiToAdd.length > 0) {
-                            saveLorebookToIndexDB(wiName, wiToAdd, JSON.parse(plaintext))
-                        }
-                    }
-                    else {
-                        waitingToast.hide()
-                        handleError(`${fileName}: JSON does not contain WI or lorebook`)
-                    }
-                }
-            }
-        }
-    }
-
     let scenarios = await getScenariosAndLegacyServerSaves()
 
     let dragIcon = createIcon("Click or drag characters, saves, lorebooks, world info or PDFs here to add")
@@ -834,7 +833,7 @@ let showCharacterList = async (event = undefined, serverLoad = false) => {
     dragIcon.addEventListener("click", () => {
         popupUtils.reset()
         promptUserForLocalFile(async (result) => {
-            uploadFileHandler(result)
+            managerUploadHandler(result)
         }, [".png", ".webp", ".json", ".txt", ".pdf"], true)
     })
     getContainerForType("Drop zone").appendChild(dragIcon);
@@ -861,7 +860,7 @@ let showCharacterList = async (event = undefined, serverLoad = false) => {
                 })
                 if (validFiles.length > 0) {
                     popupUtils.reset()
-                    fileInputToFiles(validFiles, uploadFileHandler)
+                    fileInputToFiles(validFiles, managerUploadHandler)
                 }
                 else {
                     handleError("No valid files selected")
@@ -959,20 +958,6 @@ let showCharacterList = async (event = undefined, serverLoad = false) => {
         let wiEntryToString = (entry) => {
             return `Primary: ${entry?.key}\nSecondary: ${entry?.keysecondary}`;
         }
-        let downloadB64URL = (name, data) => {
-            let a = document.createElement("a");
-            a.href = data
-            a.download = `${name}`
-            a.click();
-            a.remove();
-        }
-        let jsObjToBytes = (data) => {
-            let bytes = new TextEncoder().encode(JSON.stringify(data)), text = "";
-            for (var i = 0; i < Math.ceil(bytes.length / 32768.0); i++) {
-                text += String.fromCharCode.apply(null, bytes.slice(i * 32768, Math.min((i + 1) * 32768, bytes.length)))
-            }
-            return text
-        }
         createSearchInput()
         for (let i = 0; i < allCharacterNames.length; i++) {
             let { name, thumbnail } = allCharacterNames[i], type = getTypeFromAllCharacterData(allCharacterNames[i]);
@@ -1017,18 +1002,12 @@ let showCharacterList = async (event = undefined, serverLoad = false) => {
                         await window.loadByCharacterNameIntoWI(name)
                     }).button("Download character", async () => {
                         popupUtils.reset()
-                        let charData = await getCharacterData(name);
-                        if (!!charData?.image) {
-                            downloadB64URL(`${name}.png`, charData.image)
-                        }
-                        else
+                        
+                        let data = await getDownloadDataFromManager(name)
+                        if (data !== null)
                         {
-                            try {
-                                downloadB64URL(`${name}.json`, `data:application/json;base64,${btoa(jsObjToBytes(charData.data))}`)
-                            }
-                            catch (e) {
-                                handleError(e)
-                            }
+                            let { fileName, b64Url } = data
+                            downloadB64URL(fileName, b64Url)
                         }
                     }).button("Delete character", async () => {
                         popupUtils.reset()
@@ -1065,17 +1044,11 @@ let showCharacterList = async (event = undefined, serverLoad = false) => {
                         current_wi.push(...wiToAdd)
                     }).button("Download world info", async () => {
                         popupUtils.reset()
-                        let charData = await getCharacterData(name), { originalData } = charData;
-                        if (!!originalData) {
-                            try {
-                                downloadB64URL(`${name}.json`, `data:application/json;base64,${btoa(jsObjToBytes(originalData))}`)
-                            }
-                            catch (e) {
-                                handleError(e)
-                            }
-                        }
-                        else {
-                            handleError("Could not download file")
+
+                        let data = await getDownloadDataFromManager(name)
+                        if (data !== null) {
+                            let { fileName, b64Url } = data
+                            downloadB64URL(fileName, b64Url)
                         }
                     }).button("Delete world info", async () => {
                         popupUtils.reset()
@@ -1135,21 +1108,10 @@ let showCharacterList = async (event = undefined, serverLoad = false) => {
                         saveKLiteSaveToIndexDB(name, data);
                     }).button("Download save", async () => {
                         popupUtils.reset()
-                        let charData = await getCharacterData(name), { data } = charData;
-                        if (!!data) {
-                            try {
-                                let bytes = new TextEncoder().encode(JSON.stringify(data)), text = "";
-                                for (var i = 0; i < Math.ceil(bytes.length / 32768.0); i++) {
-                                    text += String.fromCharCode.apply(null, bytes.slice(i * 32768, Math.min((i + 1) * 32768, bytes.length)))
-                                }
-                                downloadB64URL(`${name}.json`, `data:application/json;base64,${btoa(text)}`)
-                            }
-                            catch (e) {
-                                handleError(e)
-                            }
-                        }
-                        else {
-                            handleError("Could not download file")
+                        let data = await getDownloadDataFromManager(name)
+                        if (data !== null) {
+                            let { fileName, b64Url } = data
+                            downloadB64URL(fileName, b64Url)
                         }
                     }).button("Delete save", async () => {
                         popupUtils.reset()
@@ -1191,23 +1153,10 @@ let showCharacterList = async (event = undefined, serverLoad = false) => {
                         waitingToast.hide()
                     }).button("Download document", async () => {
                         popupUtils.reset()
-                        let charData = await getCharacterData(name), { data, dataType } = charData;
-                        if (!!data) {
-                            try {
-                                let ext = ".txt"
-                                switch (dataType) {
-                                    case "application/pdf":
-                                        ext = ".pdf"
-                                        break
-                                }
-                                downloadB64URL(`${name}${ext}`, data)
-                            }
-                            catch (e) {
-                                handleError(e)
-                            }
-                        }
-                        else {
-                            handleError("Could not download file")
+                        let data = await getDownloadDataFromManager(name)
+                        if (data !== null) {
+                            let { fileName, b64Url } = data
+                            downloadB64URL(fileName, b64Url)
                         }
                     }).button("Delete document", async () => {
                         popupUtils.reset()
@@ -1313,6 +1262,23 @@ let showCharacterList = async (event = undefined, serverLoad = false) => {
             waitingToast.show()
             await Promise.all(allCharacterNames.map(elem => indexeddb_save(`character_${elem.name}`)))
             allCharacterNames = []
+            await updateCharacterListFromAll()
+            waitingToast.hide()
+        })
+    }).button("Download all", async () => {
+        popupUtils.reset()
+        msgboxYesNo("Are you sure you wish to download all data?", "Character manager", async () => {
+            waitingToast.setText(`Downloading all data`)
+            waitingToast.show()
+            await downloadZipExport()
+            waitingToast.hide()
+        })
+    }).button("Upload all", async () => {
+        popupUtils.reset()
+        msgboxYesNo("Are you sure you wish to upload all data from a zip archive?", "Character manager", async () => {
+            waitingToast.setText(`Uploading all data from archive`)
+            waitingToast.show()
+            await uploadZipImport()
             await updateCharacterListFromAll()
             waitingToast.hide()
         })

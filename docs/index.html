@@ -4065,7 +4065,7 @@ Current version indicated by LITEVER below.
 		"name":"OpenAI Harmony Non-Thinking",
 		"user":"<|start|>user<|message|>",
 		"user_end":"<|end|>",
-		"assistant":"<|start|>assistant<|channel|>final<|message|>",
+		"assistant":"<<|start|>assistant<|channel|>analysis<|message|>We can answer immediately.<|end|><|start|>assistant<|channel|>final<|message|>",
 		"assistant_end":"<|end|>",
 		"system":"<|start|>developer<|message|>",
 		"system_end":"<|end|>",
@@ -6985,6 +6985,7 @@ Current version indicated by LITEVER below.
 
 			.replace(/\*\*\*([^\s*][\s\S]*?[^\\])\*\*\*/gm, "<b><em>$1</em></b>")
 			.replace(/\*\*(.)\*\*/g, "<b>$1</b>") //handle single char bold
+			.replace(/ \*\*(\w+(?: \w+)?)\*\* /g, " <b>$1</b> ") //hack: support 1 or 2 nested bolded words (not official)
 			.replace(/\*\*([^\s*][\s\S]*?[^\\])\*\*/gm, "<b>$1</b>")
 			.replace(/(^|[\s.,;:!?<>])\*(.)\*(?=[\s.,;:!?<>]|$)/g, "$1<em>$2</em>") //handle single char italics
 			.replace(/\*([^\s*][\s\S]*?[^\\])\*/gm, "<em>$1</em>")
@@ -29564,6 +29565,7 @@ else
 <script src="static/js/ext/md-wysiwyg-editor.js"></script>
 <link rel="stylesheet" type="text/css" href="static/css/ext/pickr.css" />
 <script src="static/js/ext/pickr.js"></script>
+<script src="static/js/ext/zip-fs.min.js"></script>
 <!-- Third party libs end -->
 <!-- EsoLite modifications -->
 <script src="static/js/encryptUtils.js"></script>
@@ -29593,6 +29595,7 @@ else
 <link rel="stylesheet" type="text/css" href="static/css/popupUtils.css" />
 <script src="static/js/tavernTool.js"></script>
 <script src="static/js/popupUtils.js"></script>
+<script src="static/js/fileUtils.js"></script>
 <script src="static/js/characterManager.js"></script>
 <script src="static/js/fullScreenEditor.js"></script>
 <script src="static/js/themeEditor.js"></script>
