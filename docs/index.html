@@ -4678,6 +4678,11 @@ Current version indicated by LITEVER below.
 	//setup drag and drop zone for files
 	setupDragDrop();
 
+	//setup autoscroll disabling when manual scroll
+    attach_scroll_detection(document.getElementById("gametext"));
+	attach_scroll_detection(document.getElementById("chat_msg_body"));
+	attach_scroll_detection(document.getElementById("corpostylemain"));
+
 	//fix for iphone zooming
 	if(navigator.userAgent.indexOf('iPhone') > -1 )
 	{
@@ -17543,6 +17548,15 @@ Current version indicated by LITEVER below.
 					pending_context_preinjection = ist; //bot response as first msg
 					pending_context_postinjection = iet;
 				}
+				if (localsettings.inject_timestamps) {
+					pending_context_preinjection += get_current_timestamp();
+				}
+				if (localsettings.inject_chatnames_instruct) {
+					if (localsettings.inject_timestamps) {
+						pending_context_preinjection += " ";
+					}
+					pending_context_preinjection += get_my_multiplayer_chatname() + "\:";
+				}
 			} else {
 				if (gametext_arr.length == 0) {
 					newgen = iet;
@@ -22194,6 +22208,9 @@ Current version indicated by LITEVER below.
 
 	}
 
+	var autoscrollEnabled = true;
+	var suppressScrollEvent = false;
+	var autoscrollTimeout = null;
 	function handle_autoscroll(alwaysscroll=true)
 	{
 		if (localsettings.autoscroll) {
@@ -22201,8 +22218,9 @@ Current version indicated by LITEVER below.
 			let box2 = document.getElementById("chat_msg_body");
 			let box3 = document.getElementById("corpostylemain");
 			function isScrolledToBottom(element) {
-				return element.scrollHeight - element.scrollTop - element.clientHeight <= 100;
+				return element.scrollHeight - element.scrollTop - element.clientHeight <= (autoscrollEnabled?220:60);
 			}
+			suppressScrollEvent = true;
 			if(alwaysscroll || isScrolledToBottom(box1))
 			{
 				box1.scrollTop = box1.scrollHeight - box1.clientHeight + 10;
@@ -22215,7 +22233,21 @@ Current version indicated by LITEVER below.
 			{
 				box3.scrollTop = box3.scrollHeight - box3.clientHeight + 10;
 			}
+			suppressScrollEvent = false;
 		}
+	}
+	function attach_scroll_detection(element)
+	{
+		element.addEventListener("scroll", () => {
+			if (suppressScrollEvent) { return; }
+			autoscrollEnabled = false;
+			if (autoscrollTimeout) {
+				clearTimeout(autoscrollTimeout);
+			}
+			autoscrollTimeout = setTimeout(() => {
+				autoscrollEnabled = true;
+			}, 100);
+		});
 	}
 
 	function render_gametext(save=true, force_scroll=true)
@@ -26554,7 +26586,9 @@ Current version indicated by LITEVER below.
 				const containerRect = gametext.getBoundingClientRect();
 				if (rect.top < containerRect.top || rect.bottom > containerRect.bottom) {
 					if (range.startContainer && range.startContainer.nodeType === Node.TEXT_NODE) {
+						suppressScrollEvent = true;
 						gametext.scrollTop = 0; //simple fix for safari scrolling
+						suppressScrollEvent = false;
 						const span = document.createElement("span");
 						span.style.display = "inline";
 						span.style.background = "transparent";
