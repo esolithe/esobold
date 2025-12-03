@@ -2222,7 +2222,7 @@ Current version indicated by LITEVER below.
 	.corporightpanel
 	{
 		width: 100%;
-		height: calc(100vh - 120px);
+		height: calc(100vh - 62px);
 		display: flex;
 		flex-direction: column;
 		padding-left: 2px;
@@ -2393,6 +2393,28 @@ Current version indicated by LITEVER below.
 			padding-top: 6px;
 			padding-bottom: 6px;
 		}
+	}
+
+	/* Force sidebar visibility for corpo */
+	.corpostyle.forceLeftHidden .corpo_leftpanel_open {
+		display: block;
+	}
+
+	.corpostyle.forceLeftHidden .corpoleftpanel {
+		position: fixed;
+		left: 0;
+		top: 0;
+		height: 100%;
+		transform: translateX(-100%);
+	}
+	.corpostyle.forceLeftHidden .corpoleftpanel.open {
+		transform: translateX(0);
+	}
+	.corpostyle.forceLeftHidden .corpo_leftpanel_close {
+		display: block;
+	}
+	.corpostyle.forceLeftHidden .corpo_leftpanel_open {
+		display: block;
 	}
 
 	/* Printer friendly view */

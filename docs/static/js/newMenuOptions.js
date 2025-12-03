@@ -1,4 +1,29 @@
-
+let corpoHide_render_gametext = render_gametext;
+render_gametext = (...args) => {
+    corpoHide_render_gametext(...args)
+    if (!!localsettings?.corpoHideLeftPanel)
+    {
+        if (!!window?.eso?.forceCompleteHideOfCorpoLeftPanel) {
+            document.querySelector("#corpo_leftpanel").classList.add("hidden")
+            document.querySelector(".corpostyle").classList.remove("forceLeftHidden")
+        }
+        else {
+            document.querySelector("#corpo_leftpanel").classList.remove("hidden")
+            document.querySelector(".corpostyle").classList.add("forceLeftHidden")
+        }
+    }
+    else
+    {
+        if (!!window?.eso?.forceCompleteHideOfCorpoLeftPanel) {
+            document.querySelector("#corpo_leftpanel").classList.remove("hidden")
+            document.querySelector(".corpostyle").classList.add("forceLeftHidden")
+        }
+        else {
+            document.querySelector("#corpo_leftpanel").classList.add("hidden")
+            document.querySelector(".corpostyle").classList.remove("forceLeftHidden")
+        }
+    }
+}
 
 let originalDisplaySettings = display_settings, originalConfirmSettings = confirm_settings;
 
@@ -19,6 +44,7 @@ display_settings = () => {
     document.getElementById("useNewEditor").checked = localsettings.useNewEditor;
     document.getElementById("legacySaveMechanisms").checked = localsettings.legacySaveMechanisms;
     document.getElementById("fullScreenEditorForInputs").checked = localsettings.fullScreenEditorForInputs;
+    document.getElementById("corpoHideLeftPanel").checked = localsettings.corpoHideLeftPanel;
 }
 
 updateLegacySaveButtonState = () => {
@@ -45,6 +71,7 @@ confirm_settings = () => {
     localsettings.useNewEditor = (document.getElementById("useNewEditor").checked ? true : false);
     localsettings.legacySaveMechanisms = (document.getElementById("legacySaveMechanisms").checked ? true : false);
     localsettings.fullScreenEditorForInputs = (document.getElementById("fullScreenEditorForInputs").checked ? true : false);
+    localsettings.corpoHideLeftPanel = (document.getElementById("corpoHideLeftPanel").checked ? true : false);
     updateEditorState();
     originalConfirmSettings();
     updateLegacySaveButtonState();
@@ -93,6 +120,9 @@ window.addEventListener('load', () => {
     if (localsettings?.customThemeColours == undefined) {
         localsettings.customThemeColours = {}
     }
+    if (localsettings?.corpoHideLeftPanel == undefined) {
+        localsettings.corpoHideLeftPanel = false
+    }    
 
     let createSettingElemButton = (inputElemId, labelTitle, labelText, onClick) => {
         let settingLabelElem = document.createElement("div")
@@ -241,6 +271,9 @@ window.addEventListener('load', () => {
     lastSettingContainer.append(settingLabelElem)
 
     settingLabelElem = createSettingElemBool("legacySaveMechanisms", "Save options (legacy)", "Shows buttons for saving to slots and server using the non-data manager UI (legacy)")
+    lastSettingContainer.append(settingLabelElem)
+
+    settingLabelElem = createSettingElemBool("corpoHideLeftPanel", "Left panel in Corpo Theme starts minimised", "If this option is enabled, the left panel in Corpo gets minimised automatically.")
     lastSettingContainer.append(settingLabelElem)
 
     settingLabelElem = createSettingElemButton("customThemeColours", "Modify theme colours", "Allows modification of the colours used in the default theme", showThemePopup)
