@@ -71,7 +71,7 @@ dry_seq_break_max = 128
 extra_images_max = 4 # for kontext/qwen img
 
 # global vars
-KcppVersion = "1.102.3"
+KcppVersion = "1.103"
 showdebug = True
 kcpp_instance = None #global running instance
 global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None}
@@ -412,6 +412,25 @@ class embeddings_generation_outputs(ctypes.Structure):
                 ("count", ctypes.c_int),
                 ("data", ctypes.c_char_p)]
 
+class StdoutRedirector:
+    def __init__(self, writer):
+        self.writer = writer
+        self.terminal = sys.__stdout__
+    def write(self, message):
+        try:
+            # Always write to terminal, then duplicate to pipe writer
+            self.terminal.write(message)
+            self.terminal.flush()
+            if self.writer:
+                try:
+                    self.writer.write(message)
+                    self.writer.flush()
+                except Exception:
+                    self.writer = None
+        except Exception:
+            pass
+    def flush(self):
+        self.terminal.flush()
 
 
 def getdirpath():
@@ -3107,6 +3126,21 @@ def extract_all_names_from_tool_array(tools_array):
             pass
     return toolnames
 
+def strip_oaicontent_of_media(oaicontent):
+    if isinstance(oaicontent, list):
+        outarr = []
+        for x in oaicontent:
+            if not isinstance(x, dict):
+                outarr.append({"type": "unknown", "data": "(base64 data attached)"})
+                continue
+            xtype = x.get("type","data")
+            if xtype=="text":
+                outarr.append(x)
+            else:
+                outarr.append({"type":xtype, "data":"(base64 data attached)"})
+        return outarr
+    return oaicontent
+
 #returns the found JSON of the correct tool to use, or None if no tool is suitable
 def determine_tool_json_to_use(genparams, curr_ctx, assistant_message_start, is_followup_tool):
     # tools handling: Check if user is passing a openai tools array, if so add to end of prompt before assistant prompt unless tool_choice has been set to None
@@ -3129,6 +3163,7 @@ def determine_tool_json_to_use(genparams, curr_ctx, assistant_message_start, is_
         for message in reversed_messages:
             if message["role"] == "user":
                 last_user_message = message["content"]
+                last_user_message = strip_oaicontent_of_media(last_user_message)
                 last_user_message = f"\n\nUser's current request: {last_user_message}"
                 break
         tool_call_chunk = []
@@ -3351,6 +3386,8 @@ ws ::= | " " | "\n" [ \t]{0,20}
             tools_message_end = adapter_obj.get("tools_end", "")
             images_added = []
             audio_added = []
+            continue_assistant_turn = genparams.get('continue_assistant_turn', False)
+            latest_turn_was_assistant = False
 
             # handle structured outputs
             respformat = genparams.get('response_format', None)
@@ -3401,12 +3438,14 @@ ws ::= | " " | "\n" [ \t]{0,20}
 
                 for message in messages_array:
                     message_index += 1
+                    latest_turn_was_assistant = False
                     if message['role'] == "system":
                         messages_string += system_message_start
                     elif message['role'] == "user":
                         messages_string += user_message_start
                     elif message['role'] == "assistant":
                         messages_string += assistant_message_start
+                        latest_turn_was_assistant = True
                     elif message['role'] == "tool":
                         messages_string += tools_message_start
                         tcid = message.get("tool_call_id","")
@@ -3486,7 +3525,8 @@ ws ::= | " " | "\n" [ \t]{0,20}
                     elif message['role'] == "tool":
                         messages_string += tools_message_end
                 messages_string += assistant_message_gen
-
+                if (latest_turn_was_assistant and continue_assistant_turn): #allow continue a prefill, chop off end
+                    messages_string = messages_string[:-(len(assistant_message_gen)+len(assistant_message_end))]
             genparams["prompt"] = messages_string
             if len(images_added)>0:
                 genparams["images"] = images_added
@@ -5508,6 +5548,10 @@ Change Mode<br>
                     if tmptools and len(tmptools) > 0:
                         use_jinja = False # not allowed to use tools with jinja
 
+                # payload modifications for lcpp endpoint. we detect this by the timings_per_token field existing
+                if "timings_per_token" in genparams:
+                    genparams["continue_assistant_turn"] = True
+
                 printablegenparams_raw = truncate_long_json(genparams,trunc_len)
                 utfprint("\nInput: " + json.dumps(printablegenparams_raw,ensure_ascii=False),1)
 
@@ -6051,11 +6095,18 @@ def show_gui():
     previous_event_width = None
     previous_event_height = None
     resizing = False
+    resizing_id1 = None
+    resizing_id2 = None
     def clearesizing():
-        nonlocal resizing
+        nonlocal resizing, resizing_id1
         resizing = False
+        resizing_id1 = None
+    def actually_resize(windowwidth,windowheight,lastpos,smallratio):
+        root.geometry(str(windowwidth) + "x" + str(windowheight) + str(lastpos))
+        ctk.set_widget_scaling(smallratio)
+        pass
     def on_resize(event):
-        nonlocal resizing
+        nonlocal resizing, resizing_id1, resizing_id2
         if not event.widget.master and event.widget == root:
             nonlocal window_reference_width, window_reference_height, previous_event_width,previous_event_height
             if resizing:
@@ -6085,11 +6136,16 @@ def show_gui():
                     windowwidth = max(256, min(1024, windowwidth))
                     windowheight = math.floor(original_windowheight*smallratio)
                     windowheight = max(256, min(1024, windowheight))
-                    root.geometry(str(windowwidth) + "x" + str(windowheight) + str(lastpos))
                     if corrupt_scaler:
                         smallratio = min(smallratio, 1)*0.98 #don't allow scaling beyond normal
-                    ctk.set_widget_scaling(smallratio)
-                    root.after(5, clearesizing)
+                    if resizing_id2:
+                        root.after_cancel(resizing_id2)
+                        resizing_id2 = None
+                    resizing_id2 = root.after(100, lambda: actually_resize(windowwidth,windowheight,lastpos,smallratio))
+                    if resizing_id1:
+                        root.after_cancel(resizing_id1)
+                        resizing_id1 = None
+                    resizing_id1 = root.after(5, clearesizing)
                     changerunmode(1,1,1)
                     togglerope(1,1,1)
                     toggleflashattn(1,1,1)
@@ -7116,6 +7172,29 @@ def show_gui():
         makecheckbox(extra_tab, "Use Classic FilePicker", nozenity_var, 20, tooltiptxt="Use the classic TKinter file picker instead.")
         nozenity_var.trace_add("write", togglezenity)
 
+    extra_terminal_process = None
+    def showtermlogs():
+        nonlocal extra_terminal_process
+        try:
+            if extra_terminal_process and extra_terminal_process.poll() is None:
+                print("Error: Secondary terminal already running.")
+                return
+            if sys.platform == "linux":
+                # Create an unnamed pipe, launch a terminal that reads from the read-end FD
+                r, w = os.pipe()
+                extra_terminal_process = subprocess.Popen(["xterm", "-hold","-e", f"bash -c 'cat <&{r}'"], pass_fds=[r])
+                writer = os.fdopen(w, "w", buffering=1)
+                redirector = StdoutRedirector(writer)
+                sys.stdout = redirector
+                print("--- Secondary Linux Terminal Active ---")
+            else:
+                print("Error: Secondary Terminal Not Supported on this Platform")
+        except Exception as e:
+            print(f"Spawn Extra Terminal Failed: {e}")
+    if sys.platform == "linux":
+        makelabel(extra_tab, "Spawn Terminal Logs", 12, 0,tooltiptxt="A simple terminal logger that duplicates the command line output.")
+        ctk.CTkButton(extra_tab , text = "Spawn Terminal", command = showtermlogs ).grid(row=12,column=0, stick="w", padx= 170, pady=2)
+
     # refresh
     runopts_var.trace_add("write", changerunmode)
     changerunmode(1,1,1)
@@ -7354,6 +7433,7 @@ def show_gui():
         args.admindatadir = admin_data_dir_var.get()
         args.adminpassword = admin_password_var.get()
         args.singleinstance = (singleinstance_var.get()==1)
+        args.showgui = False #prevent showgui from leaking into configs, its cli only
         args.adminallowhf = (admin_allow_hf_var.get()==1 and not args.cli)
 
     def import_vars(dict):
