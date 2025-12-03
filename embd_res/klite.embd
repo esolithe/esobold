@@ -11437,6 +11437,12 @@ Current version indicated by LITEVER below.
 			document.getElementById("inputboxcontainerinput").classList.remove("hidden");
 			document.getElementById("inputboxcontainerinputarea").classList.add("hidden");
 			document.getElementById("inputboxcontainerinput").value = inputVal;
+			document.getElementById("inputboxcontainerinput").onkeydown = (e) => {
+				if (e?.key === "Enter")
+				{
+					onInputboxOk()
+				}
+			};
 			document.getElementById("inputboxcontainerinput").placeholder = escape_html(inputPlaceholder);
 			if(isPassword)
 			{
