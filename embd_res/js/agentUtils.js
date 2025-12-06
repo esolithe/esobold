@@ -23,13 +23,13 @@ let addThought = (wrapperHandler, prompt, onlyDisplay = false, onlyAdd = false) 
 }
 
 let waitingFori2iSelection = false, i2i64 = undefined, originalClickImage = click_image;
-click_image = (target, imghash) => {
+click_image = (target, imghash, duplicate_idx) => {
 	if (target && waitingFori2iSelection) {
 		i2i64 = target.src;
 		waitingFori2iSelection = false
 	}
 	else {
-		originalClickImage(target, imghash)
+		originalClickImage(target, imghash, duplicate_idx)
 	}
 }
 
