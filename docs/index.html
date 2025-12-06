@@ -26092,11 +26092,13 @@ Current version indicated by LITEVER below.
 	{
 		embeddings_cache = {};
 		const isIndexedDBSupported = !!window.indexedDB;
-		if(isIndexedDBSupported)
-		{
-			indexeddb_save('EmbeddingsCache',JSON.stringify(embeddings_cache));
-		}
-		estimate_and_show_textDB_usage();
+		msgboxYesNo("Are you sure you wish to clear the cached embeddings?", "Clear embedding cache", () => {
+			if(isIndexedDBSupported)
+			{
+				indexeddb_save('EmbeddingsCache',JSON.stringify(embeddings_cache));
+			}
+			estimate_and_show_textDB_usage();
+		})
 	}
 	const getRankedEmbeddings = asyncRunner(function* (searchTerm, paragraphs)
 	{
