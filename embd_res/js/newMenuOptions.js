@@ -14,14 +14,8 @@ render_gametext = (...args) => {
     }
     else
     {
-        if (!!window?.eso?.forceCompleteHideOfCorpoLeftPanel) {
-            document.querySelector("#corpo_leftpanel").classList.remove("hidden")
-            document.querySelector(".corpostyle").classList.add("forceLeftHidden")
-        }
-        else {
-            document.querySelector("#corpo_leftpanel").classList.add("hidden")
-            document.querySelector(".corpostyle").classList.remove("forceLeftHidden")
-        }
+        document.querySelector("#corpo_leftpanel").classList.remove("hidden")
+        document.querySelector(".corpostyle").classList.remove("forceLeftHidden")
     }
 }
 
