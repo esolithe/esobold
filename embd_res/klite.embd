@@ -612,11 +612,11 @@ Current version indicated by LITEVER below.
 		background-position: center;
 		background-repeat: no-repeat;
 		background-image: var(--img_websearch);
-		background-color: #15a0ad;
+		background-color: #15a0ad !important;
 	}
 	.btnicon-websearch.inactive, .btnicon-websearch.inactive:active, .btnicon-websearch.inactive:hover, .btnicon-websearch.inactive:focus, .btnicon-websearch.inactive:active:focus
 	{
-		background-color: #6a6a6a;
+		background-color: #6a6a6a !important;
 	}
 
 	.btnicon-agent, .btnicon-agent:active, .btnicon-agent:hover, .btnicon-agent:focus, .btnicon-agent:active:focus
@@ -625,11 +625,11 @@ Current version indicated by LITEVER below.
 		background-position: center;
 		background-repeat: no-repeat;
 		background-image: var(--img_favicon_normal);
-		background-color: #15a0ad;
+		background-color: #15a0ad !important;
 	}
 	.btnicon-agent.inactive, .btnicon-agent.inactive:active, .btnicon-agent.inactive:hover, .btnicon-agent.inactive:focus, .btnicon-agent.inactive:active:focus
 	{
-		background-color: #6a6a6a;
+		background-color: #6a6a6a !important;
 	}
 
 	/* Help tooltips */
@@ -20829,7 +20829,9 @@ Current version indicated by LITEVER below.
 							console.log("Replacing with Image: " + matchstr);
 							gametext_arr[i] = gametext_arr[i].replace(matchstr, newstr);
 							//default to llava if supported, and image is self uploaded
-							let desiredvismode = ((image_db[key].imsource==1 && ((is_using_kcpp_with_vision() && image_db[key].type==0) || (is_using_kcpp_with_audio() && image_db[key].type==1)))?3:0);
+							// Exclude images if agent mode is enabled as the agent should pick - it can still be enabled manually, but shouldn't be the default
+							let isAgentModeEnabled = typeof isAgentModeEnabledAndSetCorrectly === "function" && isAgentModeEnabledAndSetCorrectly()
+							let desiredvismode = ((image_db[key].imsource==1 && ((is_using_kcpp_with_vision() && image_db[key].type==0 && !isAgentModeEnabled) || (is_using_kcpp_with_audio() && image_db[key].type==1)))?3:0);
 							completed_imgs_meta[metaid] = JSON.parse(JSON.stringify(default_imgs_meta));
 							completed_imgs_meta[metaid].prompt = image_db[key].prompt;
 							completed_imgs_meta[metaid].visionmode = desiredvismode;
