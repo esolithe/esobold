@@ -136,6 +136,10 @@ static int ggml_cuda_highest_compiled_arch(const int arch) {
 #ifndef KCPP_LIMIT_CUDA_MAX_ARCH
     return arch;
 #else
+    if(arch==GGML_CUDA_CC_VOLTA) //fix for kcpp, if volta try return 610 instead
+    {
+        return GGML_CUDA_CC_DP4A;
+    }
     return (arch > KCPP_LIMIT_CUDA_MAX_ARCH ? KCPP_LIMIT_CUDA_MAX_ARCH : arch);
 #endif
 }
