@@ -638,7 +638,7 @@ let getCommands = () => {
 				"textToSay": "<text to say>"
 			},
 			"outputVisibleToUser": true,
-			"enabled": localsettings.speech_synth == KCPP_TTS_ID, // Only enabled if local endpoint exists / is in use
+			"enabled": localsettings.tts_mode == KCPP_TTS_ID, // Only enabled if local endpoint exists / is in use
 			"executor": (action) => {
 				let textToSay = action?.args?.textToSay
 				if (!!textToSay) {
