@@ -29674,5 +29674,6 @@ else
 <script src="static/js/fullScreenEditor.js"></script>
 <script src="static/js/themeEditor.js"></script>
 <script src="static/js/esoSampler.js"></script>
+<script src="static/js/MCPUtils.js"></script>
 <!-- EsoLite modifications end -->
 </html>
