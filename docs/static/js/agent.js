@@ -27,6 +27,7 @@ let generateFromPrompt = (prompt, grammar = "", images = [], bannedTokens = []) 
     }
     concat_gametext(true, "", "", "", false, true)
     let llavaImages = insertAIVisionImages.concat(images)
+    llavaImages = llavaImages.filter((elem, pos, arr) => arr.indexOf(elem) === pos)
     if (is_using_kcpp_with_vision() && llavaImages.length > 0) {
         payload.images = llavaImages;
     }
