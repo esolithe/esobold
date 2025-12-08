@@ -10,6 +10,7 @@ window.addEventListener('load', () => {
             <span id="additionalSameOptions" class="hidden" style="position: absolute;">
                 <a id="topbtn_save_current" class="nav-link mainnav" href="#" tabindex="0">Q.Save</a>
                 <a id="topbtn_download_current" class="nav-link mainnav" href="#" tabindex="0">Download</a>
+                <a id="topbtn_load_new" class="nav-link mainnav" href="#" tabindex="0">Load</a>
             </span>
 		</li>`
 
@@ -39,5 +40,9 @@ window.addEventListener('load', () => {
 
     document.querySelector("#topbtn_download_current").addEventListener("click", () => {
         save_file_button()
+    })
+
+    document.querySelector("#topbtn_load_new").addEventListener("click", () => {
+        load_file_button()
     })
 })

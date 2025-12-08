@@ -91,7 +91,8 @@ let listOfExclusions = ["Action taken:", "Action taken (words =", "History searc
     "Image generated", "No prompt provided, image not generated", "Text has been spoken", "No text provided, nothing has been said", "Setting overview has been overwritten",
     "No setting overview provided, nothing has been overwritten", "Current state has been overwritten", "No state provided, nothing has been overwritten", "Current order of actions has been cleared",
     "Current order of actions has been overwritten", "No order of actions provided, nothing has been overwritten", "Error - Empty response instead of action. Ensure all responses are valid JSON.",
-    "Current state format has been overwritten", "No valid state format provided, nothing has been overwritten", `Text has been added to world info:`, `Text was empty - nothing added to world info`, `Chain of thought had an exception`]
+    "Current state format has been overwritten", "No valid state format provided, nothing has been overwritten", 
+    `Text has been added to world info:`, `Text was empty - nothing added to world info`, `Chain of thought had an exception`,"Tool call response:"]
 
 let hideAgentModeCotForAestheticMode = (container = document) => {
     [...container.querySelectorAll("end_of_context_koboldlite_internal > div")]

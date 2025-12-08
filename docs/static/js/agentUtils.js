@@ -83,22 +83,29 @@ let objToText = (obj, depth = 0) => {
 	for (let i = 0; i < depth; i++) {
 		baseIndent += "\t"
 	}
-	switch (typeof obj) {
-		case "array":
-		case "object":
-			if (Array.isArray(obj)) {
-				output += `${baseIndent}Array:\n${obj.map(elem => `${objToText(elem, depth + 2)}`).join("\n\n")}`
-			}
-			else {
-				let keys = Object.keys(obj)
-				output += keys.map(key => {
-					return `${baseIndent}${key}:\n${objToText(obj[key], depth + 1)}`
-				}).join("\n")
-			}
-			break
-		default:
-			output += `${baseIndent}${JSON.stringify(obj)}`
-			break
+	if (obj == null)
+	{
+		output += `${baseIndent}null`
+	}
+	else
+	{
+		switch (typeof obj) {
+			case "array":
+			case "object":
+				if (Array.isArray(obj)) {
+					output += `${baseIndent}Array:\n${obj.map(elem => `${objToText(elem, depth + 2)}`).join("\n\n")}`
+				}
+				else {
+					let keys = Object.keys(obj)
+					output += keys.map(key => {
+						return `${baseIndent}${key}:\n${objToText(obj[key], depth + 1)}`
+					}).join("\n")
+				}
+				break
+			default:
+				output += `${baseIndent}${JSON.stringify(obj)}`
+				break
+		}
 	}
 	return output
 }
@@ -772,48 +779,58 @@ let getCommandsSchema = (commands = getEnabledCommands()) => {
 	let commandsSchema = commands.map(command => {
 		let elem = toJsonSchema(baseCommandStructure)
 		let args = elem.properties.command.properties.args;
+		if (command.args !== null)
+		{
+			elem.properties.command.properties.name["pattern"] = `^${command.name}$`
+			for (arg in command.args) {
+				if (!command.args[arg]?.skip) {
+					if (typeof command.args[arg] === "object" && !!command.args[arg]?.format) {
+						let formatToUse = typeof command.args[arg]?.format === "string" ? toJsonSchema(JSON.parse(command.args[arg]?.format)) : command.args[arg]?.format
+						args.properties[arg] = formatToUse
+					}
+					else if (typeof command.args[arg] === "object" && !!command.args[arg]?.type) {
+						args.properties[arg] = {
+							type: command.args[arg].type
+						}
 
-		elem.properties.command.properties.name["pattern"] = `^${command.name}$`
-		for (arg in command.args) {
-			if (!command.args[arg]?.skip) {
-				if (typeof command.args[arg] === "object" && !!command.args[arg]?.format) {
-					let formatToUse = typeof command.args[arg]?.format === "string" ? toJsonSchema(JSON.parse(command.args[arg]?.format)) : command.args[arg]?.format
-					args.properties[arg] = formatToUse
+						let propsToEdit = args.properties[arg]
+						if (command.args[arg].type === "array") {
+							args.properties[arg].items = {
+								"type": "string"
+							}
+							propsToEdit = args.properties[arg].items
+
+							if (!!command.args[arg]?.itemType) {
+								propsToEdit.type = command.args[arg]?.itemType
+							}
+							if (!!command.args[arg]?.uniqueItems) {
+								args.properties[arg].pattern = command.args[arg]?.uniqueItems
+							}
+						}
+
+						if (!!command.args[arg]?.enum) {
+							propsToEdit.enum = command.args[arg]?.enum
+						}
+						if (!!command.args[arg]?.pattern) {
+							propsToEdit.pattern = command.args[arg]?.pattern
+						}
+					} else {
+						args.properties[arg] = {
+							type: "string",
+						}
+					}
 				}
-				else if (typeof command.args[arg] === "object" && !!command.args[arg]?.type) {
-					args.properties[arg] = {
-						type: command.args[arg].type
-					}
 
-					let propsToEdit = args.properties[arg]
-					if (command.args[arg].type === "array") {
-						args.properties[arg].items = {
-							"type": "string"
-						}
-						propsToEdit = args.properties[arg].items
-
-						if (!!command.args[arg]?.itemType) {
-							propsToEdit.type = command.args[arg]?.itemType
-						}
-						if (!!command.args[arg]?.uniqueItems) {
-							args.properties[arg].pattern = command.args[arg]?.uniqueItems
-						}
-					}
-
-					if (!!command.args[arg]?.enum) {
-						propsToEdit.enum = command.args[arg]?.enum
-					}
-					if (!!command.args[arg]?.pattern) {
-						propsToEdit.pattern = command.args[arg]?.pattern
-					}
-				} else {
-					args.properties[arg] = {
-						type: "string"
-					}
-				}
+				args.required.push(arg)
 			}
 
-			args.required.push(arg)
+		}
+		else {
+			args.properties["noArgs"] = {
+				type: "string",
+				pattern: `^true$`
+			}
+			args.required.push("noArgs")
 		}
 		return elem
 	})
