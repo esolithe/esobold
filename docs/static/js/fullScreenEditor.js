@@ -19,7 +19,8 @@ let addFullScreenEditorButtons = () => {
         "instruct_endtag_end",
         "newlogitbiasval",
         "remoteDataStorageUrl",
-        "autosaveName"
+        "autosaveName",
+        "mcpServers"
     ];
     document.querySelectorAll("input:not([disabled]):not([type='numeric']):not([type='number']):not([type='button']):not([type='range']):not([inputmode='numeric']):not([inputmode='decimal']):not([type='file']):not([type='checkbox']):not([type='color']),textarea:not([disabled]):not([readonly])").forEach(c => {
         // Disable for char creator

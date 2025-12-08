@@ -736,8 +736,7 @@ let managerUploadHandler = function (result) {
         }
         else {
             let wiToAdd = data, has_tav_wi_check = has_tavern_wi_check(wiToAdd), wiName = fileName;
-            if (!data.scenarioVersion && (data.name != null || data.description != null ||
-                data.personality != null || (data.spec == "chara_card_v2" || data.spec == "chara_card_v3") || has_tav_wi_check)) {
+            if (!data.scenarioVersion && (!!data?.name && ((!!data?.description || !!data?.personality) || (data.spec == "chara_card_v2" || data.spec == "chara_card_v3")))) {
                 saveCharacterDataToIndexDB(undefined, data, fileName)
             }
             else {
@@ -747,7 +746,7 @@ let managerUploadHandler = function (result) {
                     }
                     wiToAdd = load_tavern_wi(wiToAdd);
                     if (wiToAdd && wiToAdd.length > 0) {
-                        wiToAdd.forEach(wi => wi.wigroup = fileName.replace("'", ""))
+                        wiToAdd.forEach(wi => wi.wigroup = wiName.replace("'", ""))
                     }
                 }
                 else {
@@ -1000,6 +999,11 @@ let showCharacterList = async (event = undefined, serverLoad = false) => {
                     }).button("Add character to WI", async () => {
                         popupUtils.reset()
                         await window.loadByCharacterNameIntoWI(name)
+                    }).button("Add to TextDB", async () => {
+                        popupUtils.reset()
+                        let charData = await getCharacterData(name)
+                        let wiToAdd = importCharacterCardAsWIInternal(charData.data);
+                        importWIAsTextDB(name, wiToAdd)
                     }).button("Download character", async () => {
                         popupUtils.reset()
                         
@@ -1042,6 +1046,11 @@ let showCharacterList = async (event = undefined, serverLoad = false) => {
                         let wiToAdd = charData.data;
                         current_wi = current_wi.filter(wi => wi?.folder !== name)
                         current_wi.push(...wiToAdd)
+                    }).button("Add to TextDB", async () => {
+                        popupUtils.reset()
+                        let charData = await getCharacterData(name)
+                        let wiToAdd = charData.data;
+                        importWIAsTextDB(name, wiToAdd)
                     }).button("Download world info", async () => {
                         popupUtils.reset()
 
@@ -1561,5 +1570,9 @@ window.extractExampleMessages = (messagesText) => {
 }
 
 window.formatExampleMessages = (messageText) => {
-    return extractExampleMessages(messageText).map(c => `Example messages:\n\n${c}`).join("\n\n")
+    if (!!messageText)
+    {
+        return extractExampleMessages(messageText).map(c => `Example messages:\n\n${c}`).join("\n\n")
+    }
+    return "";
 }

@@ -9361,6 +9361,63 @@ Current version indicated by LITEVER below.
 		}
 	}
 
+	function importWIAsTextDB(wiName, wiData)
+	{
+		if (!!wiData && Array.isArray(wiData))
+		{
+			var outputText = {};
+			for (var i = 0; i < wiData.length; i++) {
+				var loreEntry = wiData[i];
+				var category = loreEntry?.wigroup?.trim() || wiName.trim();
+				var comment = loreEntry.comment || "";
+				var content = loreEntry.content || "";
+
+				if(comment == "" && content == "") {
+					continue; //skip blank entries
+				}
+
+				var keyList = []
+					.concat(loreEntry.key || [])
+					.concat(loreEntry.keys || [])
+					.concat(loreEntry.keysecondary || []);
+
+				// Remove duplicates
+				var seen = {};
+				var keys = [];
+				for (var j = 0; j < keyList.length; j++) {
+					var key = keyList[j];
+					if (!seen[key]) {
+						keys.push(key);
+						seen[key] = true;
+					}
+				}
+
+				var description = "### Category: " + category;
+				if (comment && comment !== category) {
+					description += "\n(Description: " + comment + ")";
+				}
+				if (keys.length > 0) {
+					description += "\n(Names: " + keys.join(",") + ")";
+				}
+				description += "\nDetails: " + content.trim();
+				if (typeof outputText[category] === "undefined")
+				{
+					outputText[category] = []
+				}
+				outputText[category].push(description);
+			}
+
+			Object.keys(outputText).forEach(category => {
+				let categoryData = outputText[category]
+				if (categoryData.length > 0) {
+					replaceDocumentFromTextDB(category, categoryData.join("\n\n"));
+					return true;
+				}
+			})
+		}
+		return false;
+	}
+
 	function importLorebookAsTextDB(lorebook)
 	{
 		let has_tav_wi_check = has_tavern_wi_check(lorebook);
@@ -29674,5 +29731,6 @@ else
 <script src="static/js/fullScreenEditor.js"></script>
 <script src="static/js/themeEditor.js"></script>
 <script src="static/js/esoSampler.js"></script>
+<script src="static/js/MCPUtils.js"></script>
 <!-- EsoLite modifications end -->
 </html>

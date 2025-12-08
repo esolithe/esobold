@@ -39,6 +39,8 @@ display_settings = () => {
     document.getElementById("legacySaveMechanisms").checked = localsettings.legacySaveMechanisms;
     document.getElementById("fullScreenEditorForInputs").checked = localsettings.fullScreenEditorForInputs;
     document.getElementById("corpoHideLeftPanel").checked = localsettings.corpoHideLeftPanel;
+    document.getElementById("mcpDangerMode").checked = localsettings.mcpDangerMode;
+    document.getElementById("mcpServers").textContent = localsettings.mcpServers;
 }
 
 updateLegacySaveButtonState = () => {
@@ -66,6 +68,8 @@ confirm_settings = () => {
     localsettings.legacySaveMechanisms = (document.getElementById("legacySaveMechanisms").checked ? true : false);
     localsettings.fullScreenEditorForInputs = (document.getElementById("fullScreenEditorForInputs").checked ? true : false);
     localsettings.corpoHideLeftPanel = (document.getElementById("corpoHideLeftPanel").checked ? true : false);
+    localsettings.mcpDangerMode = (document.getElementById("mcpDangerMode").checked ? true : false);
+    localsettings.mcpServers = (document.getElementById("mcpServers").value);
     updateEditorState();
     originalConfirmSettings();
     updateLegacySaveButtonState();
@@ -116,7 +120,50 @@ window.addEventListener('load', () => {
     }
     if (localsettings?.corpoHideLeftPanel == undefined) {
         localsettings.corpoHideLeftPanel = false
-    }    
+    } 
+    if (localsettings?.mcpDangerMode == undefined) {
+        localsettings.mcpDangerMode = false
+    }
+    if (localsettings?.mcpServers == undefined) {
+        localsettings.mcpServers = ""
+    } 
+
+    let createSettingElementText = (inputElemId, labelTitle, labelText, placeholder = "") => {
+        let settingLabelElem = document.createElement("div")
+        settingLabelElem.classList.add("settinglabel")
+        let settingDiv = document.createElement("div")
+        settingDiv.classList.add("justifyleft", "settingsmall")
+        settingDiv.innerHTML = `${labelTitle} <span class="helpicon">?<span class="helptext">${labelText}</span></span>`
+        
+        let settingInput = document.createElement("input")
+        settingInput.type = "text"
+        settingInput.title = labelTitle
+        settingInput.id = inputElemId
+        settingInput.placeholder = placeholder
+        settingInput.style = "margin:0px 0px 0px auto; width: unset;"
+
+        settingLabelElem.append(settingDiv)
+        settingLabelElem.append(settingInput)
+        return settingLabelElem
+    }
+
+    let createSettingElementTextArea = (inputElemId, labelTitle, labelText, placeholder = "") => {
+        let settingLabelElem = document.createElement("div")
+        settingLabelElem.classList.add("settinglabel")
+        let settingDiv = document.createElement("div")
+        settingDiv.classList.add("justifyleft", "settingsmall")
+        settingDiv.innerHTML = `${labelTitle} <span class="helpicon">?<span class="helptext">${labelText}</span></span>`
+
+        let settingInput = document.createElement("textarea")
+        settingInput.title = labelTitle
+        settingInput.id = inputElemId
+        settingInput.placeholder = placeholder
+        settingInput.style = "margin:0px 0px 0px auto; width: unset;"
+
+        settingLabelElem.append(settingDiv)
+        settingLabelElem.append(settingInput)
+        return settingLabelElem
+    }
 
     let createSettingElemButton = (inputElemId, labelTitle, labelText, onClick) => {
         let settingLabelElem = document.createElement("div")
@@ -268,6 +315,12 @@ window.addEventListener('load', () => {
     lastSettingContainer.append(settingLabelElem)
 
     settingLabelElem = createSettingElemBool("corpoHideLeftPanel", "Left panel in Corpo Theme starts minimised", "If this option is enabled, the left panel in Corpo gets minimised automatically.")
+    lastSettingContainer.append(settingLabelElem)
+
+    settingLabelElem = createSettingElementTextArea("mcpServers", "MCP servers for agent mode (requires page reload)", "Adds MCP servers for agent mode to use.  Separate servers by new lines. This setting requires a page reload to take effect.", "http://localhost:12435/mcp")
+    lastSettingContainer.append(settingLabelElem)
+
+    settingLabelElem = createSettingElemBool("mcpDangerMode", "Allows external MCP commands to run without authorisation", "Dangerous!  This option allows the LLM unrestricted access to MCP commands, instead of prompting the user each time.  This is not advisable to turn on unless you are absolutely sure that the commands are safe and will not cause harm to your system.")
     lastSettingContainer.append(settingLabelElem)
 
     settingLabelElem = createSettingElemButton("customThemeColours", "Modify theme colours", "Allows modification of the colours used in the default theme", showThemePopup)
