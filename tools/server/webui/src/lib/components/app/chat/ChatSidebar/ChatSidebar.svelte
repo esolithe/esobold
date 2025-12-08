@@ -8,6 +8,7 @@
 	import * as AlertDialog from '$lib/components/ui/alert-dialog';
 	import Input from '$lib/components/ui/input/input.svelte';
 	import { conversationsStore, conversations } from '$lib/stores/conversations.svelte';
+	import { chatStore } from '$lib/stores/chat.svelte';
 	import ChatSidebarActions from './ChatSidebarActions.svelte';
 
 	const sidebar = Sidebar.useSidebar();
@@ -98,12 +99,16 @@
 
 		await goto(`#/chat/${id}`);
 	}
+
+	function handleStopGeneration(id: string) {
+		chatStore.stopGenerationForChat(id);
+	}
 </script>
 
 <ScrollArea class="h-[100vh]">
 	<Sidebar.Header class=" top-0 z-10 gap-6 bg-sidebar/50 px-4 py-4 pb-2 backdrop-blur-lg md:sticky">
 		<a href="#/" onclick={handleMobileSidebarItemClick}>
-			<h1 class="inline-flex items-center gap-1 px-2 text-xl font-semibold">llama.cpp</h1>
+			<h1 class="inline-flex items-center gap-1 px-2 text-xl font-semibold">llama.cpp UI</h1>
 		</a>
 
 		<ChatSidebarActions {handleMobileSidebarItemClick} bind:isSearchModeActive bind:searchQuery />
@@ -132,6 +137,7 @@
 							onSelect={selectConversation}
 							onEdit={handleEditConversation}
 							onDelete={handleDeleteConversation}
+							onStop={handleStopGeneration}
 						/>
 					</Sidebar.MenuItem>
 				{/each}
