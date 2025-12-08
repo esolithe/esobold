@@ -16535,7 +16535,7 @@ Current version indicated by LITEVER below.
 			{
 				image_db[imgid].aspect = 2; //landscape
 			}
-		}, false, imgres, true);
+		}, false, imgres, undefined, true);
 	}
 
 	function self_upload_audio(origAudio,filename,modify_curr_turn=false)
@@ -20936,7 +20936,7 @@ Current version indicated by LITEVER below.
 		}
 	}
 
-	function compressImage(inputDataUri, onDone, fixedSize=true, maxSize=NO_HD_RES_PX, quality = 0.45, letterboxAspect=false) {
+	function compressImage(inputDataUri, onDone, fixedSize=true, maxSize=NO_HD_RES_PX, quality = 0.5, letterboxAspect=false) {
 		let img = document.createElement('img');
 		let wantedWidth = maxSize;
 		let wantedHeight = maxSize;
