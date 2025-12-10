@@ -132,12 +132,14 @@
 		color: var(--theme_color_highlight);
 	}
 
+	#additionalSameOptions:first-of-type {
+		padding-left: 0px;
+	}
+
 	#additionalSameOptions {
-		padding-top: 15px;
-		padding-bottom: 15px;
+		padding: 25px 10px 15px 10px;
 	}
 
 	#additionalSameOptions > a {
-		padding-top: 15px;
-		padding-bottom: 15px;
+		padding: 15px 10px 15px 10px;
 	}
