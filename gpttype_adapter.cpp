@@ -107,7 +107,7 @@ static llama_context * guidance_ctx = nullptr; //for classifier free guidance, w
 static clip_ctx * clp_ctx_v = nullptr; //for llava
 static clip_image_u8 * clp_img_data = nullptr; //most recent image
 static clip_ctx * clp_ctx_a = nullptr; //for audio multimodal
-static whisper_preprocessor::whisper_filters w_filters; //for audio processing
+static std::unique_ptr<mtmd_audio_preprocessor> audio_preproc; //for audio processing
 static std::vector<media_object> media_objects;
 static std::vector<int> last_media_mem; //for storing dummy tokens that will be consumed by llava
 static std::string media_composite_image_signature = ""; //for identifying when the llava images change, we need to invalidate the cache
@@ -152,7 +152,7 @@ static int delayed_generated_tokens_limit = 0;
 std::deque<std::string> delayed_generated_tokens; //for use with antislop sampling
 static std::map<int,std::vector<int>> antislop_banned_token_ids; //first is the npast position, second is the array of banned ids at that index
 
-const int savestate_limit = 4;
+const int savestate_limit = 5;
 static savestate_data savestates[savestate_limit];
 
 inline int kcpp_cpu_has_blas(void) {
@@ -389,6 +389,38 @@ bool allExtendedUnicode(const std::string& str) {
         }
     }
     return true;
+}
+
+void print_fitted_params(const llama_model_params & mparams, const llama_context_params & cparams)
+{
+    std::cout << "-c "    << cparams.n_ctx;
+    std::cout << " -ngl " << mparams.n_gpu_layers;
+    size_t nd = llama_max_devices();
+    while (nd > 1 && mparams.tensor_split[nd - 1] == 0.0f) {
+        nd--;
+    }
+    if (nd > 1) {
+        for (size_t id = 0; id < nd; id++) {
+            if (id == 0) {
+                std::cout << " -ts ";
+            }
+            if (id > 0) {
+                std::cout << ",";
+            }
+            std::cout << mparams.tensor_split[id];
+        }
+    }
+    const size_t ntbo = llama_max_tensor_buft_overrides();
+    for (size_t itbo = 0; itbo < ntbo && mparams.tensor_buft_overrides[itbo].pattern != nullptr; itbo++) {
+        if (itbo == 0) {
+            std::cout << " -ot ";
+        }
+        if (itbo > 0) {
+            std::cout << ",";
+        }
+        std::cout << mparams.tensor_buft_overrides[itbo].pattern << "=" << ggml_backend_buft_name(mparams.tensor_buft_overrides[itbo].buft);
+    }
+    std::cout << "\n";
 }
 
 // Find tokens that completely contain `str`, either as a single token, or as a sequence of tokens.
@@ -2006,6 +2038,7 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
     kcpp_data->use_contextshift = inputs.use_contextshift;
     kcpp_data->use_fastforward = inputs.use_fastforward;
     kcpp_data->smartcache = inputs.smartcache;
+    kcpp_pipeline_parallelism = inputs.pipelineparallel;
     if(!kcpp_data->use_fastforward && kcpp_data->smartcache)
     {
         kcpp_data->smartcache = false;
@@ -2296,8 +2329,8 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
         std::vector<llama_model_kv_override> kvos; //ensure it keeps in scope until model is created
         std::vector<llama_model_tensor_buft_override> tenos; //ensure it keeps in scope until model is created
         std::vector<std::string> temp_tensor_names; //store temp tensor names to have mem references.
-        temp_tensor_names.reserve(32); //very important, prevents vector from reallocating
-        tenos.reserve(32);
+        temp_tensor_names.reserve(llama_max_tensor_buft_overrides()); //very important, prevents vector from reallocating
+        tenos.reserve(llama_max_tensor_buft_overrides());
         if(inputs.moe_experts>0)
         {
             printf("\nOverriding number of experts to %d\n",inputs.moe_experts);
@@ -2400,6 +2433,25 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
             model_params.tensor_buft_overrides = tenos.data();
         }
 
+        //apply overrides from autofit
+        float tensor_split_temp[128] = {0}; //temp buffer for autofit
+        if(inputs.autofit)
+        {
+            common_params temp_params;
+            printf("\nAttempting to use llama.cpp's automating fitting code. This will override all your layer configs, may or may not work!\n");
+            //zero out any customizations made
+            tenos.clear();
+            tenos.push_back({nullptr, nullptr});
+            model_params.tensor_buft_overrides = tenos.data();
+            model_params.tensor_split = tensor_split_temp;
+            model_params.n_gpu_layers = 999; //must be this value to be considered default
+            llama_params_fit(kcpp_data->model_filename.c_str(), &model_params, &llama_ctx_params,
+            tensor_split_temp, tenos.data(), 1024*1024*1024, kcpp_data->n_ctx,
+            GGML_LOG_LEVEL_DEBUG);
+            printf("Autofit Result: ");
+            print_fitted_params(model_params,llama_ctx_params);
+        }
+
         llama_model * llamamodel = llama_model_load_from_file(kcpp_data->model_filename.c_str(), model_params);
         if(file_format_meta.model_architecture == GGUFArch::ARCH_QWEN2VL || llama_model_rope_type(llamamodel)==LLAMA_ROPE_TYPE_MROPE || llama_model_rope_type(llamamodel)==LLAMA_ROPE_TYPE_IMROPE)
         {
@@ -2451,6 +2503,7 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
         llama_ctx_params.swa_full = kcpp_data->swa_full;
         llama_ctx_params.type_k = (inputs.quant_k>1?GGML_TYPE_Q4_0:(inputs.quant_k==1?GGML_TYPE_Q8_0:GGML_TYPE_F16));
         llama_ctx_params.type_v = (inputs.quant_v>1?GGML_TYPE_Q4_0:(inputs.quant_v==1?GGML_TYPE_Q8_0:GGML_TYPE_F16));
+
         llama_ctx_v4 = llama_init_from_model(llamamodel, llama_ctx_params);
         if(load_guidance)
         {
@@ -2552,10 +2605,20 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
             clp_img_data = clip_image_u8_init();
             if(clp_ctx_a) //init audio
             {
-                if (clip_has_whisper_encoder(clp_ctx_a)) {
-                    // TODO @ngxson : check if model n_mel is 128 or 80
-                    w_filters = whisper_precalc_filters::get_128_bins();
+                projector_type proj = clip_get_projector_type(clp_ctx_a);
+                // set preprocessor
+                switch (proj) {
+                    case PROJECTOR_TYPE_QWEN2A:
+                    case PROJECTOR_TYPE_QWEN25O:
+                    case PROJECTOR_TYPE_ULTRAVOX:
+                    case PROJECTOR_TYPE_VOXTRAL:
+                        audio_preproc = std::make_unique<mtmd_audio_preprocessor_whisper>(clp_ctx_a);
+                        break;
+                    default:
+                        GGML_ABORT("unsupported audio projector type");
                 }
+                // initialize audio preprocessor
+                audio_preproc->initialize();
                 audio_multimodal_supported = true;
             }
         }
@@ -3160,17 +3223,15 @@ static void PrepareMediaEmbds(const int nctx, const std::vector<int> & media_int
                 }
             } else if(media_objects[i].is_audio && audio_on) {
                 //  audio
-                GGML_ASSERT(w_filters.n_mel); // make sure we have filter preloaded
-
                 std::vector<float> pcmf32;
-                bool ok = kcpp_decode_audio_from_buf(media_data_buffer.data(), media_data_buffer.size(), 16000, pcmf32);
+                int samplerate = clip_get_hparams(clp_ctx_a)->audio_sample_rate;
+                bool ok = kcpp_decode_audio_from_buf(media_data_buffer.data(), media_data_buffer.size(), samplerate, pcmf32);
                 if (!ok) {
                    printf("\nError: Clip audio %d failed to convert!",i);
                    continue;
                 }
-
-                std::vector<whisper_preprocessor::whisper_mel> mel_spec_chunks;
-                ok = whisper_preprocessor::preprocess_audio(pcmf32.data(), pcmf32.size(), w_filters, mel_spec_chunks);
+                std::vector<mtmd_audio_mel> mel_spec_chunks;
+                ok = audio_preproc->preprocess(pcmf32.data(), pcmf32.size(), mel_spec_chunks);
                 if (!ok) {
                    printf("\nError: Clip audio %d failed to load!",i);
                    continue;
@@ -3400,8 +3461,24 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
             media_object lv;
             lv.b64data = item;
             lv.is_audio = false;
-            TokenizeString("<image>", lv.chunk_start_seq, file_format, false);
-            TokenizeString("</image>\n\n", lv.chunk_end_seq, file_format, false);
+            std::string img_start = "<image>";
+            std::string img_end = "</image>\n\n";
+            if(clp_ctx_v)
+            {
+                int ptype = clip_get_projector_type_ext(clp_ctx_v);
+                if(ptype == PROJECTOR_TYPE_QWEN2VL || ptype == PROJECTOR_TYPE_QWEN25VL || ptype == PROJECTOR_TYPE_QWEN3VL) //qwen
+                {
+                    img_start = "<|vision_start|>";
+                    img_end = "<|vision_end|>\n\n";
+                }
+                else if(ptype==PROJECTOR_TYPE_GLM4V)
+                {
+                    img_start = "<|begin_of_image|>";
+                    img_end = "<|end_of_image|>\n\n";
+                }
+            }
+            TokenizeString(img_start, lv.chunk_start_seq, file_format, false);
+            TokenizeString(img_end, lv.chunk_end_seq, file_format, false);
             media_objects.push_back(lv);
             new_media_composite += item;
         }
@@ -3419,12 +3496,12 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
             if(clp_ctx_a)
             {
                 int ptype = clip_get_projector_type_ext(clp_ctx_a);
-                if(ptype==14) //qwen omni
+                if(ptype==PROJECTOR_TYPE_QWEN2A) //qwen omni
                 {
                     aud_start = "<|audio_bos|>";
                     aud_end = "<|audio_eos|>\n";
                 }
-                else if(ptype==16) //voxtral
+                else if(ptype==PROJECTOR_TYPE_VOXTRAL) //voxtral
                 {
                     aud_start = "[INST][BEGIN_AUDIO]";
                     aud_end = "[/INST]\n";

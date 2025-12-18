@@ -58,7 +58,7 @@ default_draft_amount = 8
 default_ttsmaxlen = 4096
 default_visionmaxres = 1024
 net_save_slots = 12
-savestate_limit = 4 #savestate slots
+savestate_limit = 5 #savestate slots
 default_vae_tile_threshold = 768
 default_native_ctx = 16384
 overridekv_max = 4
@@ -71,7 +71,7 @@ dry_seq_break_max = 128
 extra_images_max = 4 # for kontext/qwen img
 
 # global vars
-KcppVersion = "1.103"
+KcppVersion = "1.104"
 showdebug = True
 kcpp_instance = None #global running instance
 global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None}
@@ -206,7 +206,7 @@ class load_model_inputs(ctypes.Structure):
                 ("kcpp_main_gpu", ctypes.c_int),
                 ("vulkan_info", ctypes.c_char_p),
                 ("batchsize", ctypes.c_int),
-                ("forceversion", ctypes.c_int),
+                ("autofit", ctypes.c_bool),
                 ("gpulayers", ctypes.c_int),
                 ("rope_freq_scale", ctypes.c_float),
                 ("rope_freq_base", ctypes.c_float),
@@ -225,6 +225,7 @@ class load_model_inputs(ctypes.Structure):
                 ("highpriority", ctypes.c_bool),
                 ("swa_support", ctypes.c_bool),
                 ("smartcache", ctypes.c_bool),
+                ("pipelineparallel", ctypes.c_bool),
                 ("lora_multiplier", ctypes.c_float),
                 ("quiet", ctypes.c_bool),
                 ("debugmode", ctypes.c_int)]
@@ -338,7 +339,8 @@ class sd_generation_inputs(ctypes.Structure):
                 ("scheduler", ctypes.c_char_p),
                 ("clip_skip", ctypes.c_int),
                 ("vid_req_frames", ctypes.c_int),
-                ("vid_req_avi", ctypes.c_int)]
+                ("vid_req_avi", ctypes.c_int),
+                ("remove_limits", ctypes.c_bool)]
 
 class sd_generation_outputs(ctypes.Structure):
     _fields_ = [("status", ctypes.c_int),
@@ -713,6 +715,12 @@ def end_trim_to_sentence(input_text):
 def tryparseint(value,fallback):
     if value is None:
         return fallback
+    if isinstance(value, str):
+        lower_value = value.lower()
+        if lower_value == "true":
+            return 1
+        if lower_value == "false":
+            return 0
     try:
         return int(value)
     except ValueError:
@@ -1496,7 +1504,7 @@ def load_model(model_filename):
     else:
         inputs.quant_k = inputs.quant_v = 0
     inputs.batchsize = args.batchsize
-    inputs.forceversion = args.forceversion
+    inputs.autofit = args.autofit
     inputs.gpulayers = args.gpulayers
     if args.overridenativecontext and args.overridenativecontext>0:
         inputs.overridenativecontext = args.overridenativecontext
@@ -1536,6 +1544,7 @@ def load_model(model_filename):
     inputs.highpriority = args.highpriority
     inputs.swa_support = args.useswa
     inputs.smartcache = args.smartcache
+    inputs.pipelineparallel = args.pipelineparallel
     inputs = set_backend_props(inputs)
     ret = handle.load_model(inputs)
     return ret
@@ -1880,7 +1889,7 @@ def sd_comfyui_tranform_params(genparams):
         print("Warning: ComfyUI Payload Missing!")
     return genparams
 
-def sd_process_meta_fields(fields, config):
+def sd_process_meta_fields(fields):
     # aliases to match sd.cpp command-line options
     aliases = {
         'cfg-scale': 'cfg_scale',
@@ -1891,15 +1900,12 @@ def sd_process_meta_fields(fields, config):
     }
     fields_dict = {aliases.get(k, k): v for k, v in fields}
     # whitelist accepted parameters
-    whitelist = ['scheduler', 'shifted_timestep', 'distilled_guidance']
-    if config:
-        # note the current UI always set these
-        whitelist += ['sampler_name', 'cfg_scale']
+    whitelist = ['scheduler', 'shifted_timestep', 'distilled_guidance', 'sampler_name', 'cfg_scale', 'add_sd_step_limit', 'add_sd_cfg_limit', 'remove_limits']
     fields_dict = {k: v for k, v in fields_dict.items() if k in whitelist}
     return fields_dict
 
 # json with top-level dict
-def sd_parse_meta_field(prompt, config=False):
+def sd_parse_meta_field(prompt):
     jfields = {}
     kv_dict = {}
     try:
@@ -1913,7 +1919,7 @@ def sd_parse_meta_field(prompt, config=False):
                 print("Warning: couldn't parse meta prompt; it should be valid JSON.")
         if not isinstance(jfields, dict):
             jfields = {}
-        kv_dict = sd_process_meta_fields(jfields.items(), config)
+        kv_dict = sd_process_meta_fields(jfields.items())
     except Exception:
         pass
     return kv_dict
@@ -1922,7 +1928,7 @@ def sd_parse_meta_field(prompt, config=False):
 def sd_generate(genparams):
     global maxctx, args, currentusergenkey, totalgens, pendingabortkey, chatcompl_adapter
 
-    sdgendefaults = sd_parse_meta_field(args.sdgendefaults or '', config=True)
+    sdgendefaults = sd_parse_meta_field(args.sdgendefaults or '')
     params = dict()
     defparams = dict()
     for k, v in sdgendefaults.items():
@@ -1940,7 +1946,9 @@ def sd_generate(genparams):
     adapter_obj = genparams.get('adapter', default_adapter)
     forced_negprompt = adapter_obj.get("add_sd_negative_prompt", "")
     forced_posprompt = adapter_obj.get("add_sd_prompt", "")
-    forced_steplimit = adapter_obj.get("add_sd_step_limit", 80)
+    forced_steplimit = tryparseint(adapter_obj.get("add_sd_step_limit", genparams.get("add_sd_step_limit",80)),80)
+    forced_maxcfg = tryparsefloat(adapter_obj.get("add_sd_cfg_limit", genparams.get("add_sd_cfg_limit",25)),25)
+    allow_remove_limits = tryparseint(adapter_obj.get("remove_limits", genparams.get("remove_limits",0)),0)
 
     prompt = genparams.get("prompt", "high quality")
     negative_prompt = genparams.get("negative_prompt", "")
@@ -1985,7 +1993,7 @@ def sd_generate(genparams):
     extra_images_arr = extra_images_arr[:extra_images_max]
 
     #clean vars
-    cfg_scale = (1 if cfg_scale < 1 else (25 if cfg_scale > 25 else cfg_scale))
+    cfg_scale = (1 if cfg_scale < 1 else (forced_maxcfg if cfg_scale > forced_maxcfg else cfg_scale))
     if distilled_guidance is not None and (distilled_guidance < 0 or distilled_guidance > 100):
         distilled_guidance = None # fall back to the default
     if shifted_timestep is not None and (shifted_timestep < 0 or shifted_timestep > 1000):
@@ -2022,6 +2030,7 @@ def sd_generate(genparams):
     inputs.clip_skip = clip_skip
     inputs.vid_req_frames = vid_req_frames
     inputs.vid_req_avi = vid_req_avi
+    inputs.remove_limits = allow_remove_limits
     ret = handle.sd_generate(inputs)
     outstr = ""
     animated = False
@@ -4687,6 +4696,8 @@ Change Mode<br>
                 response_body = (json.dumps([]).encode())
             else:
                 response_body = (json.dumps([friendlysdmodelname]).encode())
+        elif clean_path=='/api/models/loras' or clean_path=='/models/loras':
+            response_body = (json.dumps([]).encode())
         elif clean_path=='/view' or clean_path=='/view.png' or clean_path=='/api/view' or clean_path.startswith('/view_image'): #emulate comfyui
             content_type = 'image/png'
             response_body = lastgeneratedcomfyimg
@@ -6105,6 +6116,14 @@ def show_gui():
     def actually_resize(windowwidth,windowheight,lastpos,smallratio):
         root.geometry(str(windowwidth) + "x" + str(windowheight) + str(lastpos))
         ctk.set_widget_scaling(smallratio)
+        changerunmode(1,1,1)
+        togglerope(1,1,1)
+        toggleflashattn(1,1,1)
+        togglectxshift(1,1,1)
+        togglehorde(1,1,1)
+        toggletaesd(1,1,1)
+        togglejinja(1,1,1)
+        tabbuttonaction(tabnames[curr_tab_idx])
         pass
     def on_resize(event):
         nonlocal resizing, resizing_id1, resizing_id2
@@ -6147,14 +6166,6 @@ def show_gui():
                         root.after_cancel(resizing_id1)
                         resizing_id1 = None
                     resizing_id1 = root.after(5, clearesizing)
-                    changerunmode(1,1,1)
-                    togglerope(1,1,1)
-                    toggleflashattn(1,1,1)
-                    togglectxshift(1,1,1)
-                    togglehorde(1,1,1)
-                    toggletaesd(1,1,1)
-                    togglejinja(1,1,1)
-                    tabbuttonaction(tabnames[curr_tab_idx])
 
     if sys.platform=="darwin":
         root.resizable(False,False)
@@ -6226,6 +6237,7 @@ def show_gui():
     debugmode = ctk.IntVar()
     keepforeground = ctk.IntVar()
     terminalonly = ctk.IntVar()
+    pipelineparallel = ctk.IntVar()
     quietmode = ctk.IntVar(value=0)
     nocertifymode = ctk.IntVar(value=0)
 
@@ -6234,7 +6246,7 @@ def show_gui():
     quantkv_var = ctk.IntVar(value=0)
     blas_threads_var = ctk.StringVar()
     blas_size_var = ctk.IntVar()
-    version_var = ctk.StringVar(value="0")
+    autofit_var = ctk.IntVar()
     tensor_split_str_vars = ctk.StringVar(value="")
     rowsplit_var = ctk.IntVar()
     maingpu_var = ctk.StringVar(value="")
@@ -6257,7 +6269,7 @@ def show_gui():
     jinja_tools_var = ctk.IntVar(value=0)
     moeexperts_var = ctk.StringVar(value=str(-1))
     moecpu_var = ctk.StringVar(value=str(0))
-    defaultgenamt_var = ctk.StringVar(value=str(768))
+    defaultgenamt_var = ctk.StringVar(value=str(896))
     genlimit_var = ctk.StringVar(value=str(0))
     nobostoken_var = ctk.IntVar(value=0)
     override_kv_var = ctk.StringVar(value="")
@@ -6637,12 +6649,16 @@ def show_gui():
                 dict = json.load(f)
                 import_vars(dict)
 
-    def setup_backend_tooltip(parent):
+    def setup_backend_tooltip(parent, singlerow):
         # backend count label with the tooltip function
         nl = '\n'
         tooltxt = "Number of backends you have built and available." + (f"\n\nMissing Backends: \n\n{nl.join(antirunopts)}" if len(runopts) < 8 else "")
-        num_backends_built = makelabel(parent, str(len(runopts)) + "/9", 5, 2,tooltxt)
-        num_backends_built.grid(row=1, column=1, padx=205, pady=0)
+        num_backends_built = None
+        num_backends_built = makelabel(parent, str(len(runopts)) + "/9", 1, 1,tooltxt)
+        if singlerow:
+            num_backends_built.grid(row=1, column=0, padx=355, pady=0)
+        else:
+            num_backends_built.grid(row=1, column=1, padx=205, pady=0)
         num_backends_built.configure(text_color="#00ff00")
 
     def gui_changed_modelfile(*args):
@@ -6664,7 +6680,7 @@ def show_gui():
         max_gpu_layers = (f"/{modelfile_extracted_meta[1][0]+1}" if (modelfile_extracted_meta and modelfile_extracted_meta[1] and modelfile_extracted_meta[1][0]!=0) else "")
         index = runopts_var.get()
         gpu_be = (index == "Use Vulkan" or index == "Use Vulkan (Old CPU)" or index == "Use CLBlast" or index == "Use CLBlast (Old CPU)" or index == "Use CLBlast (Older CPU)" or index == "Use CUDA" or index == "Use hipBLAS (ROCm)")
-        layercounter_label.grid(row=6, column=1, padx=75, sticky="W")
+        layercounter_label.grid(row=6, column=0, padx=230, sticky="W")
         quick_layercounter_label.grid(row=6, column=1, padx=75, sticky="W")
         if sys.platform=="darwin" and gpulayers_var.get()=="-1":
             quick_layercounter_label.configure(text="(Auto: All Layers)")
@@ -6756,11 +6772,11 @@ def show_gui():
         index = runopts_var.get()
         if index == "Use Vulkan" or index == "Use Vulkan (Old CPU)" or index == "Use CLBlast"  or index == "Use CLBlast (Old CPU)" or index == "Use CLBlast (Older CPU)" or index == "Use CUDA" or index == "Use hipBLAS (ROCm)":
             quick_gpuname_label.grid(row=3, column=1, padx=75, sticky="W")
-            gpuname_label.grid(row=3, column=1, padx=75, sticky="W")
+            gpuname_label.grid(row=3, column=0, padx=230, sticky="W")
             gpu_selector_label.grid(row=3, column=0, padx = 8, pady=1, stick="nw")
             quick_gpu_selector_label.grid(row=3, column=0, padx = 8, pady=1, stick="nw")
             if index == "Use CLBlast" or index == "Use CLBlast (Old CPU)" or index == "Use CLBlast (Older CPU)":
-                gpu_selector_box.grid(row=3, column=1, padx=8, pady=1, stick="nw")
+                gpu_selector_box.grid(row=3, column=0, padx=160, pady=1, stick="nw")
                 quick_gpu_selector_box.grid(row=3, column=1, padx=8, pady=1, stick="nw")
                 CUDA_gpu_selector_box.grid_remove()
                 CUDA_quick_gpu_selector_box.grid_remove()
@@ -6772,10 +6788,10 @@ def show_gui():
             elif index == "Use Vulkan" or index == "Use Vulkan (Old CPU)" or index == "Use CUDA" or index == "Use hipBLAS (ROCm)":
                 gpu_selector_box.grid_remove()
                 quick_gpu_selector_box.grid_remove()
-                CUDA_gpu_selector_box.grid(row=3, column=1, padx=8, pady=1, stick="nw")
+                CUDA_gpu_selector_box.grid(row=3, column=0, padx=160, pady=1, stick="nw")
                 CUDA_quick_gpu_selector_box.grid(row=3, column=1, padx=8, pady=1, stick="nw")
-                maingpu_label.grid(row=10, column=0, padx = 8, pady=1, stick="nw")
-                maingpu_entry.grid(row=10, column=1, padx = 8, pady=1, stick="nw")
+                maingpu_label.grid(row=8, column=0, padx = 270, pady=1, stick="nw")
+                maingpu_entry.grid(row=8, column=0, padx = 340, pady=1, stick="nw")
                 lowvram_box.grid(row=4, column=0, padx=8, pady=1,  stick="nw")
         else:
             quick_gpuname_label.grid_remove()
@@ -6791,11 +6807,11 @@ def show_gui():
             lowvram_box.grid_remove()
 
         if index == "Use CUDA" or index == "Use hipBLAS (ROCm)":
-            mmq_box.grid(row=4, column=1, padx=8, pady=1,  stick="nw")
+            mmq_box.grid(row=4, column=0, padx=160, pady=1,  stick="nw")
             quick_mmq_box.grid(row=4, column=1, padx=8, pady=1,  stick="nw")
-            splitmode_box.grid(row=5, column=1, padx=8, pady=1,  stick="nw")
+            splitmode_box.grid(row=4, column=0, padx=300, pady=1,  stick="nw")
             tensor_split_label.grid(row=8, column=0, padx = 8, pady=1, stick="nw")
-            tensor_split_entry.grid(row=8, column=1, padx=8, pady=1, stick="nw")
+            tensor_split_entry.grid(row=8, column=0, padx = 160, pady=1, stick="nw")
         else:
             mmq_box.grid_remove()
             quick_mmq_box.grid_remove()
@@ -6805,16 +6821,16 @@ def show_gui():
 
         if index == "Use Vulkan" or index == "Use Vulkan (Old CPU)":
             tensor_split_label.grid(row=8, column=0, padx = 8, pady=1, stick="nw")
-            tensor_split_entry.grid(row=8, column=1, padx=8, pady=1, stick="nw")
+            tensor_split_entry.grid(row=8, column=0, padx = 160, pady=1, stick="nw")
 
         if index == "Use Vulkan" or index == "Use Vulkan (Old CPU)" or index == "Use CLBlast" or index == "Use CLBlast (Old CPU)" or index == "Use CLBlast (Older CPU)" or index == "Use CUDA" or index == "Use hipBLAS (ROCm)":
-            gpu_layers_label.grid(row=6, column=0, padx = 8, pady=1, stick="nw")
-            gpu_layers_entry.grid(row=6, column=1, padx=8, pady=1, stick="nw")
+            gpu_layers_label.grid(row=6, column=0, padx=8, pady=1, stick="nw")
+            gpu_layers_entry.grid(row=6, column=0, padx=160, pady=1, stick="nw")
             quick_gpu_layers_label.grid(row=6, column=0, padx = 8, pady=1, stick="nw")
             quick_gpu_layers_entry.grid(row=6, column=1, padx=8, pady=1, stick="nw")
         elif sys.platform=="darwin":
-            gpu_layers_label.grid(row=6, column=0, padx = 8, pady=1, stick="nw")
-            gpu_layers_entry.grid(row=6, column=1, padx=8, pady=1, stick="nw")
+            gpu_layers_label.grid(row=6, column=0, padx=8, pady=1, stick="nw")
+            gpu_layers_entry.grid(row=6, column=0, padx=160, pady=1, stick="nw")
             quick_gpu_layers_label.grid(row=6, column=0, padx = 8, pady=1, stick="nw")
             quick_gpu_layers_entry.grid(row=6, column=1, padx=8, pady=1, stick="nw")
         else:
@@ -6833,20 +6849,23 @@ def show_gui():
     runoptbox.set(runopts[0]) # Set to first available option
 
     # Tell user how many backends are available
-    setup_backend_tooltip(quick_tab)
+    setup_backend_tooltip(quick_tab,False)
 
     # gpu options
-    quick_gpu_selector_label = makelabel(quick_tab, "GPU ID:", 3,0,"Which GPU ID to load the model with.\nNormally your main GPU is #1, but it can vary for multi GPU setups.")
+    quick_gpu_selector_label = makelabel(quick_tab, "GPU ID:", 3,0,"Which GPU ID to load the model with.\nNormally your main GPU is #1, but it can vary for multi GPU setups.",padx=8)
     quick_gpu_selector_box = ctk.CTkComboBox(quick_tab, values=CLDevices, width=60, variable=gpu_choice_var, state="readonly")
     CUDA_quick_gpu_selector_box = ctk.CTkComboBox(quick_tab, values=CUDevices, width=60, variable=gpu_choice_var, state="readonly")
+    CUDA_quick_gpu_selector_box.grid(row=3, column=1, padx=8, pady=1, stick="nw")
     quick_gpuname_label = ctk.CTkLabel(quick_tab, text="")
     quick_gpuname_label.grid(row=3, column=1, padx=75, sticky="W")
     quick_gpuname_label.configure(text_color="#ffff00")
     quick_gpu_layers_entry,quick_gpu_layers_label = makelabelentry(quick_tab,"GPU Layers:", gpulayers_var, 6, 50,tooltip="How many layers to offload onto the GPU.\nUsage varies based on model type and increases with model and context size.\nRequires some trial and error to find the best fit value.\n\nNote: The auto estimation is often inaccurate! Please set layers yourself for best results!")
+    quick_gpu_layers_label.grid(row=6, column=0, padx = 8, pady=1, stick="nw")
+    quick_gpu_layers_entry.grid(row=6, column=1, padx=8, pady=1, stick="nw")
     quick_layercounter_label = ctk.CTkLabel(quick_tab, text="")
     quick_layercounter_label.grid(row=6, column=1, padx=75, sticky="W")
     quick_layercounter_label.configure(text_color="#ffff00")
-    quick_mmq_box = makecheckbox(quick_tab,  "Use QuantMatMul (mmq)", mmq_var, 4,1,tooltiptxt="Enable MMQ mode instead of CuBLAS for prompt processing. Read the wiki. Speed may vary.")
+    quick_mmq_box = makecheckbox(quick_tab,  "Use MMQ", mmq_var, 4,1,tooltiptxt="Enable MMQ mode instead of CuBLAS for prompt processing. Read the wiki. Speed may vary.")
 
     # quick boxes
     quick_boxes = {
@@ -6876,32 +6895,35 @@ def show_gui():
     # presets selector
     makelabel(hardware_tab, "Backend:", 1,0,"Select a backend to use.\nCUDA runs on Nvidia GPUs, and is much faster.\nVulkan and CLBlast works on all GPUs but is somewhat slower.\nOtherwise, runs on CPU only.\nNoAVX2 and Failsafe modes support older PCs.")
     runoptbox = ctk.CTkComboBox(hardware_tab, values=runopts,  width=180,variable=runopts_var, state="readonly")
-    runoptbox.grid(row=1, column=1,padx=8, stick="nw")
+    runoptbox.grid(row=1, column=0,padx=160, stick="nw")
     runoptbox.set(runopts[0]) # Set to first available option
 
     # Tell user how many backends are available
-    setup_backend_tooltip(hardware_tab)
+    setup_backend_tooltip(hardware_tab,True)
 
     # gpu options
     gpu_selector_label = makelabel(hardware_tab, "GPU ID:", 3,0,"Which GPU ID to load the model with.\nNormally your main GPU is #1, but it can vary for multi GPU setups.")
     gpu_selector_box = ctk.CTkComboBox(hardware_tab, values=CLDevices, width=60, variable=gpu_choice_var, state="readonly")
+    gpu_selector_box.grid(row=3, column=0, padx=160, pady=1, stick="nw")
     CUDA_gpu_selector_box = ctk.CTkComboBox(hardware_tab, values=CUDevices, width=60, variable=gpu_choice_var, state="readonly")
+    CUDA_gpu_selector_box.grid(row=3, column=0, padx=160, pady=1, stick="nw")
     gpuname_label = ctk.CTkLabel(hardware_tab, text="")
-    gpuname_label.grid(row=3, column=1, padx=75, sticky="W")
+    gpuname_label.grid(row=3, column=0, padx=230, sticky="W")
     gpuname_label.configure(text_color="#ffff00")
-    gpu_layers_entry,gpu_layers_label = makelabelentry(hardware_tab,"GPU Layers:", gpulayers_var, 6, 50,tooltip="How many layers to offload onto the GPU.\nVRAM intensive, usage increases with model and context size.\nRequires some trial and error to find the best fit value.\n\nCommon values for total layers, accuracy not guaranteed.\n\nLlama/Mistral 7b/8b: 33\nSolar 10.7b/11b: 49\nLlama 13b: 41\nLlama 20b(stack): 63\nLlama/Yi 34b: 61\nMixtral 8x7b: 33\nLlama 70b: 81")
+    lowvram_box = makecheckbox(hardware_tab,  "No KV offload", lowvram_var, 4,0, tooltiptxt='Avoid offloading KV Cache or scratch buffers to VRAM.\nAllows more layers to fit, but may result in a large speed loss.')
+    mmq_box = makecheckbox(hardware_tab,  "Use MMQ", mmq_var, 4,0,padx=160, tooltiptxt="Enable MMQ mode to use finetuned kernels instead of default CuBLAS/HipBLAS for prompt processing.\nRead the wiki. Speed may vary.")
+    splitmode_box = makecheckbox(hardware_tab,  "Row-Split", rowsplit_var, 4,0,padx=300, tooltiptxt="Split rows across GPUs instead of splitting layers and KV across GPUs.\nUses the main GPU for small tensors and intermediate results. Speed may vary.")
+    gpu_layers_entry,gpu_layers_label = makelabelentry(hardware_tab,"GPU Layers:", gpulayers_var, 6, 50, padx=160,singleline=True,tooltip="How many layers to offload onto the GPU.\nVRAM intensive, usage increases with model and context size.\nRequires some trial and error to find the best fit value.\n\nCommon values for total layers, accuracy not guaranteed.\n\nLlama/Mistral 7b/8b: 33\nSolar 10.7b/11b: 49\nLlama 13b: 41\nLlama 20b(stack): 63\nLlama/Yi 34b: 61\nMixtral 8x7b: 33\nLlama 70b: 81")
     layercounter_label = ctk.CTkLabel(hardware_tab, text="")
-    layercounter_label.grid(row=6, column=1, padx=75, sticky="W")
+    layercounter_label.grid(row=6, column=0, padx=230, sticky="W")
     layercounter_label.configure(text_color="#ffff00")
-    tensor_split_entry,tensor_split_label = makelabelentry(hardware_tab, "Tensor Split:", tensor_split_str_vars, 8, 80, tooltip='When using multiple GPUs this option controls how large tensors should be split across all GPUs.\nUses a comma-separated list of non-negative values that assigns the proportion of data that each GPU should get in order.\nFor example, "3,2" will assign 60% of the data to GPU 0 and 40% to GPU 1.')
-    lowvram_box = makecheckbox(hardware_tab,  "Low VRAM (No KV offload)", lowvram_var, 4,0, tooltiptxt='Avoid offloading KV Cache or scratch buffers to VRAM.\nAllows more layers to fit, but may result in a large speed loss.')
-    mmq_box = makecheckbox(hardware_tab,  "Use QuantMatMul (mmq)", mmq_var, 4,1, tooltiptxt="Enable MMQ mode to use finetuned kernels instead of default CuBLAS/HipBLAS for prompt processing.\nRead the wiki. Speed may vary.")
-    splitmode_box = makecheckbox(hardware_tab,  "Row-Split", rowsplit_var, 5,0, tooltiptxt="Split rows across GPUs instead of splitting layers and KV across GPUs.\nUses the main GPU for small tensors and intermediate results. Speed may vary.")
-
-    maingpu_entry,maingpu_label = makelabelentry(hardware_tab, "Main GPU:" , maingpu_var, 10, 50,tooltip="Only for multi-gpu, which GPU to set as main?\nIf left blank, uses default value.")
+    tensor_split_entry,tensor_split_label = makelabelentry(hardware_tab, "Tensor Split:", tensor_split_str_vars, 8, 80, padx=160, singleline=True, tooltip='When using multiple GPUs this option controls how large tensors should be split across all GPUs.\nUses a comma-separated list of non-negative values that assigns the proportion of data that each GPU should get in order.\nFor example, "3,2" will assign 60% of the data to GPU 0 and 40% to GPU 1.')
+    maingpu_entry,maingpu_label = makelabelentry(hardware_tab, "Main GPU:" , maingpu_var, 8, 50,padx=340,singleline=True,tooltip="Only for multi-gpu, which GPU to set as main?\nIf left blank, uses default value.",labelpadx=270)
 
     # threads
-    makelabelentry(hardware_tab, "Threads:" , threads_var, 11, 50,tooltip="How many threads to use.\nRecommended value is your CPU core count, defaults are usually OK.")
+    makelabelentry(hardware_tab, "Threads:" , threads_var, 11, 50, padx=160, singleline=True,tooltip="How many threads to use.\nRecommended value is your CPU core count, defaults are usually OK.")
+    # blas thread specifier
+    makelabelentry(hardware_tab, "Batch Threads:" , blas_threads_var, 11, 50,padx=340, singleline=True,tooltip="How many threads to use during batched processing.\nIf left blank, uses same value as regular thread count.",labelpadx=240)
 
     # hardware checkboxes
     hardware_boxes = {
@@ -6911,21 +6933,19 @@ def show_gui():
         "Use mlock": [usemlock, "Enables mlock, preventing the RAM used to load the model from being paged out."],
         "Debug Mode": [debugmode, "Enables debug mode, with extra info printed to the terminal."],
         "Keep Foreground": [keepforeground, "Bring KoboldCpp to the foreground every time there is a new generation."],
-        "CLI Terminal Only": [terminalonly, "Does not launch KoboldCpp HTTP server. Instead, enables KoboldCpp from the command line, accepting interactive console input and displaying responses to the terminal."]
+        "CLI Terminal Only": [terminalonly, "Does not launch KoboldCpp HTTP server. Instead, enables KoboldCpp from the command line, accepting interactive console input and displaying responses to the terminal."],
+        "Pipeline Parallel": [pipelineparallel, "Enable Pipeline Parallelism for faster multigpu speeds but using more memory, only active for multigpu."],
     }
 
     for idx, (name, properties) in enumerate(hardware_boxes.items()):
-        makecheckbox(hardware_tab, name, properties[0], int(idx/2) + 30, idx % 2, tooltiptxt=properties[1])
+        makecheckbox(hardware_tab, name, properties[0], int(idx/2) + 30, 0, padx=(160 if idx % 2 else 8), tooltiptxt=properties[1])
 
-    # blas thread specifier
-    makelabelentry(hardware_tab, "Batch Threads:" , blas_threads_var, 14, 50,tooltip="How many threads to use during batched processing.\nIf left blank, uses same value as regular thread count.")
     # blas batch size
     makeslider(hardware_tab, "Batch Size:", batchsize_text, blas_size_var, 0, len(batchsize_values)-1, 16,width=200, set=6,tooltip="How many tokens to process at once per batch.\nLarger values use more memory.")
     blas_size_var.trace_add("write", changed_gpulayers_estimate)
 
-    # force version
-    makelabelentry(hardware_tab, "Force Version:" , version_var, 100, 50,tooltip="If the autodetected version is wrong, you can change it here.\nLeave as 0 for default.")
-    ctk.CTkButton(hardware_tab , text = "Run Benchmark", command = guibench ).grid(row=110,column=0, stick="se", padx= 0, pady=2)
+    makecheckbox(hardware_tab, "AutoFit (llama.cpp mode)", autofit_var, 100,0, tooltiptxt="Automatically attempt to fit the model in the best possible way. Overrides everything else. Not recommended for multi model setups. Experimental.")
+    ctk.CTkButton(hardware_tab , text = "Run Benchmark", command = guibench ).grid(row=110,column=0, stick="nw", padx= 8, pady=2)
 
 
     # Tokens Tab
@@ -6947,25 +6967,25 @@ def show_gui():
     customrope_scale_entry, customrope_scale_label = makelabelentry(tokens_tab, "RoPE Scale:", customrope_scale, row=23, padx=(160 if corrupt_scaler else 100), singleline=True, tooltip="For Linear RoPE scaling. RoPE frequency scale.")
     customrope_base_entry, customrope_base_label = makelabelentry(tokens_tab, "Base:", customrope_base, row=23, padx=(420 if corrupt_scaler else 220), singleline=True, tooltip="For NTK Aware Scaling. RoPE frequency base.",labelpadx=(280 if corrupt_scaler else 180))
     def togglerope(a,b,c):
+        manualropebox.grid_remove()
+        nativectx_label.grid_remove()
+        nativectx_entry.grid_remove()
+        customrope_scale_label.grid_remove()
+        customrope_scale_entry.grid_remove()
+        customrope_base_label.grid_remove()
+        customrope_base_entry.grid_remove()
         if customrope_var.get() == 1:
-            manualropebox.grid()
-            enabled_items = [customrope_scale_label, customrope_scale_entry,customrope_base_label, customrope_base_entry]
-            disabled_items = [nativectx_entry,nativectx_label]
-            for idx, item in enumerate(enabled_items):
-                if manualrope_var.get() == 1:
-                    item.grid()
-                else:
-                    item.grid_remove()
-            for idx, item in enumerate(disabled_items):
-                if manualrope_var.get() == 0:
-                    item.grid()
-                else:
-                    item.grid_remove()
-        else:
-            disabled_items = [manualropebox, nativectx_entry,nativectx_label, customrope_scale_label, customrope_scale_entry, customrope_base_label, customrope_base_entry]
-            for idx, item in enumerate(disabled_items):
-                item.grid_remove()
-    manualropebox = makecheckbox(tokens_tab, "Manual Rope Scale", variable=manualrope_var, row=22, command=togglerope, padx=(276 if corrupt_scaler else 166), tooltiptxt="Set RoPE base and scale manually.")
+            manualropebox.grid(row=22, column=0,padx=(300 if corrupt_scaler else 200), pady=1, stick="nw")
+            if manualrope_var.get() == 1:
+                customrope_scale_label.grid(row=23, column=0, padx=8, pady=1, stick="nw")
+                customrope_scale_entry.grid(row=23, column=0, padx=(160 if corrupt_scaler else 100), pady=1, stick="nw")
+                customrope_base_label.grid(row=23, column=0, padx=(280 if corrupt_scaler else 180), pady=1, stick="nw")
+                customrope_base_entry.grid(row=23, column=0,  padx=(420 if corrupt_scaler else 220), pady=1, stick="nw")
+            else:
+                nativectx_label.grid(row=23, column=0, padx=8, pady=1, stick="nw")
+                nativectx_entry.grid(row=23, column=0, padx=(246 if corrupt_scaler else 146), pady=1, stick="nw")
+
+    manualropebox = makecheckbox(tokens_tab, "Manual Rope Scale", variable=manualrope_var, row=22, command=togglerope, padx=(300 if corrupt_scaler else 200), tooltiptxt="Set RoPE base and scale manually.")
 
     makecheckbox(tokens_tab, "Custom RoPE Config", variable=customrope_var, row=22, command=togglerope,tooltiptxt="Override the default RoPE configuration with custom RoPE scaling.")
     makecheckbox(tokens_tab, "Use FlashAttention", flashattention_var, 28, command=toggleflashattn,  tooltiptxt="Enable flash attention for GGUF models.")
@@ -7241,6 +7261,7 @@ def show_gui():
         args.remotetunnel = remotetunnel_var.get()==1
         args.foreground = keepforeground.get()==1
         args.cli = terminalonly.get()==1
+        args.pipelineparallel = pipelineparallel.get()==1
         args.quiet = quietmode.get()==1
         args.nocertify = nocertifymode.get()==1
         args.nomodel = nomodel.get()==1
@@ -7307,7 +7328,7 @@ def show_gui():
         args.maingpu = -1 if maingpu_var.get()=="" else int(maingpu_var.get())
         args.blasthreads = None if blas_threads_var.get()=="" else int(blas_threads_var.get())
         args.batchsize = int(batchsize_values[int(blas_size_var.get())])
-        args.forceversion = 0 if version_var.get()=="" else int(version_var.get())
+        args.autofit = autofit_var.get() == 1
         args.contextsize = int(contextsize_text[context_var.get()])
         if customrope_var.get()==1:
             if manualrope_var.get()==1:
@@ -7321,7 +7342,7 @@ def show_gui():
             args.overridenativecontext = 0
         args.moeexperts = int(moeexperts_var.get()) if moeexperts_var.get()!="" else -1
         args.moecpu = int(moecpu_var.get()) if moecpu_var.get()!="" else 0
-        args.defaultgenamt = int(defaultgenamt_var.get()) if defaultgenamt_var.get()!="" else 768
+        args.defaultgenamt = int(defaultgenamt_var.get()) if defaultgenamt_var.get()!="" else 896
         args.genlimit = int(genlimit_var.get()) if genlimit_var.get()!="" else 0
         args.nobostoken = (nobostoken_var.get()==1)
         args.jinja = (jinja_var.get()==1)
@@ -7466,6 +7487,7 @@ def show_gui():
         remotetunnel_var.set(1 if "remotetunnel" in dict and dict["remotetunnel"] else 0)
         keepforeground.set(1 if "foreground" in dict and dict["foreground"] else 0)
         terminalonly.set(1 if "cli" in dict and dict["cli"] else 0)
+        pipelineparallel.set(1 if "pipelineparallel" in dict and dict["pipelineparallel"] else 0)
         quietmode.set(1 if "quiet" in dict and dict["quiet"] else 0)
         nocertifymode.set(1 if "nocertify" in dict and dict["nocertify"] else 0)
         nomodel.set(1 if "nomodel" in dict and dict["nomodel"] else 0)
@@ -7581,7 +7603,7 @@ def show_gui():
         if "batchsize" in dict and dict["batchsize"]:
             blas_size_var.set(batchsize_values.index(str(dict["batchsize"])))
 
-        version_var.set(str(dict["forceversion"]) if ("forceversion" in dict and dict["forceversion"]) else "0")
+        autofit_var.set(1 if "autofit" in dict and dict["autofit"] else 0)
         model_var.set(dict["model_param"] if ("model_param" in dict and dict["model_param"]) else "")
 
         lora_var.set("")
@@ -9458,6 +9480,7 @@ if __name__ == '__main__':
     parser.add_argument("--contextsize","--ctx-size", "-c", help="Controls the memory allocated for maximum context size, only change if you need more RAM for big contexts. (default 8192).",metavar=('[256 to 262144]'), type=check_range(int,256,262144), default=8192)
     parser.add_argument("--gpulayers","--gpu-layers","--n-gpu-layers","-ngl", help="Set number of layers to offload to GPU when using GPU. Requires GPU. Set to -1 to try autodetect, set to 0 to disable GPU offload.",metavar=('[GPU layers]'), nargs='?', const=1, type=int, default=-1)
     parser.add_argument("--tensor_split","--tensorsplit","--tensor-split","-ts", help="For CUDA and Vulkan only, ratio to split tensors across multiple GPUs, space-separated list of proportions, e.g. 7 3", metavar=('[Ratios]'), type=float, nargs='+')
+    parser.add_argument("--autofit","--fit","-fit", help="Automatically attempt to fit the model in the best possible way. Overrides everything else. Experimental.", action='store_true')
 
     #more advanced params
     advparser = parser.add_argument_group('Advanced Commands')
@@ -9512,7 +9535,6 @@ if __name__ == '__main__':
     advparser.add_argument("--flashattention","--flash-attn","-fa", help="Enables flash attention.", action='store_true')
     advparser.add_argument("--lowvram","-nkvo","--no-kv-offload", help="If supported by the backend, do not offload KV to GPU (lowvram mode). Not recommended, will be slow.", action='store_true')
     advparser.add_argument("--quantkv", help="Sets the KV cache data type quantization, 0=f16, 1=q8, 2=q4. Requires Flash Attention for full effect, otherwise only K cache is quantized.",metavar=('[quantization level 0/1/2]'), type=int, choices=[0,1,2], default=0)
-    advparser.add_argument("--forceversion", help="If the model file format detection fails (e.g. rogue modified model) you can set this to override the detected format (enter desired version, e.g. 401 for GPTNeoX-Type2).",metavar=('[version]'), type=int, default=0)
     advparser.add_argument("--smartcontext", help="Reserving a portion of context to try processing less frequently. Outdated. Not recommended.", action='store_true')
     advparser.add_argument("--unpack", help="Extracts the file contents of the KoboldCpp binary into a target directory.", metavar=('destination'), type=str, default="")
     advparser.add_argument("--exportconfig", help="Exports the current selected arguments as a .kcpps settings file", metavar=('[filename]'), type=str, default="")
@@ -9520,7 +9542,7 @@ if __name__ == '__main__':
     advparser.add_argument("--nomodel", help="Allows you to launch the GUI alone, without selecting any model.", action='store_true')
     advparser.add_argument("--moeexperts", metavar=('[num of experts]'), help="How many experts to use for MoE models (default=follow gguf)", type=int, default=-1)
     advparser.add_argument("--moecpu","--n-cpu-moe", "-ncmoe", metavar=('[layers affected]'), help="Keep the Mixture of Experts (MoE) weights of the first N layers in the CPU. If no value is provided, applies to all layers.", nargs='?', const=999, type=int, default=0)
-    advparser.add_argument("--defaultgenamt", help="How many tokens to generate by default, if not specified. Must be smaller than context size. Usually, your frontend GUI will override this.", type=check_range(int,64,8192), default=768)
+    advparser.add_argument("--defaultgenamt", help="How many tokens to generate by default, if not specified. Must be smaller than context size. Usually, your frontend GUI will override this.", type=check_range(int,64,8192), default=896)
     advparser.add_argument("--nobostoken", help="Prevents BOS token from being added at the start of any prompt. Usually NOT recommended for most models.", action='store_true')
     advparser.add_argument("--enableguidance", help="Enables the use of Classifier-Free-Guidance, which allows the use of negative prompts. Has performance and memory impact.", action='store_true')
     advparser.add_argument("--maxrequestsize", metavar=('[size in MB]'), help="Specify a max request payload size. Any requests to the server larger than this size will be dropped. Do not change if unsure.", type=int, default=32)
@@ -9531,6 +9553,7 @@ if __name__ == '__main__':
     compatgroup2.add_argument("--showgui", help="Always show the GUI instead of launching the model right away when loading settings from a .kcpps file.", action='store_true')
     compatgroup2.add_argument("--skiplauncher", help="Doesn't display or use the GUI launcher. Overrides showgui.", action='store_true')
     advparser.add_argument("--singleinstance", help="Allows this KoboldCpp instance to be shut down by any new instance requesting the same port, preventing duplicate servers from clashing on a port.", action='store_true')
+    advparser.add_argument("--pipelineparallel", help="Enable Pipeline Parallelism for faster multigpu speeds but using more memory, only active for multigpu.", action='store_true')
 
     hordeparsergroup = parser.add_argument_group('Horde Worker Commands')
     hordeparsergroup.add_argument("--hordemodelname", metavar=('[name]'), help="Sets your AI Horde display model name.", default="")
@@ -9591,6 +9614,7 @@ if __name__ == '__main__':
     compatgroup.add_argument("--noblas", help=argparse.SUPPRESS, action='store_true')
     compatgroup3.add_argument("--nommap","--no-mmap", help=argparse.SUPPRESS, action='store_true')
     deprecatedgroup.add_argument("--sdnotile", help=argparse.SUPPRESS, action='store_true') # legacy option, see sdtiledvae
+    deprecatedgroup.add_argument("--forceversion", help=argparse.SUPPRESS, action='store_true') #no longer used
 
     debuggroup = parser.add_argument_group('Debug Commands')
     debuggroup.add_argument("--testmemory", help=argparse.SUPPRESS, action='store_true')

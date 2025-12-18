@@ -85,6 +85,10 @@ struct SDParams {
     bool vae_conv_direct          = false;
 
     bool chroma_use_dit_mask     = true;
+
+    std::string lora_path;
+    sd_lora_t lora_spec;
+    uint32_t lora_count;
 };
 
 //shared
@@ -109,6 +113,7 @@ static std::string sdmodelfilename = "";
 static bool photomaker_enabled = false;
 
 static bool is_vid_model = false;
+static bool remove_limits = false;
 
 static int get_loaded_sd_version(sd_ctx_t* ctx)
 {
@@ -319,6 +324,7 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
     sd_params->clip_l_path = clip1_filename;
     sd_params->clip_g_path = clip2_filename;
     sd_params->stacked_id_embeddings_path = photomaker_filename;
+    sd_params->lora_path = lorafilename;
     //if t5 is set, and model is a gguf, load it as a diffusion model path
     bool endswithgguf = (sd_params->model_path.rfind(".gguf") == sd_params->model_path.size() - 5);
     if((sd_params->t5xxl_path!="" || sd_params->clip_l_path!="" || sd_params->clip_g_path!="") && endswithgguf)
@@ -413,10 +419,15 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
     std::filesystem::path mpath(inputs.model_filename);
     sdmodelfilename = mpath.filename().string();
 
-    if(lorafilename!="" && inputs.lora_multiplier>0)
+    sd_params->lora_spec = {};
+    sd_params->lora_spec.path = sd_params->lora_path.c_str();
+    sd_params->lora_spec.multiplier = inputs.lora_multiplier;
+
+    if(sd_params->lora_path!="" && sd_params->lora_spec.multiplier>0)
     {
         printf("\nApply LoRA...\n");
-        sd_ctx->sd->apply_lora_from_file(lorafilename,inputs.lora_multiplier);
+        sd_params->lora_count = 1;
+        sd_ctx->sd->apply_loras(&sd_params->lora_spec, sd_params->lora_count);
     }
 
     input_extraimage_buffers.reserve(max_extra_images);
@@ -784,7 +795,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
         }
     }
 
-    if(loadedsdver == SDVersion::VERSION_Z_IMAGE)
+    if(!remove_limits && loadedsdver == SDVersion::VERSION_Z_IMAGE)
     {
         if(sd_params->cfg_scale > 3.0f)
         {
@@ -976,6 +987,11 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
     params.vae_tiling_params.enabled = dotile;
     params.batch_count = 1;
 
+    // needs to be "reapplied" because sdcpp tracks previously applied LoRAs
+    // and weights, and apply/unapply the differences at each gen
+    params.loras = &sd_params->lora_spec;
+    params.lora_count = sd_params->lora_count;
+
     params.ref_images = reference_imgs.data();
     params.ref_images_count = reference_imgs.size();
     params.pm_params.id_images = photomaker_imgs.data();
@@ -985,6 +1001,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
     int vid_req_frames = inputs.vid_req_frames;
     int vid_req_avi = inputs.vid_req_avi;
     int generated_num_results = 1;
+    remove_limits = inputs.remove_limits;
 
     if(is_vid_model)
     {

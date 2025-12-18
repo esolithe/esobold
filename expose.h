@@ -57,7 +57,7 @@ struct load_model_inputs
     const int kcpp_main_gpu = 0;
     const char * vulkan_info = nullptr;
     const int batchsize = 512;
-    const int forceversion = 0;
+    const bool autofit = false;
     const int gpulayers = 0;
     const float rope_freq_scale = 1.0f;
     const float rope_freq_base = 10000.0f;
@@ -76,6 +76,7 @@ struct load_model_inputs
     const bool highpriority = false;
     const bool swa_support = false;
     const bool smartcache = false;
+    const bool pipelineparallel = false;
     const float lora_multiplier = 1.0f;
     const bool quiet = false;
     const int debugmode = 0;
@@ -212,6 +213,7 @@ struct sd_generation_inputs
     const int clip_skip = -1;
     const int vid_req_frames = 1;
     const int vid_req_avi = 0;
+    const bool remove_limits = false;
 };
 struct sd_generation_outputs
 {

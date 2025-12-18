@@ -65,7 +65,7 @@ bool llava_image_embed_make_with_clip_img(clip_ctx * ctx_clip, int n_threads, co
         return false;
     }
 
-    if (clip_is_qwen2vl(ctx_clip)) {
+    if (clip_is_mrope(ctx_clip)) {
         // qwen2vl don't split image into chunks, so `num_max_patches` is not needed.
         //sometimes they resize the image LARGER than before (padding up), so we must account for that
         int max_nx = img->nx;
@@ -133,7 +133,7 @@ struct llava_embd_batch {
 
 
 //kcpp helper function
-bool audio_embd_make_with_clip_img(clip_ctx * ctx_clip, int n_threads, const whisper_preprocessor::whisper_mel & mel_spec, float ** image_embd_out, int * n_img_pos_out)
+bool audio_embd_make_with_clip_img(clip_ctx * ctx_clip, int n_threads, const mtmd_audio_mel & mel_spec, float ** image_embd_out, int * n_img_pos_out)
 {
     clip_image_f32_ptr mel_f32(clip_image_f32_init());
     mel_f32->nx  = mel_spec.n_len;
