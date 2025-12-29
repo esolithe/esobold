@@ -7312,65 +7312,72 @@ Current version indicated by LITEVER below.
 		isError: function (msg) { return "error" in msg; }
 	};
 	function ParseMCPResp(response, expectedId, onNotification) {
-		let ParseMCPSSE = function(response, expectedId, onNotification) {
+		let ParseMCPSSE = function (response, expectedId, onNotification) {
 			return new Promise(function (resolve, reject) {
 				var reader = response.body.getReader();
 				var decoder = new TextDecoder();
 				var buffer = "";
+				function processBuffer() {
+					let idx;
+					while ((idx = buffer.search(/\r?\n\r?\n/)) !== -1) {
+						let rawEvent = buffer.slice(0, idx);
+						buffer = buffer.slice(idx).replace(/^\r?\n\r?\n/, "");
+						let eventType = "message";
+						let dataLines = [];
+						let lines = rawEvent.split(/\r?\n/);
+						for (let i = 0; i < lines.length; i++) {
+							let line = lines[i];
+							if (line.startsWith("event:")) {
+								eventType = line.slice(6).trim();
+							} else if (line.startsWith("data:")) {
+								let d = line.slice(5);
+								if (d.startsWith(" ")) d = d.slice(1);
+								dataLines.push(d);
+							}
+						}
+						if (eventType !== "message" || !dataLines.length) continue;
+						let data = dataLines.join("\n");
+						if (data[0] !== "{") continue;
+						let message;
+						try {
+							message = JSON.parse(data);
+						} catch (e) {
+							continue;
+						}
+						if (jsonRPC.isNotification(message)) {
+							onNotification && onNotification(message);
+							continue;
+						}
+						if (jsonRPC.isResponse(message) && message.id === expectedId) {
+							reader.cancel().catch(function () {});
+							resolve(message);
+							return true;
+						}
+					}
+					return false;
+				}
 				function read() {
 					reader.read().then(function (result) {
 						if (result.done) {
-							resolve(null); // End of stream without final response
+							resolve(null);
 							return;
 						}
 						buffer += decoder.decode(result.value, { stream: true });
-						var events = buffer.split("\n\n"); // Split on double newlines (SSE event boundary)
-						buffer = events.pop(); // Keep incomplete event in buffer
-						for (var i = 0; i < events.length; i++) {
-							var event = events[i];
-							// Parse SSE event fields
-							var eventType = "message"; // default per SSE spec
-							var data = "";
-							var lines = event.split("\n");
-							for (var j = 0; j < lines.length; j++) {
-								var line = lines[j];
-								if (line.indexOf("event:") === 0) {
-									eventType = line.slice(6).trim();
-								} else if (line.indexOf("data:") === 0) {
-									data += (data ? "\n" : "") + line.slice(5).trim();
-								}
-							}
-							if (!data || eventType !== "message") continue; // Skip non-message events (e.g., ping) or empty data
-							if (data.indexOf("{") !== 0) continue; // Skip non-JSON data
-							try {
-								var message = JSON.parse(data);
-							} catch (e) {
-								continue; // Ignore parse errors
-							}
-							if (jsonRPC.isNotification(message)) {
-								if (onNotification) onNotification(message);
-								continue;
-							}
-							if (jsonRPC.isResponse(message) && message.id === expectedId) {
-								// Must release reader before resolving
-								reader.cancel().catch(function () { }); // Cancel the stream
-								resolve(message);
-								return;
-							}
+						if (!processBuffer()) {
+							read();
 						}
-						read(); // Continue reading
 					}).catch(reject);
 				}
-				read(); // Start reading
+				read();
 			});
-		}
-
+		};
 		var contentType = response.headers.get("Content-Type") || "";
 		if (contentType.indexOf("text/event-stream") !== -1) {
 			return ParseMCPSSE(response, expectedId, onNotification);
 		}
 		return response.json();
 	}
+
 	class MCPClient {
 		constructor(url, sessionId, protocolVersion, customHeaders) {
 			this.url = url;
@@ -7425,7 +7432,6 @@ Current version indicated by LITEVER below.
 
 	//MCP Exposed functions
 	function MCPInit(url, customHeaders, onNotification) {
-		let mcp_tools = [];
 		const clientName = 'KoboldAI Lite MCP';
 		const clientVersion = '1.0.0';
 		var currentId = ++mcp_req_id;
@@ -7448,7 +7454,7 @@ Current version indicated by LITEVER below.
 			var sessionId = response.headers.get("MCP-Session-Id");
 			return ParseMCPResp(response, currentId, onNotification)
 				.then(function (result) {
-					var negotiatedVersion = (result.result && result.result.protocolVersion) ? result.result.protocolVersion : MCP_PROTOCOL_VER;
+					var negotiatedVersion = (result && result.result && result.result.protocolVersion) ? result.result.protocolVersion : MCP_PROTOCOL_VER;
 					var client = new MCPClient(url, sessionId, negotiatedVersion, customHeaders);
 					return client.notify("notifications/initialized").then(() => client);
 				}).catch(error => {
@@ -7462,6 +7468,7 @@ Current version indicated by LITEVER below.
 	{
 		return mcp_client.listTools().then(function (toolsResult) {
 			console.log(toolsResult);
+			let mcp_tools = [];
 			if(toolsResult && toolsResult.result && toolsResult.result.tools)
 			{
 				//convert to openai tools format
@@ -7621,7 +7628,7 @@ Current version indicated by LITEVER below.
 				{ 'Authorization': `Bearer ${urlsobj[url].apikey}` } : {};
 
 			let purl = url;
-			if(localsettings.corsproxy_mcp)
+			if(document.getElementById("corsproxy_mcp").checked) //localsettings.corsproxy_mcp not yet saved
 			{
 				purl = apply_proxy_url(url,true);
 			}
