@@ -297,8 +297,8 @@ llama_context::llama_context(
         // enabling pipeline parallelism in the scheduler increases memory usage, so it is only done when necessary
         bool pipeline_parallel =
             model.n_devices() > 1 &&
-            model.params.n_gpu_layers > (int) model.hparams.n_layer &&
-            model.params.split_mode == LLAMA_SPLIT_MODE_LAYER &&
+            model.n_gpu_layers() > model.hparams.n_layer &&
+            model.split_mode() == LLAMA_SPLIT_MODE_LAYER &&
             cparams.offload_kqv &&
             !model.has_tensor_overrides();
 
@@ -469,23 +469,22 @@ llama_context::llama_context(
 }
 
 llama_context::~llama_context() {
-    // FIXME this currently results in a use-after-free bug if the model is freed before the context
-    // if (!model.hparams.no_alloc) {
-    //     for (size_t i = 0; i < backend_ptrs.size(); ++i) {
-    //         ggml_backend_t             backend = backend_ptrs[i];
-    //         ggml_backend_buffer_type_t buft    = backend_buft[i];
+    if (!model.hparams.no_alloc) {
+        for (size_t i = 0; i < backend_ptrs.size(); ++i) {
+            ggml_backend_t             backend = backend_ptrs[i];
+            ggml_backend_buffer_type_t buft    = backend_buft[i];
 
-    //         const size_t size_exp = backend_buf_exp_size[i];
-    //         const size_t size_act = ggml_backend_sched_get_buffer_size(sched.get(), backend);
-    //         if (size_exp == size_act) {
-    //             LLAMA_LOG_DEBUG("%s: %10s compute buffer size is %8.4f MiB, matches expectation of %8.4f MiB\n",
-    //                 __func__, ggml_backend_buft_name(buft), size_act / (1024.0*1024.0), size_exp / (1024.0*1024.0));
-    //         } else {
-    //             LLAMA_LOG_WARN("%s: %10s compute buffer size of %8.4f MiB, does not match expectation of %8.4f MiB\n",
-    //                 __func__, ggml_backend_buft_name(buft), size_act / (1024.0*1024.0), size_exp / (1024.0*1024.0));
-    //         }
-    //     }
-    // }
+            const size_t size_exp = backend_buf_exp_size[i];
+            const size_t size_act = ggml_backend_sched_get_buffer_size(sched.get(), backend);
+            if (size_exp == size_act) {
+                LLAMA_LOG_DEBUG("%s: %10s compute buffer size is %8.4f MiB, matches expectation of %8.4f MiB\n",
+                    __func__, ggml_backend_buft_name(buft), size_act / (1024.0*1024.0), size_exp / (1024.0*1024.0));
+            } else {
+                LLAMA_LOG_WARN("%s: %10s compute buffer size of %8.4f MiB, does not match expectation of %8.4f MiB\n",
+                    __func__, ggml_backend_buft_name(buft), size_act / (1024.0*1024.0), size_exp / (1024.0*1024.0));
+            }
+        }
+    }
     ggml_opt_free(opt_ctx);
 }
 
@@ -1581,7 +1580,7 @@ llm_graph_cb llama_context::graph_get_cb() const {
 
         // norm may be automatically assigned to the backend of the previous layer, increasing data transfer between backends
         // FIXME: fix in ggml_backend_sched
-        const bool full_offload = model.params.n_gpu_layers > (int) model.hparams.n_layer;
+        const bool full_offload = model.n_gpu_layers() > model.hparams.n_layer;
         if (ubatch.n_tokens < 32 || full_offload) {
             if (il != -1 && strcmp(name, "norm") == 0) {
                 const auto & dev_layer = model.dev_layer(il);
@@ -1923,7 +1922,7 @@ size_t llama_context::state_write_data(llama_io_write_i & io) {
 
     // write model info
     {
-        LLAMA_LOG_DEBUG("%s: - writing model info\n", __func__);
+        //LLAMA_LOG_DEBUG("%s: - writing model info\n", __func__);
 
         const std::string arch_str = llm_arch_name(model.arch);
         io.write_string(arch_str);
@@ -1932,7 +1931,7 @@ size_t llama_context::state_write_data(llama_io_write_i & io) {
 
     // write output ids
     {
-        LLAMA_LOG_DEBUG("%s: - writing output ids\n", __func__);
+        //LLAMA_LOG_DEBUG("%s: - writing output ids\n", __func__);
 
         const auto n_outputs    = this->n_outputs;
         const auto & output_ids = this->output_ids;
@@ -1960,7 +1959,7 @@ size_t llama_context::state_write_data(llama_io_write_i & io) {
 
     // write logits
     {
-        LLAMA_LOG_DEBUG("%s: - writing logits\n", __func__);
+        //LLAMA_LOG_DEBUG("%s: - writing logits\n", __func__);
 
         const uint64_t logits_size = std::min((uint64_t) this->logits_size, (uint64_t) n_outputs * model.vocab.n_tokens());
 
@@ -1973,7 +1972,7 @@ size_t llama_context::state_write_data(llama_io_write_i & io) {
 
     // write embeddings
     {
-        LLAMA_LOG_DEBUG("%s: - writing embeddings\n", __func__);
+        //LLAMA_LOG_DEBUG("%s: - writing embeddings\n", __func__);
 
         const uint64_t embd_size = std::min((uint64_t) this->embd_size, (uint64_t) n_outputs * model.hparams.n_embd);
 
@@ -1997,7 +1996,7 @@ size_t llama_context::state_read_data(llama_io_read_i & io) {
 
     // read model info
     {
-        LLAMA_LOG_DEBUG("%s: - reading model info\n", __func__);
+        //LLAMA_LOG_DEBUG("%s: - reading model info\n", __func__);
 
         const std::string cur_arch_str = llm_arch_name(model.arch);
 
@@ -2011,7 +2010,7 @@ size_t llama_context::state_read_data(llama_io_read_i & io) {
 
     // read output ids
     {
-        LLAMA_LOG_DEBUG("%s: - reading output ids\n", __func__);
+        //LLAMA_LOG_DEBUG("%s: - reading output ids\n", __func__);
 
         auto n_outputs = this->n_outputs;
         io.read_to(&n_outputs, sizeof(n_outputs));
@@ -2040,7 +2039,7 @@ size_t llama_context::state_read_data(llama_io_read_i & io) {
 
     // read logits
     {
-        LLAMA_LOG_DEBUG("%s: - reading logits\n", __func__);
+        //LLAMA_LOG_DEBUG("%s: - reading logits\n", __func__);
 
         uint64_t logits_size;
         io.read_to(&logits_size, sizeof(logits_size));
@@ -2056,7 +2055,7 @@ size_t llama_context::state_read_data(llama_io_read_i & io) {
 
     // read embeddings
     {
-        LLAMA_LOG_DEBUG("%s: - reading embeddings\n", __func__);
+        //LLAMA_LOG_DEBUG("%s: - reading embeddings\n", __func__);
 
         uint64_t embd_size;
         io.read_to(&embd_size, sizeof(embd_size));

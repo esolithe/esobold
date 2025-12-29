@@ -835,6 +835,7 @@ std::string convert_sep_to_dot(std::string name) {
         "proj_out",
         "transformer_blocks",
         "single_transformer_blocks",
+        "single_blocks",
         "diffusion_model",
         "cond_stage_model",
         "first_stage_model",
@@ -876,7 +877,18 @@ std::string convert_sep_to_dot(std::string name) {
         "ff_context",
         "norm_added_q",
         "norm_added_v",
-        "to_add_out"};
+        "to_add_out",
+        "txt_mod",
+        "img_mod",
+        "txt_mlp",
+        "img_mlp",
+        "proj_mlp",
+        "wi_0",
+        "wi_1",
+        "norm1_context",
+        "ff_context",
+        "x_embedder",
+    };
 
     // record the positions of underscores that should NOT be replaced
     std::unordered_set<size_t> protected_positions;
@@ -948,6 +960,7 @@ bool is_first_stage_model_name(const std::string& name) {
 std::string convert_tensor_name(std::string name, SDVersion version) {
     bool is_lora                             = false;
     bool is_lycoris_underline                = false;
+    bool is_underline                        = false;
     std::vector<std::string> lora_prefix_vec = {
         "lora.lora.",
         "lora.lora_",
@@ -955,12 +968,27 @@ std::string convert_tensor_name(std::string name, SDVersion version) {
         "lora.lycoris.",
         "lora.",
     };
+    std::vector<std::string> underline_lora_prefix_vec = {
+        "unet_",
+        "te_",
+        "te1_",
+        "te2_",
+        "te3_",
+        "vae_",
+    };
     for (const auto& prefix : lora_prefix_vec) {
         if (starts_with(name, prefix)) {
             is_lora = true;
             name    = name.substr(prefix.size());
             if (contains(prefix, "lycoris_")) {
                 is_lycoris_underline = true;
+            } else {
+                for (const auto& underline_lora_prefix : underline_lora_prefix_vec) {
+                    if (starts_with(name, underline_lora_prefix)) {
+                        is_underline = true;
+                        break;
+                    }
+                }
             }
             break;
         }
@@ -1020,12 +1048,14 @@ std::string convert_tensor_name(std::string name, SDVersion version) {
             }
         }
 
-        if (sd_version_is_unet(version) || is_lycoris_underline) {
+        // LOG_DEBUG("name %s %d", name.c_str(), version);
+
+        if (sd_version_is_unet(version) || is_underline || is_lycoris_underline) {
             name = convert_sep_to_dot(name);
         }
     }
 
-    std::vector<std::pair<std::string, std::string>> prefix_map = {
+    std::unordered_map<std::string, std::string> prefix_map = {
         {"diffusion_model.", "model.diffusion_model."},
         {"unet.", "model.diffusion_model."},
         {"transformer.", "model.diffusion_model."},  // dit
@@ -1040,7 +1070,12 @@ std::string convert_tensor_name(std::string name, SDVersion version) {
         // {"te2.text_model.encoder.layers.", "cond_stage_model.1.model.transformer.resblocks."},
         {"te2.", "cond_stage_model.1.transformer."},
         {"te1.", "cond_stage_model.transformer."},
+        {"te3.", "text_encoders.t5xxl.transformer."},
     };
+
+    if (sd_version_is_flux(version)) {
+        prefix_map["te1."] = "text_encoders.clip_l.transformer.";
+    }
 
     replace_with_prefix_map(name, prefix_map);
 

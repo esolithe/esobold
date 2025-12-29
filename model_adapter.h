@@ -107,6 +107,7 @@ const std::vector<TopPicksData> gpttype_get_top_picks_data();
 
 bool sdtype_load_model(const sd_load_model_inputs inputs);
 sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs);
+sd_info_outputs sdtype_get_info();
 
 bool whispertype_load_model(const whisper_load_model_inputs inputs);
 whisper_generation_outputs whispertype_generate(const whisper_generation_inputs inputs);
@@ -141,3 +142,5 @@ size_t gpttype_save_state_kv(int slot);
 bool gpttype_load_state_kv(int slot);
 bool gpttype_clear_state_kv(bool shrink);
 int get_oldest_slot(int excludeSlotId);
+void touch_slot(int slot);
+int get_identical_existing_slot();

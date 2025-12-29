@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include <nlohmann/json.hpp>
 #include <inttypes.h>
 #include <cinttypes>
 #include <algorithm>
@@ -99,6 +100,7 @@ static SDParams * sd_params = nullptr;
 static sd_ctx_t * sd_ctx = nullptr;
 static int sddebugmode = 0;
 static std::string recent_data = "";
+static std::string recent_data2 = ""; //for cases when we have 2 outputs
 static uint8_t * input_image_buffer = NULL;
 static uint8_t * input_mask_buffer = NULL;
 static std::vector<uint8_t *> input_extraimage_buffers;
@@ -736,6 +738,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
     {
         printf("\nWarning: KCPP image generation not initialized!\n");
         output.data = "";
+        output.data_extra = "";
         output.animated = 0;
         output.status = 0;
         return output;
@@ -999,7 +1002,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
 
     //the below params are only used in video models. May move into standalone object in future
     int vid_req_frames = inputs.vid_req_frames;
-    int vid_req_avi = inputs.vid_req_avi;
+    int video_output_type = inputs.video_output_type;
     int generated_num_results = 1;
     remove_limits = inputs.remove_limits;
 
@@ -1082,6 +1085,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
         if (params.width <= 0 || params.width % 64 != 0 || params.height <= 0 || params.height % 64 != 0) {
             printf("\nKCPP SD: bad request image dimensions!\n");
             output.data = "";
+            output.data_extra = "";
             output.animated = 0;
             output.status = 0;
             return output;
@@ -1098,6 +1102,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
         if (!input_image_buffer) {
             printf("\nKCPP SD: load image from memory failed!\n");
             output.data = "";
+            output.data_extra = "";
             output.animated = 0;
             output.status = 0;
             return output;
@@ -1165,6 +1170,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
     if (results == NULL) {
         printf("\nKCPP SD generate failed!\n");
         output.data = "";
+        output.data_extra = "";
         output.animated = 0;
         output.status = 0;
         return output;
@@ -1182,41 +1188,49 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
         {
             if(!sd_is_quiet && sddebugmode==1)
             {
-                printf("\nSaving video buffer, AVI=%d...",vid_req_avi);
+                printf("\nSaving video buffer, VIDEO_OUTPUT_TYPE=%d...",video_output_type);
             }
             uint8_t * out_data = nullptr;
+            uint8_t * out_data2 = nullptr;
             size_t out_len = 0;
+            size_t out_len2 = 0;
             int status = 0;
+            int status2 = 0;
             wasanim = true;
 
-            if(vid_req_avi==1)
+            if(video_output_type==0 || video_output_type==2)
             {
-                status = create_mjpg_avi_membuf_from_sd_images(results, generated_num_results, 16, 40, &out_data,&out_len);
-            }
-            else
-            {
-
                 status = create_gif_buf_from_sd_images_msf(results, generated_num_results, 16, &out_data,&out_len);
-                if(!sd_is_quiet && sddebugmode==1)
-                {
-                    printf("Video Output Size: %zu\n",out_len);
-                }
+            }
+            if(video_output_type==1 || video_output_type==2)
+            {
+                status2 = create_mjpg_avi_membuf_from_sd_images(results, generated_num_results, 16, 40, &out_data2,&out_len2);
             }
 
             if(!sd_is_quiet && sddebugmode==1)
             {
-                if(status==0)
+                printf("Video Output Sizes: GIF=%zu AVI=%zu\n",out_len,out_len2);
+                if(status==0 && status2==0)
                 {
-                    printf("Video Saved (Len %zu)!\n",out_len);
-                }else{
+                    printf("Video(s) Saved (Len %zu)!\n",out_len);
+                } else {
                     printf("Save Failed!\n");
                 }
-
             }
-            if(status==0)
+            recent_data = "";
+            recent_data2 = "";
+            if(status==0 && out_len>0)
             {
                 recent_data = kcpp_base64_encode(out_data, out_len);
                 free(out_data);
+            }
+            if (status2 == 0 && out_len2 > 0) {
+                if (recent_data == "") {
+                    recent_data = kcpp_base64_encode(out_data2, out_len2);
+                } else {
+                    recent_data2 = kcpp_base64_encode(out_data2, out_len2);
+                }
+                free(out_data2);
             }
         }
         else
@@ -1226,6 +1240,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
             if (png != NULL)
             {
                 recent_data = kcpp_base64_encode(png,out_data_len);
+                recent_data2 = "";
                 free(png);
             }
         }
@@ -1236,8 +1251,32 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
 
     free(results);
     output.data = recent_data.c_str();
+    output.data_extra = recent_data2.c_str();
     output.animated = (wasanim?1:0);
     output.status = 1;
     total_img_gens += 1;
     return output;
 }
+
+sd_info_outputs sdtype_get_info()
+{
+    using json = nlohmann::json;
+    json j;
+
+    auto available_schedulers = json::array();
+    available_schedulers.push_back("default");
+    for (int i = 0; i < scheduler_t::SCHEDULER_COUNT; i++) {
+        std::string name = sd_scheduler_name((scheduler_t)i);
+        if (name != "NONE") {
+            available_schedulers.push_back(name);
+        }
+    }
+    j["available_schedulers"] = available_schedulers;
+
+    static std::string recent_info = j.dump();
+    sd_info_outputs output;
+    output.status = 0;
+    output.data = recent_info.c_str();
+    return output;
+}
+

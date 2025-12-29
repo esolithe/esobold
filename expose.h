@@ -58,6 +58,7 @@ struct load_model_inputs
     const char * vulkan_info = nullptr;
     const int batchsize = 512;
     const bool autofit = false;
+    const int autofit_tax_mb = 0;
     const int gpulayers = 0;
     const float rope_freq_scale = 1.0f;
     const float rope_freq_base = 10000.0f;
@@ -122,6 +123,8 @@ struct generation_inputs
     const float dynatemp_exponent = 1.0f;
     const float smoothing_factor = 0.0f;
     const float smoothing_curve = 1.0f;
+    const float adaptive_target = -1.0f;
+    const float adaptive_decay = 0.9f;
     const float dry_multiplier = 0.0f;
     const float dry_base = 0.0f;
     const int dry_allowed_length = 0;
@@ -212,13 +215,19 @@ struct sd_generation_inputs
     const char * scheduler = nullptr;
     const int clip_skip = -1;
     const int vid_req_frames = 1;
-    const int vid_req_avi = 0;
+    const int video_output_type = 0; //0=gif, 1=avi, 2=both
     const bool remove_limits = false;
 };
 struct sd_generation_outputs
 {
     int status = -1;
     int animated = 0;
+    const char * data = "";
+    const char * data_extra = "";
+};
+struct sd_info_outputs
+{
+    int status = -1;
     const char * data = "";
 };
 

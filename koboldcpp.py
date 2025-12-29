@@ -71,7 +71,7 @@ dry_seq_break_max = 128
 extra_images_max = 4 # for kontext/qwen img
 
 # global vars
-KcppVersion = "1.104"
+KcppVersion = "1.105"
 showdebug = True
 kcpp_instance = None #global running instance
 global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None}
@@ -111,6 +111,7 @@ pendingabortkey = "" #if an abort is received for the non-active request, rememb
 args = None #global args
 runmode_untouched = True
 modelfile_extracted_meta = None
+calulated_gpu_overhead = 0 # may be populated at runtime, can also be missing if undetected
 importvars_in_progress = False
 has_multiplayer = False
 has_audio_support = False
@@ -207,6 +208,7 @@ class load_model_inputs(ctypes.Structure):
                 ("vulkan_info", ctypes.c_char_p),
                 ("batchsize", ctypes.c_int),
                 ("autofit", ctypes.c_bool),
+                ("autofit_tax_mb", ctypes.c_int),
                 ("gpulayers", ctypes.c_int),
                 ("rope_freq_scale", ctypes.c_float),
                 ("rope_freq_base", ctypes.c_float),
@@ -270,6 +272,8 @@ class generation_inputs(ctypes.Structure):
                 ("dynatemp_exponent", ctypes.c_float),
                 ("smoothing_factor", ctypes.c_float),
                 ("smoothing_curve", ctypes.c_float),
+                ("adaptive_target", ctypes.c_float),
+                ("adaptive_decay", ctypes.c_float),
                 ("dry_multiplier", ctypes.c_float),
                 ("dry_base", ctypes.c_float),
                 ("dry_allowed_length", ctypes.c_int),
@@ -339,12 +343,17 @@ class sd_generation_inputs(ctypes.Structure):
                 ("scheduler", ctypes.c_char_p),
                 ("clip_skip", ctypes.c_int),
                 ("vid_req_frames", ctypes.c_int),
-                ("vid_req_avi", ctypes.c_int),
+                ("video_output_type", ctypes.c_int),
                 ("remove_limits", ctypes.c_bool)]
 
 class sd_generation_outputs(ctypes.Structure):
     _fields_ = [("status", ctypes.c_int),
                 ("animated", ctypes.c_int),
+                ("data", ctypes.c_char_p),
+                ("data_extra", ctypes.c_char_p)]
+
+class sd_info_outputs(ctypes.Structure):
+    _fields_ = [("status", ctypes.c_int),
                 ("data", ctypes.c_char_p)]
 
 class whisper_load_model_inputs(ctypes.Structure):
@@ -628,6 +637,8 @@ def init_library():
     handle.sd_load_model.restype = ctypes.c_bool
     handle.sd_generate.argtypes = [sd_generation_inputs]
     handle.sd_generate.restype = sd_generation_outputs
+    handle.sd_get_info.argtypes = []
+    handle.sd_get_info.restype = sd_info_outputs
     handle.whisper_load_model.argtypes = [whisper_load_model_inputs]
     handle.whisper_load_model.restype = ctypes.c_bool
     handle.whisper_generate.argtypes = [whisper_generation_inputs]
@@ -1174,7 +1185,7 @@ def extract_modelfile_params(filepath,sdfilepath,whisperfilepath,mmprojfilepath,
             modelfile_extracted_meta = None
 
 def autoset_gpu_layers(ctxsize, sdquanted, bbs, qkv_level): #shitty algo to determine how many layers to use
-    global showusedmemwarning, showmultigpuwarning, modelfile_extracted_meta # reference cached values instead
+    global showusedmemwarning, showmultigpuwarning, modelfile_extracted_meta, calulated_gpu_overhead # reference cached values instead
     gpumem = MaxMemory[0]
     usedmem = 0
     if MaxFreeMemory[0]>0:
@@ -1201,21 +1212,24 @@ def autoset_gpu_layers(ctxsize, sdquanted, bbs, qkv_level): #shitty algo to dete
                             showmultigpuwarning = False
                             print("Multi-Part GGUF detected. Layer estimates may not be very accurate - recommend setting layers manually.")
                         fsize *= total_parts
-            sdquantsavings = sdquanted
+
+            calulated_gpu_overhead = 0
             if modelfile_extracted_meta[3] > 1024*1024*1024*5: #sdxl tax
-                mem -= 1024*1024*1024*(9 - sdquantsavings * 1.5) # 9, 7.5, 6
+                calulated_gpu_overhead += 1024*1024*1024*(9 - sdquanted * 1.5) # 9, 7.5, 6
             elif modelfile_extracted_meta[3] > 1024*1024*512: #normal sd tax
-                mem -= 1024*1024*1024*(4.25 - sdquantsavings * 0.5) # 4.25, 3.75, 3.25
+                calulated_gpu_overhead += 1024*1024*1024*(4.25 - sdquanted * 0.5) # 4.25, 3.75, 3.25
             if modelfile_extracted_meta[4] > 1024*1024*10: #whisper tax
-                mem -= max(350*1024*1024,modelfile_extracted_meta[4]*1.5)
+                calulated_gpu_overhead += max(350*1024*1024,modelfile_extracted_meta[4]*1.5)
             if modelfile_extracted_meta[5] > 1024*1024*10: #mmproj tax
-                mem -= max(350*1024*1024,modelfile_extracted_meta[5]*1.5)
+                calulated_gpu_overhead += max(350*1024*1024,modelfile_extracted_meta[5]*1.5)
             if modelfile_extracted_meta[6] > 1024*1024*10: #draft model tax
-                mem -= (modelfile_extracted_meta[6] * 1.5)
+                calulated_gpu_overhead += (modelfile_extracted_meta[6] * 1.5)
             if modelfile_extracted_meta[7] > 1024*1024*10: #tts model tax
-                mem -= max(600*1024*1024, modelfile_extracted_meta[7] * 3)
+                calulated_gpu_overhead += max(600*1024*1024, modelfile_extracted_meta[7] * 3)
             if modelfile_extracted_meta[8] > 1024*1024*10: #embeddings model tax
-                mem -= max(350*1024*1024, modelfile_extracted_meta[8] * 1.5)
+                calulated_gpu_overhead += max(350*1024*1024, modelfile_extracted_meta[8] * 1.5)
+
+            mem -= calulated_gpu_overhead
             mem = 0 if mem < 0 else mem
 
             csmul = (cs/4096) if cs >= 8192 else 1.8 if cs > 4096 else 1.2 if cs > 2048 else 1.0
@@ -1462,7 +1476,7 @@ def auto_set_backend_cli():
         print(f"Auto Selected Default Backend (flag={cpusupport})\n")
 
 def load_model(model_filename):
-    global args
+    global args, calulated_gpu_overhead
     inputs = load_model_inputs()
     inputs.model_filename = model_filename.encode("UTF-8")
     inputs.max_context_length = maxctx #initial value to use for ctx, can be overwritten
@@ -1505,6 +1519,7 @@ def load_model(model_filename):
         inputs.quant_k = inputs.quant_v = 0
     inputs.batchsize = args.batchsize
     inputs.autofit = args.autofit
+    inputs.autofit_tax_mb = int(calulated_gpu_overhead/(1024*1024))
     inputs.gpulayers = args.gpulayers
     if args.overridenativecontext and args.overridenativecontext>0:
         inputs.overridenativecontext = args.overridenativecontext
@@ -1605,6 +1620,11 @@ def generate(genparams, stream_flag=False):
     dynatemp_exponent = tryparsefloat(genparams.get('dynatemp_exponent', 1.0),1.0)
     smoothing_factor = tryparsefloat(genparams.get('smoothing_factor', 0.0),0.0)
     smoothing_curve = tryparsefloat(genparams.get('smoothing_curve', 1.0),1.0)
+    adaptive_target = tryparsefloat(genparams.get('adaptive_target', -1.0),-1.0)
+    adaptive_decay = tryparsefloat(genparams.get('adaptive_decay', 0.9),0.9)
+    adaptive_decay = 0.01 if adaptive_decay < 0.01 else (0.99 if adaptive_decay > 0.99 else adaptive_decay)
+    if adaptive_target>0 and min_p<=0 and top_p>=1.0: #adaptive p sampler requires a truncation sampler first, force a tiny min-p
+        min_p = 0.002
     logit_biases = genparams.get('logit_bias', {})
     render_special = genparams.get('render_special', False)
     banned_strings = genparams.get('banned_strings', []) # SillyTavern uses that name
@@ -1668,6 +1688,8 @@ def generate(genparams, stream_flag=False):
     inputs.dynatemp_exponent = dynatemp_exponent
     inputs.smoothing_factor = smoothing_factor
     inputs.smoothing_curve = smoothing_curve
+    inputs.adaptive_target = adaptive_target
+    inputs.adaptive_decay = adaptive_decay
     inputs.grammar = grammar.encode("UTF-8")
     inputs.grammar_retain_state = grammar_retain_state
     inputs.allow_eos_token = not ban_eos_token
@@ -1776,6 +1798,21 @@ def generate(genparams, stream_flag=False):
                 if sindex != -1 and trim_str!="":
                     outstr = outstr[:sindex]
         return {"text":outstr,"status":ret.status,"stopreason":ret.stopreason,"prompt_tokens":ret.prompt_tokens, "completion_tokens": ret.completion_tokens}
+
+def sd_get_info():
+    info = handle.sd_get_info()
+    if info.status == 0:
+        try:
+            return json.loads(info.data)
+        except Exception:
+            print("An error occurred while decoding sd metadata info")
+    else:
+        print("An error occurred while getting sd metadata info")
+    return {}
+
+def sd_get_available_schedulers():
+    info = sd_get_info()
+    return info.get('available_schedulers', [])
 
 sd_convdirect_choices = ['off', 'vaeonly', 'full']
 
@@ -1889,58 +1926,41 @@ def sd_comfyui_tranform_params(genparams):
         print("Warning: ComfyUI Payload Missing!")
     return genparams
 
-def sd_process_meta_fields(fields):
-    # aliases to match sd.cpp command-line options
-    aliases = {
+# json with top-level dict
+def gendefaults_parse_meta_field(input_str):
+    alias_map = {
         'cfg-scale': 'cfg_scale',
         'guidance': 'distilled_guidance',
         'sampler': 'sampler_name',
         'sampling-method': 'sampler_name',
         'timestep-shift': 'shifted_timestep',
     }
-    fields_dict = {aliases.get(k, k): v for k, v in fields}
-    # whitelist accepted parameters
-    whitelist = ['scheduler', 'shifted_timestep', 'distilled_guidance', 'sampler_name', 'cfg_scale', 'add_sd_step_limit', 'add_sd_cfg_limit', 'remove_limits']
-    fields_dict = {k: v for k, v in fields_dict.items() if k in whitelist}
-    return fields_dict
-
-# json with top-level dict
-def sd_parse_meta_field(prompt):
-    jfields = {}
-    kv_dict = {}
-    try:
+    if not isinstance(input_str, str) or not input_str.strip():
+        return {}
+    parsed = None
+    try: # Try parsing as-is
+        parsed = json.loads(input_str)
+    except json.JSONDecodeError:
+        # Try wrapping in braces for loose key/value strings
         try:
-            jfields = json.loads(prompt)
+            parsed = json.loads(f"{{{input_str}}}")
         except json.JSONDecodeError:
-            # accept "field":"value",... without {} (also empty strings)
-            try:
-                jfields = json.loads('{ ' + prompt + ' }')
-            except json.JSONDecodeError:
-                print("Warning: couldn't parse meta prompt; it should be valid JSON.")
-        if not isinstance(jfields, dict):
-            jfields = {}
-        kv_dict = sd_process_meta_fields(jfields.items())
-    except Exception:
-        pass
-    return kv_dict
-
+            print("Warning: couldn't parse gendefaults_parse_meta_field.")
+            return {}
+    if not isinstance(parsed, dict):
+        print("Warning: gendefaults_parse_meta_field - not a JSON object.")
+        return {}
+    result = {}
+    # First pass: apply aliases only if canonical key is not explicitly present
+    for key, value in parsed.items():
+        canonical = alias_map.get(key, key)
+        if canonical not in parsed:
+            result[canonical] = value
+    result.update(parsed)  # Second pass: explicit keys override aliases
+    return result
 
 def sd_generate(genparams):
     global maxctx, args, currentusergenkey, totalgens, pendingabortkey, chatcompl_adapter
-
-    sdgendefaults = sd_parse_meta_field(args.sdgendefaults or '')
-    params = dict()
-    defparams = dict()
-    for k, v in sdgendefaults.items():
-        if k in ['sampler_name', 'scheduler']:
-            # these can be explicitely set to 'default'; process later
-            # TODO should we consider values like 'clip_skip=-1' as 'default' too?
-            defparams[k] = v
-        else:
-            params[k] = v
-    # apply most of the defaults
-    params.update(genparams)
-    genparams = params
 
     default_adapter = {} if chatcompl_adapter is None else chatcompl_adapter
     adapter_obj = genparams.get('adapter', default_adapter)
@@ -1978,15 +1998,11 @@ def sd_generate(genparams):
     if seed < 0:
         seed = random.randint(100000, 999999)
     sample_method = (genparams.get("sampler_name") or "default").lower()
-    if sample_method == 'default' and 'sampler_name' in defparams:
-        sample_method = (defparams.get("sampler_name") or "default").lower()
     scheduler = (genparams.get("scheduler") or "default").lower()
-    if scheduler == 'default' and 'scheduler' in defparams:
-        scheduler = (defparams.get("scheduler") or "default").lower()
     clip_skip = tryparseint(genparams.get("clip_skip", -1),-1)
     vid_req_frames = tryparseint(genparams.get("frames", 1),1)
     vid_req_frames = 1 if (not vid_req_frames or vid_req_frames < 1) else vid_req_frames
-    vid_req_avi = 1 if genparams.get("avi_video", False) else 0
+    video_output_type = genparams.get("video_output_type", 0)
     extra_images_arr = genparams.get("extra_images", [])
     extra_images_arr = ([] if not extra_images_arr else extra_images_arr)
     extra_images_arr = [img for img in extra_images_arr if img not in (None, "")]
@@ -2029,15 +2045,17 @@ def sd_generate(genparams):
     inputs.scheduler = scheduler.encode("UTF-8")
     inputs.clip_skip = clip_skip
     inputs.vid_req_frames = vid_req_frames
-    inputs.vid_req_avi = vid_req_avi
+    inputs.video_output_type = video_output_type
     inputs.remove_limits = allow_remove_limits
     ret = handle.sd_generate(inputs)
-    outstr = ""
+    data_main = ""
+    data_extra = ""
     animated = False
     if ret.status==1:
-        outstr = ret.data.decode("UTF-8","ignore")
+        data_main = ret.data.decode("UTF-8","ignore")
+        data_extra = ret.data_extra.decode("UTF-8","ignore")
         animated = True if ret.animated else False
-    return {"animated": animated, "data":outstr}
+    return {"animated": animated, "data":data_main, "data_extra":data_extra}
 
 
 def whisper_load_model(model_filename):
@@ -3367,7 +3385,8 @@ ws ::= | " " | "\n" [ \t]{0,20}
         default_adapter = {} if chatcompl_adapter is None else chatcompl_adapter
         adapter_obj = genparams.get('adapter', default_adapter)
         default_max_tok = (adapter_obj.get("max_length", args.defaultgenamt) if (api_format==4 or api_format==7) else args.defaultgenamt)
-        genparams["max_length"] = tryparseint(genparams.get('max_tokens', genparams.get('max_completion_tokens', default_max_tok)),default_max_tok)
+        oaiml = tryparseint(genparams.get('max_tokens', genparams.get('max_completion_tokens', default_max_tok)),default_max_tok)
+        genparams["max_length"] = genparams.get('max_length', oaiml)
         if genparams["max_length"] <= 0:
             genparams["max_length"] = default_max_tok
         presence_penalty = genparams.get('presence_penalty', genparams.get('frequency_penalty', 0.0))
@@ -3399,6 +3418,7 @@ ws ::= | " " | "\n" [ \t]{0,20}
             audio_added = []
             continue_assistant_turn = genparams.get('continue_assistant_turn', False)
             latest_turn_was_assistant = False
+            latest_turn_was_tool = False
 
             # handle structured outputs
             respformat = genparams.get('response_format', None)
@@ -3450,6 +3470,7 @@ ws ::= | " " | "\n" [ \t]{0,20}
                 for message in messages_array:
                     message_index += 1
                     latest_turn_was_assistant = False
+                    latest_turn_was_tool = False
                     if message['role'] == "system":
                         messages_string += system_message_start
                     elif message['role'] == "user":
@@ -3458,6 +3479,7 @@ ws ::= | " " | "\n" [ \t]{0,20}
                         messages_string += assistant_message_start
                         latest_turn_was_assistant = True
                     elif message['role'] == "tool":
+                        latest_turn_was_tool = True
                         messages_string += tools_message_start
                         tcid = message.get("tool_call_id","")
                         tcid = ("" if not tcid else f" {tcid}")
@@ -3548,6 +3570,8 @@ ws ::= | " " | "\n" [ \t]{0,20}
             else:
                 genparams["stop_sequence"].append(user_message_start.strip())
                 genparams["stop_sequence"].append(assistant_message_start.strip())
+            if not used_tool_json and jinjatools and latest_turn_was_tool:
+                genparams["stop_sequence"].append("(Made a function call") # qol prevent fake toolcalls
             genparams["trim_stop"] = True
 
 
@@ -4649,7 +4673,7 @@ Change Mode<br>
             if friendlysdmodelname=="inactive" or fullsdmodelpath=="":
                 response_body = (json.dumps([]).encode())
             else:
-                response_body = (json.dumps([{"name":name,"label":name} for name in ["default","discrete","karras","exponential","ays","gits","sgm_uniform","simple","smoothstep","lcm"]]).encode())
+                response_body = (json.dumps([{"name":name,"label":name} for name in sd_get_available_schedulers()]).encode())
         elif clean_path.endswith('/sdapi/v1/latent-upscale-modes'):
            response_body = (json.dumps([]).encode())
         elif clean_path.endswith('/sdapi/v1/upscalers'):
@@ -5551,6 +5575,24 @@ Change Mode<br>
                         }}).encode())
                         return
 
+                gendefaults = gendefaults_parse_meta_field(args.gendefaults or '')
+                gen_new_keys = {k: v for k, v in gendefaults.items() if k not in genparams}
+                #special handling for some params that should be overwritten if equal to literal string default
+                special_fields = ["sampler_name", "scheduler"]
+                for field in special_fields:
+                    if field in genparams and isinstance(genparams[field], str):
+                        genparams[field] = genparams[field].lower()
+                special_fields_overwrite = {}
+                if not args.gendefaultsoverwrite:
+                    for field in special_fields:
+                        if genparams.get(field, "default") == "default" and field in gendefaults:
+                            value = gendefaults.get(field, "default")
+                            if isinstance(value, str):
+                                value = value.lower()
+                            special_fields_overwrite[field] = value
+                genparams.update(gendefaults if args.gendefaultsoverwrite else gen_new_keys)
+                genparams.update(special_fields_overwrite)
+
                 trunc_len = 8000
                 if args.debugmode >= 1:
                     trunc_len = 32000
@@ -5703,6 +5745,7 @@ Change Mode<br>
                         gen = sd_generate(genparams)
                         gendat = gen["data"]
                         genanim = gen["animated"]
+                        gendatextra = gen["data_extra"]
                         genresp = None
                         if is_comfyui_imggen:
                             if gendat:
@@ -5713,7 +5756,7 @@ Change Mode<br>
                         elif is_oai_imggen:
                             genresp = (json.dumps({"created":int(time.time()),"data":[{"b64_json":gendat}],"background":"opaque","output_format":"png","size":"1024x1024","quality":"medium"}).encode())
                         else:
-                            genresp = (json.dumps({"images":[gendat],"parameters":{},"info":"","animated":genanim}).encode())
+                            genresp = (json.dumps({"images":[gendat],"parameters":{},"info":"","animated":genanim,"extra_data":gendatextra}).encode())
                         self.send_response(200)
                         self.send_header('content-length', str(len(genresp)))
                         self.end_headers(content_type='application/json')
@@ -6019,6 +6062,49 @@ def show_gui():
     global using_gui_launcher
     using_gui_launcher = True
 
+    #check for wayland with fractional scale
+    def get_problematic_scaler():
+        if sys.platform != "linux":
+            return False
+        import xml.etree.ElementTree as ET
+        from pathlib import Path
+        fractional_enabled = False # Check if fractional scaling is enabled
+        try:
+            features = subprocess.check_output(
+                ["gsettings", "get", "org.gnome.mutter", "experimental-features"],
+                text=True
+            ).strip()
+            fractional_enabled = "scale-monitor-framebuffer" in features
+        except Exception:
+            return False
+        xml_path = Path.home() / ".config" / "monitors.xml"
+        if not xml_path.exists(): #monitors.xml not found. if we have fractional scaling on gnome, just trigger the fallback
+            if fractional_enabled and "GNOME" in os.environ.get("XDG_CURRENT_DESKTOP") and os.environ.get("XDG_SESSION_TYPE") == "wayland":
+                return True
+            return False
+        try:
+            tree = ET.parse(xml_path)
+            root = tree.getroot()
+            configs = root.findall(".//configuration")
+            if not configs:
+                return False
+            logical_confs = [c for c in configs if c.findtext(".//layoutmode") == "logical"]
+            physical_confs = [c for c in configs if c.findtext(".//layoutmode") == "physical"]
+            if fractional_enabled and logical_confs:
+                chosen_conf = logical_confs[-1]
+            elif not fractional_enabled and physical_confs:
+                chosen_conf = physical_confs[-1]
+            else:
+                chosen_conf = configs[-1]
+            scales = [float(s.text) for s in chosen_conf.findall(".//scale") if s.text]
+            if scales:
+                return max(scales)>1.0
+        except Exception:
+            pass
+        return False
+
+    corrupt_scaler = get_problematic_scaler()
+
     # if args received, launch
     if len(sys.argv) != 1 and not args.showgui:
         import tkinter as tk
@@ -6046,56 +6132,17 @@ def show_gui():
     except Exception:
         pass
 
-    #check for wayland with fractional scale
-    def get_problematic_scaler():
-        if sys.platform != "linux" or os.environ.get("XDG_SESSION_TYPE") != "wayland":
-            return False
-        import xml.etree.ElementTree as ET
-        from pathlib import Path
-        fractional_enabled = False # Check if fractional scaling is enabled
-        try:
-            features = subprocess.check_output(
-                ["gsettings", "get", "org.gnome.mutter", "experimental-features"],
-                text=True
-            ).strip()
-            fractional_enabled = "scale-monitor-framebuffer" in features
-        except Exception:
-            return False
-        xml_path = Path.home() / ".config" / "monitors.xml"
-        if not xml_path.exists(): #monitors.xml not found. if we have fractional scaling on gnome, just trigger the fallback
-            if fractional_enabled and "GNOME" in os.environ.get("XDG_CURRENT_DESKTOP"):
-                return True
-            return False
-        try:
-            tree = ET.parse(xml_path)
-            root = tree.getroot()
-            configs = root.findall(".//configuration")
-            if not configs:
-                return False
-            logical_confs = [c for c in configs if c.findtext(".//layoutmode") == "logical"]
-            physical_confs = [c for c in configs if c.findtext(".//layoutmode") == "physical"]
-            if fractional_enabled and logical_confs:
-                chosen_conf = logical_confs[-1]
-            elif not fractional_enabled and physical_confs:
-                chosen_conf = physical_confs[-1]
-            else:
-                chosen_conf = configs[-1]
-            scales = [float(s.text) for s in chosen_conf.findall(".//scale") if s.text]
-            if scales:
-                return max(scales)>1.0
-        except Exception:
-            pass
-        return False
-
     import customtkinter as ctk
     nextstate = 0 #0=exit, 1=launch
-    corrupt_scaler = get_problematic_scaler()
-    original_windowwidth = int(860 if corrupt_scaler else 584)
-    original_windowheight = int(740 if corrupt_scaler else 584)
+    original_windowwidth = int(590)
+    original_windowheight = int(590)
     windowwidth = original_windowwidth
     windowheight = original_windowheight
     ctk.set_appearance_mode("dark")
     root = ctk.CTk(fg_color="#2b2b2b")
+    if corrupt_scaler:
+        print("Adjusting tk scaling to try and fix scaling issues...")
+        root.tk.call('tk','scaling',2)
     root.geometry(str(windowwidth) + "x" + str(windowheight))
     root.title(f"KoboldCpp v{KcppVersion}")
 
@@ -6156,8 +6203,6 @@ def show_gui():
                     windowwidth = max(256, min(1024, windowwidth))
                     windowheight = math.floor(original_windowheight*smallratio)
                     windowheight = max(256, min(1024, windowheight))
-                    if corrupt_scaler:
-                        smallratio = min(smallratio, 1)*0.98 #don't allow scaling beyond normal
                     if resizing_id2:
                         root.after_cancel(resizing_id2)
                         resizing_id2 = None
@@ -6202,9 +6247,9 @@ def show_gui():
 
     tabs = ctk.CTkFrame(root, corner_radius = 0, width=windowwidth, height=windowheight-50)
     tabs.grid(row=0, stick="nsew")
-    tabnames= ["Quick Launch", "Hardware", "Tokens", "Loaded Files", "Network", "Horde Worker","Image Gen","Audio","Admin","Extra"]
+    tabnames= ["Quick Launch", "Hardware", "Context", "Loaded Files", "Network", "Horde Worker","Image Gen","Audio","Admin","Extra"]
     navbuttons = {}
-    navbuttonframe = ctk.CTkFrame(tabs, width=int(160 if corrupt_scaler else 100), height=int(tabs.cget("height")))
+    navbuttonframe = ctk.CTkFrame(tabs, width=int(104), height=int(tabs.cget("height")))
     navbuttonframe.grid(row=0, column=0, padx=2,pady=2)
     navbuttonframe.grid_propagate(False)
 
@@ -6249,7 +6294,7 @@ def show_gui():
     autofit_var = ctk.IntVar()
     tensor_split_str_vars = ctk.StringVar(value="")
     rowsplit_var = ctk.IntVar()
-    maingpu_var = ctk.StringVar(value="")
+    maingpu_var = ctk.StringVar(value="-1")
 
     contextshift_var = ctk.IntVar(value=1)
     fastforward_var = ctk.IntVar(value=1)
@@ -6326,7 +6371,8 @@ def show_gui():
     sd_clamped_soft_var = ctk.StringVar(value="0")
     sd_threads_var = ctk.StringVar(value=str(default_threads))
     sd_quant_var = ctk.StringVar(value=sd_quant_choices[0])
-    sd_gen_defaults_var = ctk.StringVar()
+    gen_defaults_var = ctk.StringVar()
+    gen_defaults_overwrite_var = ctk.IntVar(value=0)
 
     whisper_model_var = ctk.StringVar()
     tts_model_var = ctk.StringVar()
@@ -6455,8 +6501,8 @@ def show_gui():
         button = ctk.CTkButton(parent, 50, text="Browse", command= lambda a=var,b=searchtext:getfilename(a,b))
         if singlerow:
             if singlecol:
-                entry.grid(row=row, column=0, padx=((194 if corrupt_scaler else 94)+8), pady=2, stick="w")
-                button.grid(row=row, column=0, padx=((194 if corrupt_scaler else 94)+width+12), pady=2, stick="w")
+                entry.grid(row=row, column=0, padx=((94)+8), pady=2, stick="w")
+                button.grid(row=row, column=0, padx=((94)+width+12), pady=2, stick="w")
             else:
                 entry.grid(row=row, column=1, padx=8, pady=2, stick="w")
                 button.grid(row=row, column=1, padx=(width+12), pady=2, stick="w")
@@ -6918,7 +6964,7 @@ def show_gui():
     layercounter_label.grid(row=6, column=0, padx=230, sticky="W")
     layercounter_label.configure(text_color="#ffff00")
     tensor_split_entry,tensor_split_label = makelabelentry(hardware_tab, "Tensor Split:", tensor_split_str_vars, 8, 80, padx=160, singleline=True, tooltip='When using multiple GPUs this option controls how large tensors should be split across all GPUs.\nUses a comma-separated list of non-negative values that assigns the proportion of data that each GPU should get in order.\nFor example, "3,2" will assign 60% of the data to GPU 0 and 40% to GPU 1.')
-    maingpu_entry,maingpu_label = makelabelentry(hardware_tab, "Main GPU:" , maingpu_var, 8, 50,padx=340,singleline=True,tooltip="Only for multi-gpu, which GPU to set as main?\nIf left blank, uses default value.",labelpadx=270)
+    maingpu_entry,maingpu_label = makelabelentry(hardware_tab, "Main GPU:" , maingpu_var, 8, 50,padx=340,singleline=True,tooltip="Only for multi-gpu, which GPU to set as main?\nIf left blank or -1, uses default value.",labelpadx=270)
 
     # threads
     makelabelentry(hardware_tab, "Threads:" , threads_var, 11, 50, padx=160, singleline=True,tooltip="How many threads to use.\nRecommended value is your CPU core count, defaults are usually OK.")
@@ -6944,28 +6990,32 @@ def show_gui():
     makeslider(hardware_tab, "Batch Size:", batchsize_text, blas_size_var, 0, len(batchsize_values)-1, 16,width=200, set=6,tooltip="How many tokens to process at once per batch.\nLarger values use more memory.")
     blas_size_var.trace_add("write", changed_gpulayers_estimate)
 
-    makecheckbox(hardware_tab, "AutoFit (llama.cpp mode)", autofit_var, 100,0, tooltiptxt="Automatically attempt to fit the model in the best possible way. Overrides everything else. Not recommended for multi model setups. Experimental.")
+    makecheckbox(hardware_tab, "Use FlashAttention", flashattention_var, 100, command=toggleflashattn,  tooltiptxt="Enable flash attention for GGUF models.")
+
+    makecheckbox(hardware_tab, "AutoFit (llama.cpp mode)", autofit_var, 100,0,padx=160, tooltiptxt="Automatically attempt to fit the model in the best possible way. Overrides everything else. Not recommended for multi model setups. Experimental.")
     ctk.CTkButton(hardware_tab , text = "Run Benchmark", command = guibench ).grid(row=110,column=0, stick="nw", padx= 8, pady=2)
 
 
-    # Tokens Tab
-    tokens_tab = tabcontent["Tokens"]
-    # tokens checkboxes
-    smartcontextbox = makecheckbox(tokens_tab, "Use SmartContext", smartcontext_var, 1,tooltiptxt="Uses SmartContext. Now considered outdated and not recommended.\nCheck the wiki for more info.")
-    makecheckbox(tokens_tab, "Use ContextShift", contextshift_var, 2,tooltiptxt="Uses Context Shifting to reduce reprocessing.\nRecommended. Check the wiki for more info.", command=togglectxshift)
-    makecheckbox(tokens_tab, "Use FastForwarding", fastforward_var, 3,tooltiptxt="Use fast forwarding to recycle previous context (always reprocess if disabled).\nRecommended.", command=togglefastforward)
-    makecheckbox(tokens_tab, "Use Sliding Window Attention (SWA)", swa_var, 4,tooltiptxt="Allows Sliding Window Attention (SWA) KV Cache, which saves memory but cannot be used with context shifting.", command=toggleswa)
-    makecheckbox(tokens_tab, "Use SmartCache", smartcache_var, 5,tooltiptxt="Enables intelligent context switching by saving KV cache snapshots to RAM. Requires fast forwarding.", command=togglesmartcache)
+    # Context Tab
+    context_tab = tabcontent["Context"]
+    # Context checkboxes
+    smartcontextbox = makecheckbox(context_tab, "Use SmartContext", smartcontext_var, 1,tooltiptxt="Uses SmartContext. Now considered outdated and not recommended.\nCheck the wiki for more info.")
+    makecheckbox(context_tab, "Use ContextShift", contextshift_var, 2,tooltiptxt="Uses Context Shifting to reduce reprocessing.\nRecommended. Check the wiki for more info.", command=togglectxshift)
+    makecheckbox(context_tab, "Use FastForwarding", fastforward_var, 3,tooltiptxt="Use fast forwarding to recycle previous context (always reprocess if disabled).\nRecommended.", command=togglefastforward)
+    makecheckbox(context_tab, "Use Sliding Window Attention (SWA)", swa_var, 4,tooltiptxt="Allows Sliding Window Attention (SWA) KV Cache, which saves memory but cannot be used with context shifting.", command=toggleswa)
+    makecheckbox(context_tab, "Use SmartCache", smartcache_var, 5,tooltiptxt="Enables intelligent context switching by saving KV cache snapshots to RAM. Requires fast forwarding.", command=togglesmartcache)
 
     # context size
-    makeslider(tokens_tab, "Context Size:",contextsize_text, context_var, 0, len(contextsize_text)-1, 18, width=280, set=7,tooltip="What is the maximum context size to support. Model specific. You cannot exceed it.\nLarger contexts require more memory, and not all models support it.")
+    makeslider(context_tab, "Context Size:",contextsize_text, context_var, 0, len(contextsize_text)-1, 18, width=280, set=7,tooltip="What is the maximum context size to support. Model specific. You cannot exceed it.\nLarger contexts require more memory, and not all models support it.")
     context_var.trace_add("write", changed_gpulayers_estimate)
-    makelabelentry(tokens_tab, "Default Gen Amt:", defaultgenamt_var, row=20, padx=(220 if corrupt_scaler else 120), singleline=True, tooltip="How many tokens to generate by default, if not specified. Must be smaller than context size. Usually, your frontend GUI will override this.")
-    makelabelentry(tokens_tab, "Prompt Limit:", genlimit_var, row=20, padx=(460 if corrupt_scaler else 300), singleline=True, tooltip="If set, restricts max output tokens to this limit regardless of API request. Set to 0 to disable.",labelpadx=(300 if corrupt_scaler else 210))
+    makelabelentry(context_tab, "Default Gen Amt:", defaultgenamt_var, row=20, padx=(120), singleline=True, tooltip="How many tokens to generate by default, if not specified. Must be smaller than context size. Usually, your frontend GUI will override this.")
+    makelabelentry(context_tab, "Prompt Limit:", genlimit_var, row=20, padx=(300), singleline=True, tooltip="If set, restricts max output tokens to this limit regardless of API request. Set to 0 to disable.",labelpadx=(210))
+    makelabelentry(context_tab, "Default Params:", gen_defaults_var, row=21, width=200, padx=(110), singleline=True, tooltip='Set default generation parameters for incoming API payloads.\nSpecified as JSON fields: {"KEY1":"VALUE1", "KEY2":"VALUE2"...}')
+    makecheckbox(context_tab, "Override", gen_defaults_overwrite_var, row=21,padx=(330), tooltiptxt="Allow the gendefaults parameters to overwrite the original value in API payloads.")
 
-    nativectx_entry, nativectx_label = makelabelentry(tokens_tab, "Override Native Context:", customrope_nativectx, row=23, padx=(246 if corrupt_scaler else 146), singleline=True, tooltip="Overrides the native trained context of the loaded model with a custom value to be used for Rope scaling.")
-    customrope_scale_entry, customrope_scale_label = makelabelentry(tokens_tab, "RoPE Scale:", customrope_scale, row=23, padx=(160 if corrupt_scaler else 100), singleline=True, tooltip="For Linear RoPE scaling. RoPE frequency scale.")
-    customrope_base_entry, customrope_base_label = makelabelentry(tokens_tab, "Base:", customrope_base, row=23, padx=(420 if corrupt_scaler else 220), singleline=True, tooltip="For NTK Aware Scaling. RoPE frequency base.",labelpadx=(280 if corrupt_scaler else 180))
+    nativectx_entry, nativectx_label = makelabelentry(context_tab, "Override Native Context:", customrope_nativectx, row=23, padx=(146), singleline=True, tooltip="Overrides the native trained context of the loaded model with a custom value to be used for Rope scaling.")
+    customrope_scale_entry, customrope_scale_label = makelabelentry(context_tab, "RoPE Scale:", customrope_scale, row=23, padx=(100), singleline=True, tooltip="For Linear RoPE scaling. RoPE frequency scale.")
+    customrope_base_entry, customrope_base_label = makelabelentry(context_tab, "Base:", customrope_base, row=23, padx=(220), singleline=True, tooltip="For NTK Aware Scaling. RoPE frequency base.",labelpadx=(180))
     def togglerope(a,b,c):
         manualropebox.grid_remove()
         nativectx_label.grid_remove()
@@ -6975,26 +7025,25 @@ def show_gui():
         customrope_base_label.grid_remove()
         customrope_base_entry.grid_remove()
         if customrope_var.get() == 1:
-            manualropebox.grid(row=22, column=0,padx=(300 if corrupt_scaler else 200), pady=1, stick="nw")
+            manualropebox.grid(row=22, column=0,padx=(200), pady=1, stick="nw")
             if manualrope_var.get() == 1:
                 customrope_scale_label.grid(row=23, column=0, padx=8, pady=1, stick="nw")
-                customrope_scale_entry.grid(row=23, column=0, padx=(160 if corrupt_scaler else 100), pady=1, stick="nw")
-                customrope_base_label.grid(row=23, column=0, padx=(280 if corrupt_scaler else 180), pady=1, stick="nw")
-                customrope_base_entry.grid(row=23, column=0,  padx=(420 if corrupt_scaler else 220), pady=1, stick="nw")
+                customrope_scale_entry.grid(row=23, column=0, padx=(100), pady=1, stick="nw")
+                customrope_base_label.grid(row=23, column=0, padx=(180), pady=1, stick="nw")
+                customrope_base_entry.grid(row=23, column=0,  padx=(220), pady=1, stick="nw")
             else:
                 nativectx_label.grid(row=23, column=0, padx=8, pady=1, stick="nw")
-                nativectx_entry.grid(row=23, column=0, padx=(246 if corrupt_scaler else 146), pady=1, stick="nw")
+                nativectx_entry.grid(row=23, column=0, padx=(146), pady=1, stick="nw")
 
-    manualropebox = makecheckbox(tokens_tab, "Manual Rope Scale", variable=manualrope_var, row=22, command=togglerope, padx=(300 if corrupt_scaler else 200), tooltiptxt="Set RoPE base and scale manually.")
+    manualropebox = makecheckbox(context_tab, "Manual Rope Scale", variable=manualrope_var, row=22, command=togglerope, padx=(200), tooltiptxt="Set RoPE base and scale manually.")
 
-    makecheckbox(tokens_tab, "Custom RoPE Config", variable=customrope_var, row=22, command=togglerope,tooltiptxt="Override the default RoPE configuration with custom RoPE scaling.")
-    makecheckbox(tokens_tab, "Use FlashAttention", flashattention_var, 28, command=toggleflashattn,  tooltiptxt="Enable flash attention for GGUF models.")
-    noqkvlabel = makelabel(tokens_tab,"(Note: QuantKV works best with flash attention)",28,0,"Only K cache can be quantized, and performance can suffer.\nIn some cases, it might even use more VRAM when doing a full offload.",padx=160)
+    makecheckbox(context_tab, "Custom RoPE Config", variable=customrope_var, row=22, command=togglerope,tooltiptxt="Override the default RoPE configuration with custom RoPE scaling.")
+    noqkvlabel = makelabel(context_tab,"(Note: QuantKV works best with flash attention)",30,0,"Only K cache can be quantized, and performance can suffer.\nIn some cases, it might even use more VRAM when doing a full offload.",padx=160)
     noqkvlabel.configure(text_color="#ff5555")
-    qkvslider,qkvlabel,qkvtitle = makeslider(tokens_tab, "Quantize KV Cache:", quantkv_text, quantkv_var, 0, 2, 30, set=0,tooltip="Enable quantization of KV cache.\nRequires FlashAttention for full effect, otherwise only K cache is quantized.")
+    qkvslider,qkvlabel,qkvtitle = makeslider(context_tab, "Quantize KV Cache:", quantkv_text, quantkv_var, 0, 2, 30, set=0,tooltip="Enable quantization of KV cache.\nRequires FlashAttention for full effect, otherwise only K cache is quantized.")
     quantkv_var.trace_add("write", toggleflashattn)
-    makecheckbox(tokens_tab, "No BOS Token", nobostoken_var, 43, tooltiptxt="Prevents BOS token from being added at the start of any prompt. Usually NOT recommended for most models.")
-    makecheckbox(tokens_tab, "Enable Guidance", enableguidance_var, 43,padx=(200 if corrupt_scaler else 140), tooltiptxt="Enables the use of Classifier-Free-Guidance, which allows the use of negative prompts. Has performance and memory impact.")
+    makecheckbox(context_tab, "No BOS Token", nobostoken_var, 43, tooltiptxt="Prevents BOS token from being added at the start of any prompt. Usually NOT recommended for most models.")
+    makecheckbox(context_tab, "Enable Guidance", enableguidance_var, 43,padx=(140), tooltiptxt="Enables the use of Classifier-Free-Guidance, which allows the use of negative prompts. Has performance and memory impact.")
     def togglejinja(a,b,c):
         if jinja_var.get()==1:
             jinjatoolsbox.grid()
@@ -7002,31 +7051,31 @@ def show_gui():
             jinja_tools_var.set(0)
             jinjatoolsbox.grid_remove()
         changed_gpulayers_estimate()
-    makecheckbox(tokens_tab, "Use Jinja", jinja_var, row=45, command=togglejinja, tooltiptxt="Enables using jinja chat template formatting for chat completions endpoint. Other endpoints are unaffected.")
-    jinjatoolsbox = makecheckbox(tokens_tab, "Jinja for Tools", jinja_tools_var, row=45 ,padx=(200 if corrupt_scaler else 140), tooltiptxt="Allows jinja even with tool calls. If unchecked, jinja will be disabled when tools are used.")
+    makecheckbox(context_tab, "Use Jinja", jinja_var, row=45, command=togglejinja, tooltiptxt="Enables using jinja chat template formatting for chat completions endpoint. Other endpoints are unaffected.")
+    jinjatoolsbox = makecheckbox(context_tab, "Jinja for Tools", jinja_tools_var, row=45 ,padx=(140), tooltiptxt="Allows jinja even with tool calls. If unchecked, jinja will be disabled when tools are used.")
     jinja_var.trace_add("write", togglejinja)
-    makelabelentry(tokens_tab, "MoE Experts:", moeexperts_var, row=55, padx=(220 if corrupt_scaler else 120), singleline=True, tooltip="Override number of MoE experts.")
-    makelabelentry(tokens_tab, "MoE CPU Layers:", moecpu_var, row=55, padx=(490 if corrupt_scaler else 320), singleline=True, tooltip="Force Mixture of Experts (MoE) weights of the first N layers to the CPU.\nSetting it higher than GPU layers has no effect.", labelpadx=(300 if corrupt_scaler else 210))
-    makelabelentry(tokens_tab, "Override KV:", override_kv_var, row=57, padx=(220 if corrupt_scaler else 120), singleline=True, width=150, tooltip="Override metadata value by key. Separate multiple values with commas. Format is name=type:value. Types: int, float, bool, str")
-    makelabelentry(tokens_tab, "Override Tensors:", override_tensors_var, row=59, padx=(220 if corrupt_scaler else 120), singleline=True, width=150, tooltip="Override selected backend for specific tensors matching tensor_name_regex_pattern=buffer_type, same as in llama.cpp.")
+    makelabelentry(context_tab, "MoE Experts:", moeexperts_var, row=55, padx=(120), singleline=True, tooltip="Override number of MoE experts.")
+    makelabelentry(context_tab, "MoE CPU Layers:", moecpu_var, row=55, padx=(320), singleline=True, tooltip="Force Mixture of Experts (MoE) weights of the first N layers to the CPU.\nSetting it higher than GPU layers has no effect.", labelpadx=(210))
+    makelabelentry(context_tab, "Override KV:", override_kv_var, row=57, padx=(120), singleline=True, width=150, tooltip="Override metadata value by key. Separate multiple values with commas. Format is name=type:value. Types: int, float, bool, str")
+    makelabelentry(context_tab, "Override Tensors:", override_tensors_var, row=59, padx=(120), singleline=True, width=150, tooltip="Override selected backend for specific tensors matching tensor_name_regex_pattern=buffer_type, same as in llama.cpp.")
 
     # Model Tab
     model_tab = tabcontent["Loaded Files"]
 
     makefileentry(model_tab, "Text Model:", "Select GGUF or GGML Model File", model_var, 1,width=205,singlerow=True, onchoosefile=on_picked_model_file,tooltiptxt="Select a GGUF or GGML model file on disk to be loaded.")
-    ctk.CTkButton(model_tab, width=70, text = "HF Search", command = model_searcher ).grid(row=1,column=0, stick="nw", padx=(520 if corrupt_scaler else 370), pady=2)
+    ctk.CTkButton(model_tab, width=70, text = "HF Search", command = model_searcher ).grid(row=1,column=0, stick="nw", padx=(370), pady=2)
     makefileentry(model_tab, "Text Lora:", "Select Lora File",lora_var, 3,width=160,singlerow=True,tooltiptxt="Select an optional GGML Text LoRA adapter to use.\nLeave blank to skip.")
-    makelabelentry(model_tab, "Multiplier: ", loramult_var, 3, 50,padx=(580 if corrupt_scaler else 390),singleline=True,tooltip="Scale multiplier for Text LoRA Strength. Default is 1.0", labelpadx=(470 if corrupt_scaler else 330))
+    makelabelentry(model_tab, "Multiplier: ", loramult_var, 3, 50,padx=(390),singleline=True,tooltip="Scale multiplier for Text LoRA Strength. Default is 1.0", labelpadx=(330))
     makefileentry(model_tab, "Mmproj File:", "Select Audio or Vision mmproj File", mmproj_var, 7,width=280,singlerow=True,tooltiptxt="Select a mmproj file to use for multimodal models for vision and audio recognition.\nLeave blank to skip.")
     makecheckbox(model_tab, "Vision Force CPU", mmprojcpu_var, 9, tooltiptxt="Force CLIP for Vision mmproj always on CPU.")
-    makelabelentry(model_tab, "Vision MaxRes:", visionmaxres_var, 9, padx=(450 if corrupt_scaler else 320), singleline=True, tooltip=f"Clamp MMProj vision maximum allowed resolution. Allowed values are between 512 to 2048 px (default {default_visionmaxres}).", labelpadx=(260 if corrupt_scaler else 220))
+    makelabelentry(model_tab, "Vision MaxRes:", visionmaxres_var, 9, padx=(320), singleline=True, tooltip=f"Clamp MMProj vision maximum allowed resolution. Allowed values are between 512 to 2048 px (default {default_visionmaxres}).", labelpadx=(220))
     makefileentry(model_tab, "Draft Model:", "Select Speculative Text Model File", draftmodel_var, 11,width=280,singlerow=True,tooltiptxt="Select a draft text model file to use for speculative decoding.\nLeave blank to skip.")
-    makelabelentry(model_tab, "Draft Amount: ", draftamount_var, 13, 50,padx=(170 if corrupt_scaler else 100),singleline=True,tooltip="How many tokens to draft per chunk before verifying results")
-    makelabelentry(model_tab, "Splits: ", draftgpusplit_str_vars, 13, 50,padx=(320 if corrupt_scaler else 210),singleline=True,tooltip="Distribution of draft model layers. Leave blank to follow main model's gpu split. Only works if multi-gpu (All) selected in main model.", labelpadx=(260 if corrupt_scaler else 160))
-    makelabelentry(model_tab, "Layers: ", draftgpulayers_var, 13, 50,padx=(470 if corrupt_scaler else 320),singleline=True,tooltip="How many layers to GPU offload for the draft model", labelpadx=(390 if corrupt_scaler else 270))
+    makelabelentry(model_tab, "Draft Amount: ", draftamount_var, 13, 50,padx=(100),singleline=True,tooltip="How many tokens to draft per chunk before verifying results")
+    makelabelentry(model_tab, "Splits: ", draftgpusplit_str_vars, 13, 50,padx=(210),singleline=True,tooltip="Distribution of draft model layers. Leave blank to follow main model's gpu split. Only works if multi-gpu (All) selected in main model.", labelpadx=(160))
+    makelabelentry(model_tab, "Layers: ", draftgpulayers_var, 13, 50,padx=(320),singleline=True,tooltip="How many layers to GPU offload for the draft model", labelpadx=(270))
     makefileentry(model_tab, "Embeds Model:", "Select Embeddings Model File", embeddings_model_var, 15, width=130,singlerow=True, filetypes=[("*.gguf","*.gguf")], tooltiptxt="Select an embeddings GGUF model that can be used to generate embedding vectors.")
-    makelabelentry(model_tab, "ECtx: ", embeddings_ctx_var, 15, 50,padx=(490 if corrupt_scaler else 335),singleline=True,tooltip="If set above 0, limits max context for embedding model to save memory.", labelpadx=(442 if corrupt_scaler else 302))
-    makecheckbox(model_tab, "GPU", embeddings_gpu_var, 15, 0,padx=(560 if corrupt_scaler else 390),tooltiptxt="Uses the GPU for Embeddings.")
+    makelabelentry(model_tab, "ECtx: ", embeddings_ctx_var, 15, 50,padx=(335),singleline=True,tooltip="If set above 0, limits max context for embedding model to save memory.", labelpadx=(302))
+    makecheckbox(model_tab, "GPU", embeddings_gpu_var, 15, 0,padx=(390),tooltiptxt="Uses the GPU for Embeddings.")
     embeddings_gpu_var.trace_add("write", gui_changed_modelfile)
     makefileentry(model_tab, "Preload Story:", "Select Preloaded Story File", preloadstory_var, 17,width=280,singlerow=True,tooltiptxt="Select an optional KoboldAI JSON savefile \nto be served on launch to any client.")
     makefileentry(model_tab, "SaveData File:", "Select or Create New SaveData Database File", savedatafile_var, 19,width=280,filetypes=[("KoboldCpp SaveDB", "*.jsondb")],singlerow=True,dialog_type=1,tooltiptxt="Selecting a file will allow data to be loaded and saved persistently to this KoboldCpp server remotely. File is created if it does not exist.")
@@ -7037,7 +7086,7 @@ def show_gui():
         fnam = zentk_askopenfilename(title="Pick Premade ChatCompletions Adapter",filetypes=[("JSON Adapter", "*.json")], initialdir=initialDir)
         if fnam:
             chatcompletionsadapter_var.set(fnam)
-    ctk.CTkButton(model_tab, 64, text="Pick Premade", command=pickpremadetemplate).grid(row=25, column=0, padx=(422 if corrupt_scaler else 322), pady=2, stick="nw")
+    ctk.CTkButton(model_tab, 64, text="Pick Premade", command=pickpremadetemplate).grid(row=25, column=0, padx=(322), pady=2, stick="nw")
 
     mmproj_var.trace_add("write", gui_changed_modelfile)
     draftmodel_var.trace_add("write", gui_changed_modelfile)
@@ -7096,15 +7145,15 @@ def show_gui():
 
     images_tab = tabcontent["Image Gen"]
     makefileentry(images_tab, "Image Gen. Model (safetensors/gguf):", "Select Image Gen Model File", sd_model_var, 1, width=280, singlecol=True, filetypes=[("*.safetensors *.gguf","*.safetensors *.gguf")], tooltiptxt="Select a .safetensors or .gguf Image Generation model file on disk to be loaded.")
-    makelabelentry(images_tab, "Clamp Resolution Limit (Hard):", sd_clamped_var, 4, 50, padx=(340 if corrupt_scaler else 190),singleline=True,tooltip="Limit generation steps and output image size for shared use.\nSet to 0 to disable, otherwise value is clamped to the max size limit (min 512px).")
-    makelabelentry(images_tab, "(Soft):", sd_clamped_soft_var, 4, 50, padx=(490 if corrupt_scaler else 290),singleline=True,tooltip="Square image size restriction, to protect the server against memory crashes.\nAllows width-height tradeoffs, eg. 640 allows 640x640 and 512x768\nLeave at 0 for the default value: 832 for SD1.5/SD2, 1024 otherwise.",labelpadx=(450 if corrupt_scaler else 250))
-    makelabelentry(images_tab, "ImgThreads:" , sd_threads_var, 8, 50,padx=(490 if corrupt_scaler else 290),singleline=True,tooltip="How many threads to use during image generation.\nIf left blank, uses same value as threads.",labelpadx=(350 if corrupt_scaler else 210))
+    makelabelentry(images_tab, "Clamp Resolution Limit (Hard):", sd_clamped_var, 4, 50, padx=(190),singleline=True,tooltip="Limit generation steps and output image size for shared use.\nSet to 0 to disable, otherwise value is clamped to the max size limit (min 512px).")
+    makelabelentry(images_tab, "(Soft):", sd_clamped_soft_var, 4, 50, padx=(290),singleline=True,tooltip="Square image size restriction, to protect the server against memory crashes.\nAllows width-height tradeoffs, eg. 640 allows 640x640 and 512x768\nLeave at 0 for the default value: 832 for SD1.5/SD2, 1024 otherwise.",labelpadx=(250))
+    makelabelentry(images_tab, "ImgThreads:" , sd_threads_var, 8, 50,padx=(290),singleline=True,tooltip="How many threads to use during image generation.\nIf left blank, uses same value as threads.",labelpadx=(210))
     sd_model_var.trace_add("write", gui_changed_modelfile)
-    makelabelcombobox(images_tab, "Compress Weights: ", sd_quant_var, 8, width=(80 if corrupt_scaler else 60), padx=(226 if corrupt_scaler else 126), labelpadx=8, tooltiptxt="Quantizes the SD model weights to save memory.\nHigher levels save more memory, and cause more quality degradation.", values=sd_quant_choices)
+    makelabelcombobox(images_tab, "Compress Weights: ", sd_quant_var, 8, width=(60), padx=(126), labelpadx=8, tooltiptxt="Quantizes the SD model weights to save memory.\nHigher levels save more memory, and cause more quality degradation.", values=sd_quant_choices)
     sd_quant_var.trace_add("write", changed_gpulayers_estimate)
 
     makefileentry(images_tab, "Image LoRA:", "Select SD lora file",sd_lora_var, 20, width=160, singlerow=True, filetypes=[("*.safetensors *.gguf", "*.safetensors *.gguf")],tooltiptxt="Select a .safetensors or .gguf SD LoRA model file to be loaded. Should be unquantized!")
-    makelabelentry(images_tab, "Multiplier:" , sd_loramult_var, 20, 50,padx=(580 if corrupt_scaler else 390),singleline=True,tooltip="What mutiplier value to apply the SD LoRA with.",labelpadx=(460 if corrupt_scaler else 330))
+    makelabelentry(images_tab, "Multiplier:" , sd_loramult_var, 20, 50,padx=(390),singleline=True,tooltip="What mutiplier value to apply the SD LoRA with.",labelpadx=(330))
 
     makefileentry(images_tab, "T5-XXL File:", "Select T5-XXL model file (SD3, Flux, WAN)",sd_t5xxl_var, 24, width=280, singlerow=True, filetypes=[("*.safetensors *.gguf","*.safetensors *.gguf")],tooltiptxt="Select a .safetensors t5xxl file to be loaded.")
     makefileentry(images_tab, "Clip-1 File:", "Select First Clip model file (Clip-L for SD3 or Flux, or other vision encoder)",sd_clip1_var, 26, width=280, singlerow=True, filetypes=[("*.safetensors *.gguf","*.safetensors *.gguf")],tooltiptxt="Select a .safetensors Clip-1 file to be loaded.\nThis is Clip-L for SD3 and Flux, Clip Vision for WAN, and Qwen2.5VL for QwenImage")
@@ -7123,13 +7172,12 @@ def show_gui():
                 sdvaeitem2.grid()
                 sdvaeitem3.grid()
     makecheckbox(images_tab, "TAE SD (AutoFix Broken VAE)", sd_vaeauto_var, 42,command=toggletaesd,tooltiptxt="Replace VAE with TAESD. May fix bad VAE.")
-    makelabelcombobox(images_tab, "Conv2D Direct:", sd_convdirect_var, row=42, labelpadx=(390 if corrupt_scaler else 220), padx=(550 if corrupt_scaler else 310), width=90, tooltiptxt="Use Conv2D Direct operation. May save memory or improve performance.\nMight crash if not supported by the backend.\n", values=sd_convdirect_choices)
-    makelabelentry(images_tab, "VAE Tiling Threshold:", sd_tiled_vae_var, 44, 50, padx=(254 if corrupt_scaler else 144),singleline=True,tooltip="Enable VAE Tiling for images above this size, to save memory.\nSet to 0 to disable VAE tiling.")
-    makecheckbox(images_tab, "SD Flash Attention", sd_flash_attention_var, 44,padx=(400 if corrupt_scaler else 230), tooltiptxt="Enable Flash Attention for image diffusion. May save memory or improve performance.")
+    makelabelcombobox(images_tab, "Conv2D Direct:", sd_convdirect_var, row=42, labelpadx=(220), padx=(310), width=90, tooltiptxt="Use Conv2D Direct operation. May save memory or improve performance.\nMight crash if not supported by the backend.\n", values=sd_convdirect_choices)
+    makelabelentry(images_tab, "VAE Tiling Threshold:", sd_tiled_vae_var, 44, 50, padx=(144),singleline=True,tooltip="Enable VAE Tiling for images above this size, to save memory.\nSet to 0 to disable VAE tiling.")
+    makecheckbox(images_tab, "SD Flash Attention", sd_flash_attention_var, 44,padx=(230), tooltiptxt="Enable Flash Attention for image diffusion. May save memory or improve performance.")
     makecheckbox(images_tab, "Model CPU Offload", sd_offload_cpu_var, 50,padx=8, tooltiptxt="Offload image weights in RAM to save VRAM, swap into VRAM when needed.")
-    makecheckbox(images_tab, "VAE on CPU", sd_vae_cpu_var, 50,padx=(270 if corrupt_scaler else 160), tooltiptxt="Force VAE to CPU only for image generation.")
-    makecheckbox(images_tab, "CLIP on GPU", sd_clip_gpu_var, 50,padx=(480 if corrupt_scaler else 280), tooltiptxt="Put CLIP and T5 to GPU for image generation. Otherwise, CLIP will use CPU.")
-    makelabelentry(images_tab, "Default Params:", sd_gen_defaults_var, 52, 280, padx=(220 if corrupt_scaler else 110), singleline=True, tooltip='Default image generation parameters when not specified by the UI or API.\nSpecified as JSON fields: {"KEY1":"VALUE1", "KEY2":"VALUE2"...}')
+    makecheckbox(images_tab, "VAE on CPU", sd_vae_cpu_var, 50,padx=(160), tooltiptxt="Force VAE to CPU only for image generation.")
+    makecheckbox(images_tab, "CLIP on GPU", sd_clip_gpu_var, 50,padx=(280), tooltiptxt="Put CLIP and T5 to GPU for image generation. Otherwise, CLIP will use CPU.")
 
     # audio tab
     audio_tab = tabcontent["Audio"]
@@ -7153,7 +7201,7 @@ def show_gui():
             autopath = os.path.dirname(autopath)
             admin_dir_var.set(autopath)
     makecheckbox(admin_tab, "Enable Model Administration", admin_var, 1, 0, command=toggleadmin,tooltiptxt="Enable a admin server, allowing you to remotely relaunch and swap models and configs.")
-    makelabelentry(admin_tab, "Admin Password:" , admin_password_var, 3, 150,padx=(220 if corrupt_scaler else 120),singleline=True,tooltip="Require a password to access admin functions. You are strongly advised to use one for publically accessible instances!")
+    makelabelentry(admin_tab, "Admin Password:" , admin_password_var, 3, 150,padx=(120),singleline=True,tooltip="Require a password to access admin functions. You are strongly advised to use one for publically accessible instances!")
     makefileentry(admin_tab, "Config Directory (Required):", "Select directory containing .gguf or .kcpps files to relaunch from", admin_dir_var, 5, width=280, dialog_type=2, tooltiptxt="Specify a directory to look for .kcpps configs in, which can be used to swap models.")
     makefileentry(admin_tab, "Model Directory:", "Select directory containing .gguf text model files to allow overriding configs with", admin_text_model_dir_var, 7, width=280, dialog_type=2, tooltiptxt="Specify a directory to look for .gguf text model files in, which can be used to swap models within a config.")
     makefileentry(admin_tab, "Data Directory:", "Select directory which will be used to store user data if desired", admin_data_dir_var, 9, width=280, dialog_type=2, tooltiptxt="Specify a directory to store user data in.")
@@ -7183,15 +7231,15 @@ def show_gui():
     # extra tab
     extra_tab = tabcontent["Extra"]
     makelabel(extra_tab, "Extract KoboldCpp Files", 3, 0,tooltiptxt="Unpack KoboldCpp to a local directory to modify its files. You can also launch via koboldcpp.py for faster startup.")
-    ctk.CTkButton(extra_tab , text = "Unpack KoboldCpp To Folder", command = unpack_to_dir ).grid(row=3,column=0, stick="w", padx=(300 if corrupt_scaler else 170), pady=2)
+    ctk.CTkButton(extra_tab , text = "Unpack KoboldCpp To Folder", command = unpack_to_dir ).grid(row=3,column=0, stick="w", padx=(170), pady=2)
     makelabel(extra_tab, "Export as .kcppt template", 4, 0,tooltiptxt="Creates a KoboldCpp launch template for others to use.\nEmbeds JSON files directly into exported file when saving.\nWhen loaded, forces the backend to be automatically determined.\nWarning! Not recommended for beginners!")
-    ctk.CTkButton(extra_tab , text = "Generate LaunchTemplate", command = kcpp_export_template ).grid(row=4,column=0, stick="w", padx=(300 if corrupt_scaler else 170), pady=2)
+    ctk.CTkButton(extra_tab , text = "Generate LaunchTemplate", command = kcpp_export_template ).grid(row=4,column=0, stick="w", padx=(170), pady=2)
     makelabel(extra_tab, "Analyze GGUF Metadata", 6, 0,tooltiptxt="Reads the metadata, weight types and tensor names in any GGUF file.")
-    ctk.CTkButton(extra_tab , text = "Analyze GGUF", command = analyze_gguf_model_wrapper ).grid(row=6,column=0, stick="w", padx=(300 if corrupt_scaler else 170), pady=2)
+    ctk.CTkButton(extra_tab , text = "Analyze GGUF", command = analyze_gguf_model_wrapper ).grid(row=6,column=0, stick="w", padx=(170), pady=2)
     if os.name == 'nt':
         makelabel(extra_tab, "File Extensions Handler", 10, 0,tooltiptxt="Makes KoboldCpp the default handler for .kcpps, .kcppt, .ggml and .gguf files.")
-        ctk.CTkButton(extra_tab , text = "Register", width=90, command = register_koboldcpp ).grid(row=10,column=0, stick="w", padx= (300 if corrupt_scaler else 170), pady=2)
-        ctk.CTkButton(extra_tab , text = "Unregister", width=90, command = unregister_koboldcpp ).grid(row=10,column=0, stick="w", padx= (434 if corrupt_scaler else 264), pady=2)
+        ctk.CTkButton(extra_tab , text = "Register", width=90, command = register_koboldcpp ).grid(row=10,column=0, stick="w", padx= (170), pady=2)
+        ctk.CTkButton(extra_tab , text = "Unregister", width=90, command = unregister_koboldcpp ).grid(row=10,column=0, stick="w", padx= (264), pady=2)
     if sys.platform == "linux":
         def togglezenity(a,b,c):
             global zenity_permitted
@@ -7436,8 +7484,9 @@ def show_gui():
         else:
             args.sdlora = ""
 
-        if sd_gen_defaults_var.get() != "":
-            args.sdgendefaults = sd_gen_defaults_var.get()
+        if gen_defaults_var.get() != "":
+            args.gendefaults = gen_defaults_var.get()
+        args.gendefaultsoverwrite = (gen_defaults_overwrite_var.get()==1)
 
         if whisper_model_var.get() != "":
             args.whispermodel = whisper_model_var.get()
@@ -7550,7 +7599,7 @@ def show_gui():
         if "maingpu" in dict:
             maingpu_var.set(dict["maingpu"])
         else:
-            maingpu_var.set("")
+            maingpu_var.set("-1")
         if "tensor_split" in dict and dict["tensor_split"]:
             tssep = ','.join(map(str, dict["tensor_split"]))
             tensor_split_str_vars.set(tssep)
@@ -7672,7 +7721,8 @@ def show_gui():
 
         sd_lora_var.set(dict["sdlora"] if ("sdlora" in dict and dict["sdlora"]) else "")
         sd_loramult_var.set(str(dict["sdloramult"]) if ("sdloramult" in dict and dict["sdloramult"]) else "1.0")
-        sd_gen_defaults_var.set(dict["sdgendefaults"] if ("sdgendefaults" in dict and dict["sdgendefaults"]) else "")
+        gen_defaults_var.set(dict["gendefaults"] if ("gendefaults" in dict and dict["gendefaults"]) else "")
+        gen_defaults_overwrite_var.set(1 if "gendefaultsoverwrite" in dict and dict["gendefaultsoverwrite"] else 0)
 
         whisper_model_var.set(dict["whispermodel"] if ("whispermodel" in dict and dict["whispermodel"]) else "")
 
@@ -7704,6 +7754,7 @@ def show_gui():
         kcpp_exporting_template = False
         export_vars()
         savdict = json.loads(json.dumps(args.__dict__,indent=2))
+        savdict["istemplate"] = False
         file_type = [("KoboldCpp Settings", "*.kcpps")]
         filename = zentk_asksaveasfilename(filetypes=file_type, defaultextension=".kcpps",title="Save kcpps settings config file")
         if not filename:
@@ -7739,12 +7790,12 @@ def show_gui():
     def display_updates():
         LaunchWebbrowser("https://github.com/LostRuins/koboldcpp/releases/latest","Cannot launch updates in browser.")
 
-    ctk.CTkButton(tabs , text = "Launch", fg_color="#2f8d3c", hover_color="#2faa3c", command = guilaunch, width=80, height = 35 ).grid(row=1,column=1, stick="se", padx=(170 if corrupt_scaler else 25), pady=5)
+    ctk.CTkButton(tabs , text = "Launch", fg_color="#2f8d3c", hover_color="#2faa3c", command = guilaunch, width=100, height = 35 ).grid(row=1,column=1, stick="se", padx=(25), pady=5)
 
     ctk.CTkButton(tabs , text = "Update", fg_color="#9900cc", hover_color="#aa11dd", command = display_updates, width=90, height = 35 ).grid(row=1,column=0, stick="sw", padx= 5, pady=5)
     ctk.CTkButton(tabs , text = "Save Config", fg_color="#084a66", hover_color="#085a88", command = save_config_gui, width=60, height = 35 ).grid(row=1,column=1, stick="sw", padx= 5, pady=5)
-    ctk.CTkButton(tabs , text = "Load Config", fg_color="#084a66", hover_color="#085a88", command = load_config_gui, width=60, height = 35 ).grid(row=1,column=1, stick="sw", padx= (152 if corrupt_scaler else 92), pady=5)
-    ctk.CTkButton(tabs , text = "Help (Find Models)", fg_color="#992222", hover_color="#bb3333", command = display_help_models, width=100, height = 35 ).grid(row=1,column=1, stick="sw", padx= (300 if corrupt_scaler else 180), pady=5)
+    ctk.CTkButton(tabs , text = "Load Config", fg_color="#084a66", hover_color="#085a88", command = load_config_gui, width=60, height = 35 ).grid(row=1,column=1, stick="sw", padx= (92), pady=5)
+    ctk.CTkButton(tabs , text = "Help (Find Models)", fg_color="#992222", hover_color="#bb3333", command = display_help_models, width=100, height = 35 ).grid(row=1,column=1, stick="sw", padx= (180), pady=5)
 
     # start a thread that tries to get actual gpu names and layer counts
     gpuinfo_thread = threading.Thread(target=auto_set_backend_gui)
@@ -8059,6 +8110,8 @@ def convert_invalid_args(args):
         dict["sdclip2"] = dict["sdclipg"]
     if "jinja_tools" in dict and dict["jinja_tools"]:
         dict["jinja"] = True
+    if "sdgendefaults" in dict and "gendefaults" not in dict:
+        dict["gendefaults"] = dict["sdgendefaults"]
     return args
 
 def setuptunnel(global_memory, has_sd):
@@ -8208,6 +8261,7 @@ def convert_args_to_template(savdict):
     savdict["hordeworkername"] = ""
     savdict["sdthreads"] = 0
     savdict["password"] = None
+    savdict["adminpassword"] = None
     savdict["usemmap"] = False
     savdict["usemlock"] = False
     savdict["debugmode"] = 0
@@ -8226,6 +8280,8 @@ def save_config_cli(filename, template):
     savdict = json.loads(json.dumps(args.__dict__))
     if template:
         savdict = convert_args_to_template(savdict)
+    else:
+        savdict["istemplate"] = False
     if filename is None:
         return
     filenamestr = str(filename).strip()
@@ -8920,7 +8976,7 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
         global maxctx
         maxctx = args.contextsize
 
-    args.defaultgenamt = max(128, min(args.defaultgenamt, 8192))
+    args.defaultgenamt = max(64, min(args.defaultgenamt, 8192))
     args.defaultgenamt = min(args.defaultgenamt, maxctx / 2)
 
     if args.port_param!=defaultport:
@@ -8945,6 +9001,8 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
         ssl._create_default_https_context = ssl._create_unverified_context
 
     if args.gpulayers:
+        if args.autofit:
+            args.gpulayers = -1
         shouldavoidgpu = False
         if args.usecpu and sys.platform!="darwin":
             shouldavoidgpu = True
@@ -9065,7 +9123,7 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
 
         # The chat completions adapter is a list that needs derivation from chat templates
         # Try to derive chat completions adapter from chat template, now that we have the model loaded
-        if not args.nomodel and args.model_param:
+        if args.model_param:
             ctbytes = handle.get_chat_template()
             cached_chat_template = ctypes.string_at(ctbytes).decode("UTF-8","ignore")
             if cached_chat_template != "" and (chatcompl_adapter_list is not None and isinstance(chatcompl_adapter_list, list)):
@@ -9554,6 +9612,8 @@ if __name__ == '__main__':
     compatgroup2.add_argument("--skiplauncher", help="Doesn't display or use the GUI launcher. Overrides showgui.", action='store_true')
     advparser.add_argument("--singleinstance", help="Allows this KoboldCpp instance to be shut down by any new instance requesting the same port, preventing duplicate servers from clashing on a port.", action='store_true')
     advparser.add_argument("--pipelineparallel", help="Enable Pipeline Parallelism for faster multigpu speeds but using more memory, only active for multigpu.", action='store_true')
+    advparser.add_argument("--gendefaults", metavar=('{"parameter":"value",...}'), help="Sets extra default parameters for some fields in API requests, as a JSON string.", default="")
+    advparser.add_argument("--gendefaultsoverwrite", help="Allow the gendefaults parameters to overwrite the original value in API payloads.", action='store_true')
 
     hordeparsergroup = parser.add_argument_group('Horde Worker Commands')
     hordeparsergroup.add_argument("--hordemodelname", metavar=('[name]'), help="Sets your AI Horde display model name.", default="")
@@ -9584,7 +9644,6 @@ if __name__ == '__main__':
     sdparsergrouplora.add_argument("--sdlora", metavar=('[filename]'), help="Specify an image generation LORA safetensors model to be applied.", default="")
     sdparsergroup.add_argument("--sdloramult", metavar=('[amount]'), help="Multiplier for the image LORA model to be applied.", type=float, default=1.0)
     sdparsergroup.add_argument("--sdtiledvae", metavar=('[maxres]'), help="Adjust the automatic VAE tiling trigger for images above this size. 0 disables vae tiling.", type=int, default=default_vae_tile_threshold)
-    sdparsergroup.add_argument("--sdgendefaults", metavar=('{"parameter":"value",...}'), help="Sets default parameters for image generation, as a JSON string.", default="")
     whisperparsergroup = parser.add_argument_group('Whisper Transcription Commands')
     whisperparsergroup.add_argument("--whispermodel", metavar=('[filename]'), help="Specify a Whisper .bin model to enable Speech-To-Text transcription.", default="")
 
@@ -9615,6 +9674,7 @@ if __name__ == '__main__':
     compatgroup3.add_argument("--nommap","--no-mmap", help=argparse.SUPPRESS, action='store_true')
     deprecatedgroup.add_argument("--sdnotile", help=argparse.SUPPRESS, action='store_true') # legacy option, see sdtiledvae
     deprecatedgroup.add_argument("--forceversion", help=argparse.SUPPRESS, action='store_true') #no longer used
+    deprecatedgroup.add_argument("--sdgendefaults", help=argparse.SUPPRESS, action='store_true') # legacy option, see gendefaults
 
     debuggroup = parser.add_argument_group('Debug Commands')
     debuggroup.add_argument("--testmemory", help=argparse.SUPPRESS, action='store_true')
