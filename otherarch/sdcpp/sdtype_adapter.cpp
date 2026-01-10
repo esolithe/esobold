@@ -362,7 +362,6 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
 
     params.n_threads = sd_params->n_threads;
     params.wtype = sd_params->wtype;
-    params.keep_clip_on_cpu = sd_params->clip_on_cpu;
     params.diffusion_flash_attn = sd_params->diffusion_flash_attn;
     params.diffusion_conv_direct = sd_params->diffusion_conv_direct;
     params.vae_conv_direct = sd_params->vae_conv_direct;
@@ -380,19 +379,12 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
 
     if(inputs.debugmode==1)
     {
-        std::stringstream ss;
-        ss  << "\nMODEL:"      << params.model_path
-            << "\nDIFFUSION:"  << params.diffusion_model_path
-            << "\nVAE:"        << params.vae_path
-            << "\nTAESD:"      << params.taesd_path
-            << "\nPHOTOMAKER:" << params.photo_maker_path
-            << "\nTHREADS:"    << params.n_threads
-            << "\nWTYPE:"      << params.wtype
-            << "\nDIFFUSIONFLASHATTN:"  << (params.diffusion_flash_attn ? 1 : 0)
-            << "\nDIFFUSIONCONVDIRECT:" << (params.diffusion_conv_direct ? 1 : 0)
-            << "\nVAECONVDIRECT:"       << (params.vae_conv_direct ? 1 : 0)
-            << "\n";
-        printf("%s", ss.str().c_str());
+        char* buf = sd_ctx_params_to_str(&params);
+        if(buf)
+        {
+            printf("\n%s\n", buf);
+            free(buf);
+        }
     }
 
     sd_ctx = new_sd_ctx(&params);
@@ -774,6 +766,8 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
         sd_params->sample_method = sd_get_default_sample_method(sd_ctx);
     }
 
+    SetCircularAxesAll(sd_ctx, inputs.circular_x, inputs.circular_y);
+
     auto loadedsdver = get_loaded_sd_version(sd_ctx);
     bool is_img2img = img2img_data != "";
     bool is_wan = (loadedsdver == SDVersion::VERSION_WAN2 || loadedsdver == SDVersion::VERSION_WAN2_2_I2V || loadedsdver == SDVersion::VERSION_WAN2_2_TI2V);
@@ -1061,19 +1055,12 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
     {
         if(!sd_is_quiet && sddebugmode==1)
         {
-            std::stringstream ss;
-            ss  << "\nTXT2IMG PROMPT:" << params.prompt
-                << "\nNPROMPT:" << params.negative_prompt
-                << "\nCLPSKP:" << params.clip_skip
-                << "\nCFGSCLE:" << params.sample_params.guidance.txt_cfg
-                << "\nSIZE:" << params.width << "x" << params.height
-                << "\nSM:" << sd_sample_method_name(params.sample_params.sample_method)
-                << "\nSCHED:" << get_scheduler_name(params.sample_params.scheduler)
-                << "\nSTEP:" << params.sample_params.sample_steps
-                << "\nSEED:" << params.seed
-                << "\nBATCH:" << params.batch_count
-                << "\n\n";
-            printf("%s", ss.str().c_str());
+            char* buf = sd_img_gen_params_to_str(&params);
+            if(buf)
+            {
+                printf("\n%s\n", buf);
+                free(buf);
+            }
         }
 
         fflush(stdout);
@@ -1146,19 +1133,12 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
 
         if(!sd_is_quiet && sddebugmode==1)
         {
-            std::stringstream ss;
-            ss  << "\nIMG2IMG PROMPT:" << params.prompt
-                << "\nNPROMPT:" << params.negative_prompt
-                << "\nCLPSKP:" << params.clip_skip
-                << "\nCFGSCLE:" << params.sample_params.guidance.txt_cfg
-                << "\nSIZE:" << params.width << "x" << params.height
-                << "\nSM:" << sd_sample_method_name(params.sample_params.sample_method)
-                << "\nSTEP:" << params.sample_params.sample_steps
-                << "\nSEED:" << params.seed
-                << "\nSTRENGTH:" << params.strength
-                << "\nBATCH:" << params.batch_count
-                << "\n\n";
-            printf("%s", ss.str().c_str());
+            char* buf = sd_img_gen_params_to_str(&params);
+            if(buf)
+            {
+                printf("\n%s\n", buf);
+                free(buf);
+            }
         }
 
         fflush(stdout);

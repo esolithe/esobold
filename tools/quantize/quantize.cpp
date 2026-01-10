@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cctype>
 #include <algorithm>
+#include <filesystem>
 
 struct quant_option {
     std::string name;
@@ -641,6 +642,11 @@ int main(int argc, char ** argv) {
         fprintf(stderr, "\n==========================================================================================================\n");
         fprintf(stderr, "Please do not use IQ1_S, IQ1_M, IQ2_S, IQ2_XXS, IQ2_XS or Q2_K_S quantization without an importance matrix\n");
         fprintf(stderr, "==========================================================================================================\n\n\n");
+        return 1;
+    }
+
+    if (std::error_code ec; std::filesystem::equivalent(fname_inp, fname_out, ec)) {
+        fprintf(stderr, "%s: error: input and output files are the same: '%s'\n", __func__, fname_inp.c_str());
         return 1;
     }
 
