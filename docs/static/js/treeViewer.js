@@ -223,5 +223,6 @@ setInterval(() => {
 }, 1000)
 
 mermaid.initialize({
-    maxTextSize: 100000
+    maxTextSize: 100000,
+    maxEdges: 100000
 });
