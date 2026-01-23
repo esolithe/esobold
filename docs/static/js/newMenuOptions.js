@@ -265,7 +265,7 @@ window.addEventListener('load', () => {
         settingElem.append(minMaxDiv)
         return settingElem
     }
-    let lastSettingContainer = document.querySelector("#settingsmenuformat > .settingitem:last-child")
+    let lastSettingContainer = document.querySelector("#instructtagsection")
 
     let settingLabelElem = createSettingElemBool("agentBehaviour", "Agent behaviour (experimental)", "Allows the AI to use multiple generations and certain tools to see if it can improve results.  This can include web search (if enabled), dice rolling, and formula evaluation.  This mode requires instruct start and end tags for all roles. Image and TTS only is enabled for local KCPP users.")
     settingLabelElem.onclick = () => {
@@ -289,7 +289,7 @@ window.addEventListener('load', () => {
     settingLabelElem.style.display = "none"
     lastSettingContainer.append(settingLabelElem)
 
-    lastSettingContainer = document.querySelector("#settingsmenuadvanced > .settingitem:nth-last-child(-n+2)")
+    lastSettingContainer = document.querySelector("#settingsmenuadvanced > .settingitem")
     settingLabelElem = createSettingElemBool("disableSaveCompressionLocally", "Disables save compression locally", "Disables save compression locally - Improves load / autosave performance with larger saves. The save compression is left enabled for sharing saves or uploading to the main server)")
     lastSettingContainer.append(settingLabelElem)
 
