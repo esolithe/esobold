@@ -12,7 +12,7 @@ Current version indicated by LITEVER below.
 -->
 
 <script id="init-config">
-	const LITEVER = 303;
+	const LITEVER = 304;
 	const urlParams = new URLSearchParams(window.location.search);
 	var localflag = urlParams.get('local'); //this will be replaced automatically in embedded kcpp
 	const STORAGE_PREFIX = (localflag?"e_":"")+"kaihordewebui_";
@@ -1032,8 +1032,8 @@ Current version indicated by LITEVER below.
 	}
 	.popupfooter button {
 		width: 100px;
-		margin-left: 10px;
-		margin-right: 10px;
+		margin-left: 6px;
+		margin-right: 6px;
 	}
 
 	/* World info table */
@@ -3438,6 +3438,7 @@ Current version indicated by LITEVER below.
 	const koboldcpp_savedata_list_endpoint = "/api/extra/data/list";
 	const koboldcpp_savedata_save_endpoint = "/api/extra/data/save";
 	const koboldcpp_savedata_load_endpoint = "/api/extra/data/load";
+	const koboldcpp_mcp_endpoint = "/mcp";
 
 	const oai_models_endpoint = "/models";
 	const oai_submit_endpoint = "/completions";
@@ -3510,7 +3511,6 @@ Current version indicated by LITEVER below.
 	const default_xtts_base = " http://localhost:8020";
 	const default_alltalk_base = "http://localhost:7851";
 	const default_comfy_base = "http://localhost:8188";
-	const default_mcp_base = "http://localhost:5001";
 
 	const WEBBROWSER_TTS_ID = 1;
 	const KCPP_TTS_ID = 2;
@@ -3708,7 +3708,7 @@ Current version indicated by LITEVER below.
 		saved_comfy_url: default_comfy_base,
 		saved_xtts_url: default_xtts_base,
 		saved_alltalk_url: default_alltalk_base,
-		saved_mcp_urls: default_mcp_base,
+		saved_mcp_urls: "",
 		prev_custom_endpoint_type: 0, //show a reconnect box to custom endpoint if needed. 0 is horde, otherwise its dropdown value+1
 		prev_custom_endpoint_model: "", //we may not be able to match, but set it if we do
 		prev_custom_endpoint_ischatcmpl: true,
@@ -3811,6 +3811,7 @@ Current version indicated by LITEVER below.
 		enable_tool_use: false,
 		tools_auto_exec: true,
 		corsproxy_mcp: false,
+		kcpp_mcp_bridge: false,
 		cached_mcp_tools: {}, //key is url, value is tools array
 		disabled_mcp_tools: [], //maintain a list of unwanted tools that was deselected
 
@@ -3822,6 +3823,7 @@ Current version indicated by LITEVER below.
 		legacy_savefile:false,
 		allow_continue_user_turn: false,
 		proxy_disable_stream:false,
+		new_session_erase_memory: false,
 
 		//section migrated from story itself
 		extrastopseq: "",
@@ -4010,7 +4012,7 @@ Current version indicated by LITEVER below.
 		"name":"GLM-4.5 Non-Thinking",
 		"user":"<|user|>\\n",
 		"user_end":"/nothink",
-		"assistant":"<|assistant|>\\n<think></think>",
+		"assistant":"<|assistant|>\\n<think>We can answer immediately.</think>",
 		"assistant_end":"",
 		"system":"<|system|>\\n",
 		"system_end":"",
@@ -4374,7 +4376,7 @@ Current version indicated by LITEVER below.
 		}
 		if (typeof obj === 'object') {
 			const result = {};
-			for (const key in obj) {
+			for (let key in obj) {
 				if (obj.hasOwnProperty(key)) {
 					result[key] = replaceStringsInObject(obj[key], src, tgt);
 				}
@@ -6644,6 +6646,19 @@ Current version indicated by LITEVER below.
 							if (event.data && event.data.choices && event.data.choices.length>0) {
 								if(event.data.choices[0].text)
 								{
+									//crappy fix for OpenRouter completions, which can provide reasoning on the same chunk
+									if(streaming_was_thinking)
+									{
+										streaming_was_thinking = false;
+										if(event.data.choices[0].reasoning!=null && event.data.choices[0].reasoning!="")
+										{
+											synchro_pending_stream += event.data.choices[0].reasoning;
+										}
+										if(localsettings.think_injected==1 || synchro_pending_stream.includes(localsettings.start_thinking_tag.replaceAll("\\n", "\n")))
+										{
+											synchro_pending_stream += localsettings.stop_thinking_tag.replaceAll("\\n", "\n");
+										}
+									}
 									synchro_pending_stream += event.data.choices[0].text;
 								}
 								else if(event.data.choices[0].delta && event.data.choices[0].delta.content)
@@ -6716,6 +6731,11 @@ Current version indicated by LITEVER below.
 											}
 										}
 									}
+								}
+								else if(event.data.choices[0].reasoning!=null && event.data.choices[0].reasoning!="")
+								{
+									streaming_was_thinking = true;
+									synchro_pending_stream += event.data.choices[0].reasoning;
 								}
 
 								//collect logprobs if detected
@@ -7725,6 +7745,11 @@ Current version indicated by LITEVER below.
 				apiKey = null;
 			}
 			servers[url] = { apikey: apiKey, tools:[] };
+		}
+		if(document.getElementById("kcpp_mcp_bridge").checked && is_using_kcpp_with_lcppui())
+		{
+			let url = apply_proxy_url(custom_kobold_endpoint + koboldcpp_mcp_endpoint);
+			servers[url] = { apikey: (custom_kobold_key!=""?custom_kobold_key:null), tools:[] };
 		}
 		return servers;
 	}
@@ -14927,6 +14952,7 @@ Current version indicated by LITEVER below.
 		document.getElementById("enable_tool_use").checked = localsettings.enable_tool_use;
 		document.getElementById("tools_auto_exec").checked = localsettings.tools_auto_exec;
 		document.getElementById("corsproxy_mcp").checked = localsettings.corsproxy_mcp;
+		document.getElementById("kcpp_mcp_bridge").checked = localsettings.kcpp_mcp_bridge;
 		document.getElementById("mcpurls").value = localsettings.saved_mcp_urls;
 		pending_cached_mcp_tools = JSON.parse(JSON.stringify(localsettings.cached_mcp_tools));
 		pending_disabled_mcp_tools = JSON.parse(JSON.stringify(localsettings.disabled_mcp_tools));
@@ -15707,7 +15733,8 @@ Current version indicated by LITEVER below.
 		localsettings.enable_tool_use = (document.getElementById("enable_tool_use").checked ? true : false);
 		localsettings.tools_auto_exec = (document.getElementById("tools_auto_exec").checked ? true : false);
 		localsettings.corsproxy_mcp = (document.getElementById("corsproxy_mcp").checked ? true : false);
-		localsettings.saved_mcp_urls = document.getElementById("mcpurls").value.trim()?document.getElementById("mcpurls").value.trim():default_mcp_base;
+		localsettings.kcpp_mcp_bridge = (document.getElementById("kcpp_mcp_bridge").checked ? true : false);
+		localsettings.saved_mcp_urls = document.getElementById("mcpurls").value.trim();
 		localsettings.cached_mcp_tools = JSON.parse(JSON.stringify(pending_cached_mcp_tools));
 		pending_disabled_mcp_tools = [];
 		for(key in localsettings.cached_mcp_tools)
@@ -16173,28 +16200,21 @@ Current version indicated by LITEVER below.
 
 	function display_newgame() {
 		mainmenu_untab(true);
-		document.getElementById("keep_ai_selected").checked = true;
+		document.getElementById("new_session_erase_memory").checked = localsettings.new_session_erase_memory;
 		document.getElementById("newgamecontainer").classList.remove("hidden");
-		if(localflag)
-		{
-			document.getElementById("keep_ai_selected_row").classList.add("hidden");
-		}else
-		{
-			document.getElementById("keep_ai_selected_row").classList.remove("hidden");
-		}
 	}
 
 	function confirm_newgame() {
-		if(!localflag && !document.getElementById("keep_ai_selected").checked)
-		{
-			selected_models = [];
-			selected_workers = [];
-			localsettings.opmode = 1;
-		}
+		localsettings.new_session_erase_memory = document.getElementById("new_session_erase_memory").checked;
 		hide_popups();
-		restart_new_game(true, document.getElementById("keep_memory").checked);
+		restart_new_game(true, !localsettings.new_session_erase_memory);
 		sync_multiplayer(true);
 		update_for_sidepanel();
+		hide_popups();
+	}
+	function cancel_newgame()
+	{
+		localsettings.new_session_erase_memory = document.getElementById("new_session_erase_memory").checked;
 		hide_popups();
 	}
 
@@ -16631,7 +16651,6 @@ Current version indicated by LITEVER below.
 		idle_timer = 0;
 		idle_triggered_counter = 0;
 		gametext_arr = [];
-		alt_gametext_branches = [];
 		treeHandler.tree = {};
 		redo_arr = [];
 		last_request_str = "No Requests Available";
@@ -16675,6 +16694,7 @@ Current version indicated by LITEVER below.
 		recentSearchQueries = [];
 		lastSearchResults = [];
 		toolcall_waiting_approve = null;
+		alt_gametext_branches = [];
 		if (!keep_memory)
 		{
 			personal_notes = "";
@@ -16719,7 +16739,6 @@ Current version indicated by LITEVER below.
 			restart_new_game();
 			display_settings();
 			confirm_settings();
-			document.getElementById("keep_memory").checked = false;
 			clear_bg_img();
 			pick_default_horde_models();
 			indexeddb_save("savedusermod","");
@@ -19567,6 +19586,7 @@ Current version indicated by LITEVER below.
 					}
 					delete submit_payload["memory"];
 					delete submit_payload["prompt"];
+					delete submit_payload["images"];
 					submit_payload.messages = [];
 					submit_payload.continue_assistant_turn = true;
 					let mhistory = repack_instruct_history(combinedprompt);
@@ -19594,7 +19614,7 @@ Current version indicated by LITEVER below.
 						}
 						submit_payload.messages.push(cturn);
 					}
-					if(determine_if_can_use_mcp() && localsettings.cached_mcp_tools && Object.keys(localsettings.cached_mcp_tools).length>0)
+					if(localsettings.enable_tool_use && determine_if_can_use_mcp() && localsettings.cached_mcp_tools && Object.keys(localsettings.cached_mcp_tools).length>0)
 					{
 						let senttools = MCPGetAllowedTools();
 						if(senttools.length>0)
@@ -19781,7 +19801,7 @@ Current version indicated by LITEVER below.
 						}
 					}
 
-					if(determine_if_can_use_mcp() && localsettings.cached_mcp_tools && Object.keys(localsettings.cached_mcp_tools).length>0)
+					if(localsettings.enable_tool_use && determine_if_can_use_mcp() && localsettings.cached_mcp_tools && Object.keys(localsettings.cached_mcp_tools).length>0)
 					{
 						let senttools = MCPGetAllowedTools();
 						if(senttools.length>0)
@@ -21081,6 +21101,43 @@ Current version indicated by LITEVER below.
 		}
 		currmediahash = "";
 		currmediaidx = 0;
+	}
+
+	function download_curr_media() {
+		let elementId = document.getElementById("zoomedaudio")?"zoomedaudio":"zoomedimg";
+		let filename = document.getElementById("zoomedaudio")?"audio.mp3":"image.jpg";
+		let triggerDownload = function(url, filename) {
+			var a = document.createElement("a");
+			a.href = url;
+			a.download = filename;
+			document.body.appendChild(a);
+			a.click();
+			document.body.removeChild(a);
+			// Cleanup blob URLs
+			if (url.indexOf("blob:") === 0) {
+				setTimeout(function () {
+					URL.revokeObjectURL(url);
+				}, 1000);
+			}
+		}
+		var el = document.getElementById(elementId);
+		if (!el || !el.src) return;
+		var src = el.src;
+		if (src.indexOf("blob:") === 0) {
+			var xhr = new XMLHttpRequest();
+			xhr.open("GET", src, true);
+			xhr.responseType = "blob";
+
+			xhr.onload = function () {
+				if (xhr.status === 200) {
+					triggerDownload(URL.createObjectURL(xhr.response), filename);
+				}
+			};
+			xhr.send();
+		}
+		else {
+			triggerDownload(src, filename);
+		}
 	}
 
 	function render_all_media_html(text, float=true, center=false)
@@ -24096,7 +24153,7 @@ Current version indicated by LITEVER below.
 			if(chatunits[i].tool_calls)
 			{
 				chatunits[i].origmsg = chatunits[i].msg;
-				chatunits[i].msg = `<span class="color_lightgreen" style="font-weight:bold;">Made a tool call ${chatunits[i].tool_calls[0].id} to ${chatunits[i].tool_calls[0].function.name}</span>`;
+				chatunits[i].msg = `<span class="color_lightgreen" style="font-weight:bold;">Made a tool call to ${chatunits[i].tool_calls[0].function.name}</span>`;
 				if(!localsettings.tools_auto_exec && (i==chatunits.length-1 || (i==chatunits.length-2 && chatunits[chatunits.length-1].msg=="")))
 				{
 					toolcall_waiting_approve = {"tool_calls":chatunits[i].tool_calls};
@@ -24111,7 +24168,7 @@ Current version indicated by LITEVER below.
 			if(chatunits[i].tool_results)
 			{
 				chatunits[i].origmsg = chatunits[i].msg;
-				chatunits[i].msg = `<span class="color_lightgreen" style="font-weight:bold;">Received tool call results for ${chatunits[i].tool_results.tool_call_id} to ${chatunits[i].tool_results.name}</span>`;
+				chatunits[i].msg = `<span class="color_lightgreen" style="font-weight:bold;">Received tool call results for ${chatunits[i].tool_results.name}</span>`;
 			}
 		}
 		return chatunits;
@@ -29245,7 +29302,11 @@ Current version indicated by LITEVER below.
 								class="helptext">Many public MCP servers restrict CORS, use this to proxy your requests. Uses external tools, please only use if necessary.</span></span></div>
 							<input title="Use CORS Proxy for MCP" type="checkbox" id="corsproxy_mcp" style="margin:0px 0px 0px auto;">
 						</div>
-
+						<div class="settinglabel">
+							<div class="justifyleft settingsmall">Include KoboldCpp MCP Bridge <span class="helpicon">?<span
+								class="helptext">If selected, attempts to connect to any MCP configured in KoboldCpp MCP bridge. Requires KoboldCpp.</span></span></div>
+							<input title="Include KoboldCpp MCP Bridge" type="checkbox" id="kcpp_mcp_bridge" style="margin:0px 0px 0px auto;">
+						</div>
 						<div class="settinglabel">
 							<div class="justifyleft settingsmall">MCP Server URLs <span class="helpicon">?<span
 								class="helptext">Connect to local or remote MCP servers to use tools there. One URL per row, optional API keys separated by commas. Caution: MCP API keys are stored in plaintext in saves!</span></span></div>
@@ -29253,6 +29314,7 @@ Current version indicated by LITEVER below.
 							<button type="button" id="clear_mcp_btn" class="btn btn-primary" style="width:80px; padding:2px 3px;font-size:12px; margin: 0px 0px 0px auto;" onclick="Clear_MCP_Tools()">Remove All</button>
 							<button type="button" id="connect_mcp_btn" class="btn btn-primary" style="width:80px; padding:2px 3px;font-size:12px; margin: 0px 0px 0px 3px;" onclick="Fetch_MCP_Tools()">Connect All</button>
 						</div>
+
 
 						<div class="color_red hidden" id="nomcp">MCP Toolcalling unavailable, requires chat completions.</div>
 
@@ -29987,7 +30049,7 @@ Current version indicated by LITEVER below.
 					<option value="google/gemma-3-27b-it">google/gemma-3-27b-it</option>
 					<option value="meta/llama-3.3-70b-instruct">meta/llama-3.3-70b-instruct</option>
 					<option value="mistralai/mistral-large">mistralai/mistral-large</option>
-					<option value="moonshotai/kimi-k2-instruct" selected>moonshotai/kimi-k2-instruct</option>
+					<option value="moonshotai/kimi-k2-instruct-0905" selected>moonshotai/kimi-k2-instruct-0905</option>
 					<option value="nvidia/llama-3.3-nemotron-super-49b-v1">nvidia/llama-3.3-nemotron-super-49b-v1</option>
 					<option value="qwen/qwen3-235b-a22b">qwen/qwen3-235b-a22b</option>
 				<option style="display:none;" class="custom_model_option" value="custom">[Custom]</option>
@@ -30230,13 +30292,9 @@ Current version indicated by LITEVER below.
 				Unsaved data will be lost.<br><br>
 				<div>
 					<div style="vertical-align: middle;">
-						<div id="keep_ai_selected_row" title="If disabled, brings you back to the start page">
-							<span>Keep AI Selected? </span>
-							<input type="checkbox" id="keep_ai_selected" style=" vertical-align: top;" checked>
-						</div>
 						<div>
-							<span>Keep Memory and World Info? </span>
-							<input type="checkbox" id="keep_memory" style=" vertical-align: top;">
+							<span class="color_red">Also Reset Memory and World Info? </span>
+							<input type="checkbox" id="new_session_erase_memory" style="vertical-align: top;">
 						</div>
 					</div>
 				</div>
@@ -30244,7 +30302,7 @@ Current version indicated by LITEVER below.
 			</div>
 			<div class="popupfooter">
 				<button type="button" class="btn btn-primary" onclick="confirm_newgame()">Ok</button>
-				<button type="button" class="btn btn-primary" onclick="hide_popups()">Cancel</button>
+				<button type="button" class="btn btn-primary" onclick="cancel_newgame()">Cancel</button>
 			</div>
 		</div>
 	</div>
@@ -30292,7 +30350,8 @@ Current version indicated by LITEVER below.
 			</div>
 			<br>
 			<div class="popupfooter">
-				<button type="button" class="bg_red btn btn-primary" style="width: 124px;" onclick="delete_curr_media();clear_zoomed_img_and_audio();hide_popups();">Delete Media</button>
+				<button type="button" class="bg_red btn btn-primary" onclick="delete_curr_media();clear_zoomed_img_and_audio();hide_popups();">Delete</button>
+				<button type="button" class="btn btn-primary" onclick="download_curr_media();">Download</button>
 				<button type="button" class="btn btn-primary" onclick="clear_zoomed_img_and_audio();hide_popups()">Close</button>
 			</div>
 		</div>
