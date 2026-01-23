@@ -28567,12 +28567,6 @@ Current version indicated by LITEVER below.
 					<span class="justifyleft">Temporary Memory<span class="helpicon">?<span
 						class="helptext">Put the information you want the AI to know at the start (until you fill the context). Placeholder tags can be used.</span></span>
 					</span>
-					<span class="justifyright flex-push-right" >
-						<div class="settinglabel" style="padding-top: 4px;">
-							<div class="justifyleft settingsmall" title="Add newline after injecting memory text">Newline After Memory </div>
-						<input type="checkbox" title="Add Newline After Memory" id="newlineaftermemory" style="margin:0px 0 0;" checked>
-						</div>
-					</span>
 				</div>
 				<textarea title="Edit Temporary Memory" class="form-control menuinput_multiline" id="tempmemorytext" style="height: 160px;"
 					placeholder="Edit the temporary memory at the top of the context."></textarea>
