@@ -22,8 +22,8 @@
 	#memory_tab_container,
 	#wi_tab_container,
 	#documentdb_tab_container {
-		height: calc(90% - 60px);
-		max-height: calc(90% - 60px);
+		height: calc(90%);
+		max-height: calc(90%);
 		overflow-y: auto;
 	}
 
