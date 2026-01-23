@@ -710,3 +710,42 @@ bool kcpp_decode_audio_from_buf(const unsigned char * buf_in, size_t len, int ta
     ma_decoder_uninit(&decoder);
     return true;
 }
+
+static std::vector<std::string> kcpp_string_split(const std::string & input, char separator)
+{
+    std::vector<std::string> parts;
+    size_t begin_pos = 0;
+    size_t separator_pos = input.find(separator);
+    while (separator_pos != std::string::npos) {
+        std::string part = input.substr(begin_pos, separator_pos - begin_pos);
+        parts.emplace_back(part);
+        begin_pos = separator_pos + 1;
+        separator_pos = input.find(separator, begin_pos);
+    }
+    parts.emplace_back(input.substr(begin_pos, separator_pos - begin_pos));
+    return parts;
+}
+
+//for llama.cpp style device overrides e.g. --device Vulkan0,Vulkan1
+std::vector<ggml_backend_dev_t> kcpp_parse_device_list(const std::string & value) {
+    std::vector<ggml_backend_dev_t> devices;
+    auto dev_names = kcpp_string_split(value, ',');
+    if (dev_names.empty()) {
+        printf("\nkcpp_parse_device_list error: no devices specified\n");
+        return std::vector<ggml_backend_dev_t>();
+    }
+    if (dev_names.size() == 1 && dev_names[0] == "none") {
+        return std::vector<ggml_backend_dev_t>();
+    } else {
+        for (const auto & device : dev_names) {
+            auto * dev = ggml_backend_dev_by_name(device.c_str());
+            if (!dev || ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_CPU) {
+                printf("\nkcpp_parse_device_list error: invalid device: %s\n",device.c_str());
+                return std::vector<ggml_backend_dev_t>();
+            }
+            devices.push_back(dev);
+        }
+        devices.push_back(nullptr);
+    }
+    return devices;
+}

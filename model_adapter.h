@@ -107,6 +107,7 @@ const std::vector<TopPicksData> gpttype_get_top_picks_data();
 
 bool sdtype_load_model(const sd_load_model_inputs inputs);
 sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs);
+sd_generation_outputs sdtype_upscale(const sd_upscale_inputs inputs);
 sd_info_outputs sdtype_get_info();
 
 bool whispertype_load_model(const whisper_load_model_inputs inputs);

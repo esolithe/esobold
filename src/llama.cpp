@@ -14,6 +14,7 @@ static bool old_mixtral_warning_showed = false;
 #include "llama-kv-cache.cpp"
 #include "llama-kv-cache-iswa.cpp"
 #include "llama-memory-hybrid.cpp"
+#include "llama-memory-hybrid-iswa.cpp"
 #include "llama-memory-recurrent.cpp"
 #include "llama-model-loader.cpp"
 #include "llama-model-saver.cpp"
@@ -43,8 +44,6 @@ static bool old_mixtral_warning_showed = false;
 
 #ifdef GGML_USE_CUDA
 #  include "ggml-cuda.h"
-#elif defined(GGML_USE_CLBLAST)
-#  include "ggml_v3b-opencl.h"
 #endif
 
 #if defined(_MSC_VER)
@@ -135,8 +134,20 @@ static std::vector<llama_device_memory_data> llama_get_device_memory_data(
         }
     }
     for (size_t i = 0; i < ret.size(); i++) {
-        size_t free, total;
+        size_t free;
+        size_t total;
         ggml_backend_dev_memory(model->devices[i], &free, &total);
+
+        // devices can return 0 bytes for free and total memory if they do not
+        // have any to report. in this case, we will use the host memory as a fallback
+        // fixes: https://github.com/ggml-org/llama.cpp/issues/18577
+        if (free == 0 && total == 0) {
+            ggml_backend_dev_t cpu_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+            if (cpu_dev == nullptr) {
+                throw std::runtime_error(format("%s: no CPU backend found", __func__));
+            }
+            ggml_backend_dev_memory(cpu_dev, &free, &total);
+        }
         ret[i].free  = free;
         ret[i].total = total;
     }
@@ -792,13 +803,9 @@ bool llama_supports_mlock(void) {
 }
 
 bool llama_supports_gpu_offload(void) {
-    #if defined(GGML_USE_CLBLAST)
-        return true;
-    #else
     return ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU) != nullptr ||
            ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_IGPU) != nullptr ||
            llama_supports_rpc();
-    #endif
 }
 
 bool llama_supports_rpc(void) {

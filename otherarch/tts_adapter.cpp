@@ -589,7 +589,7 @@ static llama_context * cts_ctx = nullptr; //codes to speech
 static TTS_VER ttsver = TTS_VER_2;
 static int ttsdebugmode = 0;
 static bool tts_is_quiet = false;
-static std::string ttsplatformenv, ttsdeviceenv, ttsvulkandeviceenv;
+static std::string ttsvulkandeviceenv;
 static std::string last_generated_audio = "";
 static std::string last_generation_settings_prompt = ""; //for caching purposes to fix ST bug
 static int last_generation_settings_speaker_seed;
@@ -618,16 +618,6 @@ bool ttstype_load_model(const tts_load_model_inputs inputs)
     tts_executable_path = inputs.executable_path;
 
     //duplicated from expose.cpp
-    int cl_parseinfo = inputs.clblast_info; //first digit is whether configured, second is platform, third is devices
-    std::string usingclblast = "GGML_OPENCL_CONFIGURED="+std::to_string(cl_parseinfo>0?1:0);
-    putenv((char*)usingclblast.c_str());
-    cl_parseinfo = cl_parseinfo%100; //keep last 2 digits
-    int platform = cl_parseinfo/10;
-    int devices = cl_parseinfo%10;
-    ttsplatformenv = "GGML_OPENCL_PLATFORM="+std::to_string(platform);
-    ttsdeviceenv = "GGML_OPENCL_DEVICE="+std::to_string(devices);
-    putenv((char*)ttsplatformenv.c_str());
-    putenv((char*)ttsdeviceenv.c_str());
     std::string vulkan_info_raw = inputs.vulkan_info;
     std::string vulkan_info_str = "";
     for (size_t i = 0; i < vulkan_info_raw.length(); ++i) {
@@ -636,7 +626,14 @@ bool ttstype_load_model(const tts_load_model_inputs inputs)
             vulkan_info_str += ",";
         }
     }
-    if(vulkan_info_str!="")
+    const char* existingenv = getenv("GGML_VK_VISIBLE_DEVICES");
+    std::vector<ggml_backend_dev_t> devices_override;
+    std::string dev_override_str = inputs.devices_override;
+    if(dev_override_str!="")
+    {
+        devices_override = kcpp_parse_device_list(dev_override_str);
+    }
+    if(!existingenv && vulkan_info_str!="")
     {
         ttsvulkandeviceenv = "GGML_VK_VISIBLE_DEVICES="+vulkan_info_str;
         putenv((char*)ttsvulkandeviceenv.c_str());
@@ -697,6 +694,12 @@ bool ttstype_load_model(const tts_load_model_inputs inputs)
         tts_ctx_params.n_threads_batch = nthreads;
         tts_ctx_params.flash_attn_type = (inputs.flash_attention?LLAMA_FLASH_ATTN_TYPE_ENABLED:LLAMA_FLASH_ATTN_TYPE_DISABLED);
         tts_ctx_params.kv_unified = true;
+
+        if(devices_override.size()>0)
+        {
+            printf("\nOverriding with %d devices...\n",devices_override.size()-1);
+            tts_model_params.devices = devices_override.data();
+        }
 
         llama_model * ttcmodel = llama_model_load_from_file(modelfile_ttc.c_str(), tts_model_params);
         ttc_ctx = llama_init_from_model(ttcmodel, tts_ctx_params);

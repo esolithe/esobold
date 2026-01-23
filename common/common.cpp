@@ -15,7 +15,6 @@
 #include "json-schema-to-grammar.cpp"
 #include "llama.h"
 #include "sampling.h"
-#include "chat.cpp"
 #include "ggml/src/ggml-opt.cpp" //dear god pls
 
 #include <algorithm>
@@ -1180,7 +1179,6 @@ common_init_result::common_init_result(common_params & params) :
         pimpl->samplers_seq_config[i] = { i, common_sampler_get(pimpl->samplers[i].get()) };
     }
 
-    // TODO: temporarily gated behind a flag
     if (params.sampling.backend_sampling) {
         cparams.samplers   = pimpl->samplers_seq_config.data();
         cparams.n_samplers = pimpl->samplers_seq_config.size();

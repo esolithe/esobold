@@ -69,6 +69,8 @@ int32_t kcpp_quick_sample(float * logits, const int n_logits, const std::vector<
 std::vector<std::string> split_string(const std::string& input, const std::string& separator);
 bool kcpp_decode_audio_from_buf(const unsigned char * buf_in, size_t len, int target_sampler_rate, std::vector<float> & pcmf32_mono);
 
+std::vector<ggml_backend_dev_t> kcpp_parse_device_list(const std::string & value);
+
 //duplcated and modified from llava_embd_batch
 struct kcpp_embd_batch {
     std::vector<llama_pos>    pos;

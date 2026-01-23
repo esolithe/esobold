@@ -22,7 +22,7 @@
 #endif
 
 static llama_context * embeddings_ctx = nullptr; //text to codes ctx
-static std::string ttsplatformenv, ttsdeviceenv, ttsvulkandeviceenv;
+static std::string ttsvulkandeviceenv;
 bool embeddings_debug = false;
 static int max_batchsize = 512;
 static std::string last_output = "";
@@ -83,16 +83,6 @@ static void batch_decode(llama_context * ctx, llama_batch & batch, float * outpu
 bool embeddingstype_load_model(const embeddings_load_model_inputs inputs)
 {
     //duplicated from expose.cpp
-    int cl_parseinfo = inputs.clblast_info; //first digit is whether configured, second is platform, third is devices
-    std::string usingclblast = "GGML_OPENCL_CONFIGURED="+std::to_string(cl_parseinfo>0?1:0);
-    putenv((char*)usingclblast.c_str());
-    cl_parseinfo = cl_parseinfo%100; //keep last 2 digits
-    int platform = cl_parseinfo/10;
-    int devices = cl_parseinfo%10;
-    ttsplatformenv = "GGML_OPENCL_PLATFORM="+std::to_string(platform);
-    ttsdeviceenv = "GGML_OPENCL_DEVICE="+std::to_string(devices);
-    putenv((char*)ttsplatformenv.c_str());
-    putenv((char*)ttsdeviceenv.c_str());
     std::string vulkan_info_raw = inputs.vulkan_info;
     std::string vulkan_info_str = "";
     for (size_t i = 0; i < vulkan_info_raw.length(); ++i) {
@@ -101,7 +91,14 @@ bool embeddingstype_load_model(const embeddings_load_model_inputs inputs)
             vulkan_info_str += ",";
         }
     }
-    if(vulkan_info_str!="")
+    const char* existingenv = getenv("GGML_VK_VISIBLE_DEVICES");
+    std::vector<ggml_backend_dev_t> devices_override;
+    std::string dev_override_str = inputs.devices_override;
+    if(dev_override_str!="")
+    {
+        devices_override = kcpp_parse_device_list(dev_override_str);
+    }
+    if(!existingenv && vulkan_info_str!="")
     {
         ttsvulkandeviceenv = "GGML_VK_VISIBLE_DEVICES="+vulkan_info_str;
         putenv((char*)ttsvulkandeviceenv.c_str());
@@ -123,6 +120,12 @@ bool embeddingstype_load_model(const embeddings_load_model_inputs inputs)
     int kcpp_parseinfo_maindevice = inputs.kcpp_main_gpu<=0?0:inputs.kcpp_main_gpu;
     model_params.main_gpu = kcpp_parseinfo_maindevice;
     model_params.split_mode = llama_split_mode::LLAMA_SPLIT_MODE_LAYER;
+
+    if(devices_override.size()>0)
+    {
+        printf("\nOverriding with %d devices...\n",devices_override.size()-1);
+        model_params.devices = devices_override.data();
+    }
 
     llama_model * embeddingsmodel = llama_model_load_from_file(modelfile.c_str(), model_params);
     const int n_ctx_train = llama_model_n_ctx_train(embeddingsmodel);

@@ -2324,9 +2324,6 @@ static const ggml::cpu::tensor_traits * ggml_repack_get_optimal_repack_type(cons
     static const ggml::cpu::repack::tensor_traits<block_iq4_nl, 4, 4, GGML_TYPE_Q8_0> iq4_nl_4x4_q8_0;
 
     bool permit_repack = true;
-#if defined(GGML_USE_CLBLAST)
-    permit_repack = false; //kcpp: clblast cannot handle repacking
-#endif
 
     // instance for Q8_0
     static const ggml::cpu::repack::tensor_traits<block_q8_0, 4, 4, GGML_TYPE_Q8_0> q8_0_4x4_q8_0;

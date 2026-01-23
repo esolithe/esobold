@@ -2,14 +2,11 @@
 
 #include "ggml.h"
 
+#include <algorithm>
 #include <array>
 #include <cinttypes>
 #include <cstring>
 #include <future>
-
-#if defined(GGML_USE_CLBLAST)
-#  include "ggml_v3b-opencl.h"
-#endif
 
 static const size_t kiB = 1024;
 static const size_t MiB = 1024*kiB;
@@ -348,6 +345,7 @@ namespace GGUFMeta {
             GGUFMeta::GKV<GGUFMeta::ArrayInfo>::get_kv(ctx, kid);
 
         switch (arr_info.gt) {
+            case GGUF_TYPE_BOOL:
             case GGUF_TYPE_UINT32:
             case GGUF_TYPE_INT32:   GGML_ASSERT((std::is_same<T,     int32_t>::value) ||
                                                 (std::is_same<T,    uint32_t>::value)); break;
@@ -369,7 +367,13 @@ namespace GGUFMeta {
                 result[i] = value;
             }
         } else {
-            std::copy((const T*)arr_info.data, (const T *)arr_info.data + arr_info.length, result.begin());
+            if (arr_info.gt == GGUF_TYPE_BOOL) {
+                std::transform((const bool *)arr_info.data, (const bool *)arr_info.data + arr_info.length, result.begin(), [](bool x) {
+                    return static_cast<T>(x);
+                });
+            } else {
+                std::copy((const T*)arr_info.data, (const T *)arr_info.data + arr_info.length, result.begin());
+            }
         }
 
         return true;
@@ -535,12 +539,18 @@ llama_model_loader::llama_model_loader(
     files.emplace_back(new llama_file(fname.c_str(), "rb", use_direct_io));
     contexts.emplace_back(ctx);
 
-    use_direct_io = use_direct_io && files.back()->has_direct_io();
-
-    // Disable mmap in case Direct I/O is enabled and available
-    if (use_direct_io && use_mmap) {
-        use_mmap = false;
-        LLAMA_LOG_WARN("%s: direct I/O is enabled, disabling mmap\n", __func__);
+    if (use_mmap && use_direct_io) {
+        if (files.back()->has_direct_io()) {
+            // Disable mmap, as DirectIO is available
+            use_mmap = false;
+            LLAMA_LOG_WARN("%s: direct I/O is enabled, disabling mmap\n", __func__);
+        } else {
+            // Disable DirectIO and reopen file using std::fopen for mmap
+            use_direct_io = false;
+            files.pop_back();
+            files.emplace_back(new llama_file(fname.c_str(), "rb", false));
+            LLAMA_LOG_WARN("%s: direct I/O is not available, using mmap\n", __func__);
+        }
     }
 
     // Save tensors data offset of the main file.
@@ -959,7 +969,6 @@ void llama_model_loader::load_data_for(struct ggml_tensor * cur) const {
     }
 }
 
-static int clblast_offload_fallback_layers = 0;
 static int layer_name_to_number(std::string inputString)
 {
     size_t firstDotPosition = inputString.find('.');
@@ -1205,18 +1214,6 @@ bool llama_model_loader::load_all_data(
                 }
             }
         }
-
-        #if defined(GGML_USE_CLBLAST)
-        int layernum = layer_name_to_number(cur->name);
-        bool shouldoffload = (layernum>=0 && clblast_offload_fallback_layers>layernum);
-        if(shouldoffload)
-        {
-            cur->clblast_offload_gpu = true;
-            ggml_cl_transform_tensor(cur->data, cur);
-        }else{
-            cur->clblast_offload_gpu = false;
-        }
-        #endif
 
         size_done += n_size;
     }
