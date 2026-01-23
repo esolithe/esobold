@@ -31,10 +31,10 @@ class TreeViewer {
 				background-color: black;
 				border-radius: 10px;
 				height: 20px;
-				width: 50px;
+				width: 42px;
 				text-align: center;
 				background-image: var(--img_worldTree);
-				height: 50px;
+				height: 42px;
 				background-size: contain;
 				background-repeat: no-repeat;
 				background-position: center;`
