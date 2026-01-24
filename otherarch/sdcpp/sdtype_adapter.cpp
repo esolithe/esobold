@@ -837,8 +837,8 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
     const int default_res_limit = 8192; // arbitrary, just to simplify the code
     // avoid crashes due to bugs/limitations on certain models
     // although it can be possible for a single side to exceed 1024, the total resolution of the image
-    // cannot exceed (832x832) for sd1/sd2 or (1024x1024) for sdxl/sd3/flux, to prevent crashing the server
-    const int hard_megapixel_res_limit = (loadedsdver==SDVersion::VERSION_SD1 || loadedsdver==SDVersion::VERSION_SD2)?832:1024;
+    // cannot exceed (832x832) for sd1/sd2 or (1280x1280) for sdxl/sd3/flux, to prevent crashing the server
+    const int hard_megapixel_res_limit = (loadedsdver==SDVersion::VERSION_SD1 || loadedsdver==SDVersion::VERSION_SD2)?832:1280;
 
     int img_hard_limit = default_res_limit;
     if (cfg_side_limit > 0) {
