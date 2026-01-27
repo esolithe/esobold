@@ -4642,7 +4642,7 @@ Change Mode<br>
 
         if clean_path in [""]: # the root url is lite
             content_type = 'text/html'
-            if not args.developerMode and supports_gzip and embedded_kailite_gz is not None:
+            if (not args.developerMode) and supports_gzip and embedded_kailite_gz is not None:
                 response_body = embedded_kailite_gz
                 content_encoding = 'gzip'
             elif embedded_kailite is not None:
