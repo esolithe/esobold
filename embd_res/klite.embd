@@ -29051,7 +29051,7 @@ Current version indicated by LITEVER below.
 						</div>
 						<div id="guitypedesc2" class="settingsdesctxt justifyright"></div>
 
-						<div class="settinglabel">
+						<div class="settinglabel hidden">
 							<div class="justifyleft">Color scheme <span class="helpicon">?<span
 								class="helptext">Set UI color scheme. Does not apply to corpo mode.</span></span></div>
 								<div class="push-right">
