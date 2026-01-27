@@ -180,9 +180,6 @@ Finally, obtain and load a GGUF model. See [here](#Obtaining-a-GGUF-model)
 ## Run on RunPod
 - KoboldCpp can now be used on RunPod cloud GPUs! This is an easy way to get started without installing anything in a minute or two, and is very scalable, capable of running 70B+ models at afforable cost. [Try our RunPod image here!](https://koboldai.org/runpodcpp).
 
-## Run on Novita AI
-KoboldCpp can now also be run on Novita AI, a newer alternative GPU cloud provider which has a quick launch KoboldCpp template for as well. [Check it out here!](https://koboldai.org/novitacpp)
-
 ## Docker
 - The official docker can be found at https://hub.docker.com/r/koboldai/koboldcpp
 - If you're building your own docker, remember to enable LLAMA_PORTABLE
