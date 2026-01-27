@@ -143,3 +143,11 @@
 	#additionalSameOptions > a {
 		padding: 15px 10px 15px 10px;
 	}
+
+	.shareEquallyHorizontally {
+		display: flex;
+	}
+
+	.shareEquallyHorizontally > * {
+		flex: auto;
+	}

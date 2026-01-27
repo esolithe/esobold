@@ -28707,46 +28707,48 @@ Current version indicated by LITEVER below.
 					<input title="Search Includes Context History" type="checkbox" id="documentdb_searchhistory" class="push-right">
 				</div>
 
-				<div class="settingitem" style="width: unset;">
-					<div class="settinglabel" style="padding: 4px;">
-						<div class="justifyleft">Search Results <span class="helpicon">?<span class="helptext">Controls how many search results to retrieve from DB. Each search result is added to the context as a snippet of the DB
-						document.</span></span></div>
-						<input title="Number of Search Results" inputmode="numeric" class="justifyright" style="margin-left:3px" id="documentdb_numresults" oninput="
-						document.getElementById('documentdb_numresults_slide').value = this.value; estimate_and_show_textDB_usage();">
+				<div class="shareEquallyHorizontally">
+					<div class="settingitem" style="width: unset;">
+						<div class="settinglabel" style="padding: 4px;">
+							<div class="justifyleft">Search Results <span class="helpicon">?<span class="helptext">Controls how many search results to retrieve from DB. Each search result is added to the context as a snippet of the DB
+							document.</span></span></div>
+							<input title="Number of Search Results" inputmode="numeric" class="justifyright push-right" id="documentdb_numresults" oninput="
+							document.getElementById('documentdb_numresults_slide').value = this.value; estimate_and_show_textDB_usage();">
+						</div>
+						<div><input title="Number of Search Results Slider" type="range" min="1" max="10" step="1" id="documentdb_numresults_slide" oninput="
+							document.getElementById('documentdb_numresults').value = this.value; estimate_and_show_textDB_usage();"></div>
+						<div class="settingminmax">
+							<div class="justifyleft">1</div>
+							<div class="justifyright">10</div>
+						</div>
 					</div>
-					<div><input title="Number of Search Results Slider" type="range" min="1" max="10" step="1" id="documentdb_numresults_slide" oninput="
-						document.getElementById('documentdb_numresults').value = this.value; estimate_and_show_textDB_usage();"></div>
-					<div class="settingminmax">
-						<div class="justifyleft">1</div>
-						<div class="justifyright">10</div>
-					</div>
-				</div>
 
-				<div class="settingitem" style="width: unset;">
-					<div class="settinglabel" style="padding: 4px;">
-						<div class="justifyleft">Added History <span class="helpicon">?<span class="helptext">Adds the specified amount of characters from the context before the last user message to the search query.</span></span></div>
-						<input title="Extra Text For Search" inputmode="numeric" class="justifyright" style="margin-left:3px" id="documentdb_searchrange" oninput="
-						document.getElementById('documentdb_searchrange_slide').value = this.value;">
+					<div class="settingitem" style="width: unset;">
+						<div class="settinglabel" style="padding: 4px;">
+							<div class="justifyleft">Added History <span class="helpicon">?<span class="helptext">Adds the specified amount of characters from the context before the last user message to the search query.</span></span></div>
+							<input title="Extra Text For Search" inputmode="numeric" class="justifyright push-right" id="documentdb_searchrange" oninput="
+							document.getElementById('documentdb_searchrange_slide').value = this.value;">
+						</div>
+						<div><input title="Extra Text For Search Slider" type="range" min="50" max="500" step="10" id="documentdb_searchrange_slide" oninput="
+							document.getElementById('documentdb_searchrange').value = this.value;"></div>
+						<div class="settingminmax">
+							<div class="justifyleft">50</div>
+							<div class="justifyright">500</div>
+						</div>
 					</div>
-					<div><input title="Extra Text For Search Slider" type="range" min="50" max="500" step="10" id="documentdb_searchrange_slide" oninput="
-						document.getElementById('documentdb_searchrange').value = this.value;"></div>
-					<div class="settingminmax">
-						<div class="justifyleft">50</div>
-						<div class="justifyright">500</div>
-					</div>
-				</div>
 
-				<div class="settingitem" style="width: unset;">
-					<div class="settinglabel" style="padding: 4px;">
-						<div class="justifyleft">Snippet Size <span class="helpicon">?<span class="helptext">Controls the size (in characters) of each snippet taken from the documents.</span></span></div>
-						<input title="Snippet Size" inputmode="numeric" class="justifyright" style="margin-left:3px" id="documentdb_chunksize" oninput="
-						document.getElementById('documentdb_chunksize_slide').value = this.value; estimate_and_show_textDB_usage();">
-					</div>
-					<div><input title="Snippet Size Slider" type="range" min="100" max="3000" step="50" id="documentdb_chunksize_slide" oninput="
-						document.getElementById('documentdb_chunksize').value = this.value; estimate_and_show_textDB_usage();"></div>
-					<div class="settingminmax">
-						<div class="justifyleft">100</div>
-						<div class="justifyright">3000</div>
+					<div class="settingitem" style="width: unset;">
+						<div class="settinglabel" style="padding: 4px;">
+							<div class="justifyleft">Snippet Size <span class="helpicon">?<span class="helptext">Controls the size (in characters) of each snippet taken from the documents.</span></span></div>
+							<input title="Snippet Size" inputmode="numeric" class="justifyright push-right" id="documentdb_chunksize" oninput="
+							document.getElementById('documentdb_chunksize_slide').value = this.value; estimate_and_show_textDB_usage();">
+						</div>
+						<div><input title="Snippet Size Slider" type="range" min="100" max="3000" step="50" id="documentdb_chunksize_slide" oninput="
+							document.getElementById('documentdb_chunksize').value = this.value; estimate_and_show_textDB_usage();"></div>
+						<div class="settingminmax">
+							<div class="justifyleft">100</div>
+							<div class="justifyright">3000</div>
+						</div>
 					</div>
 				</div>
 
