@@ -57,8 +57,8 @@ let themes = {
         "--theme_color_bg": "#182330",
         "--theme_color_bg_dark": "#0b141a",
         "--theme_color_topmenu_text": "#d1d1d1",
-        "--theme_color_button_bg": "#32496d",
-        "--theme_color_button_text": "#d1d1d1"
+        "--theme_color_btn": "#32496d",
+        "--theme_color_btn_text": "#d1d1d1"
     },
     "Old colour theme (Cedo)": {
         "--theme_color_topmenu": "#337ab7",
@@ -83,8 +83,8 @@ let themes = {
         "--theme_color_tabs_text": "#e0e0e0",
         "--theme_color_placeholder_text": "#9e9e9e",
         "--theme_color_topmenu_text": "#e0e0e0",
-        "--theme_color_button_bg": "#337ab7",
-        "--theme_color_button_text": "#e0e0e0"
+        "--theme_color_btn": "#337ab7",
+        "--theme_color_btn_text": "#e0e0e0"
     },
     "Night (TwistedShadows)": {
         "--theme_color_bg": "#000000",
@@ -109,8 +109,8 @@ let themes = {
         "--theme_color_topbtn_highlight": "#596985",
         "--theme_color_topmenu": "#000000",
         "--theme_color_topmenu_text": "#ffffff",
-        "--theme_color_button_bg": "#000000",
-        "--theme_color_button_text": "#ffffff"
+        "--theme_color_btn": "#000000",
+        "--theme_color_btn_text": "#ffffff"
     },
     "Tako (Lakius)": {
         "--theme_color_bg": "rgba(47.000000000000014, 34, 49.00000000000001, 1)",
@@ -135,8 +135,8 @@ let themes = {
         "--theme_color_topbtn_highlight": "rgba(217, 137.00000000000006, 7.999999999999989, 1)",
         "--theme_color_topmenu": "rgba(41.55767102869011, 30.678912543109437, 51.22767857142856, 1)",
         "--theme_color_topmenu_text": "rgba(255, 255, 255, 1)",
-        "--theme_color_button_bg": "rgba(206, 148.0000000000001, 70.99999999999999, 1)",
-        "--theme_color_button_text": "rgba(255, 255, 255, 1)"
+        "--theme_color_btn": "rgba(206, 148.0000000000001, 70.99999999999999, 1)",
+        "--theme_color_btn_text": "rgba(255, 255, 255, 1)"
     },
     "Aqua blue (Dr. Toaster)": {
         "--theme_color_topmenu": "rgba(0, 42.99999999999997, 54, 1)",
@@ -161,8 +161,8 @@ let themes = {
         "--theme_color_bg": "rgba(35.99999999999999, 71.00000000000004, 81.99999999999999, 1)",
         "--theme_color_bg_dark": "rgba(35.999999999999986, 71.00000000000001, 81.99999999999996, 0.68)",
         "--theme_color_topmenu_text": "rgba(160, 190, 190, 1)",
-        "--theme_color_button_bg": "rgba(0, 42.99999999999997, 54, 1)",
-        "--theme_color_button_text": "rgba(160, 190, 190, 1)"
+        "--theme_color_btn": "rgba(0, 42.99999999999997, 54, 1)",
+        "--theme_color_btn_text": "rgba(160, 190, 190, 1)"
     },
     "CandyUI (Peter)": {
         "--theme_color_bg": "#182330",
@@ -187,8 +187,8 @@ let themes = {
         "--theme_color_topbtn_highlight": "rgba(0, 191, 255, 0.8)",
         "--theme_color_topmenu": "rgba(255, 105, 179.99999999999997, 0.7)",
         "--theme_color_topmenu_text": "#d1d1d1",
-        "--theme_color_button_bg": "rgba(255, 105, 179.99999999999997, 0.6)",
-        "--theme_color_button_text": "#d1d1d1"
+        "--theme_color_btn": "rgba(255, 105, 179.99999999999997, 0.6)",
+        "--theme_color_btn_text": "#d1d1d1"
     },
     "Cherry pink (Rose22)": {
         "--theme_color_bg_dark": "rgba(0, 0, 0, 1)",
@@ -213,8 +213,8 @@ let themes = {
         "--theme_color_placeholder_text": "#9e9e9e",
         "--theme_color_topmenu": "rgba(0, 0, 0, 1)",
         "--theme_color_topmenu_text": "rgba(255, 168, 226.00000000000003, 1)",
-        "--theme_color_button_bg": "rgba(148, 49.999999999999986, 102.99999999999987, 1)",
-        "--theme_color_button_text": "rgba(255, 99.99999999999999, 202.99999999999994, 1)",
+        "--theme_color_btn": "rgba(148, 49.999999999999986, 102.99999999999987, 1)",
+        "--theme_color_btn_text": "rgba(255, 99.99999999999999, 202.99999999999994, 1)",
     },
     "Light Dark Blue (Peter)": {
         "--theme_color_bg": "rgba(255,255,255,1)",
@@ -239,8 +239,8 @@ let themes = {
         "--theme_color_topbtn_highlight": "rgba(215,229,255,1)",
         "--theme_color_topmenu": "rgba(255,255,255,1)",
         "--theme_color_topmenu_text": "rgba(31,41,55,1)",
-        "--theme_color_button_bg": "rgba(37,99,235,1)",
-        "--theme_color_button_text": "#FFFFFF"
+        "--theme_color_btn": "rgba(37,99,235,1)",
+        "--theme_color_btn_text": "#FFFFFF"
     },
     "Light Lite Blue (Peter)": {
         "--theme_color_bg": "#FFFFFF",
@@ -265,8 +265,8 @@ let themes = {
         "--theme_color_topbtn_highlight": "#D6E7FF",
         "--theme_color_topmenu": "#FFFFFF",
         "--theme_color_topmenu_text": "#1F2937",
-        "--theme_color_button_bg": "#007ACC",
-        "--theme_color_button_text": "#FFFFFF"
+        "--theme_color_btn": "#007ACC",
+        "--theme_color_btn_text": "#FFFFFF"
     },
     "Light Lavender (Peter)": {
         "--theme_color_bg": "#FAF7FF",
@@ -291,8 +291,8 @@ let themes = {
         "--theme_color_topbtn_highlight": "#E1D6FF",
         "--theme_color_topmenu": "#FAF7FF",
         "--theme_color_topmenu_text": "#2E2640",
-        "--theme_color_button_bg": "#6D5BD0",
-        "--theme_color_button_text": "#FFFFFF"
+        "--theme_color_btn": "#6D5BD0",
+        "--theme_color_btn_text": "#FFFFFF"
     },
     "Light Sand (Peter)": {
         "--theme_color_bg": "#FBF7F0",
@@ -317,8 +317,8 @@ let themes = {
         "--theme_color_topbtn_highlight": "#EADCC6",
         "--theme_color_topmenu": "#FBF7F0",
         "--theme_color_topmenu_text": "#3F3A28",
-        "--theme_color_button_bg": "#C37D2F",
-        "--theme_color_button_text": "#FFFFFF"
+        "--theme_color_btn": "#C37D2F",
+        "--theme_color_btn_text": "#FFFFFF"
     },
     "Light Coffee Cream (Peter)": {
         "--theme_color_bg": "#F7F2E7",
@@ -343,8 +343,8 @@ let themes = {
         "--theme_color_topbtn_highlight": "#E8D8BF",
         "--theme_color_topmenu": "#FAF4EA",
         "--theme_color_topmenu_text": "#3E3A33",
-        "--theme_color_button_bg": "#C9A566",
-        "--theme_color_button_text": "#FFFFFF"
+        "--theme_color_btn": "#C9A566",
+        "--theme_color_btn_text": "#FFFFFF"
     },
     "Mostly black (Peter)": {
         "--theme_color_bg": "#151617",
@@ -369,8 +369,8 @@ let themes = {
         "--theme_color_topbtn_highlight": "#282033",
         "--theme_color_topmenu": "#151417",
         "--theme_color_topmenu_text": "#e6e6ea",
-        "--theme_color_button_bg": "#7c3aed",
-        "--theme_color_button_text": "#ffffff"
+        "--theme_color_btn": "#7c3aed",
+        "--theme_color_btn_text": "#ffffff"
     },
     "Dark navy (Peter)": {
         "--theme_color_bg": "#0f274f",
@@ -395,8 +395,8 @@ let themes = {
         "--theme_color_topbtn_highlight": "#163054",
         "--theme_color_topmenu": "#0b1a32",
         "--theme_color_topmenu_text": "#e6eef9",
-        "--theme_color_button_bg": "#1d4ed8",
-        "--theme_color_button_text": "#ffffff"
+        "--theme_color_btn": "#1d4ed8",
+        "--theme_color_btn_text": "#ffffff"
     },
     "Ink blue (Peter)": {
         "--theme_color_bg": "#0d141e",
@@ -421,8 +421,8 @@ let themes = {
         "--theme_color_topbtn_highlight": "#122233",
         "--theme_color_topmenu": "#0b141e",
         "--theme_color_topmenu_text": "#e6eef9",
-        "--theme_color_button_bg": "#0284c7",
-        "--theme_color_button_text": "#ffffff"
+        "--theme_color_btn": "#0284c7",
+        "--theme_color_btn_text": "#ffffff"
     },
     "Dark charcoal (Peter)": {
         "--theme_color_bg": "#1a1a1a",
@@ -447,8 +447,8 @@ let themes = {
         "--theme_color_topbtn_highlight": "#232323",
         "--theme_color_topmenu": "#161616",
         "--theme_color_topmenu_text": "#eaeaea",
-        "--theme_color_button_bg": "#5fa36a",
-        "--theme_color_button_text": "#ffffff"
+        "--theme_color_btn": "#5fa36a",
+        "--theme_color_btn_text": "#ffffff"
     },
     "Dark brown (Peter)": {
         "--theme_color_bg": "#201a13",
@@ -473,8 +473,8 @@ let themes = {
         "--theme_color_topbtn_highlight": "#2f2519",
         "--theme_color_topmenu": "#1f180f",
         "--theme_color_topmenu_text": "#f1e7da",
-        "--theme_color_button_bg": "#b7791f",
-        "--theme_color_button_text": "#ffffff"
+        "--theme_color_btn": "#b7791f",
+        "--theme_color_btn_text": "#ffffff"
     },
     "Dark olive (Peter)": {
         "--theme_color_bg": "#20211c",
@@ -499,8 +499,8 @@ let themes = {
         "--theme_color_topbtn_highlight": "#2e3025",
         "--theme_color_topmenu": "#1f201b",
         "--theme_color_topmenu_text": "#e8e9d9",
-        "--theme_color_button_bg": "#8d9467",
-        "--theme_color_button_text": "#ffffff"
+        "--theme_color_btn": "#8d9467",
+        "--theme_color_btn_text": "#ffffff"
     },
     "Dark gray (Peter)": {
         "--theme_color_bg": "#1a1a1a",
@@ -525,8 +525,8 @@ let themes = {
         "--theme_color_topbtn_highlight": "#242424",
         "--theme_color_topmenu": "#1a1a1a",
         "--theme_color_topmenu_text": "#ededed",
-        "--theme_color_button_bg": "#3b82f6",
-        "--theme_color_button_text": "#ffffff"
+        "--theme_color_btn": "#3b82f6",
+        "--theme_color_btn_text": "#ffffff"
     },
     "Dark red (Peter)": {
         "--theme_color_bg": "#2a090a",
@@ -551,8 +551,8 @@ let themes = {
         "--theme_color_topbtn_highlight": "#3a1213",
         "--theme_color_topmenu": "#2a090a",
         "--theme_color_topmenu_text": "#fceaea",
-        "--theme_color_button_bg": "#b91c1c",
-        "--theme_color_button_text": "#ffffff"
+        "--theme_color_btn": "#b91c1c",
+        "--theme_color_btn_text": "#ffffff"
     },
     "Dark teal (Peter)": {
         "--theme_color_bg": "#0b232b",
@@ -577,8 +577,8 @@ let themes = {
         "--theme_color_topbtn_highlight": "#113742",
         "--theme_color_topmenu": "#0a252d",
         "--theme_color_topmenu_text": "#e6f7fa",
-        "--theme_color_button_bg": "#0ea5a5",
-        "--theme_color_button_text": "#ffffff"
+        "--theme_color_btn": "#0ea5a5",
+        "--theme_color_btn_text": "#ffffff"
     }
 }
 

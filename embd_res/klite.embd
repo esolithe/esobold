@@ -94,6 +94,8 @@ Current version indicated by LITEVER below.
 		--theme_color_main: rgba(0, 42.99999999999997, 54, 1);
 		--theme_color_footer:rgba(0, 42.99999999999997, 54, 1);
 		--theme_color_text: rgba(160, 190, 190, 1);
+		--theme_color_pending_text: rgba(160, 190, 190, 1);
+		--theme_color_lines: rgba(124, 142, 142, 1);
 		--theme_color_input_text: rgba(160, 190, 190, 1);
 		--theme_color_highlight:rgba(126.12097579480334, 157.83261861936177, 167.7991349356515, 1);
 		--theme_color_border: rgba(124, 142, 142, 1);
@@ -110,8 +112,16 @@ Current version indicated by LITEVER below.
 		--theme_color_placeholder_text:rgba(197.42672003224254, 212.76565279279438, 212.76565279279438, 1);
 		--theme_color_topmenu: rgba(0, 42.99999999999997, 54, 1);
 		--theme_color_topmenu_text: rgba(160, 190, 190, 1);
-		--theme_color_button_bg:rgba(0, 42.99999999999997, 54, 1);
-		--theme_color_button_text:rgba(160, 190, 190, 1);
+		--theme_color_btn:rgba(0, 42.99999999999997, 54, 1);
+		--theme_color_btn_text:rgba(160, 190, 190, 1);
+		--theme_color_btn_highlight_text: rgba(126.12097579480334, 157.83261861936177, 167.7991349356515, 1);
+		--theme_color_user_name: #18d4bb;
+		--theme_color_ai_name: #da6060;
+		--theme_color_user_msg_bg: #005c4b;
+		--theme_color_user_msg_fg: #e1e6e7;
+		--theme_color_ai_msg_bg: #1d282f;
+		--theme_color_ai_msg_fg: #e1e6e7;
+		--theme_color_footer_text: #9e9e9e;
 		--theme_font_family: "Helvetica", sans-serif;
 		--theme_font_size_small: 9pt;
 		--theme_font_size_medium: 10pt;
