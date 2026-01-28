@@ -126,7 +126,63 @@ window.addEventListener('load', () => {
     }
     if (localsettings?.mcpServers == undefined) {
         localsettings.mcpServers = ""
-    } 
+    }
+
+    // Overwrite the switching to handle new dynamically added menus
+    window.display_settings_tab = (tabIndex) => {
+        let settingNav = document.querySelector("#settingscontainer .settingsnav"), settingBody = document.querySelector("#settingscontainer .settingsbody")
+        
+        settingNav.querySelectorAll("li").forEach(elem => {
+            elem.classList.remove("active")
+        })
+        settingBody.querySelectorAll(".settingsmenu").forEach(elem => {
+            elem.classList.add("hidden")
+        })
+
+
+        current_settings_tab_idx = tabIndex
+        let sectionButton = document.querySelector(`#settingscontainer .settingsnav :nth-child(${tabIndex + 1})`), sectionBody = document.querySelector(`#${sectionButton.id.replace(/_tab$/, "")}`)
+        sectionBody.classList.remove("hidden")
+        sectionButton.classList.add("active")
+    }
+
+    let createNewSettingsSection = (id, buttonText = id) => {
+        let settingNav = document.querySelector("#settingscontainer .settingsnav"), settingBody = document.querySelector("#settingscontainer .settingsbody")
+        let sectionButton = document.createElement("li"), sectionBody = document.createElement("div")
+        let sectionId = `settingsmenu${id}`
+
+        let settingsBox = document.createElement("div")
+        settingsBox.classList.add("settingitem", "wide")
+
+        sectionBody.id = sectionId
+        sectionBody.classList.add("settingsmenu", "hidden")
+        sectionBody.onchange = setting_tweaked
+
+        sectionBody.appendChild(settingsBox)
+        settingBody.appendChild(sectionBody)
+
+        sectionButton.id = `${sectionId}_tab`
+        settingNav.appendChild(sectionButton)
+
+        let sectionLink = document.createElement("a")
+        sectionLink.innerText = buttonText
+        sectionLink.title = buttonText
+        let currentNumberOfTabs = settingNav.querySelectorAll("li").length
+        sectionLink.onclick = () => display_settings_tab(currentNumberOfTabs - 1)
+        sectionButton.appendChild(sectionLink)
+
+        return { sectionButton, sectionBody, settingsBox }
+    }
+
+    let createNewSubSection = (sectonText, isFirst = false) => {
+        let headerElem = document.createElement("h3")
+        if (isFirst)
+        {
+            headerElem.style.marginTop = "4px"
+        }
+        headerElem.innerText = sectonText
+        return headerElem
+    }
 
     let createSettingElementText = (inputElemId, labelTitle, labelText, placeholder = "") => {
         let settingLabelElem = document.createElement("div")
@@ -267,6 +323,7 @@ window.addEventListener('load', () => {
     }
     let lastSettingContainer = document.querySelector("#instructtagsection")
 
+    lastSettingContainer.appendChild(createNewSubSection("Esobold agent mode settings"))
     let settingLabelElem = createSettingElemBool("agentBehaviour", "Agent behaviour (experimental)", "Allows the AI to use multiple generations and certain tools to see if it can improve results.  This can include web search (if enabled), dice rolling, and formula evaluation.  This mode requires instruct start and end tags for all roles. Image and TTS only is enabled for local KCPP users.")
     settingLabelElem.onclick = () => {
         if (document.getElementById("agentBehaviour").checked == true && document.getElementById("separate_end_tags").checked != true) {
@@ -290,41 +347,54 @@ window.addEventListener('load', () => {
     lastSettingContainer.append(settingLabelElem)
 
     lastSettingContainer = document.querySelector("#settingsmenuadvanced > .settingitem")
-    settingLabelElem = createSettingElemBool("disableSaveCompressionLocally", "Disables save compression locally", "Disables save compression locally - Improves load / autosave performance with larger saves. The save compression is left enabled for sharing saves or uploading to the main server)")
-    lastSettingContainer.append(settingLabelElem)
 
-    settingLabelElem = createSettingElemBool("enableRunningMemory", "Enable running memory", "Enables running memory, an experimental version of autogenerating memory which triggers every time the context length changes by half its maximum. The summaries it generates can be found under world info.")
-    lastSettingContainer.append(settingLabelElem)
+    let { settingsBox } = createNewSettingsSection("esobold", "Esobold")
 
-    settingLabelElem = createSettingElemBool("worldTreePrune", "Prune branches on world tree", "Prune branches on world tree to make it easier to navigate.")
-    lastSettingContainer.append(settingLabelElem)
-
-    settingLabelElem = createSettingElemRange("worldTreeDepth", "World tree branch depth", "Depth of each branch to display when not showing the entire world tree.", 1, 5, 1, 2)
-    lastSettingContainer.append(settingLabelElem)
-
-    settingLabelElem = createSettingElemBool("worldTreeShowAll", "Show all world tree content", "Shows all branches and nodes on the world tree - only use if saves are small")
-    lastSettingContainer.append(settingLabelElem)
+    settingsBox.appendChild(createNewSubSection("Editor settings", true))
 
     settingLabelElem = createSettingElemBool("useNewEditor", "Use new editor", "Uses the new editor (including a WYSIWYG and markdown view) - has issues with HTML tags and may break")
-    lastSettingContainer.append(settingLabelElem)
+    settingsBox.append(settingLabelElem)
 
     settingLabelElem = createSettingElemBool("fullScreenEditorForInputs", "Full screen editor for inputs", "Adds buttons to open a full screen editor for inputs (experimental)")
-    lastSettingContainer.append(settingLabelElem)
+    settingsBox.append(settingLabelElem)
+
+    settingsBox.appendChild(createNewSubSection("World tree settings"))
+
+    settingLabelElem = createSettingElemBool("worldTreePrune", "Prune branches on world tree", "Prune branches on world tree to make it easier to navigate.")
+    settingsBox.append(settingLabelElem)
+
+    settingLabelElem = createSettingElemRange("worldTreeDepth", "World tree branch depth", "Depth of each branch to display when not showing the entire world tree.", 1, 5, 1, 2)
+    settingsBox.append(settingLabelElem)
+
+    settingLabelElem = createSettingElemBool("worldTreeShowAll", "Show all world tree content", "Shows all branches and nodes on the world tree - only use if saves are small")
+    settingsBox.append(settingLabelElem)
+
+    settingsBox.appendChild(createNewSubSection("Save settings"))
+
+    settingLabelElem = createSettingElemBool("disableSaveCompressionLocally", "Disables save compression locally", "Disables save compression locally - Improves load / autosave performance with larger saves. The save compression is left enabled for sharing saves or uploading to the main server)")
+    settingsBox.append(settingLabelElem)
+
+    settingLabelElem = createSettingElemBool("enableRunningMemory", "Enable running memory", "Enables running memory, an experimental version of autogenerating memory which triggers every time the context length changes by half its maximum. The summaries it generates can be found under world info.")
+    settingsBox.append(settingLabelElem)
 
     settingLabelElem = createSettingElemBool("legacySaveMechanisms", "Save options (legacy)", "Shows buttons for saving to slots and server using the non-data manager UI (legacy)")
-    lastSettingContainer.append(settingLabelElem)
+    settingsBox.append(settingLabelElem)
+
+    settingsBox.appendChild(createNewSubSection("Misc settings"))
 
     settingLabelElem = createSettingElemBool("corpoHideLeftPanel", "Left panel in Corpo Theme starts minimised", "If this option is enabled, the left panel in Corpo gets minimised automatically.")
-    lastSettingContainer.append(settingLabelElem)
+    settingsBox.append(settingLabelElem)
 
     settingLabelElem = createSettingElementTextArea("mcpServers", "MCP servers for agent mode (requires page reload)", "Adds MCP servers for agent mode to use.  Separate servers by new lines. This setting requires a page reload to take effect.", "http://localhost:12435/mcp")
-    lastSettingContainer.append(settingLabelElem)
+    settingsBox.append(settingLabelElem)
 
     settingLabelElem = createSettingElemBool("mcpDangerMode", "Allows external MCP commands to run without authorisation", "Dangerous!  This option allows the LLM unrestricted access to MCP commands, instead of prompting the user each time.  This is not advisable to turn on unless you are absolutely sure that the commands are safe and will not cause harm to your system.")
-    lastSettingContainer.append(settingLabelElem)
+    settingsBox.append(settingLabelElem)
 
+    settingsBox = document.querySelector("#settingsmenuappearance > .settingitem")
+    settingsBox.appendChild(createNewSubSection("Esobold theme settings"))
     settingLabelElem = createSettingElemButton("customThemeColours", "Modify theme colours", "Allows modification of the colours used in the default theme", showThemePopup)
-    lastSettingContainer.append(settingLabelElem)
+    settingsBox.append(settingLabelElem)
 
     createStopThinkingButton()
 })

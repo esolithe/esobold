@@ -78,10 +78,10 @@ flowchart TD\n${treeToViewOutput.outputText.trim()}`
         elem.style = `
 				background-color: darkcyan;
 				position: absolute;
-				top: 0;
 				height: 80%;
 				width: 80%;
-				margin: 10%;`
+				top: 10%;
+                left: 10%;`
 
         let container = document.createElement("div")
         container.id = "treeDiagram"
