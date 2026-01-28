@@ -41,7 +41,7 @@ Current version indicated by LITEVER below.
 	* Modified to remove unneeded components
 	*/
 	/*! normalize.css v3.0.3 | MIT License | github.com/necolas/normalize.css */
-	pre code,td,th{padding:0}pre code,table{background-color:transparent}.table,input[type=range]{width:100%}.btn,img{vertical-align:middle}html{font-family:sans-serif;-ms-text-size-adjust:100%;-webkit-text-size-adjust:100%;font-size:10px;-webkit-tap-highlight-color:transparent}body{margin:0;font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;font-size:14px;line-height:1.42857143;color:#333;background-color:#fff}b,dt,strong{font-weight:700}h1{margin:.67em 0}hr{-webkit-box-sizing:content-box;-moz-box-sizing:content-box;box-sizing:content-box;height:0}textarea{overflow:auto}table{border-collapse:collapse;border-spacing:0}@media print{blockquote,img,pre,tr{page-break-inside:avoid}*,:after,:before{color:#000!important;text-shadow:none!important;background:0 0!important;-webkit-box-shadow:none!important;box-shadow:none!important}a,a:visited{text-decoration:underline}a[href]:after{content:" (" attr(href) ")"}abbr[title]:after{content:" (" attr(title) ")"}a[href^="#"]:after,a[href^="javascript:"]:after{content:""}blockquote,pre{border:1px solid #999}thead{display:table-header-group}img{max-width:100%!important}h2,h3,p{orphans:3;widows:3}h2,h3{page-break-after:avoid}.navbar{display:none}.btn>.caret,.dropup>.btn>.caret{border-top-color:#000!important}.table{border-collapse:collapse!important}.table td,.table th{background-color:#fff!important}.table-bordered td,.table-bordered th{border:1px solid #ddd!important}}.form-control,.table .table{background-color:#fff}.form-control,.nav>li,.nav>li>a,.radio,input[type=file],input[type=range],pre{display:block}*,:after,:before{-webkit-box-sizing:border-box;-moz-box-sizing:border-box;box-sizing:border-box}button,input,select,textarea{font-family:inherit;font-size:inherit;line-height:inherit}a{color:#337ab7;text-decoration:none}a:focus,a:hover{color:#23527c;text-decoration:underline}a:focus,input[type=checkbox]:focus,input[type=file]:focus,input[type=radio]:focus{outline:-webkit-focus-ring-color auto 5px;outline-offset:-2px}hr{margin-top:20px;margin-bottom:20px;border:0;border-top:1px solid #eee}.h1,.h2,.h3,.h4,.h5,.h6,h1,h2,h3,h4,h5,h6{font-family:inherit;font-weight:500;line-height:1.1;color:inherit}.h1 .small,.h1 small,.h2 .small,.h2 small,.h3 .small,.h3 small,.h4 .small,.h4 small,.h5 .small,.h5 small,.h6 .small,.h6 small,h1 .small,h1 small,h2 .small,h2 small,h3 .small,h3 small,h4 .small,h4 small,h5 .small,h5 small,h6 .small,h6 small{font-weight:400;line-height:1;color:#777}.h1,.h2,.h3,h1,h2,h3{margin-top:20px;margin-bottom:10px}.h1 .small,.h1 small,.h2 .small,.h2 small,.h3 .small,.h3 small,h1 .small,h1 small,h2 .small,h2 small,h3 .small,h3 small{font-size:65%}.h4,.h5,.h6,.navbar-btn.btn-sm,h4,h5,h6{margin-top:10px;margin-bottom:10px}.h4 .small,.h4 small,.h5 .small,.h5 small,.h6 .small,.h6 small,h4 .small,h4 small,h5 .small,h5 small,h6 .small,h6 small{font-size:75%}.h1,h1{font-size:36px}.h2,h2{font-size:30px}.h3,h3{font-size:24px}.h4,h4{font-size:18px}.h5,h5{font-size:14px}.h6,h6{font-size:12px}p{margin:0 0 10px}dl,ol,ul{margin-top:0}.btn,.form-control{padding:6px 12px;font-size:14px;background-image:none}.btn,.form-control,.nav-tabs>li>a,blockquote .small,blockquote footer,blockquote small,dd,dt,pre{line-height:1.42857143}ol,ul{margin-bottom:10px}.table,dl{margin-bottom:20px}.btn,.nav,blockquote ol:last-child,blockquote p:last-child,blockquote ul:last-child,ol ol,ol ul,ul ol,ul ul{margin-bottom:0}.btn .caret,dd{margin-left:0}blockquote{padding:10px 20px;margin:0 0 20px;font-size:17.5px;border-left:5px solid #eee}blockquote .small,blockquote footer,blockquote small{display:block;font-size:80%;color:#777}code,kbd,pre,samp{font-family:Menlo,Monaco,Consolas,"Courier New",monospace}code{padding:2px 4px;font-size:90%;color:#c7254e;background-color:#f9f2f4;border-radius:4px}.table>tbody>tr.active>td,.table>tbody>tr.active>th,.table>tbody>tr>td.active,.table>tbody>tr>th.active,.table>tfoot>tr.active>td,.table>tfoot>tr.active>th,.table>tfoot>tr>td.active,.table>tfoot>tr>th.active,.table>thead>tr.active>td,.table>thead>tr.active>th,.table>thead>tr>td.active,.table>thead>tr>th.active,pre{background-color:#f5f5f5}pre{padding:9.5px;margin:0 0 10px;font-size:13px;color:#333;word-break:break-all;word-wrap:break-word;border:1px solid #ccc;border-radius:4px}pre code{font-size:inherit;color:inherit;white-space:pre-wrap;border-radius:0;word-break:break-word}th{text-align:left}.table{max-width:100%}.table>tbody>tr>td,.table>tbody>tr>th,.table>tfoot>tr>td,.table>tfoot>tr>th,.table>thead>tr>td,.table>thead>tr>th{padding:8px;line-height:1.42857143;vertical-align:top;border-top:1px solid #ddd}.table>thead>tr>th{vertical-align:bottom;border-bottom:2px solid #ddd}.table>caption+thead>tr:first-child>td,.table>caption+thead>tr:first-child>th,.table>colgroup+thead>tr:first-child>td,.table>colgroup+thead>tr:first-child>th,.table>thead:first-child>tr:first-child>td,.table>thead:first-child>tr:first-child>th{border-top:0}.table>tbody+tbody{border-top:2px solid #ddd}input[type=search]{-webkit-box-sizing:border-box;-moz-box-sizing:border-box;box-sizing:border-box;-webkit-appearance:none;-moz-appearance:none;appearance:none}input[type=checkbox],input[type=radio]{line-height:normal}.checkbox.disabled label,.form-control[disabled],.radio.disabled label,fieldset[disabled] .checkbox label,fieldset[disabled] .form-control,fieldset[disabled] .radio label,fieldset[disabled] input[type=checkbox],fieldset[disabled] input[type=radio],input[type=checkbox].disabled,input[type=checkbox][disabled],input[type=radio].disabled,input[type=radio][disabled]{cursor:not-allowed}select[multiple],select[size],textarea.form-control{height:auto}.form-control{width:100%;height:34px;color:#555;border:1px solid #ccc;border-radius:4px;-webkit-box-shadow:inset 0 1px 1px rgba(0,0,0,.075);box-shadow:inset 0 1px 1px rgba(0,0,0,.075);-webkit-transition:border-color .15s ease-in-out,-webkit-box-shadow .15s ease-in-out;-o-transition:border-color .15s ease-in-out,box-shadow .15s ease-in-out;transition:border-color .15s ease-in-out,box-shadow .15s ease-in-out,-webkit-box-shadow .15s ease-in-out}.form-control:focus{border-color:#66afe9;outline:0;-webkit-box-shadow:inset 0 1px 1px rgba(0,0,0,.075),0 0 8px rgba(102,175,233,.6);box-shadow:inset 0 1px 1px rgba(0,0,0,.075),0 0 8px rgba(102,175,233,.6)}.form-control::-moz-placeholder{color:#999;opacity:1}.form-control:-ms-input-placeholder{color:#999}.form-control::-webkit-input-placeholder{color:#999}.form-control::-ms-expand{background-color:transparent;border:0}.form-control[disabled],.form-control[readonly],fieldset[disabled] .form-control{background-color:#eee;opacity:1}.btn{text-align:center;white-space:nowrap;display:inline-block;font-weight:400;-ms-touch-action:manipulation;touch-action:manipulation;cursor:pointer;border:1px solid transparent;border-radius:4px;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;user-select:none}.btn.active.focus,.btn.active:focus,.btn.focus,.btn:active.focus,.btn:active:focus,.btn:focus{outline:-webkit-focus-ring-color auto 5px;outline-offset:-2px}.btn.focus,.btn:focus,.btn:hover{color:#333;text-decoration:none}.btn.active,.btn:active{background-image:none;outline:0;-webkit-box-shadow:inset 0 3px 5px rgba(0,0,0,.125);box-shadow:inset 0 3px 5px rgba(0,0,0,.125)}.btn.disabled,.btn[disabled],fieldset[disabled] .btn{cursor:not-allowed;opacity:.65;-webkit-box-shadow:none;box-shadow:none}a.btn.disabled,fieldset[disabled] a.btn{pointer-events:none}.btn-primary{color:#fff;background-color:#337ab7;border-color:#2e6da4}.btn-primary.focus,.btn-primary:focus{color:#fff;background-color:#286090;border-color:#122b40}.btn-primary:hover{color:#fff;background-color:#286090;border-color:#204d74}.btn-primary.active,.btn-primary:active,.open>.dropdown-toggle.btn-primary{color:#fff;background-color:#286090;background-image:none;border-color:#204d74}.btn-primary.active.focus,.btn-primary.active:focus,.btn-primary.active:hover,.btn-primary:active.focus,.btn-primary:active:focus,.btn-primary:active:hover,.open>.dropdown-toggle.btn-primary.focus,.open>.dropdown-toggle.btn-primary:focus,.open>.dropdown-toggle.btn-primary:hover{color:#fff;background-color:#204d74;border-color:#122b40}.btn-primary.disabled.focus,.btn-primary.disabled:focus,.btn-primary.disabled:hover,.btn-primary[disabled].focus,.btn-primary[disabled]:focus,.btn-primary[disabled]:hover,fieldset[disabled] .btn-primary.focus,fieldset[disabled] .btn-primary:focus,fieldset[disabled] .btn-primary:hover{background-color:#337ab7;border-color:#2e6da4}.dropup .caret,.navbar-fixed-bottom .dropdown .caret{content:"";border-top:0;border-bottom:4px dashed}.dropup .dropdown-menu,.navbar-fixed-bottom .dropdown .dropdown-menu{top:auto;bottom:100%;margin-bottom:2px}[data-toggle=buttons]>.btn input[type=checkbox],[data-toggle=buttons]>.btn input[type=radio],[data-toggle=buttons]>.btn-group>.btn input[type=checkbox],[data-toggle=buttons]>.btn-group>.btn input[type=radio]{position:absolute;clip:rect(0,0,0,0);pointer-events:none}.nav{padding-left:0;list-style:none}.nav>li>a:focus,.nav>li>a:hover{text-decoration:none;background-color:#eee}.nav>li.disabled>a{color:#777}.nav>li.disabled>a:focus,.nav>li.disabled>a:hover{color:#777;text-decoration:none;cursor:not-allowed;background-color:transparent}.nav .open>a,.nav .open>a:focus,.nav .open>a:hover{background-color:#eee;border-color:#337ab7}.nav .nav-divider{height:1px;margin:9px 0;overflow:hidden;background-color:#e5e5e5}.nav>li>a>img{max-width:none}.nav-tabs{border-bottom:1px solid #ddd}.nav-tabs>li{float:left;margin-bottom:-1px}.nav-tabs>li>a{margin-right:2px;border:1px solid transparent;border-radius:4px 4px 0 0}.nav-tabs>li>a:hover{border-color:#eee #eee #ddd}.nav-tabs>li.active>a,.nav-tabs>li.active>a:focus,.nav-tabs>li.active>a:hover{color:#555;cursor:default;background-color:#fff;border:1px solid #ddd;border-bottom-color:transparent}.nav-tabs .dropdown-menu{margin-top:-1px;border-top-left-radius:0;border-top-right-radius:0}.navbar-collapse{padding-right:15px;padding-left:15px;overflow-x:visible;border-top:1px solid transparent;-webkit-overflow-scrolling:touch}.navbar-collapse.in{overflow-y:auto}.navbar-nav{margin:7.5px -15px}.navbar-nav>li>a{line-height:20px}.navbar-nav>li>.dropdown-menu{margin-top:0;border-top-left-radius:0;border-top-right-radius:0}@media (min-width:768px){.navbar{border-radius:4px}.navbar-nav>li{float:left}.navbar-collapse{width:auto;border-top:0;-webkit-box-shadow:none;box-shadow:none}.navbar-collapse.collapse{display:block!important;height:auto!important;padding-bottom:0;overflow:visible!important}.navbar-collapse.in{overflow-y:visible}.navbar-nav{float:left;margin:0}}@media (max-width:767px){.navbar-nav .open .dropdown-menu{position:static;float:none;width:auto;margin-top:0;background-color:transparent;border:0;-webkit-box-shadow:none;box-shadow:none}.navbar-nav .open .dropdown-menu .dropdown-header,.navbar-nav .open .dropdown-menu>li>a{padding:5px 15px 5px 25px}.navbar-nav .open .dropdown-menu>li>a{line-height:20px}.navbar-nav .open .dropdown-menu>li>a:focus,.navbar-nav .open .dropdown-menu>li>a:hover{background-image:none}}.collapse{display:none}.hidden,.hide{display:none!important}.container:after,.container:before,.nav:after,.nav:before,.navbar-collapse:after,.navbar-collapse:before,.panel-body:after,.panel-body:before,.row:after,.row:before{display:table;content:" "}.container:after,.nav:after,.navbar-collapse:after,.navbar:after,.pager:after,.panel-body:after,.row:after{clear:both}button,input,select,textarea{color:inherit;font:inherit;margin:0}
+	pre code,td,th{padding:0}pre code,table{background-color:transparent}.table,input[type=range]{width:100%}.btn,img{vertical-align:middle}html{font-family:sans-serif;-ms-text-size-adjust:100%;-webkit-text-size-adjust:100%;font-size:10px;-webkit-tap-highlight-color:transparent}body{margin:0;font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;font-size:14px;line-height:1.42857143;color:#333;background-color:#fff}b,dt,strong{font-weight:700}h1{margin:.67em 0}hr{-webkit-box-sizing:content-box;-moz-box-sizing:content-box;box-sizing:content-box;height:0}textarea{overflow:auto}table{border-collapse:collapse;border-spacing:0}@media print{blockquote,img,pre,tr{page-break-inside:avoid}*,:after,:before{color:#000!important;text-shadow:none!important;background:0 0!important;-webkit-box-shadow:none!important;box-shadow:none!important}a,a:visited{text-decoration:underline}a[href]:after{content:" (" attr(href) ")"}abbr[title]:after{content:" (" attr(title) ")"}a[href^="#"]:after,a[href^="javascript:"]:after{content:""}blockquote,pre{border:1px solid #999}thead{display:table-header-group}img{max-width:100%!important}h2,h3,p{orphans:3;widows:3}h2,h3{page-break-after:avoid}.navbar{display:none}.btn>.caret,.dropup>.btn>.caret{border-top-color:#000!important}.table{border-collapse:collapse!important}.table td,.table th{background-color:#fff!important}.table-bordered td,.table-bordered th{border:1px solid #ddd!important}}.form-control,.table .table{background-color:#fff}.form-control,.nav>li,.nav>li>a,.radio,input[type=file],input[type=range],pre{display:block}*,:after,:before{-webkit-box-sizing:border-box;-moz-box-sizing:border-box;box-sizing:border-box}button,input,select,textarea{font-family:inherit;font-size:inherit;line-height:inherit}a{color:#337ab7;text-decoration:none}a:focus,a:hover{color:#23527c;text-decoration:underline}a:focus,input[type=checkbox]:focus,input[type=file]:focus,input[type=radio]:focus{outline:-webkit-focus-ring-color auto 5px;outline-offset:-2px}hr{margin-top:20px;margin-bottom:20px;border:0;border-top:1px solid #eee}.h1,.h2,.h3,.h4,.h5,.h6,h1,h2,h3,h4,h5,h6{font-family:inherit;font-weight:500;line-height:1.1;color:inherit}.h1 .small,.h1 small,.h2 .small,.h2 small,.h3 .small,.h3 small,.h4 .small,.h4 small,.h5 .small,.h5 small,.h6 .small,.h6 small,h1 .small,h1 small,h2 .small,h2 small,h3 .small,h3 small,h4 .small,h4 small,h5 .small,h5 small,h6 .small,h6 small{font-weight:400;line-height:1;color:#777}.h1,.h2,.h3,h1,h2,h3{margin-top:20px;margin-bottom:10px}.h1 .small,.h1 small,.h2 .small,.h2 small,.h3 .small,.h3 small,h1 .small,h1 small,h2 .small,h2 small,h3 .small,h3 small{font-size:65%}.h4,.h5,.h6,.navbar-btn.btn-sm,h4,h5,h6{margin-top:10px;margin-bottom:10px}.h4 .small,.h4 small,.h5 .small,.h5 small,.h6 .small,.h6 small,h4 .small,h4 small,h5 .small,h5 small,h6 .small,h6 small{font-size:75%}.h1,h1{font-size:36px}.h2,h2{font-size:30px}.h3,h3{font-size:24px}.h4,h4{font-size:18px}.h5,h5{font-size:14px}.h6,h6{font-size:var(--theme_font_size_medium);}p{margin:0 0 10px}dl,ol,ul{margin-top:0}.btn,.form-control{padding:6px 12px;font-size:14px;background-image:none}.btn,.form-control,.nav-tabs>li>a,blockquote .small,blockquote footer,blockquote small,dd,dt,pre{line-height:1.42857143}ol,ul{margin-bottom:10px}.table,dl{margin-bottom:20px}.btn,.nav,blockquote ol:last-child,blockquote p:last-child,blockquote ul:last-child,ol ol,ol ul,ul ol,ul ul{margin-bottom:0}.btn .caret,dd{margin-left:0}blockquote{padding:10px 20px;margin:0 0 20px;font-size:17.5px;border-left:5px solid #eee}blockquote .small,blockquote footer,blockquote small{display:block;font-size:80%;color:#777}code,kbd,pre,samp{font-family:Menlo,Monaco,Consolas,"Courier New",monospace}code{padding:2px 4px;font-size:90%;color:#c7254e;background-color:#f9f2f4;border-radius:4px}.table>tbody>tr.active>td,.table>tbody>tr.active>th,.table>tbody>tr>td.active,.table>tbody>tr>th.active,.table>tfoot>tr.active>td,.table>tfoot>tr.active>th,.table>tfoot>tr>td.active,.table>tfoot>tr>th.active,.table>thead>tr.active>td,.table>thead>tr.active>th,.table>thead>tr>td.active,.table>thead>tr>th.active,pre{background-color:#f5f5f5}pre{padding:9.5px;margin:0 0 10px;font-size:13px;color:#333;word-break:break-all;word-wrap:break-word;border:1px solid #ccc;border-radius:4px}pre code{font-size:inherit;color:inherit;white-space:pre-wrap;border-radius:0;word-break:break-word}th{text-align:left}.table{max-width:100%}.table>tbody>tr>td,.table>tbody>tr>th,.table>tfoot>tr>td,.table>tfoot>tr>th,.table>thead>tr>td,.table>thead>tr>th{padding:8px;line-height:1.42857143;vertical-align:top;border-top:1px solid #ddd}.table>thead>tr>th{vertical-align:bottom;border-bottom:2px solid #ddd}.table>caption+thead>tr:first-child>td,.table>caption+thead>tr:first-child>th,.table>colgroup+thead>tr:first-child>td,.table>colgroup+thead>tr:first-child>th,.table>thead:first-child>tr:first-child>td,.table>thead:first-child>tr:first-child>th{border-top:0}.table>tbody+tbody{border-top:2px solid #ddd}input[type=search]{-webkit-box-sizing:border-box;-moz-box-sizing:border-box;box-sizing:border-box;-webkit-appearance:none;-moz-appearance:none;appearance:none}input[type=checkbox],input[type=radio]{line-height:normal}.checkbox.disabled label,.form-control[disabled],.radio.disabled label,fieldset[disabled] .checkbox label,fieldset[disabled] .form-control,fieldset[disabled] .radio label,fieldset[disabled] input[type=checkbox],fieldset[disabled] input[type=radio],input[type=checkbox].disabled,input[type=checkbox][disabled],input[type=radio].disabled,input[type=radio][disabled]{cursor:not-allowed}select[multiple],select[size],textarea.form-control{height:auto}.form-control{width:100%;height:34px;color:#555;border:1px solid #ccc;border-radius:4px;-webkit-box-shadow:inset 0 1px 1px rgba(0,0,0,.075);box-shadow:inset 0 1px 1px rgba(0,0,0,.075);-webkit-transition:border-color .15s ease-in-out,-webkit-box-shadow .15s ease-in-out;-o-transition:border-color .15s ease-in-out,box-shadow .15s ease-in-out;transition:border-color .15s ease-in-out,box-shadow .15s ease-in-out,-webkit-box-shadow .15s ease-in-out}.form-control:focus{border-color:#66afe9;outline:0;-webkit-box-shadow:inset 0 1px 1px rgba(0,0,0,.075),0 0 8px rgba(102,175,233,.6);box-shadow:inset 0 1px 1px rgba(0,0,0,.075),0 0 8px rgba(102,175,233,.6)}.form-control::-moz-placeholder{color:#999;opacity:1}.form-control:-ms-input-placeholder{color:#999}.form-control::-webkit-input-placeholder{color:#999}.form-control::-ms-expand{background-color:transparent;border:0}.form-control[disabled],.form-control[readonly],fieldset[disabled] .form-control{background-color:#eee;opacity:1}.btn{text-align:center;white-space:nowrap;display:inline-block;font-weight:400;-ms-touch-action:manipulation;touch-action:manipulation;cursor:pointer;border:1px solid transparent;border-radius:4px;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;user-select:none}.btn.active.focus,.btn.active:focus,.btn.focus,.btn:active.focus,.btn:active:focus,.btn:focus{outline:-webkit-focus-ring-color auto 5px;outline-offset:-2px}.btn.focus,.btn:focus,.btn:hover{color:#333;text-decoration:none}.btn.active,.btn:active{background-image:none;outline:0;-webkit-box-shadow:inset 0 3px 5px rgba(0,0,0,.125);box-shadow:inset 0 3px 5px rgba(0,0,0,.125)}.btn.disabled,.btn[disabled],fieldset[disabled] .btn{cursor:not-allowed;opacity:.65;-webkit-box-shadow:none;box-shadow:none}a.btn.disabled,fieldset[disabled] a.btn{pointer-events:none}.btn-primary{color:#fff;background-color:#337ab7;border-color:#2e6da4}.btn-primary.focus,.btn-primary:focus{color:#fff;background-color:#286090;border-color:#122b40}.btn-primary:hover{color:#fff;background-color:#286090;border-color:#204d74}.btn-primary.active,.btn-primary:active,.open>.dropdown-toggle.btn-primary{color:#fff;background-color:#286090;background-image:none;border-color:#204d74}.btn-primary.active.focus,.btn-primary.active:focus,.btn-primary.active:hover,.btn-primary:active.focus,.btn-primary:active:focus,.btn-primary:active:hover,.open>.dropdown-toggle.btn-primary.focus,.open>.dropdown-toggle.btn-primary:focus,.open>.dropdown-toggle.btn-primary:hover{color:#fff;background-color:#204d74;border-color:#122b40}.btn-primary.disabled.focus,.btn-primary.disabled:focus,.btn-primary.disabled:hover,.btn-primary[disabled].focus,.btn-primary[disabled]:focus,.btn-primary[disabled]:hover,fieldset[disabled] .btn-primary.focus,fieldset[disabled] .btn-primary:focus,fieldset[disabled] .btn-primary:hover{background-color:#337ab7;border-color:#2e6da4}.dropup .caret,.navbar-fixed-bottom .dropdown .caret{content:"";border-top:0;border-bottom:4px dashed}.dropup .dropdown-menu,.navbar-fixed-bottom .dropdown .dropdown-menu{top:auto;bottom:100%;margin-bottom:2px}[data-toggle=buttons]>.btn input[type=checkbox],[data-toggle=buttons]>.btn input[type=radio],[data-toggle=buttons]>.btn-group>.btn input[type=checkbox],[data-toggle=buttons]>.btn-group>.btn input[type=radio]{position:absolute;clip:rect(0,0,0,0);pointer-events:none}.nav{padding-left:0;list-style:none}.nav>li>a:focus,.nav>li>a:hover{text-decoration:none;background-color:#eee}.nav>li.disabled>a{color:#777}.nav>li.disabled>a:focus,.nav>li.disabled>a:hover{color:#777;text-decoration:none;cursor:not-allowed;background-color:transparent}.nav .open>a,.nav .open>a:focus,.nav .open>a:hover{background-color:#eee;border-color:#337ab7}.nav .nav-divider{height:1px;margin:9px 0;overflow:hidden;background-color:#e5e5e5}.nav>li>a>img{max-width:none}.nav-tabs{border-bottom:1px solid #ddd}.nav-tabs>li{float:left;margin-bottom:-1px}.nav-tabs>li>a{margin-right:2px;border:1px solid transparent;border-radius:4px 4px 0 0}.nav-tabs>li>a:hover{border-color:#eee #eee #ddd}.nav-tabs>li.active>a,.nav-tabs>li.active>a:focus,.nav-tabs>li.active>a:hover{color:#555;cursor:default;background-color:#fff;border:1px solid #ddd;border-bottom-color:transparent}.nav-tabs .dropdown-menu{margin-top:-1px;border-top-left-radius:0;border-top-right-radius:0}.navbar-collapse{padding-right:15px;padding-left:15px;overflow-x:visible;border-top:1px solid transparent;-webkit-overflow-scrolling:touch}.navbar-collapse.in{overflow-y:auto}.navbar-nav{margin:7.5px -15px}.navbar-nav>li>a{line-height:20px}.navbar-nav>li>.dropdown-menu{margin-top:0;border-top-left-radius:0;border-top-right-radius:0}@media (min-width:768px){.navbar{border-radius:4px}.navbar-nav>li{float:left}.navbar-collapse{width:auto;border-top:0;-webkit-box-shadow:none;box-shadow:none}.navbar-collapse.collapse{display:block!important;height:auto!important;padding-bottom:0;overflow:visible!important}.navbar-collapse.in{overflow-y:visible}.navbar-nav{float:left;margin:0}}@media (max-width:767px){.navbar-nav .open .dropdown-menu{position:static;float:none;width:auto;margin-top:0;background-color:transparent;border:0;-webkit-box-shadow:none;box-shadow:none}.navbar-nav .open .dropdown-menu .dropdown-header,.navbar-nav .open .dropdown-menu>li>a{padding:5px 15px 5px 25px}.navbar-nav .open .dropdown-menu>li>a{line-height:20px}.navbar-nav .open .dropdown-menu>li>a:focus,.navbar-nav .open .dropdown-menu>li>a:hover{background-image:none}}.collapse{display:none}.hidden,.hide{display:none!important}.container:after,.container:before,.nav:after,.nav:before,.navbar-collapse:after,.navbar-collapse:before,.panel-body:after,.panel-body:before,.row:after,.row:before{display:table;content:" "}.container:after,.nav:after,.navbar-collapse:after,.navbar:after,.pager:after,.panel-body:after,.row:after{clear:both}button,input,select,textarea{color:inherit;font:inherit;margin:0}
 	</style>
 
 	<style id="styling-lite">
@@ -49,7 +49,7 @@ Current version indicated by LITEVER below.
 
 	/* base64 encoded image resources used in Lite */
 	:root{
-		--main_font_size: 13px;
+		--main_font_size: var(--theme_font_size_medium);
 		--img_nikosquare:url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAMAAACdt4HsAAAAAXNSR0IB2cksfwAAAAlwSFlzAAALEwAACxMBAJqcGAAAADxQTFRFS2Si+X5+pmBfHyApLjZSS2SjP057Vzw5EA4Sf1ZT+9Sv1WpqnYx/7qaYw7vUAAAAS2Sj9PPzgnrLS2SjAzrF9gAAABR0Uk5T///////w////////////AKj//yMlHqVpAAAD3klEQVR4nKWXi7KjIAyGFSgxEjhV3/9d90+8onZPd810prWSDwi50fyoTNP7/X79g2D4NJlqo+rvV/Mf8npPM2B6/4+6ihKaB/pGaH4e6IPw00y3+48xhBC3J32Id+NeUzN9UPfer4RoD/eIqbnuwLS7zncLAfqdPvvDmvY9XAE6vuuImEAw8fNT1/kr4Qqw+YhdIocfJl0glxyTvyG8m7MNY1B9diAkmgGUODnH7Km7AF53AGEjUJtWYdUPzn0LyC6AQO0qCUCi1PKXAM5tCwXeAC0ROf36AqA2VACmbQ8yP9DVimeA6lPKkLaW3EPylXAARBXV701OhOVPI6hcAXH1mTyP7e8AMyEc4mQDzP7XrfOfl5D7ndAdfXID6NwMyXACEpEbgPTCLJn1hEGoAep/OKheQiCEEhj1HgBQX1ZxQMPLlyVsABwejkp8EGEQAkxRA4RgIRYhTxme1fkKoBZwAHjLA+b/cgLQ8gZ4gZ+tVtgAnboaa+Lg0IwRhBqAmX0cI0WFqHN3FUAXAOPpzIWhPzZYQgUAu4ljiaKTaKwtZtwAIdv8XkocR9+UYM5/BMTRxzJKsWEu+RPAAsBxKSWWgTHS18cofiwhlCJD4cApUb0CNWKA/5dhwAqKD2UIXAEoFgUMkIJTCCcjzkGE890BQhXA685WQNqD6ujKWDRhhI7EdKUCtKSGxd8ASEr+6sqNApKPeD/iFEpT6nAUcAMgMmBzqwVPgJCd80X3AIlDDcjSzH8PJbD7AGiT020WjfcCN0jI5WwJGk5axP4eikeyvQd4HE5i7I4xEpWANKg0m2p0OUIcQKJnd7uCaABMRebOSOoB1WUVYACzaGSs012NaI5gAC0GcPWD9iLI6/qVdGeXY7R6xu1M0FAhG7s865ctw97Zoz85kuXi5T2EbaZatLileQA+VifrYGrT7ruL+lbZ0orYcXQJpry/tl+26l1s8sOy+BxMqKjr23nf7mhFnktbOgJOGQmnVG0ZVve06VvDUFmEztGIhHAy2YHA+qsCuFNS1T0Edf41AOZ1b7uwH1tYYFA4p3U1owiOOu+AsyxrQ3AIXwrLXtryL4BPpW0rrvMaPgHSx+K6l3cj3Oin1lH6S3nfd+KDa51lAjJhE6ddz7XRu29xUH51O95SgNOahDTB3PPvLc7cZPWYEVlVlp5AkGtJK/63XZoq0jBsvUrPeNDvr/tE1SnD3qxIEVuNfAsY0J9w4Ux2ZKizHPLHFdw127r7HIS2ZpvFTHHbbN+3+2Qm29p9NvXv2v3twkHHCwd9vnA8vvI8vnQ9vvY9v3g+vvo+v3w/u/7/AZoAPJwrbZ1IAAAAAElFTkSuQmCC");
 		--img_humansquare:url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgBAMAAACBVGfHAAAAAXNSR0IB2cksfwAAAAlwSFlzAAACTwAAAk8B95E4kAAAAB5QTFRFVoes/v7+f6C7rMPVVoes2OXvVoesVoeskazFAAAAcXZmPwAAAAp0Uk5T/////9z/khD/AFgG4xQAAACKSURBVHicY5iewoAE3CoZShhQgDtDAqoAG4MDqgALA/lAuQmVzyooaIAiYCgoKIEiICgoKIouIIhfBYYZGLYwKBuh8oHcVgUkfqOgaKCgMILPIQgGCFMUIQIIewIhAnCXMAlCgQKqEQhDmGECAegCBmiGws1gYFICA2SnIgEHVC4LZlRiRDZ6cgAAalgSYyNZX70AAAAASUVORK5CYII");
 		--img_favicon_busy:url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgBAMAAACBVGfHAAAAAXNSR0IB2cksfwAAAAlwSFlzAAALEwAACxMBAJqcGAAAAB5QTFRFAAAA459F8vrrV2hQWm5T2M2oeo9zWWtS6P3k1evQZQ2NdgAAAAp0Uk5TAP//7xr/5HYRi6G3mX8AAAEASURBVHicjZGxagMxDIY9GNr1hryAwaGd1frWQEQ8x+HuAXJEpbOPmG4ZkwcopG9byXYuCaHQf5I+0K9ftlKi0zl9/RzUVcdX+ny5Bc/fRGd1C05Ex0uDaaHUE31IOXKpPaDGPdGI2rfIIMLoEwC0CbkU4FIEIhog7QsgAuqM7QegYRSnFbhgWHNwyKZKr6S3TTA9oKzV8d0IaIIVCx6BXQEzs3mTEQ+hgCb0bQZuAhYELMUig9kDMH8BaZr/gWLqnVkXUNdysAsowRC2tlqU6HLcuk7k4/SSszOZzq/ncrYhW+Rnzg9AZUL2RLfrOoK0qIC/RtTi9JPaR4B07e/0C6jPUVuNXWqeAAAAAElFTkSuQmCC");
@@ -94,6 +94,8 @@ Current version indicated by LITEVER below.
 		--theme_color_main: rgba(0, 42.99999999999997, 54, 1);
 		--theme_color_footer:rgba(0, 42.99999999999997, 54, 1);
 		--theme_color_text: rgba(160, 190, 190, 1);
+		--theme_color_pending_text: rgba(160, 190, 190, 1);
+		--theme_color_lines: rgba(124, 142, 142, 1);
 		--theme_color_input_text: rgba(160, 190, 190, 1);
 		--theme_color_highlight:rgba(126.12097579480334, 157.83261861936177, 167.7991349356515, 1);
 		--theme_color_border: rgba(124, 142, 142, 1);
@@ -110,8 +112,16 @@ Current version indicated by LITEVER below.
 		--theme_color_placeholder_text:rgba(197.42672003224254, 212.76565279279438, 212.76565279279438, 1);
 		--theme_color_topmenu: rgba(0, 42.99999999999997, 54, 1);
 		--theme_color_topmenu_text: rgba(160, 190, 190, 1);
-		--theme_color_button_bg:rgba(0, 42.99999999999997, 54, 1);
-		--theme_color_button_text:rgba(160, 190, 190, 1);
+		--theme_color_btn:rgba(0, 42.99999999999997, 54, 1);
+		--theme_color_btn_text:rgba(160, 190, 190, 1);
+		--theme_color_btn_highlight_text: rgba(126.12097579480334, 157.83261861936177, 167.7991349356515, 1);
+		--theme_color_user_name: #18d4bb;
+		--theme_color_ai_name: #da6060;
+		--theme_color_user_msg_bg: #005c4b;
+		--theme_color_user_msg_fg: #e1e6e7;
+		--theme_color_ai_msg_bg: #1d282f;
+		--theme_color_ai_msg_fg: #e1e6e7;
+		--theme_color_footer_text: #9e9e9e;
 		--theme_font_family: "Helvetica", sans-serif;
 		--theme_font_size_small: 9pt;
 		--theme_font_size_medium: 10pt;
@@ -1476,7 +1486,7 @@ Current version indicated by LITEVER below.
 	.branchmenu .xbtn {
 		background: var(--theme_color_topbtn);
 		color: var(--theme_color_text);
-		font-size: 12px;
+		font-size: var(--theme_font_size_medium);
 		height: 24px;
 		font-weight: bolder;
 	}
@@ -2066,7 +2076,7 @@ Current version indicated by LITEVER below.
 		width: 100%;
 		border-collapse: collapse;
 		font-family: sans-serif;
-		font-size: 12px;
+		font-size: var(--theme_font_size_medium);
 		text-align: left;
 	}
 	.tools-table th,
@@ -4042,7 +4052,7 @@ Current version indicated by LITEVER below.
 		darkmode: true,
 		render_streaming_markdown: true,
 		enable_tool_use: false,
-		tools_auto_exec: true,
+		tools_auto_exec: false,
 		corsproxy_mcp: false,
 		kcpp_mcp_bridge: true,
 		cached_mcp_tools: {}, //key is url, value is tools array
@@ -24669,7 +24679,7 @@ Current version indicated by LITEVER below.
 					let approvebtns = "";
 					if(pending_response_id == "")
 					{
-						approvebtns = `<button type="button" title="Inspect Tool Call" class="btn btn-primary" style="font-size:12px;padding:2px 2px; margin-left:4px;" onclick="inspect_waiting_toolcall()">Inspect</button><button type="button" title="Approve Tool Call" class="btn btn-primary" style="font-size:12px;padding:2px 2px; margin-left:4px;" onclick="execute_waiting_toolcall()">Approve</button>`;
+						approvebtns = `<button type="button" title="Inspect Tool Call" class="btn btn-primary" style="font-size: var(--theme_font_size_medium);padding:2px 2px; margin-left:4px;" onclick="inspect_waiting_toolcall()">Inspect</button><button type="button" title="Approve Tool Call" class="btn btn-primary" style="font-size: var(--theme_font_size_medium);padding:2px 2px; margin-left:4px;" onclick="execute_waiting_toolcall()">Approve</button>`;
 					}
 					chatunits[i].msg = `<span class="color_lightgreen" style="font-weight:bold;">Requesting a tool call to ${chatunits[i].tool_calls[0].function.name}</span>${approvebtns}`;
 				}
@@ -28697,46 +28707,48 @@ Current version indicated by LITEVER below.
 					<input title="Search Includes Context History" type="checkbox" id="documentdb_searchhistory" class="push-right">
 				</div>
 
-				<div class="settingitem" style="width: unset;">
-					<div class="settinglabel" style="padding: 4px;">
-						<div class="justifyleft">Search Results <span class="helpicon">?<span class="helptext">Controls how many search results to retrieve from DB. Each search result is added to the context as a snippet of the DB
-						document.</span></span></div>
-						<input title="Number of Search Results" inputmode="numeric" class="justifyright" style="margin-left:3px" id="documentdb_numresults" oninput="
-						document.getElementById('documentdb_numresults_slide').value = this.value; estimate_and_show_textDB_usage();">
+				<div class="shareEquallyHorizontally">
+					<div class="settingitem" style="width: unset;">
+						<div class="settinglabel" style="padding: 4px;">
+							<div class="justifyleft">Search Results <span class="helpicon">?<span class="helptext">Controls how many search results to retrieve from DB. Each search result is added to the context as a snippet of the DB
+							document.</span></span></div>
+							<input title="Number of Search Results" inputmode="numeric" class="justifyright push-right" id="documentdb_numresults" oninput="
+							document.getElementById('documentdb_numresults_slide').value = this.value; estimate_and_show_textDB_usage();">
+						</div>
+						<div><input title="Number of Search Results Slider" type="range" min="1" max="10" step="1" id="documentdb_numresults_slide" oninput="
+							document.getElementById('documentdb_numresults').value = this.value; estimate_and_show_textDB_usage();"></div>
+						<div class="settingminmax">
+							<div class="justifyleft">1</div>
+							<div class="justifyright">10</div>
+						</div>
 					</div>
-					<div><input title="Number of Search Results Slider" type="range" min="1" max="10" step="1" id="documentdb_numresults_slide" oninput="
-						document.getElementById('documentdb_numresults').value = this.value; estimate_and_show_textDB_usage();"></div>
-					<div class="settingminmax">
-						<div class="justifyleft">1</div>
-						<div class="justifyright">10</div>
-					</div>
-				</div>
 
-				<div class="settingitem" style="width: unset;">
-					<div class="settinglabel" style="padding: 4px;">
-						<div class="justifyleft">Added History <span class="helpicon">?<span class="helptext">Adds the specified amount of characters from the context before the last user message to the search query.</span></span></div>
-						<input title="Extra Text For Search" inputmode="numeric" class="justifyright" style="margin-left:3px" id="documentdb_searchrange" oninput="
-						document.getElementById('documentdb_searchrange_slide').value = this.value;">
+					<div class="settingitem" style="width: unset;">
+						<div class="settinglabel" style="padding: 4px;">
+							<div class="justifyleft">Added History <span class="helpicon">?<span class="helptext">Adds the specified amount of characters from the context before the last user message to the search query.</span></span></div>
+							<input title="Extra Text For Search" inputmode="numeric" class="justifyright push-right" id="documentdb_searchrange" oninput="
+							document.getElementById('documentdb_searchrange_slide').value = this.value;">
+						</div>
+						<div><input title="Extra Text For Search Slider" type="range" min="50" max="500" step="10" id="documentdb_searchrange_slide" oninput="
+							document.getElementById('documentdb_searchrange').value = this.value;"></div>
+						<div class="settingminmax">
+							<div class="justifyleft">50</div>
+							<div class="justifyright">500</div>
+						</div>
 					</div>
-					<div><input title="Extra Text For Search Slider" type="range" min="50" max="500" step="10" id="documentdb_searchrange_slide" oninput="
-						document.getElementById('documentdb_searchrange').value = this.value;"></div>
-					<div class="settingminmax">
-						<div class="justifyleft">50</div>
-						<div class="justifyright">500</div>
-					</div>
-				</div>
 
-				<div class="settingitem" style="width: unset;">
-					<div class="settinglabel" style="padding: 4px;">
-						<div class="justifyleft">Snippet Size <span class="helpicon">?<span class="helptext">Controls the size (in characters) of each snippet taken from the documents.</span></span></div>
-						<input title="Snippet Size" inputmode="numeric" class="justifyright" style="margin-left:3px" id="documentdb_chunksize" oninput="
-						document.getElementById('documentdb_chunksize_slide').value = this.value; estimate_and_show_textDB_usage();">
-					</div>
-					<div><input title="Snippet Size Slider" type="range" min="100" max="3000" step="50" id="documentdb_chunksize_slide" oninput="
-						document.getElementById('documentdb_chunksize').value = this.value; estimate_and_show_textDB_usage();"></div>
-					<div class="settingminmax">
-						<div class="justifyleft">100</div>
-						<div class="justifyright">3000</div>
+					<div class="settingitem" style="width: unset;">
+						<div class="settinglabel" style="padding: 4px;">
+							<div class="justifyleft">Snippet Size <span class="helpicon">?<span class="helptext">Controls the size (in characters) of each snippet taken from the documents.</span></span></div>
+							<input title="Snippet Size" inputmode="numeric" class="justifyright push-right" id="documentdb_chunksize" oninput="
+							document.getElementById('documentdb_chunksize_slide').value = this.value; estimate_and_show_textDB_usage();">
+						</div>
+						<div><input title="Snippet Size Slider" type="range" min="100" max="3000" step="50" id="documentdb_chunksize_slide" oninput="
+							document.getElementById('documentdb_chunksize').value = this.value; estimate_and_show_textDB_usage();"></div>
+						<div class="settingminmax">
+							<div class="justifyleft">100</div>
+							<div class="justifyright">3000</div>
+						</div>
 					</div>
 				</div>
 
@@ -28894,7 +28906,7 @@ Current version indicated by LITEVER below.
 									</div>
 								</div>
 								<div class="settinglabel" style="width:100%">
-									<button type="button" class="btn btn-primary" style="padding:2px 4px;margin:2px;margin-left:auto;font-size:12px;" onclick="add_another_participant()">Add Another Participant</button>
+									<button type="button" class="btn btn-primary" style="padding:2px 4px;margin:2px;margin-left:auto;font-size: var(--theme_font_size_medium);" onclick="add_another_participant()">Add Another Participant</button>
 								</div>
 							</div>
 
@@ -29039,7 +29051,7 @@ Current version indicated by LITEVER below.
 						</div>
 						<div id="guitypedesc2" class="settingsdesctxt justifyright"></div>
 
-						<div class="settinglabel">
+						<div class="settinglabel hidden">
 							<div class="justifyleft">Color scheme <span class="helpicon">?<span
 								class="helptext">Set UI color scheme. Does not apply to corpo mode.</span></span></div>
 								<div class="push-right">
@@ -29367,7 +29379,7 @@ Current version indicated by LITEVER below.
 												<input title="Mirostat Eta" class="settinglabel miniinput" type="text" inputmode="decimal" placeholder="0.0" value="0.0" id="miro_eta"></div>
 											</div>
 										</div>
-										<div id="mirounsupporteddiv" class="color_red" style="font-weight:bold;padding:3px;font-size:12px">Unsupported</div>
+										<div id="mirounsupporteddiv" class="color_red" style="font-weight:bold;padding:3px;font-size:var(--theme_font_size_medium);">Unsupported</div>
 										</div>
 								</div>
 
@@ -29397,9 +29409,9 @@ Current version indicated by LITEVER below.
 											<input title="DRY Last N" class="settinglabel miniinput" type="text" inputmode="decimal" placeholder="0.0" value="0.0" id="dry_penalty_last_n"></div>
 										</div>
 									</div>
-									<button id="setbreakers" type="button" class="btn btn-primary" style="width:100%; padding:2px 3px; font-size:12px;" onclick="setDryBreakers()">Seq. Breaks</button>
+									<button id="setbreakers" type="button" class="btn btn-primary" style="width:100%; padding:2px 3px; font-size: var(--theme_font_size_medium);" onclick="setDryBreakers()">Seq. Breaks</button>
 									</div>
-									<div id="dryunsupporteddiv" class="color_red" style="font-weight:bold;padding:3px;font-size:12px">Unsupported</div>
+									<div id="dryunsupporteddiv" class="color_red" style="font-weight:bold;padding:3px;font-size:var(--theme_font_size_medium);">Unsupported</div>
 									</div>
 								</div>
 							</div>
@@ -29421,7 +29433,7 @@ Current version indicated by LITEVER below.
 												<input title="XTC Probability" class="settinglabel miniinput" type="text" inputmode="decimal" placeholder="0.0" value="0.0" id="xtc_probability"></div>
 											</div>
 										</div>
-										<div id="xtcunsupporteddiv" class="color_red" style="font-weight:bold;padding:3px;font-size:12px">Unsupported</div>
+										<div id="xtcunsupporteddiv" class="color_red" style="font-weight:bold;padding:3px;font-size:var(--theme_font_size_medium);">Unsupported</div>
 										</div>
 								</div>
 								<div class="settinglabel settingcell">
@@ -29440,7 +29452,7 @@ Current version indicated by LITEVER below.
 												<input title="Adaptive-P Decay" class="settinglabel miniinput" type="text" inputmode="decimal" placeholder="0.0" value="0.0" id="adaptivep_decay"></div>
 											</div>
 										</div>
-										<div id="adaptpunsupporteddiv" class="color_red" style="font-weight:bold;padding:3px;font-size:12px">Unsupported</div>
+										<div id="adaptpunsupporteddiv" class="color_red" style="font-weight:bold;padding:3px;font-size:var(--theme_font_size_medium);">Unsupported</div>
 									</div>
 								</div>
 								<div class="settinglabel settingcell">
@@ -29451,7 +29463,7 @@ Current version indicated by LITEVER below.
 									<div class="justifyleft" style="width:100%">
 									<input title="Top N Sigma" class="settinglabel miniinput" type="text" inputmode="decimal" placeholder="0" value="0" id="nsigma"></div>
 									</div>
-									<div id="nsigmaunsupporteddiv" class="color_red" style="font-weight:bold;padding:3px;font-size:12px">Unsupported</div>
+									<div id="nsigmaunsupporteddiv" class="color_red" style="font-weight:bold;padding:3px;font-size:var(--theme_font_size_medium);">Unsupported</div>
 								</div>
 							</div>
 
@@ -29461,27 +29473,27 @@ Current version indicated by LITEVER below.
 										Grammar Sampling (KCPP) - Allows you to constrain output to fit specific structures. Resets grammar state every generation unless Retain is checked.</span></span></div>
 									<div id="grammarsupporteddiv" style="display:flex;">
 										<div class="justifyleft" style="height: 30px;width:100%;display: flex;">
-										<button title="Set Grammar GBNF" id="setgrammar" type="button" class="btn btn-primary" style="padding:2px 3px;margin-top:2px;font-size:12px;" onclick="selectGrammar()">GBNF</button>
+										<button title="Set Grammar GBNF" id="setgrammar" type="button" class="btn btn-primary" style="padding:2px 3px;margin-top:2px;font-size: var(--theme_font_size_medium);" onclick="selectGrammar()">GBNF</button>
 										<div style="display:flex;">
 										<div style="margin:2px;margin-top:6px;" title="Do not reset grammar on generate. May not work with multiple users.">Retain </div>
 										<input title="Retain Grammar State" type="checkbox" id="grammar_retain_state" style="padding:2px 3px;">
 										</div>
 									</div>
 									</div>
-									<div id="grammarunsupporteddiv" class="color_red" style="font-weight:bold;padding:3px;font-size:12px">Unsupported</div>
+									<div id="grammarunsupporteddiv" class="color_red" style="font-weight:bold;padding:3px;font-size: var(--theme_font_size_medium)">Unsupported</div>
 								</div>
 								<div class="settinglabel settingcell">
 									<div title="DynaTemp Configs." class="justifyleft" style="width:100%">Dy.Temp <span class="helpicon">?<span class="helptext">
 										Dynamic temperature is specified by a Temperature Value and a Temperature Range. Actual temperature is allowed to be automatically adjusted dynamically between (DynaTemp ± DynaRange).</span></span></div>
 									<div class="justifyleft" style="width:100%">
-									<button title="Dynamic Temperature Configuration" type="button" class="btn btn-primary" style="padding:2px 4px;font-size:12px;" onclick="show_dynatemp()"><span id="dynatemp_overview">OFF</span></button>
+									<button title="Dynamic Temperature Configuration" type="button" class="btn btn-primary" style="padding:2px 4px;font-size: var(--theme_font_size_medium);" onclick="show_dynatemp()"><span id="dynatemp_overview">OFF</span></button>
 									</div>
 								</div>
 								<div class="settinglabel settingcell">
 									<div class="justifyleft" style="width:100%">2nd-Ep.Sampler <span class="helpicon">?<span class="helptext">
 										If enabled, sample N tokens from a second OpenAI Compatible endpoint first before a request. This can be useful for jailbreak purposes.</span></span></div>
 									<div class="justifyleft" style="width:100%;">
-										<button title="Second Endpoint Split Sampling" type="button" class="btn btn-primary" style="padding:2px 4px;font-size:12px;" onclick="show_2epsample()"><span id="second_ep_overview">OFF</span></button>
+										<button title="Second Endpoint Split Sampling" type="button" class="btn btn-primary" style="padding:2px 4px;font-size: var(--theme_font_size_medium);" onclick="show_2epsample()"><span id="second_ep_overview">OFF</span></button>
 									</div>
 								</div>
 							</div>
@@ -29511,7 +29523,7 @@ Current version indicated by LITEVER below.
 								<div class="justifyleft">Model</div>
 								<select class="form-control push-right" id="generate_images_model" style="width:calc(100% - 58px);" onblur="validate_sd_model()" title="Stable Diffusion Model Selection">
 								</select>
-								<button id="generate_images_horde_setkey" type="button" class="btn btn-primary" style="width:52px; padding: 2px 2px; margin-left: 3px; font-size:12px;" onclick="set_horde_key()">Set Key</button>
+								<button id="generate_images_horde_setkey" type="button" class="btn btn-primary" style="width:52px; padding: 2px 2px; margin-left: 3px; font-size: var(--theme_font_size_medium);" onclick="set_horde_key()">Set Key</button>
 							</div>
 							<div class="settinglabel">
 								<div class="justifyleft"  title="If NSFW is disabled, explicit images will be censored">Allow NSFW </div>
@@ -29528,7 +29540,7 @@ Current version indicated by LITEVER below.
 								</select>
 								</div>
 								<button type="button" class="btn btn-primary" onclick="set_a1111_endpoint()"
-									style="width:52px; padding: 2px 2px; margin-left: 3px; font-size:12px;">Set URL</button>
+									style="width:52px; padding: 2px 2px; margin-left: 3px; font-size: var(--theme_font_size_medium);">Set URL</button>
 							</div>
 							<div class="settinglabel">
 								<div class="justifyleft"  title="Save images remotely on A1111/Forge host (caution)">Save In A1111/Forge </div>
@@ -29542,7 +29554,7 @@ Current version indicated by LITEVER below.
 							<select title="Select Image Model" class="form-control push-right" id="generate_images_comfy_model" style="width:calc(100% - 58px)">
 								<option value="">[None]</option>
 							</select>
-							<button type="button" class="btn btn-primary" onclick="set_comfy_endpoint()" style="width:52px; padding: 2px 2px; margin-left: 3px; font-size:12px;">Set URL</button>
+							<button type="button" class="btn btn-primary" onclick="set_comfy_endpoint()" style="width:52px; padding: 2px 2px; margin-left: 3px; font-size: var(--theme_font_size_medium);">Set URL</button>
 							</div>
 							<div class="settinglabel" style="display: flex; width: 100%">
 							<div class="justifyleft">LoRA</div>
@@ -29554,9 +29566,9 @@ Current version indicated by LITEVER below.
 
 						<div id="generate_images_dalle_container" class="settinglabel hidden settingsbox">
 							<table width="100%"><tr>
-							<td><button type="button" class="btn btn-primary" style="width:100%; padding:2px 3px;margin-top:2px;font-size:12px;" onclick="set_dalle_url()">Set URL</button></td>
-							<td><button type="button" class="btn btn-primary" style="width:100%; padding:2px 3px;margin-top:2px;font-size:12px;" onclick="set_dalle_key()">Set Key</button></td>
-							<td><button type="button" class="btn btn-primary" style="width:100%; padding:2px 3px;margin-top:2px;font-size:12px;" onclick="set_dalle_model()">Model</button></td>
+							<td><button type="button" class="btn btn-primary" style="width:100%; padding:2px 3px;margin-top:2px;font-size: var(--theme_font_size_medium);" onclick="set_dalle_url()">Set URL</button></td>
+							<td><button type="button" class="btn btn-primary" style="width:100%; padding:2px 3px;margin-top:2px;font-size: var(--theme_font_size_medium);" onclick="set_dalle_key()">Set Key</button></td>
+							<td><button type="button" class="btn btn-primary" style="width:100%; padding:2px 3px;margin-top:2px;font-size: var(--theme_font_size_medium);" onclick="set_dalle_model()">Model</button></td>
 							</tr></table>
 						</div>
 
@@ -30062,7 +30074,7 @@ Current version indicated by LITEVER below.
 				<div id="settingsmenutools" class="settingsmenu hidden" onchange="setting_tweaked()">
 					<div class="settingitem wide">
 						<h3 style="margin-top: 4px;">MCP Tool Calling</h3>
-						<div class="justifyleft color_red hidden" id="nomcp" style="font-weight:bold;font-size:12px">MCP Toolcalling unavailable, requires chat completions.</div>
+						<div class="justifyleft color_red hidden" id="nomcp" style="font-weight:bold;font-size: var(--theme_font_size_medium)">MCP Toolcalling unavailable, requires chat completions.</div>
 						<div class="settinglabel">
 							<div class="justifyleft">Enable Toolcalling <span class="helpicon">?<span
 								class="helptext">Allow tool calling and MCP server usage. Require Chat Completions endpoint (KoboldCpp will auto switch).</span></span></div>
@@ -30087,8 +30099,8 @@ Current version indicated by LITEVER below.
 							<div class="justifyleft">MCP Server URLs <span class="helpicon">?<span
 								class="helptext">Connect to local or remote MCP servers to use tools there. One URL per row, optional API keys separated by commas. Caution: MCP API keys are stored in plaintext in saves!</span></span></div>
 							<textarea class="form-control menuinput_multiline" style="height: 80px;line-height:1.1;margin-bottom: 4px;" id="mcpurls" placeholder="MCP server URLs (e.g. http://localhost:3000/mcp)&#10;One URL per row, optional API keys separated by commas." rows="4"></textarea>
-							<button type="button" id="clear_mcp_btn" class="btn btn-primary push-right" style="width:80px; padding:2px 3px;font-size:12px;" onclick="Clear_MCP_Tools()">Remove All</button>
-							<button type="button" id="connect_mcp_btn" class="btn btn-primary" style="width:80px; padding:2px 3px;font-size:12px; margin: 0px 0px 0px 3px;" onclick="Fetch_MCP_Tools()">Connect All</button>
+							<button type="button" id="clear_mcp_btn" class="btn btn-primary push-right" style="width:80px; padding:2px 3px;font-size: var(--theme_font_size_medium);" onclick="Clear_MCP_Tools()">Remove All</button>
+							<button type="button" id="connect_mcp_btn" class="btn btn-primary" style="width:80px; padding:2px 3px;font-size: var(--theme_font_size_medium); margin: 0px 0px 0px 3px;" onclick="Fetch_MCP_Tools()">Connect All</button>
 						</div>
 
 						<div id="tools_list_container" class="tools_list_container">
@@ -30098,7 +30110,7 @@ Current version indicated by LITEVER below.
 
 						<div class="settinglabel">
 							<div class="justifyleft">
-								<div id="websearchunsupporteddiv" class="color_red hidden" style="font-weight:bold;font-size:12px">WebSearch Not Supported</div>
+								<div id="websearchunsupporteddiv" class="color_red hidden" style="font-weight:bold;font-size: var(--theme_font_size_medium)">WebSearch Not Supported</div>
 							</div>
 						</div>
 						<div class="settinglabel">
@@ -30498,7 +30510,7 @@ Current version indicated by LITEVER below.
 					<div style="margin-top:3px; text-align: center; align-self: center; width: 100%">
 						<span style="font-weight:bold;text-decoration: underline;">Slot Storage Option</span>
 						<span style="float:right; text-align: right;">
-							<button type="button" class="btn btn-primary" style="font-size:10px;padding:2px 5px;margin-left:4px;margin:2px;" onclick="hide_popups();display_settings();display_settings_tab(6);">Configure</button>
+							<button type="button" class="btn btn-primary" style="font-size: var(--theme_font_size_medium);padding:2px 5px;margin-left:4px;margin:2px;" onclick="hide_popups();display_settings();display_settings_tab(6);">Configure</button>
 						</span>
 					</div>
 					<div style="display:flex;">
@@ -30778,7 +30790,7 @@ Current version indicated by LITEVER below.
 					<div class="box-label" style="padding:4px" title="Add Prefix. Forcefully inserts extra text at the start of the prompt to steer the AI.">Add Prefix</div>
 					<input type="checkbox" title="Add Postfix Prompt" id="jailbreakprompt2" onchange="togglejailbreak2()">
 					<div class="box-label" style="padding:4px" title="Add Postfix. Forcefully inserts extra text to before the AI response to steer the AI.">Add Postfix</div>
-					<select title="Reasoning Effort" class="form-control" style="height: 22px; font-size:10px; padding:2px;display:inline;width:120px" id="oaireasoningeffort">
+					<select title="Reasoning Effort" class="form-control" style="height: 22px; font-size: var(--theme_font_size_medium); padding:2px;display:inline;width:120px" id="oaireasoningeffort">
 						<option value="" selected>Reasoning: Default</option>
 						<option value="none">Reasoning: None</option>
 						<option value="minimal">Reasoning: Minimal</option>

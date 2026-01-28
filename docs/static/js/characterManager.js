@@ -1300,6 +1300,9 @@ let showCharacterList = async (event = undefined, serverLoad = false) => {
             .button("Sync", () => putAllCharacterManagerData())
     }
     popupUtils.resetButtonGroup().button("Close", () => popupUtils.reset()).show();
+
+    // Fix colour of bottom border for popup
+    popupUtils.buttonsElem.style["paddingBottom"] = "0px"
 }
 
 // Native character creator popup for esobold
