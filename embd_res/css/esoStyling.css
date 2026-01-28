@@ -124,8 +124,8 @@
 
 	.btn.btn-primary,
 	button {
-		background-color: var(--theme_color_button_bg);
-		color: var(--theme_color_button_text);
+		background-color: var(--theme_color_btn);
+		color: var(--theme_color_btn_text);
 	}
 
 	.hlchunk {
