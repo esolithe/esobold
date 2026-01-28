@@ -385,12 +385,6 @@ window.addEventListener('load', () => {
     settingLabelElem = createSettingElemBool("corpoHideLeftPanel", "Left panel in Corpo Theme starts minimised", "If this option is enabled, the left panel in Corpo gets minimised automatically.")
     settingsBox.append(settingLabelElem)
 
-    settingLabelElem = createSettingElementTextArea("mcpServers", "MCP servers for agent mode (requires page reload)", "Adds MCP servers for agent mode to use.  Separate servers by new lines. This setting requires a page reload to take effect.", "http://localhost:12435/mcp")
-    settingsBox.append(settingLabelElem)
-
-    settingLabelElem = createSettingElemBool("mcpDangerMode", "Allows external MCP commands to run without authorisation", "Dangerous!  This option allows the LLM unrestricted access to MCP commands, instead of prompting the user each time.  This is not advisable to turn on unless you are absolutely sure that the commands are safe and will not cause harm to your system.")
-    settingsBox.append(settingLabelElem)
-
     settingsBox = document.querySelector("#settingsmenuappearance > .settingitem")
     settingsBox.appendChild(createNewSubSection("Esobold theme settings"))
     settingLabelElem = createSettingElemButton("customThemeColours", "Modify theme colours", "Allows modification of the colours used in the default theme", showThemePopup)
