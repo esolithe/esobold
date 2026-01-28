@@ -39,8 +39,6 @@ display_settings = () => {
     document.getElementById("legacySaveMechanisms").checked = localsettings.legacySaveMechanisms;
     document.getElementById("fullScreenEditorForInputs").checked = localsettings.fullScreenEditorForInputs;
     document.getElementById("corpoHideLeftPanel").checked = localsettings.corpoHideLeftPanel;
-    document.getElementById("mcpDangerMode").checked = localsettings.mcpDangerMode;
-    document.getElementById("mcpServers").textContent = localsettings.mcpServers;
 }
 
 updateLegacySaveButtonState = () => {
@@ -68,8 +66,6 @@ confirm_settings = () => {
     localsettings.legacySaveMechanisms = (document.getElementById("legacySaveMechanisms").checked ? true : false);
     localsettings.fullScreenEditorForInputs = (document.getElementById("fullScreenEditorForInputs").checked ? true : false);
     localsettings.corpoHideLeftPanel = (document.getElementById("corpoHideLeftPanel").checked ? true : false);
-    localsettings.mcpDangerMode = (document.getElementById("mcpDangerMode").checked ? true : false);
-    localsettings.mcpServers = (document.getElementById("mcpServers").value);
     updateEditorState();
     originalConfirmSettings();
     updateLegacySaveButtonState();
@@ -120,12 +116,6 @@ window.addEventListener('load', () => {
     }
     if (localsettings?.corpoHideLeftPanel == undefined) {
         localsettings.corpoHideLeftPanel = false
-    } 
-    if (localsettings?.mcpDangerMode == undefined) {
-        localsettings.mcpDangerMode = false
-    }
-    if (localsettings?.mcpServers == undefined) {
-        localsettings.mcpServers = ""
     }
 
     // Overwrite the switching to handle new dynamically added menus
