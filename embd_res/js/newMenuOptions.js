@@ -146,7 +146,7 @@ window.addEventListener('load', () => {
 
         sectionBody.id = sectionId
         sectionBody.classList.add("settingsmenu", "hidden")
-        sectionBody.onchange = setting_tweaked
+        sectionBody.onchange = sampler_setting_tweaked
 
         sectionBody.appendChild(settingsBox)
         settingBody.appendChild(sectionBody)
