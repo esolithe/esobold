@@ -24701,24 +24701,54 @@ Current version indicated by LITEVER below.
 							curr = repack_postprocess_turn(curr, countmap, false); //change whole object
 						}
 						let currmsg = curr.msg;
-
 						let namepart = (curr.name?`<span style="font-weight: bolder;">${escape_html(curr.name)} </span><br>`:"");
 						if(localsettings.inject_chatnames_instruct && localsettings.show_nametags)
 						{
 							currmsg = namepart + currmsg;
 						}
 
-						if(curr.myturn)
+						let imageToUse = getImageForSource(curr?.source, curr.name), isHuman = false, putRaw = false;
+						if (curr?.source !== undefined) {
+							switch (curr?.source) {
+								case "human":
+									imageToUse = imageToUse || "var(--img_humansquare)";
+									isHuman = true;
+									break;
+								case "ai":
+									imageToUse = imageToUse || "var(--img_nikosquare)";
+									break;
+								case "system":
+								default:
+									imageToUse = imageToUse || "var(--img_favicon_normal)";
+									break;
+							}
+						}
+						else {
+							if(curr.myturn)
+							{
+								imageToUse = imageToUse || "var(--img_humansquare)";
+								isHuman = true;
+							}
+							else
+							{
+								// To do: Investigate further if this breaks other modes - currently causes the first message to show twice
+								if (i == 0 && true === false) {
+									fulltxt += `${currmsg}`;
+									putRaw = true;
+								} 
+								else {
+									imageToUse = imageToUse || "var(--img_nikosquare)";
+								}
+							}
+						}
+
+						if (putRaw)
 						{
-							fulltxt += `<hr style="margin-top: 12px; margin-bottom: 12px;"><span class="color_kobotext"><span class="humansquare" onclick="classic_click_turn(this,${i})"></span>${currmsg}</span>`;
+							fulltxt += `${currmsg}`;
 						}
 						else
 						{
-							if (i == 0) {
-								fulltxt += `${currmsg}`;
-							} else {
-								fulltxt += `<hr style="margin-top: 12px; margin-bottom: 12px;"><span><span class="nikosquare" onclick="classic_click_turn(this,${i})"></span>${currmsg}</span>`;
-							}
+							fulltxt += `<hr style="margin-top: 12px; margin-bottom: 12px;">${isHuman ? `<span class="color_kobotext">` : ""}<img class="containAndScaleImage" onclick="classic_click_turn(this,${i})" style="height:38px;width:38px;padding:3px 6px 3px 3px;border-radius: 8%; background-image: ${imageToUse};" />${currmsg}${isHuman ? `</span>` : ""}`;
 						}
 					}
 
