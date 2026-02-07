@@ -31904,5 +31904,6 @@ Current version indicated by LITEVER below.
 <script src="static/js/themeEditor.js"></script>
 <script src="static/js/esoSampler.js"></script>
 <script src="static/js/MCPUtils.js"></script>
+<script src="static/js/esoWelcome.js"></script>
 <!-- EsoLite modifications end -->
 </html>
