@@ -129,6 +129,12 @@ Current version indicated by LITEVER below.
 
         --theme_color_border: #7c8e8e;
         --theme_color_border_highlight: #82a1bc;
+		--theme_color_user_name: #18d4bb;
+        --theme_color_ai_name: #da6060;
+        --theme_color_user_msg_bg: #005c4b;
+        --theme_color_user_msg_fg: #e1e6e7;
+        --theme_color_ai_msg_bg: #1d282f;
+        --theme_color_ai_msg_fg: #e1e6e7;
         --theme_color_pending_text: #90f7fa;
 
 		--theme_font_family: "Helvetica", sans-serif;
