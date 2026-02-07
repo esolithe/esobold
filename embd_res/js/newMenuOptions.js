@@ -311,30 +311,32 @@ window.addEventListener('load', () => {
         settingElem.append(minMaxDiv)
         return settingElem
     }
-    let lastSettingContainer = document.querySelector("#instructtagsection")
+    let lastSettingContainer = document.querySelector("#inject_jailbreak_instruct").closest(".settinglabel")
 
-    lastSettingContainer.appendChild(createNewSubSection("Esobold agent mode settings"))
+    lastSettingContainer.after(createNewSubSection("Esobold agent mode settings"))
     let settingLabelElem = createSettingElemBool("agentBehaviour", "Agent behaviour (experimental)", "Allows the AI to use multiple generations and certain tools to see if it can improve results.  This can include web search (if enabled), dice rolling, and formula evaluation.  This mode requires instruct start and end tags for all roles. Image and TTS only is enabled for local KCPP users.")
     settingLabelElem.onclick = () => {
         if (document.getElementById("agentBehaviour").checked == true && document.getElementById("separate_end_tags").checked != true) {
             document.getElementById("separate_end_tags").click()
         }
     }
-    lastSettingContainer.append(settingLabelElem)
+    lastSettingContainer.after(settingLabelElem)
 
     settingLabelElem = createSettingElemBool("agentHideCOT", "Hide agent COT (experimental)", "Hides agent thinking steps (such as searches)")
-    lastSettingContainer.append(settingLabelElem)
+    lastSettingContainer.after(settingLabelElem)
 
     settingLabelElem = createSettingElemRange("agentCOTMax", "Maximum agent actions", "Defines the maximum number of actions the agent can take without a user input", 1, 20, 1, 5)
-    lastSettingContainer.append(settingLabelElem)
+    lastSettingContainer.after(settingLabelElem)
 
     settingLabelElem = createSettingElemBool("agentStopOnRequestForInput", "Stop on request for input from agent", "Stops the current agent processing if it asks for user input")
-    lastSettingContainer.append(settingLabelElem)
+    lastSettingContainer.after(settingLabelElem)
 
     // Hidden as this is no longer is in use for now
     settingLabelElem = createSettingElemRange("agentCOTRepeatsMax", "Maximum repeated agent actions of a type", "Defines the maximum number of actions the agent can take of the same type without a user input", 1, 20, 1, 1)
     settingLabelElem.style.display = "none"
-    lastSettingContainer.append(settingLabelElem)
+    lastSettingContainer.after(settingLabelElem)
+
+    lastSettingContainer.after(createNewSubSection("Chat name settings"))
 
     lastSettingContainer = document.querySelector("#settingsmenuadvanced > .settingitem")
 

@@ -36,8 +36,8 @@
 	#popupContainer .popupContent select {
 	    background-color: var(--theme_color_input_bg);
 	    border-color: var(--theme_color_border);
-	    color: var(--theme_color_input_text);
-	    border: 1px solid var(--colgrey, #ccc);
+	    color: var(--theme_color_input_fg);
+	    border: 1px solid var(--theme_color_border, #ccc);
 	    border-radius: 6px;
 	    padding: 6px 8px;
 	    box-sizing: border-box;
@@ -78,7 +78,7 @@
 	}
 
 	.characterCreatorGrid {
-	    color: var(--theme_color_text);
+	    color: var(--theme_color_fg);
 	    padding: 10px;
 	    display: grid;
 	    grid-template-columns: 1fr 1fr;
@@ -116,7 +116,7 @@
 	}
 
 	.buttonGroup > span {
-		color: var(--theme_color_text);
+		color: var(--theme_color_fg);
 		background-color: var(--theme_color_topbtn);
 		border-radius: 10px;
 		text-align: center;
