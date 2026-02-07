@@ -59,7 +59,7 @@
 	}
 
 	hr {
-		border-color: var(--theme_color_text)
+		border-color: var(--theme_color_fg)
 	}
 
 	input[type=checkbox] {
@@ -81,20 +81,20 @@
 		height: 12px;
 		border-width: 0 3px 3px 0;
 		transform: rotate(45deg);
-		border-color: var(--theme_color_input_text);
+		border-color: var(--theme_color_input_fg);
 		border-style: solid;
 	}
 
 	#connectstatus {
-		color: var(--theme_color_glow_text) !important
+		color: var(--theme_color_fg_highlight) !important
 	}
 
 	.text_highlight {
-		color: var(--theme_color_glow_text);
+		color: var(--theme_color_fg_highlight);
 	}
 
 	input[type=range] {
-		accent-color: var(--theme_color_input_text);
+		accent-color: var(--theme_color_input_fg);
 	}
 
 	input,
@@ -103,7 +103,7 @@
 	.cht_inp_bg_inner,
 	#cht_inp_bg {
 		background-color: var(--theme_color_input_bg);
-		color: var(--theme_color_input_text);
+		color: var(--theme_color_input_fg);
 	}
 
 	::placeholder,
@@ -111,7 +111,7 @@
 	.form-control::placeholder,
 	label[for=allowediting],
 	input::placeholder {
-		color: var(--theme_color_placeholder_text);
+		color: var(--theme_color_fg_muted);
 	}
 
 	#corpo_cht_inp::placeholder {
@@ -124,8 +124,8 @@
 
 	.btn.btn-primary,
 	button {
-		background-color: var(--theme_color_btn);
-		color: var(--theme_color_btn_text);
+		background-color: var(--theme_color_accent_bg);
+		color: var(--theme_color_fg);
 	}
 
 	.hlchunk {

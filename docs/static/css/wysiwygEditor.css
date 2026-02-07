@@ -31,7 +31,7 @@
 	}
 
 	.md-toolbar-button {
-	    color: var(--theme_color_text);
+	    color: var(--theme_color_fg);
 	    background-color: var(--theme_color_topbtn);
 	    border: 1px solid var(--theme_color_border)
 	}
@@ -43,13 +43,13 @@
 	}
 
 	.md-tab-button.active {
-	    color: var(--theme_color_text);
+	    color: var(--theme_color_fg);
 	    background-color: var(--theme_color_topbtn_highlight);
 	    border-bottom: transparent;
 	}
 
 	.md-tab-button {
-	    color: var(--theme_color_text);
+	    color: var(--theme_color_fg);
 	    border-right: transparent;
 	}
 
