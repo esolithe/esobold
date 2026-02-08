@@ -1,22 +1,35 @@
+version: "3.2"
 services:
   esobold:
-    image: esolithe/esobold:latest
-    # build:
-    #   context: .
-    ports:
-      - "5001:5001"
+    container_name: koboldcpp
+    image: koboldai/koboldcpp:latest
+    security_opt:
+      - apparmor:unconfined # AppArmor breaks sockets, don't worry everything is securely confined within docker
     volumes:
+      - ./kcpp-data:/workspace/:rw
+      # - ./esoModels:/app/models
+      # - ./esoConfigs:/app/configs
+      # - ./esoData:/app/data
       - esoModels:/app/models
       - esoConfigs:/app/configs
       - esoData:/app/data
-    deploy:
+    # devices: # Uncomment this section to add support for AMD/Intel GPU's
+    # - /dev/dri:/dev/dri
+    deploy: # You can remove this section if you do not wish to use an Nvidia GPU
       resources:
         reservations:
           devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    command: --admin --admindir "/app/configs" --downloaddir "/app/models" --admintextmodelsdir "/app/models" --admindatadir "/app/data" --adminallowhf --nomodel --websearch --multiplayer --debug
+          - driver: nvidia
+            device_ids: ['0']
+            capabilities: [gpu]
+    environment:
+      - KCPP_DONT_UPDATE=false
+      - KCPP_DONT_TUNNEL=true
+      - KCPP_BIN_OVERRIDE=https://github.com/esolithe/esobold/releases/latest/download/koboldcpp-linux-x64
+      - KCPP_ARGS=--admin --admindir "/app/configs" --downloaddir "/app/models" --admintextmodelsdir "/app/models" --admindatadir "/app/data" --adminallowhf --nomodel --websearch --multiplayer --gpulayers 99 --multiuser 20
+    ports:
+      - "5001:5001"
+    restart: unless-stopped
 volumes:
   esoModels:
   esoConfigs:

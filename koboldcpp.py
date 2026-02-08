@@ -3889,6 +3889,8 @@ def get_my_epurl():
     return epurl
 
 def getDBPath():
+    if args.admindatadir:
+        os.makedirs(os.path.abspath(args.admindatadir), exist_ok=True)
     return os.path.join(args.admindatadir, "kcpp.db")
 
 dataMetadata = {}
@@ -4745,6 +4747,8 @@ Change Mode<br>
 
         elif clean_path.endswith(('/api/admin/list_options')): #used by admin to get configs supported by a kcpp instance
             opts = []
+            if args.admin and args.admindir:
+                os.makedirs(os.path.abspath(args.admindir), exist_ok=True)
             if args.admin and args.admindir and os.path.exists(args.admindir) and self.check_header_password(args.adminpassword):
                 dirpath = os.path.abspath(args.admindir)
                 opts = [f for f in sorted(os.listdir(dirpath)) if (f.endswith(".kcpps") or f.endswith(".kcppt") or f.endswith(".gguf")) and os.path.isfile(os.path.join(dirpath, f))]
@@ -4753,6 +4757,8 @@ Change Mode<br>
 
         elif clean_path.endswith(('/api/admin/list_models')): #used by admin to get models which can be reloaded with
             opts = []
+            if args.admin and args.admintextmodelsdir:
+                os.makedirs(os.path.abspath(args.admintextmodelsdir), exist_ok=True)
             if args.admin and args.admintextmodelsdir and os.path.exists(args.admintextmodelsdir) and self.check_header_password(args.adminpassword):
                 dirpath = os.path.abspath(args.admintextmodelsdir)
                 opts = [f for f in os.listdir(dirpath) if f.endswith(".gguf") and os.path.isfile(os.path.join(dirpath, f))]
@@ -8645,7 +8651,9 @@ def downloader_internal(input_url, output_filename, capture_output, min_file_siz
     if "https://huggingface.co/" in input_url and "/blob/main/" in input_url:
         input_url = input_url.replace("/blob/main/", "/resolve/main/")
     if download_dir_path:
+        print(f"Download directory: {download_dir_path}")
         download_dir_path = os.path.abspath(download_dir_path)
+        print(f"Download directory (resolved): {download_dir_path}")
         os.makedirs(download_dir_path, exist_ok=True)
     if output_filename == "auto":
         filename = os.path.basename(input_url).split('?')[0].split('#')[0]
@@ -8663,6 +8671,7 @@ def downloader_internal(input_url, output_filename, capture_output, min_file_siz
             else:
                 exe_dir = os.path.dirname(sys.executable if getattr(sys, 'frozen', False) else __file__)
                 output_filename = os.path.join(exe_dir, filename)
+    print(f"Downloading model to: {output_filename}")
     incomplete_dl_exist = (os.path.exists(output_filename+".aria2") and os.path.getsize(output_filename+".aria2") > 16)
     if os.path.exists(output_filename) and os.path.getsize(output_filename) > min_file_size and not incomplete_dl_exist:
         print(f"{output_filename} already exists, using existing file.")
