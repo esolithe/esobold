@@ -1,0 +1,23 @@
+services:
+  esobold:
+    image: esolithe/esobold:latest
+    # build:
+    #   context: .
+    ports:
+      - "5001:5001"
+    volumes:
+      - esoModels:/app/models
+      - esoConfigs:/app/configs
+      - esoData:/app/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command: --admin --admindir "/app/configs" --downloaddir "/app/models" --admintextmodelsdir "/app/models" --admindatadir "/app/data" --adminallowhf --nomodel --websearch --multiplayer --debug
+volumes:
+  esoModels:
+  esoConfigs:
+  esoData:
