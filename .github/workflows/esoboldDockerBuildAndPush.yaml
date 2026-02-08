@@ -1,5 +1,4 @@
-name: Esobold build and push to dockerhub
-
+name: Esobold build and push to docker
 on:
   workflow_dispatch:
 jobs:
