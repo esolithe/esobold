@@ -9,6 +9,8 @@ jobs:
     steps:
       - name: Checking out the repo
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - name: Set current tag
         run: |
           latestTag=$(git describe --abbrev=0 --match="RM*" --tags)
