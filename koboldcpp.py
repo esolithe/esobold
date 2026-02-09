@@ -8590,7 +8590,7 @@ def reload_from_new_args(newargs):
         args.istemplate = False
         newargs = convert_invalid_args(newargs)
         for key, value in newargs.items(): #do not overwrite certain values
-            if key not in ["remotetunnel","showgui","port","host","port_param","admin","adminpassword","admindir","admintextmodelsdir","admindatadir","adminallowhf","ssl","nocertify","benchmark","prompt","config"]:
+            if key not in ["remotetunnel","showgui","port","host","port_param","admin","adminpassword","admindir","admintextmodelsdir","admindatadir","adminallowhf","ssl","nocertify","benchmark","prompt","config","downloaddir"]:
                 setattr(args, key, value)
         setattr(args,"showgui",False)
         setattr(args,"benchmark",False)
