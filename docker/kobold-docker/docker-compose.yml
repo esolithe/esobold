@@ -7,12 +7,7 @@ services:
       - apparmor:unconfined # AppArmor breaks sockets, don't worry everything is securely confined within docker
     volumes:
       - ./kcpp-data:/workspace/:rw
-      # - ./esoModels:/app/models
-      # - ./esoConfigs:/app/configs
-      # - ./esoData:/app/data
-      - esoModels:/app/models
-      - esoConfigs:/app/configs
-      - esoData:/app/data
+      # - kcppWorkspace:/workspace/:rw
     # devices: # Uncomment this section to add support for AMD/Intel GPU's
     # - /dev/dri:/dev/dri
     deploy: # You can remove this section if you do not wish to use an Nvidia GPU
@@ -25,12 +20,12 @@ services:
     environment:
       - KCPP_DONT_UPDATE=false
       - KCPP_DONT_TUNNEL=true
-      - KCPP_BIN_OVERRIDE=https://github.com/esolithe/esobold/releases/latest/download/koboldcpp-linux-x64
-      - KCPP_ARGS=--admin --admindir "/app/configs" --downloaddir "/app/models" --admintextmodelsdir "/app/models" --admindatadir "/app/data" --adminallowhf --nomodel --websearch --multiplayer --gpulayers 99 --multiuser 20
+      - KCPP_ARGS=--admin --admindir "/workspace/configs" --downloaddir "/workspace/models/" --gpulayers 99 --multiuser 20 --nomodel
     ports:
       - "5001:5001"
     restart: unless-stopped
 volumes:
+  kcppWorkspace:
   esoModels:
   esoConfigs:
   esoData:
