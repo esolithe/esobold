@@ -8707,6 +8707,7 @@ def sanitize_string(input_string):
     return sanitized_string
 
 def downloader_internal(input_url, output_filename, capture_output, min_file_size=64): # 64 bytes required by default
+    print(f"Download directory argument: {args.downloaddir}")
     download_dir_path = args.downloaddir
     if "https://huggingface.co/" in input_url and "/blob/main/" in input_url:
         input_url = input_url.replace("/blob/main/", "/resolve/main/")
