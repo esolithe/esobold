@@ -92,7 +92,9 @@ let listOfExclusions = ["Action taken:", "Action taken (words =", "History searc
     "No setting overview provided, nothing has been overwritten", "Current state has been overwritten", "No state provided, nothing has been overwritten", "Current order of actions has been cleared",
     "Current order of actions has been overwritten", "No order of actions provided, nothing has been overwritten", "Error - Empty response instead of action. Ensure all responses are valid JSON.",
     "Current state format has been overwritten", "No valid state format provided, nothing has been overwritten", 
-    `Text has been added to world info:`, `Text was empty - nothing added to world info`, `Chain of thought had an exception`, "Tool call response (hidden from user):","Tool call response error (hidden from user):"]
+    `Text has been added to world info:`, `Text was empty - nothing added to world info`, `Chain of thought had an exception`, "Tool call response (hidden from user):", "Tool call response error (hidden from user):", "Background task: "]
+
+window.agentListOfExclusions = listOfExclusions;
 
 let hideAgentModeCotForAestheticMode = (container = document) => {
     [...container.querySelectorAll("end_of_context_koboldlite_internal > div")]
@@ -114,7 +116,7 @@ render_aesthetic_ui = (input, isPreview) => {
 var loadingNewGame = true
 let originalRepackInstructTurns = repack_instruct_turns, cotOverrideRepack = false;
 
-repack_instruct_turns = (input, usertag, aitag, systag, allow_blank, filterOutActions = (localsettings?.agentHideCOT)) => {
+repack_instruct_turns = (input, usertag, aitag, systag, allow_blank, filterOutActions = (localsettings?.agentHideCOT), excludeSpecificMessagePrefixes = []) => {
     if (isAgentModeEnabledAndSetCorrectly()) {
         let turns = split(input, usertag, aitag, systag)
         let combined_chunks = turns.map(elem => {
@@ -201,6 +203,9 @@ repack_instruct_turns = (input, usertag, aitag, systag, allow_blank, filterOutAc
                 })
         }
 
+        combined_chunks = combined_chunks
+            .filter(elem => !excludeSpecificMessagePrefixes.find(excludedStart => elem.message.trim().indexOf(excludedStart) === 0))
+
         return combined_chunks.map(elem => {
             if (allow_blank || elem.message.trim() != "") {
                 return {
@@ -217,11 +222,11 @@ repack_instruct_turns = (input, usertag, aitag, systag, allow_blank, filterOutAc
     }
 };
 
-let getLastActions = (amountOfActions = 10) => {
+let getLastActions = (amountOfActions = 10, excludeSpecificMessagePrefixes = []) => {
     let exclusions = ["Chain of thought repetition detected - ending", "Chain of thought complete", "plan_actions"]
     // , "Action: {", "Action (words =", "Action taken: ", "Action taken (words ="
     // "Action: {", "Action (words =", "Action taken: ", "Action taken (words ="
-    return repack_instruct_turns(concat_gametext(true), `{{[INPUT]}}`, `{{[OUTPUT]}}`, `{{[SYSTEM]}}`, true, false).map(msg => {
+    return repack_instruct_turns(concat_gametext(true), `{{[INPUT]}}`, `{{[OUTPUT]}}`, `{{[SYSTEM]}}`, true, false, excludeSpecificMessagePrefixes).map(msg => {
         msg.msg = msg.msg.replaceAll("{{[SYSTEM_END]}}", "").replaceAll("{{[INPUT_END]}}", "").replaceAll("{{[OUTPUT_END]}}", "").trim();
         return msg
     }).filter(msg => !/^\n*$/.test(msg.msg) && !!msg.msg && !exclusions.find(exclusion => msg.msg.indexOf(exclusion) !== -1)).splice(-amountOfActions)
@@ -446,7 +451,7 @@ let actionToText = (action) => {
 let currentOrderOfActionsOverall = [], currentOrderOfActionDescriptionsOverall = []
 let recentActions = [], maxActionsInHistory = 1000, currentAgentCycle = null, endCurrent = false
 
-let runAgentCycle = async (initialPrompt = undefined) => {
+let runAgentCycle = async (initialPrompt = undefined, backgroundInvocation = false, excludeSpecificMessagePrefixes = []) => {
 
     clearSuggestions()
     endCurrent = false
@@ -457,7 +462,7 @@ let runAgentCycle = async (initialPrompt = undefined) => {
     currentOrderOfActionsOverall = []
     currentOrderOfActionDescriptionsOverall = []
 
-    let lastActions = getLastActions(maxActionsInHistory)
+    let lastActions = getLastActions(maxActionsInHistory, excludeSpecificMessagePrefixes)
     lastActions.forEach(action => {
         switch (action.source) {
             case "system":
@@ -475,6 +480,7 @@ let runAgentCycle = async (initialPrompt = undefined) => {
     let textDBResults = ""
     if (!!initialPrompt) {
         initialPrompt = (localsettings.inject_chatnames_instruct ? `${localsettings.chatname}: ${initialPrompt}` : initialPrompt)
+        initialPrompt = !!backgroundInvocation ? `Background task: ${initialPrompt}` : initialPrompt
         addThought(createInstructPrompt, initialPrompt)
     }
     else if (!!lastActions && lastActions.length > 0) {
@@ -734,9 +740,14 @@ let runAgentCycle = async (initialPrompt = undefined) => {
     // Render any suggestions generated in the agent logic
     renderSuggestions()
     currentAgentCycle = null
-    Array(...document.getElementsByClassName("stopThinking")).forEach(elem => elem.classList.add("hidden"))
+    if (window?.backgroundAgentLoop !== true)
+    {
+        Array(...document.getElementsByClassName("stopThinking")).forEach(elem => elem.classList.add("hidden"))
+    }
     submit_multiplayer(true)
 }
+
+window.runAgentCycle = runAgentCycle;
 
 // Overrides to lite / UI interactions
 
@@ -789,6 +800,10 @@ let stopAgentThinking = () => {
     endCurrent = true
     Array(...document.getElementsByClassName("stopThinking")).forEach(elem => elem.classList.add("hidden"))
     currentAgentCycle = null
+    if (window?.intervalIdForBackgroundAgent !== undefined)
+    {
+        clearInterval(window.intervalIdForBackgroundAgent)
+    }
     submit_multiplayer(true)
     trigger_abort_controller()
 }

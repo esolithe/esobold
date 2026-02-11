@@ -148,6 +148,16 @@ let getCommands = () => {
 			}
 		},
 		{
+			"name": "do_nothing",
+			"description": "Do nothing. End the current plan.",
+			"args": null,
+			"enabled": false,
+			"outputVisibleToUser": false,
+			"executor": () => {
+				return true;
+			}
+		},
+		{
 			"name": "send_message",
 			"description": "Sends text to the user. When asking for user input include suggestions for them to respond with.",
 			"args": {
@@ -176,12 +186,17 @@ let getCommands = () => {
 			"executor": (action) => {
 				if (!!action?.args?.messages) {
 					clearSuggestions()
+					let messageShowToUser = false
 					action?.args?.messages.forEach(message => {
-						addThought(createAIPrompt, localsettings.inject_chatnames_instruct ? `${action?.args?.whoToSendMessageAs}: ${message}` : message)
+						if (!!message)
+						{
+							addThought(createAIPrompt, localsettings.inject_chatnames_instruct ? `${action?.args?.whoToSendMessageAs}: ${message}` : message)
+							messageShowToUser = true;
+						}
 					})
 
 					let suggestions = action?.args?.suggestionsToPickFrom
-					if (!!suggestions && Array.isArray(suggestions)) {
+					if (messageShowToUser && !!suggestions && Array.isArray(suggestions)) {
 						try {
 							let actualSuggestions = suggestions.map(String).filter(text => text.trim().length > 0)
 							if (actualSuggestions.length > 0) {

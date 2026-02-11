@@ -4167,7 +4167,7 @@ Current version indicated by LITEVER below.
 	}
 
 	let isAgentModeEnabledAndSetCorrectly = () => {
-		return localsettings.opmode == 4 && !!localsettings?.agentBehaviour && allTagsValid()
+		return localsettings.opmode == 4 && !!localsettings?.agentBehaviour // && allTagsValid()
 	}
 
 	const defaultsettings = JSON.parse(JSON.stringify(localsettings));
