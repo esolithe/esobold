@@ -5045,14 +5045,14 @@ Current version indicated by LITEVER below.
 		}
 	}
 
-	const fromfile = ( window.location.protocol == 'file:' );
-	if(!dbgmode && !fromfile){
-		if(!window.console) window.console = {};
-		var methods = ["log", "debug", "warn", "info"];
-		for(var i=0;i<methods.length;i++){
-			console[methods[i]] = function(){};
-		}
-	}
+	// const fromfile = ( window.location.protocol == 'file:' );
+	// if(!dbgmode && !fromfile){
+	// 	if(!window.console) window.console = {};
+	// 	var methods = ["log", "debug", "warn", "info"];
+	// 	for(var i=0;i<methods.length;i++){
+	// 		console[methods[i]] = function(){};
+	// 	}
+	// }
 
 	//poke speech synth to preload voices
 	if ('speechSynthesis' in window) {
