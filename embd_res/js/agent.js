@@ -265,7 +265,7 @@ let calcImageSizing = (aspect) => {
     return sizing
 }
 
-let getInitialAgentPrompt = (commands = getEnabledCommands(), max_mem_len) => {
+let getInitialAgentPrompt = (max_mem_len) => {
     prompt = ""
     if (!!current_memory) {
         prompt += createSysPrompt(`Setting overview:\n\n${substring_to_boundary(current_memory, max_mem_len)}`)
@@ -273,7 +273,7 @@ let getInitialAgentPrompt = (commands = getEnabledCommands(), max_mem_len) => {
     return prompt
 }
 
-let getFinalAgentPrompt = (commands, currentOrderOfActions, objectiveForCurrentAction, initialPrompt) => {
+let getFinalAgentPrompt = (currentChainOfThought, commands, currentOrderOfActions, objectiveForCurrentAction, initialPrompt) => {
     let state = getDocumentFromTextDB('State')
     let prompt = []
 
@@ -307,7 +307,7 @@ let getFinalAgentPrompt = (commands, currentOrderOfActions, objectiveForCurrentA
     // 	prompt.push(`Order of actions: ${currentOrderOfActions.join(" -> ")}`)
     // }
     let basePrompt = prompt.join("\n\n")
-    return createSysPrompt(`### Available commands:\n\n${getCommandsAsText(!!commands.find(c => c.name === "plan_actions") ? getEnabledCommands() : commands)}`) + (basePrompt.length > 0 ? createSysPrompt(basePrompt) : "")
+    return createSysPrompt(`### Available commands:\n\n${getCommandsAsText(!!commands.find(c => c.name === "plan_actions") ? getEnabledCommands(currentChainOfThought) : commands)}`) + (basePrompt.length > 0 ? createSysPrompt(basePrompt) : "")
 }
 
 /**
@@ -448,31 +448,45 @@ let actionToText = (action) => {
     return actionAsText
 }
 
-let currentOrderOfActionsOverall = [], currentOrderOfActionDescriptionsOverall = []
-let recentActions = [], maxActionsInHistory = 1000, currentAgentCycle = null, endCurrent = false
+let maxActionsInHistory = 1000, currentAgentCycle = [], endCurrent = false
 
-let runAgentCycle = async (initialPrompt = undefined, backgroundInvocation = false, excludeSpecificMessagePrefixes = []) => {
+let genericAgentFinaliser = (params) => {
+    let { currentChainOfThought, recentActions, currentOrderOfActionsOverall, currentOrderOfActionDescriptionsOverall } = params
+    currentChainOfThought.forEach(elem => {
+        let { wrappedPrompt, prompt, onlyDisplay, onlyAdd } = elem;
+        if (!onlyDisplay) {
+            currentChainOfThought.push(wrappedPrompt)
+        }
+        if (!onlyAdd) {
+            gametext_arr.push(wrappedPrompt.replace(/\\\\/g, ""))
+        }
+    })
+    render_gametext()
+    return true
+}
 
+let runAgentCycle = async (interactionId, initialPrompt = undefined, backgroundInvocation = false, excludeSpecificMessagePrefixes = [], agentFinaliser = genericAgentFinaliser) => {
+    
     clearSuggestions()
     endCurrent = false
     // gametext_arr = []
     // render_gametext()
-    currentChainOfThought = []
-    recentActions = []
-    currentOrderOfActionsOverall = []
-    currentOrderOfActionDescriptionsOverall = []
+    let currentChainOfThought = []
+    let recentActions = []
+    let currentOrderOfActionsOverall = []
+    let currentOrderOfActionDescriptionsOverall = []
 
     let lastActions = getLastActions(maxActionsInHistory, excludeSpecificMessagePrefixes)
     lastActions.forEach(action => {
         switch (action.source) {
             case "system":
-                addThought(createSysPrompt, action.msg, false, true);
+                addThought(currentChainOfThought, createSysPrompt, action.msg, false, true);
                 break;
             case "ai":
-                addThought(createAIPrompt, action.msg, false, true);
+                addThought(currentChainOfThought, createAIPrompt, action.msg, false, true);
                 break;
             case "human":
-                addThought(createInstructPrompt, action.msg, false, true);
+                addThought(currentChainOfThought, createInstructPrompt, action.msg, false, true);
                 break;
         }
     })
@@ -481,7 +495,7 @@ let runAgentCycle = async (initialPrompt = undefined, backgroundInvocation = fal
     if (!!initialPrompt) {
         initialPrompt = (localsettings.inject_chatnames_instruct ? `${localsettings.chatname}: ${initialPrompt}` : initialPrompt)
         initialPrompt = !!backgroundInvocation ? `Background task: ${initialPrompt}` : initialPrompt
-        addThought(createInstructPrompt, initialPrompt)
+        addThought(currentChainOfThought, createInstructPrompt, initialPrompt)
     }
     else if (!!lastActions && lastActions.length > 0) {
         let humanActions = lastActions.reverse().filter(elem => elem.source === "human")
@@ -583,7 +597,7 @@ let runAgentCycle = async (initialPrompt = undefined, backgroundInvocation = fal
         let max_anote_len = Math.floor(max_allowed_characters * 0.6);
         let max_wi_len = Math.floor(max_allowed_characters * 0.5);
 
-        let history = getInitialAgentPrompt(nextAction, max_mem_len)
+        let history = getInitialAgentPrompt(max_mem_len)
         let wiToInclude = createSysPrompt(substring_to_boundary(getWorldInfoForAgent(truncated_context, max_wi_len) + "\n\n" + textDBResults, max_wi_len))
         let anToInclude = !!current_anote ? createSysPrompt(substring_to_boundary(current_anotetemplate.replace("<|>", current_anote), max_anote_len)) : ""
 
@@ -596,23 +610,24 @@ let runAgentCycle = async (initialPrompt = undefined, backgroundInvocation = fal
             promptOverview = planningPrompt
         }
 
-        let finalAgentPrompt = getFinalAgentPrompt(nextAction, currentOrderOfActionsOverall, promptOverview, initialPrompt)
+        let finalAgentPrompt = getFinalAgentPrompt(currentChainOfThought, nextAction, currentOrderOfActionsOverall, promptOverview, initialPrompt)
 
         let cotAsText = "", maxLengthOfCot = max_allowed_characters - history.length - wiToInclude.length - anToInclude.length - finalAgentPrompt.length
         for (let j = currentChainOfThought.length - 1; j >= 0; j--) {
-            if (cotAsText.length + currentChainOfThought[j].length > maxLengthOfCot) {
+            if (cotAsText.length + currentChainOfThought[j].wrappedPrompt.length > maxLengthOfCot) {
                 break
             }
-            cotAsText = currentChainOfThought[j] + cotAsText
+            cotAsText = currentChainOfThought[j].wrappedPrompt + cotAsText
         }
 
+        let agentRequestBody = substring_to_boundary(current_temp_memory + cotAsText, maxLengthOfCot)
         if (wi_insertlocation === "0") // WI after memory
         {
             history += wiToInclude
-            history += substring_to_boundary(current_temp_memory + cotAsText, maxLengthOfCot)
+            history += agentRequestBody
         }
         else {
-            history += substring_to_boundary(current_temp_memory + cotAsText, maxLengthOfCot)
+            history += agentRequestBody
             history += wiToInclude
         }
         history += anToInclude
@@ -627,7 +642,7 @@ let runAgentCycle = async (initialPrompt = undefined, backgroundInvocation = fal
 
         try {
             if (resp.trim() == "") {
-                // addThought(createSysPrompt, "Error - Empty response instead of action. Ensure all responses are valid JSON.", lastThoughtWasBlank)
+                // addThought(currentChainOfThought, createSysPrompt, "Error - Empty response instead of action. Ensure all responses are valid JSON.", lastThoughtWasBlank)
                 isCompleted = true
                 hasAttemptedToCompleteOnce = true
                 continue
@@ -665,10 +680,10 @@ let runAgentCycle = async (initialPrompt = undefined, backgroundInvocation = fal
                     actionSummary.push(`Aim: ${promptOverview}`)
                 }
                 actionSummary.push(`\`\`\`\n${actionToText(action?.command).trim()}\n\`\`\`\n\n`)
-                addThought(createAIPrompt, actionSummary.join("\n\n"))
+                addThought(currentChainOfThought, createAIPrompt, actionSummary.join("\n\n"))
 
                 let isCompleted = false;
-                let command = [...getReasoningCommand(), ...getCommands()].find(command => command.name === action.command.name)
+                let command = [...getReasoningCommand(), ...getCommands(currentChainOfThought)].find(command => command.name === action.command.name)
                 if (!!command && command?.executor !== undefined) {
                     if (configOverrides[action.command.name]) {
                         let overrides = configOverrides[action.command.name]
@@ -681,6 +696,11 @@ let runAgentCycle = async (initialPrompt = undefined, backgroundInvocation = fal
                     }
 
                     let res = await command.executor(action.command)
+                    if (action.command?.name === "plan_actions")
+                    {
+                        currentOrderOfActionsOverall = action.command?.args?.orderOfActions.map(act => act.action)
+                        currentOrderOfActionDescriptionsOverall = action.command?.args?.orderOfActions.map(act => act.objective)
+                    }
                     if (res === true) {
                         isCompleted = true
                         hasAttemptedToCompleteOnce = true
@@ -696,11 +716,11 @@ let runAgentCycle = async (initialPrompt = undefined, backgroundInvocation = fal
 
                 if (isCompleted) {
                     if (!hasAttemptedToCompleteOnce) {
-                        addThought(createAIPrompt, checkFinalThoughtsPrompt)
+                        addThought(currentChainOfThought, createAIPrompt, checkFinalThoughtsPrompt)
                         hasAttemptedToCompleteOnce = true
                     }
                     else {
-                        addThought(createSysPrompt, "Chain of thought complete", true)
+                        addThought(currentChainOfThought, createSysPrompt, "Chain of thought complete", true)
                         break
                     }
                 }
@@ -708,22 +728,22 @@ let runAgentCycle = async (initialPrompt = undefined, backgroundInvocation = fal
             else {
                 if (Object.keys(json).length === 0 || json?.command?.name === "None" || json?.command?.name === "null") {
                     if (!hasAttemptedToCompleteOnce) {
-                        addThought(createAIPrompt, checkFinalThoughtsPrompt)
+                        addThought(currentChainOfThought, createAIPrompt, checkFinalThoughtsPrompt)
                         hasAttemptedToCompleteOnce = true
                     }
                     else {
-                        addThought(createSysPrompt, "Chain of thought complete", true)
+                        addThought(currentChainOfThought, createSysPrompt, "Chain of thought complete", true)
                         break
                     }
                 }
                 else {
-                    addThought(createSysPrompt, `Invalid command requested: ${JSON.stringify(json)}`)
+                    addThought(currentChainOfThought, createSysPrompt, `Invalid command requested: ${JSON.stringify(json)}`)
                     // break
                 }
             }
         }
         catch (e) {
-            addThought(createSysPrompt, `Chain of thought had an exception: ${e}`)
+            addThought(currentChainOfThought, createSysPrompt, `Chain of thought had an exception: ${e}`)
             console.error(`Agent response which errored: ${resp}`)
 
             if (resp === null || resp.indexOf("evaluate_formula") === -1) {
@@ -738,13 +758,19 @@ let runAgentCycle = async (initialPrompt = undefined, backgroundInvocation = fal
     }
 
     // Render any suggestions generated in the agent logic
-    renderSuggestions()
-    currentAgentCycle = null
-    if (window?.backgroundAgentLoop !== true)
-    {
+    let finaliserParams = {
+        currentChainOfThought,
+        recentActions,
+        currentOrderOfActionsOverall,
+        currentOrderOfActionDescriptionsOverall
+    }
+    if (agentFinaliser(finaliserParams)) {
+        renderSuggestions()
+        submit_multiplayer(true)
+    }
+    if (window?.backgroundAgentLoop !== true) {
         Array(...document.getElementsByClassName("stopThinking")).forEach(elem => elem.classList.add("hidden"))
     }
-    submit_multiplayer(true)
 }
 
 window.runAgentCycle = runAgentCycle;
@@ -759,11 +785,12 @@ prepare_submit_generation = async () => {
         document.getElementById("input_text").value = "";
         // Hack to ensure that images are always saved as new turns		
         localsettings.img_newturn = true
-        if (currentAgentCycle !== null) {
+        if (currentAgentCycle.length > 0) {
             endCurrent = true
-            await currentAgentCycle
+            await Promise.all(currentAgentCycle.map(c => c.status))
         }
-        currentAgentCycle = runAgentCycle(inputText)
+        let interactionId = window.crypto.randomUUID()
+        currentAgentCycle.push({ id: interactionId, status: runAgentCycle(interactionId, inputText)})
     }
     else {
         originalPrepareSubmitGeneration()
@@ -772,8 +799,7 @@ prepare_submit_generation = async () => {
 
 restart_new_game = () => {
     loadingNewGame = true
-    currentChainOfThought = []
-    recentActions = []
+    stopAgentThinking()
     clearSuggestions()
     originalRestartNewGame()
 }
@@ -799,7 +825,7 @@ let stopAgentThinking = () => {
 
     endCurrent = true
     Array(...document.getElementsByClassName("stopThinking")).forEach(elem => elem.classList.add("hidden"))
-    currentAgentCycle = null
+    currentAgentCycle = []
     if (window?.intervalIdForBackgroundAgent !== undefined)
     {
         clearInterval(window.intervalIdForBackgroundAgent)

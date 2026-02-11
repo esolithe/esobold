@@ -2,8 +2,8 @@
 // Original method of getting tools superceeded by core KCPP.
 window.addEventListener("load", async () => {
   let gc = getCommands
-  getCommands = () => {
-    let commands = gc()
+  getCommands = (currentChainOfThought) => {
+    let commands = gc(currentChainOfThought)
 
     try {
       if (localsettings.enable_tool_use && determine_if_can_use_mcp() && localsettings.cached_mcp_tools && Object.keys(localsettings.cached_mcp_tools).length > 0)
@@ -49,10 +49,10 @@ window.addEventListener("load", async () => {
                       let tgt = replaceStringsInObject(resp.content[0], "&quot;", "\""); //we must remove existing escaped quotes or things break later
                       webResp = JSON.stringify(tgt);
                     }
-                    addThought(createSysPrompt, `Tool call response (hidden from user): \n\`\`\`\n${webResp}\n\`\`\``)
+                    addThought(currentChainOfThought, createSysPrompt, `Tool call response (hidden from user): \n\`\`\`\n${webResp}\n\`\`\``)
                   }).catch(e => {
                     console.log(e)
-                    addThought(createSysPrompt, `Tool call response error (hidden from user): \n\`\`\`\n${e.message}\n\`\`\``)
+                    addThought(currentChainOfThought, createSysPrompt, `Tool call response error (hidden from user): \n\`\`\`\n${e.message}\n\`\`\``)
                   })
               }
               return false;

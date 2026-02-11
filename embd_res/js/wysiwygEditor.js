@@ -168,8 +168,8 @@ let enableNewEditor = () => {
     }
 
     // Handler for agent
-    addThought = (wrapperHandler, prompt, onlyDisplay, onlyAdd) => {
-        originalAddThought(wrapperHandler, prompt, onlyDisplay, onlyAdd)
+    addThought = (currentChainOfThought, wrapperHandler, prompt, onlyDisplay, onlyAdd) => {
+        originalAddThought(currentChainOfThought, wrapperHandler, prompt, onlyDisplay, onlyAdd)
         if (gameText.contentEditable === "true") {
             overwriteRawContents()
         }
