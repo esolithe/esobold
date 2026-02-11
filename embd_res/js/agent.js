@@ -544,6 +544,23 @@ class AgentLogger {
     }
 }
 
+let getActionSummaryText = (command, promptOverview, wordCountEnabled) => {
+    let actionSummary = []
+    if (wordCountEnabled && !!command?.args?.messages) {
+        let wordCount = command?.args?.messages.flatMap(str => str.split(/\s/g).filter(s => s.length > 0)).length
+        actionSummary.push(`Action taken (words = ${wordCount}):`)
+    }
+    else {
+        actionSummary.push(`Action taken:`)
+    }
+
+    if (!!promptOverview) {
+        actionSummary.push(`Aim: ${promptOverview}`)
+    }
+    actionSummary.push(`\`\`\`\n${actionToText(command).trim()}\n\`\`\`\n\n`)
+    return actionSummary.join("\n\n")
+}
+
 let runAgentCycle = async (agentRunState = {}) => {
     clearSuggestions()
     // gametext_arr = []
@@ -646,7 +663,20 @@ let runAgentCycle = async (agentRunState = {}) => {
         await agentInitialiser(agentRunState)
     }
 
-    for (let i = 0; i < Number(localsettings.agentCOTMax) + 1 && (currentOrderOfActionsOverall.length === 0 || i < currentOrderOfActionsOverall.length + 1) && endCurrent === false; i++) {
+    if (agentRunState?.planToUse !== undefined && typeof agentRunState.planToUse === "object")
+    {
+        currentOrderOfActionsOverall = agentRunState.planToUse.orderOfActions.map(act => act.action)
+        currentOrderOfActionDescriptionsOverall = agentRunState.planToUse.orderOfActions.map(act => act.objective)
+        objRefOverride(agentRunState, { currentOrderOfActionsOverall, currentOrderOfActionDescriptionsOverall })
+        let argsObject = !!agentRunState.mostRecentChatOpponent ? objRefAssign({ whoToRespondAs: agentRunState.mostRecentChatOpponent }, agentRunState.planToUse) : agentRunState.planToUse
+        let completePlanObject = {
+            name: "plan_actions",
+            args: argsObject
+        }
+        addThought(currentChainOfThought, createAIPrompt, getActionSummaryText(completePlanObject, null, false))
+    }
+
+    for (let i = !!agentRunState?.planToUse ? 1 : 0; i < Number(localsettings.agentCOTMax) + 1 && (currentOrderOfActionsOverall.length === 0 || i < currentOrderOfActionsOverall.length + 1) && endCurrent === false; i++) {
         let nextAction = []
         let validCommands = getEnabledCommands(manualOverridesForEnabledCommands).map(command => command.name).filter(name => i != 0 || name != "stop_thinking")
         if (i == 0) {
@@ -775,21 +805,8 @@ let runAgentCycle = async (agentRunState = {}) => {
 
                 let action = json
                 recentActions.push(json)
-
-                let actionSummary = []
-                if (wordCountEnabled && !!action?.command?.args?.messages) {
-                    let wordCount = action?.command?.args?.messages.flatMap(str => str.split(/\s/g).filter(s => s.length > 0)).length
-                    actionSummary.push(`Action taken (words = ${wordCount}):`)
-                }
-                else {
-                    actionSummary.push(`Action taken:`)
-                }
-
-                if (i > 0) {
-                    actionSummary.push(`Aim: ${promptOverview}`)
-                }
-                actionSummary.push(`\`\`\`\n${actionToText(action?.command).trim()}\n\`\`\`\n\n`)
-                addThought(currentChainOfThought, createAIPrompt, actionSummary.join("\n\n"))
+                
+                addThought(currentChainOfThought, createAIPrompt, getActionSummaryText(action?.command, i > 0 ? promptOverview : null, wordCountEnabled))
 
                 let isCompleted = false;
                 let command = [...getReasoningCommand(agentRunState), ...getCommands(agentRunState)].find(command => command.name === action.command.name)
@@ -925,8 +942,17 @@ prepare_submit_generation = async () => {
         currentAgentCycle.push({ id: interactionId, status: runAgentCycle({ 
             interactionId, 
             initialPrompt: inputText, 
-            printToConsole: true, 
-            // mostRecentChatOpponent: "John Doe",
+            printToConsole: true,
+            // planToUse: {
+            //     "responsePlanOverview": "The user wants to say hello to the world. There is no other information needed so just send a greeting as me.",
+            //     "orderOfActions": [
+            //         {
+            //             "action": "send_message",
+            //             "objective": "Sending the users a greeting message after they asked for one."
+            //         }
+            //     ]
+            // },
+            // mostRecentChatOpponent: "Bash Terminal",
         })})
     }
     else {
