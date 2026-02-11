@@ -56,14 +56,8 @@ let getRandomElemFromArray = (arr) => {
 	return arr[Math.floor(Math.random() * arr.length)]
 }
 
-let mostRecentChatOpponent = ""
-let resetChatOpponentToRandom = () => {
-	mostRecentChatOpponent = getRandomElemFromArray(localsettings.chatopponent.split("||$||"))
-	return mostRecentChatOpponent
-}
-
-let getChatOpponentForAgent = () => {
-	return localsettings.inject_chatnames_instruct ? mostRecentChatOpponent : ""
+let getRandomChatOpponent = () => {
+	return getRandomElemFromArray(localsettings.chatopponent.split("||$||"))
 }
 
 let objToText = (obj, depth = 0) => {
@@ -103,7 +97,8 @@ let objToText = (obj, depth = 0) => {
 }
 
 let wordCountEnabled = false
-let getCommands = (currentChainOfThought) => {
+let getCommands = (agentRunState) => {
+	let { currentChainOfThought } = agentRunState
 	return [
 		{
 			"name": "do_nothing",
@@ -121,9 +116,9 @@ let getCommands = (currentChainOfThought) => {
 			"args": {
 				"whoToSendMessageAs": {
 					description: "<whose perspective is the response written from>",
-					pattern: (localsettings.inject_chatnames_instruct ? `^${getChatOpponentForAgent()}$` : undefined),
+					pattern: (!!agentRunState?.mostRecentChatOpponent ? `^${agentRunState.mostRecentChatOpponent}$` : undefined),
 					type: "string",
-					skip: !localsettings.inject_chatnames_instruct
+					skip: !agentRunState?.mostRecentChatOpponent
 				},
 				"messages": {
 					description: "<text to send>",
@@ -148,7 +143,7 @@ let getCommands = (currentChainOfThought) => {
 					action?.args?.messages.forEach(message => {
 						if (!!message)
 						{
-							addThought(currentChainOfThought, createAIPrompt, localsettings.inject_chatnames_instruct ? `${action?.args?.whoToSendMessageAs}: ${message}` : message)
+							addThought(currentChainOfThought, createAIPrompt, agentRunState?.mostRecentChatOpponent ? `${agentRunState?.mostRecentChatOpponent}: ${message}` : message)
 							messageShowToUser = true;
 						}
 					})
@@ -411,7 +406,7 @@ let getCommands = (currentChainOfThought) => {
 						addThought(currentChainOfThought, createSysPrompt, `Current order of actions has been cleared`)
 					}
 					else {
-						replaceDocumentFromTextDB('Order of actions', [...orderOfActions.filter(acts => acts.split("|").find(act => getCommands().map(command => command.name).includes(act))), "stop_thinking"].join(","))
+						replaceDocumentFromTextDB('Order of actions', [...orderOfActions.filter(acts => acts.split("|").find(act => getCommands(agentRunState).map(command => command.name).includes(act))), "stop_thinking"].join(","))
 						addThought(currentChainOfThought, createSysPrompt, `Current order of actions has been overwritten`)
 
 					}
@@ -633,8 +628,8 @@ let getCommands = (currentChainOfThought) => {
 	]
 }
 
-let getEnabledCommands = (currentChainOfThought, overrides = []) => {
-	let enabledCommands = getCommands(currentChainOfThought).filter(command => !!command?.enabled || overrides.includes(command.name))
+let getEnabledCommands = (agentRunState, overrides = []) => {
+	let enabledCommands = getCommands(agentRunState).filter(command => !!command?.enabled || overrides.includes(command.name))
 	let forbiddenAgentCommands = getDocumentFromTextDB('Forbidden agent commands')
 	if (forbiddenAgentCommands !== null) {
 		let commandsToExclude = forbiddenAgentCommands.split("|")
@@ -643,9 +638,10 @@ let getEnabledCommands = (currentChainOfThought, overrides = []) => {
 	return enabledCommands
 }
 
-let getReasoningCommand = (overrides = []) => {
-	let whoToRespondAsOptions = (localsettings.inject_chatnames_instruct ? localsettings.chatopponent.split("||$||") : undefined)
-	if (localsettings.inject_chatnames_instruct && window.eso.currentChatOpponentOverride !== null) {
+let getReasoningCommand = (agentRunState, overrides = []) => {
+	let {mostRecentChatOpponent} = agentRunState
+	let whoToRespondAsOptions = !!mostRecentChatOpponent ? [mostRecentChatOpponent] : (localsettings.inject_chatnames_instruct ? localsettings.chatopponent.split("||$||") : undefined)
+	if (!mostRecentChatOpponent && localsettings.inject_chatnames_instruct && window.eso.currentChatOpponentOverride !== null) {
 		whoToRespondAsOptions = [window.eso.currentChatOpponentOverride]
 	}
 	window.eso.currentChatOpponentOverride = null;
@@ -658,7 +654,7 @@ let getReasoningCommand = (overrides = []) => {
 					description: "<whose perspective is the response going to be written from>",
 					enum: whoToRespondAsOptions,
 					type: "string",
-					skip: !localsettings.inject_chatnames_instruct
+					skip: !whoToRespondAsOptions
 				},
 				"responsePlanOverview": {
 					type: "string",
@@ -689,14 +685,6 @@ let getReasoningCommand = (overrides = []) => {
 			},
 			"enabled": true,
 			"executor": (action) => {
-				if (localsettings.inject_chatnames_instruct) {
-					if (!!action?.args?.whoToRespondAs) {
-						mostRecentChatOpponent = action?.args?.whoToRespondAs
-					}
-					else {
-						mostRecentChatOpponent = resetChatOpponentToRandom()
-					}
-				}
 				return false
 			}
 		}

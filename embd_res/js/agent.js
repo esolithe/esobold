@@ -313,7 +313,7 @@ let getFinalAgentPrompt = (currentChainOfThought, commands, currentOrderOfAction
 /**
  * Mostly a copy and paste of the main function - tweaked the format returned along with adding a clean cut off for WI
  */
-let getWorldInfoForAgent = (wimatch_context, maxWILength) => {
+let getWorldInfoForAgent = (agentRunState, wimatch_context, maxWILength) => {
     //if world info exists, we inject it right after the memory
     //for each matching key
     if (wi_searchdepth > 0) {
@@ -394,8 +394,8 @@ let getWorldInfoForAgent = (wimatch_context, maxWILength) => {
             }
 
             // If accessing WI for a character's memory, switch based on the current chat opponent
-            if (!!shoulduse && !!getChatOpponentForAgent() && (!!wi.comment && !!wi.wigroup) && (wi.comment.endsWith("_imported_memory") && wi.wigroup === wi.comment.replace("_imported_memory", ""))) {
-                shoulduse = (wi.wigroup == localsettings.chatname) || (wi.wigroup == getChatOpponentForAgent())
+            if (!!shoulduse && !!agentRunState.mostRecentChatOpponent && (!!wi.comment && !!wi.wigroup) && (wi.comment.endsWith("_imported_memory") && wi.wigroup === wi.comment.replace("_imported_memory", ""))) {
+                shoulduse = (wi.wigroup == localsettings.chatname) || (wi.wigroup == agentRunState.mostRecentChatOpponent)
             }
 
             if (shoulduse) {
@@ -555,7 +555,8 @@ let runAgentCycle = async (agentRunState = {}) => {
         agentVisualiser: genericAgentVisualiser,
         agentFinaliser: genericAgentFinaliser,
         printToConsole: true,
-        cotProcessedUntil: 0
+        cotProcessedUntil: 0,
+        mostRecentChatOpponent: ""
     }, agentRunState, {
         logger: new AgentLogger()
     })
@@ -649,12 +650,12 @@ let runAgentCycle = async (agentRunState = {}) => {
         let nextAction = []
         let validCommands = getEnabledCommands(manualOverridesForEnabledCommands).map(command => command.name).filter(name => i != 0 || name != "stop_thinking")
         if (i == 0) {
-            nextAction = getReasoningCommand(manualOverridesForEnabledCommands)
+            nextAction = getReasoningCommand(agentRunState, manualOverridesForEnabledCommands)
         }
         else {
             // Ensure valid commands does not include stop thinking right away to ensure an action of some type is taken
             nextAction = JSON.parse(JSON.stringify(currentOrderOfActionsOverall)).splice(i - 1).filter(acts => acts.split("|").find(act => validCommands.includes(act)))
-            nextAction = nextAction.length > 0 ? getCommands().filter(act => nextAction[0].split("|").includes(act.name)) : getEnabledCommands(manualOverridesForEnabledCommands).filter(command => validCommands.includes(command.name))
+            nextAction = nextAction.length > 0 ? getCommands(agentRunState).filter(act => nextAction[0].split("|").includes(act.name)) : getEnabledCommands(manualOverridesForEnabledCommands).filter(command => validCommands.includes(command.name))
 
             // Find any actions which have occured more than the max repeats in settings and remove them from the options
             if (currentOrderOfActionsOverall.length === 0) {
@@ -703,7 +704,7 @@ let runAgentCycle = async (agentRunState = {}) => {
         let max_wi_len = Math.floor(max_allowed_characters * 0.5);
 
         let history = getInitialAgentPrompt(max_mem_len)
-        let wiToInclude = createSysPrompt(substring_to_boundary(getWorldInfoForAgent(truncated_context, max_wi_len) + "\n\n" + textDBResults, max_wi_len))
+        let wiToInclude = createSysPrompt(substring_to_boundary(getWorldInfoForAgent(agentRunState, truncated_context, max_wi_len) + "\n\n" + textDBResults, max_wi_len))
         let anToInclude = !!current_anote ? createSysPrompt(substring_to_boundary(current_anotetemplate.replace("<|>", current_anote), max_anote_len)) : ""
 
         let promptOverview = currentOrderOfActionDescriptionsOverall.length > 0 ? currentOrderOfActionDescriptionsOverall[i - 1] : null
@@ -791,7 +792,7 @@ let runAgentCycle = async (agentRunState = {}) => {
                 addThought(currentChainOfThought, createAIPrompt, actionSummary.join("\n\n"))
 
                 let isCompleted = false;
-                let command = [...getReasoningCommand(), ...getCommands(currentChainOfThought)].find(command => command.name === action.command.name)
+                let command = [...getReasoningCommand(agentRunState), ...getCommands(agentRunState)].find(command => command.name === action.command.name)
                 if (!!command && command?.executor !== undefined) {
                     if (configOverrides[action.command.name]) {
                         let overrides = configOverrides[action.command.name]
@@ -807,7 +808,15 @@ let runAgentCycle = async (agentRunState = {}) => {
                     if (action.command?.name === "plan_actions")
                     {
                         currentOrderOfActionsOverall = action.command?.args?.orderOfActions.map(act => act.action)
-                        currentOrderOfActionDescriptionsOverall = action.command?.args?.orderOfActions.map(act => act.objective)
+                        currentOrderOfActionDescriptionsOverall = action.command?.args?.orderOfActions.map(act => act.objective)                        
+                        if (!agentRunState?.mostRecentChatOpponent && localsettings.inject_chatnames_instruct) {
+                            if (!!action?.args?.whoToRespondAs) {
+                                agentRunState.mostRecentChatOpponent = action?.args?.whoToRespondAs
+                            }
+                            else {
+                                agentRunState.mostRecentChatOpponent = getRandomChatOpponent()
+                            }
+                        }
                         objRefOverride(agentRunState, { currentOrderOfActionsOverall, currentOrderOfActionDescriptionsOverall })
                     }
 
@@ -913,7 +922,12 @@ prepare_submit_generation = async () => {
         }
         endCurrent = false
         let interactionId = window.crypto.randomUUID()
-        currentAgentCycle.push({ id: interactionId, status: runAgentCycle({ interactionId, initialPrompt: inputText, printToConsole: false })})
+        currentAgentCycle.push({ id: interactionId, status: runAgentCycle({ 
+            interactionId, 
+            initialPrompt: inputText, 
+            printToConsole: true, 
+            // mostRecentChatOpponent: "John Doe",
+        })})
     }
     else {
         originalPrepareSubmitGeneration()
