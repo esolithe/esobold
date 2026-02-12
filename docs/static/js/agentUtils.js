@@ -10,16 +10,8 @@ let createAIPrompt = (prompt) => {
 	return `${instructendplaceholder}${prompt}${instructendplaceholder_end}`
 }
 
-let currentChainOfThought = []
-let addThought = (wrapperHandler, prompt, onlyDisplay = false, onlyAdd = false) => {
-	thought = wrapperHandler(prompt)
-	if (!onlyDisplay) {
-		currentChainOfThought.push(thought)
-	}
-	if (!onlyAdd) {
-		gametext_arr.push(thought.replace(/\\\\/g, ""))
-		render_gametext()
-	}
+let addThought = (currentChainOfThought, wrapperHandler, prompt, onlyDisplay = false, onlyAdd = false) => {
+	currentChainOfThought.push({ wrappedPrompt: wrapperHandler(prompt), prompt, onlyDisplay, onlyAdd})
 }
 
 let waitingFori2iSelection = false, i2i64 = undefined, originalClickImage = click_image;
@@ -64,14 +56,8 @@ let getRandomElemFromArray = (arr) => {
 	return arr[Math.floor(Math.random() * arr.length)]
 }
 
-let mostRecentChatOpponent = ""
-let resetChatOpponentToRandom = () => {
-	mostRecentChatOpponent = getRandomElemFromArray(localsettings.chatopponent.split("||$||"))
-	return mostRecentChatOpponent
-}
-
-let getChatOpponentForAgent = () => {
-	return localsettings.inject_chatnames_instruct ? mostRecentChatOpponent : ""
+let getRandomChatOpponent = () => {
+	return getRandomElemFromArray(localsettings.chatopponent.split("||$||"))
 }
 
 let objToText = (obj, depth = 0) => {
@@ -111,40 +97,17 @@ let objToText = (obj, depth = 0) => {
 }
 
 let wordCountEnabled = false
-let getCommands = () => {
+let getCommands = (agentRunState) => {
+	let { currentChainOfThought } = agentRunState
 	return [
 		{
-			"name": "ask_user",
-			"description": "Ask the user for input. Optionally, suggested responses can be provided to the user as well.",
-			"args": {
-				"whoToSendMessageAs": {
-					description: "<whose perspective is the response written from>",
-					pattern: (localsettings.inject_chatnames_instruct ? `^${getChatOpponentForAgent()}$` : undefined),
-					type: "string",
-					skip: !localsettings.inject_chatnames_instruct
-				},
-				"message": "<message that prompts the user for input>",
-				"suggestionsToPickFrom": {
-					description: "<suggestions written from the user's perspective which they can pick from for their next action>",
-					type: "array",
-				}
-			},
+			"name": "do_nothing",
+			"description": "Do nothing. End the current plan.",
+			"args": null,
 			"enabled": false,
-			"outputVisibleToUser": true,
-			"executor": (action) => {
-				clearSuggestions()
-				let suggestions = action?.args?.suggestionsToPickFrom
-				if (!!suggestions && Array.isArray(suggestions)) {
-					try {
-						setSuggestions(suggestions.map(String))
-					}
-					catch {
-						// Do not care about an error here, it's a nice to have if the suggestions show
-					}
-				}
-				let prompt = localsettings.inject_chatnames_instruct ? `Request for user input by ${action?.args?.whoToSendMessageAs}: ${action?.args?.message}` : `Request for user input: ${action?.args?.message}`
-				addThought(createSysPrompt, prompt)
-				return currentOrderOfActionsOverall.length === 0
+			"outputVisibleToUser": false,
+			"executor": () => {
+				return true;
 			}
 		},
 		{
@@ -153,9 +116,9 @@ let getCommands = () => {
 			"args": {
 				"whoToSendMessageAs": {
 					description: "<whose perspective is the response written from>",
-					pattern: (localsettings.inject_chatnames_instruct ? `^${getChatOpponentForAgent()}$` : undefined),
+					pattern: (!!agentRunState?.agentName ? `^${agentRunState.agentName}$` : undefined),
 					type: "string",
-					skip: !localsettings.inject_chatnames_instruct
+					skip: !agentRunState?.agentName
 				},
 				"messages": {
 					description: "<text to send>",
@@ -176,12 +139,17 @@ let getCommands = () => {
 			"executor": (action) => {
 				if (!!action?.args?.messages) {
 					clearSuggestions()
+					let messageShowToUser = false
 					action?.args?.messages.forEach(message => {
-						addThought(createAIPrompt, localsettings.inject_chatnames_instruct ? `${action?.args?.whoToSendMessageAs}: ${message}` : message)
+						if (!!message && message.trim().length > 0)
+						{
+							addThought(currentChainOfThought, createAIPrompt, agentRunState?.agentName ? `${agentRunState?.agentName}: ${message}` : message)
+							messageShowToUser = true;
+						}
 					})
 
 					let suggestions = action?.args?.suggestionsToPickFrom
-					if (!!suggestions && Array.isArray(suggestions)) {
+					if (messageShowToUser && !!suggestions && Array.isArray(suggestions)) {
 						try {
 							let actualSuggestions = suggestions.map(String).filter(text => text.trim().length > 0)
 							if (actualSuggestions.length > 0) {
@@ -202,7 +170,7 @@ let getCommands = () => {
 			"args": null,
 			"enabled": false,
 			"executor": (action) => {
-				addThought(createSysPrompt, `Stop thinking action confirmed`)
+				addThought(currentChainOfThought, createSysPrompt, `Stop thinking action confirmed`)
 				return true
 			}
 		},
@@ -216,7 +184,7 @@ let getCommands = () => {
 			"executor": async (action) => {
 				await (new Promise((resolve, reject) => { PerformWebsearch(`${action?.args?.query}`, resolve) }));
 				let webResp = objToText(lastSearchResults);
-				addThought(createSysPrompt, `Web search results: \n${webResp, 1}`)
+				addThought(currentChainOfThought, createSysPrompt, `Web search results: \n${webResp, 1}`)
 			}
 		},
 		{
@@ -242,10 +210,10 @@ let getCommands = () => {
 					for (let roll = 0; roll < numDice; roll++) {
 						results.push(Math.ceil(Math.random() * numSides))
 					}
-					addThought(createSysPrompt, `Rolled ${numDice} dice with ${numSides} sides: ${results.join(", ")}`)
+					addThought(currentChainOfThought, createSysPrompt, `Rolled ${numDice} dice with ${numSides} sides: ${results.join(", ")}`)
 				}
 				else {
-					addThought(createSysPrompt, `Could not roll dice as the format was incorrect`)
+					addThought(currentChainOfThought, createSysPrompt, `Could not roll dice as the format was incorrect`)
 				}
 			}
 		},
@@ -274,10 +242,10 @@ let getCommands = () => {
 					for (let roll = 0; roll < numOfTerms; roll++) {
 						results.push(getRandomElemFromArray(tableElems))
 					}
-					addThought(createSysPrompt, `Got ${numOfTerms} terms from ${tableToUse}: ${results.join(", ")}`)
+					addThought(currentChainOfThought, createSysPrompt, `Got ${numOfTerms} terms from ${tableToUse}: ${results.join(", ")}`)
 				}
 				else {
-					addThought(createSysPrompt, `Could not get terms as the format was incorrect`)
+					addThought(currentChainOfThought, createSysPrompt, `Could not get terms as the format was incorrect`)
 				}
 			}
 		},
@@ -291,10 +259,10 @@ let getCommands = () => {
 			"executor": (action) => {
 				let formula = action?.args?.formula
 				if (!!formula) {
-					addThought(createSysPrompt, `Formula evaluation result: ${math.evaluate(formula)}`)
+					addThought(currentChainOfThought, createSysPrompt, `Formula evaluation result: ${math.evaluate(formula)}`)
 				}
 				else {
-					addThought(createSysPrompt, `Formula evaluation could not be completed as no formula was provided`)
+					addThought(currentChainOfThought, createSysPrompt, `Formula evaluation could not be completed as no formula was provided`)
 				}
 			}
 		},
@@ -317,10 +285,10 @@ let getCommands = () => {
 				if (!!textToAdd) {
 					keywords = !!keywords && Array.isArray(keywords) ? `Keywords: ${keywords.join(", ")}\n\n` : ""
 					documentdb_data = `${documentdb_data}[DOCUMENT BREAK]${keywords}${textToAdd}[DOCUMENT BREAK]`
-					addThought(createSysPrompt, `Text has been added to history`)
+					addThought(currentChainOfThought, createSysPrompt, `Text has been added to history`)
 				}
 				else {
-					addThought(createSysPrompt, `Text was empty - nothing added to history`)
+					addThought(currentChainOfThought, createSysPrompt, `Text was empty - nothing added to history`)
 				}
 			}
 		},
@@ -346,10 +314,10 @@ let getCommands = () => {
 					uniqueIdentifier = uniqueIdentifier.toLowerCase()
 					keywords = !!keywords && Array.isArray(keywords) ? keywords : [uniqueIdentifier]
 					overwriteWIFromAgent(uniqueIdentifier, keywords, textToAdd)
-					addThought(createSysPrompt, `Text has been added to world info: ${uniqueIdentifier}`)
+					addThought(currentChainOfThought, createSysPrompt, `Text has been added to world info: ${uniqueIdentifier}`)
 				}
 				else {
-					addThought(createSysPrompt, `Text was empty - nothing added to world info`)
+					addThought(currentChainOfThought, createSysPrompt, `Text was empty - nothing added to world info`)
 				}
 			}
 		},
@@ -364,10 +332,10 @@ let getCommands = () => {
 				let systemPrompt = action?.args?.text
 				if (!!systemPrompt) {
 					current_memory = `{{[SYSTEM]}}${systemPrompt}{{[SYSTEM_END]}}`
-					addThought(createSysPrompt, `Setting overview has been overwritten`)
+					addThought(currentChainOfThought, createSysPrompt, `Setting overview has been overwritten`)
 				}
 				else {
-					addThought(createSysPrompt, `No setting overview provided, nothing has been overwritten`)
+					addThought(currentChainOfThought, createSysPrompt, `No setting overview provided, nothing has been overwritten`)
 				}
 			}
 		},
@@ -388,10 +356,10 @@ let getCommands = () => {
 				}
 				if (!!newState) {
 					replaceDocumentFromTextDB('State', newState)
-					addThought(createSysPrompt, `Current state has been overwritten`)
+					addThought(currentChainOfThought, createSysPrompt, `Current state has been overwritten`)
 				}
 				else {
-					addThought(createSysPrompt, `No state provided, nothing has been overwritten`)
+					addThought(currentChainOfThought, createSysPrompt, `No state provided, nothing has been overwritten`)
 				}
 			}
 		},
@@ -408,14 +376,14 @@ let getCommands = () => {
 					let newStateFormatAsJson = JSON.parse(newStateFormat)
 					if (!!newStateFormatAsJson) {
 						replaceDocumentFromTextDB('StateFormat', JSON.stringify(newStateFormatAsJson))
-						addThought(createSysPrompt, `Current state format has been overwritten`)
+						addThought(currentChainOfThought, createSysPrompt, `Current state format has been overwritten`)
 					}
 					else {
-						addThought(createSysPrompt, `No valid state format provided, nothing has been overwritten`)
+						addThought(currentChainOfThought, createSysPrompt, `No valid state format provided, nothing has been overwritten`)
 					}
 				}
 				catch (e) {
-					addThought(createSysPrompt, `No valid state format provided, nothing has been overwritten`)
+					addThought(currentChainOfThought, createSysPrompt, `No valid state format provided, nothing has been overwritten`)
 					// Surpress error
 				}
 			}
@@ -435,17 +403,17 @@ let getCommands = () => {
 				if (!!orderOfActions && Array.isArray(orderOfActions)) {
 					if (orderOfActions.length === 0) {
 						replaceDocumentFromTextDB('Order of actions', "")
-						addThought(createSysPrompt, `Current order of actions has been cleared`)
+						addThought(currentChainOfThought, createSysPrompt, `Current order of actions has been cleared`)
 					}
 					else {
-						replaceDocumentFromTextDB('Order of actions', [...orderOfActions.filter(acts => acts.split("|").find(act => getCommands().map(command => command.name).includes(act))), "stop_thinking"].join(","))
-						addThought(createSysPrompt, `Current order of actions has been overwritten`)
+						replaceDocumentFromTextDB('Order of actions', [...orderOfActions.filter(acts => acts.split("|").find(act => getCommands(agentRunState).map(command => command.name).includes(act))), "stop_thinking"].join(","))
+						addThought(currentChainOfThought, createSysPrompt, `Current order of actions has been overwritten`)
 
 					}
 					return true
 				}
 				else {
-					addThought(createSysPrompt, `No order of actions provided, nothing has been overwritten`)
+					addThought(currentChainOfThought, createSysPrompt, `No order of actions provided, nothing has been overwritten`)
 				}
 			}
 		},
@@ -465,18 +433,18 @@ let getCommands = () => {
 					}
 					let ltmSnippets = await DatabaseMinisearch(contentToSearch, searchHistoryString, "");
 					if (ltmSnippets.length === 0) {
-						addThought(createSysPrompt, `History search performed: Nothing found`)
+						addThought(currentChainOfThought, createSysPrompt, `History search performed: Nothing found`)
 					}
 					else {
 						let ltmContent = "History search performed:";
 						for (let i = 0; i < ltmSnippets.length; ++i) {
 							ltmContent += getInfoSnippet(ltmSnippets[i]);
 						}
-						addThought(createSysPrompt, ltmContent)
+						addThought(currentChainOfThought, createSysPrompt, ltmContent)
 					}
 				}
 				else {
-					addThought(createSysPrompt, `Search string was empty, no search performed`)
+					addThought(currentChainOfThought, createSysPrompt, `Search string was empty, no search performed`)
 				}
 			}
 		},
@@ -493,7 +461,7 @@ let getCommands = () => {
 			"executor": (action) => {
 				let wordCountState = action?.args?.state
 				wordCountEnabled = !!wordCountState
-				addThought(createSysPrompt, `Word count is ${wordCountEnabled ? "enabled" : "disabled"}`)
+				addThought(currentChainOfThought, createSysPrompt, `Word count is ${wordCountEnabled ? "enabled" : "disabled"}`)
 			}
 		},
 		{
@@ -510,7 +478,7 @@ let getCommands = () => {
 				}
 				if (!!analysisPrompt) {
 					waitingFori2iSelection = true
-					addThought(createSysPrompt, `Please click an image as a source for image analysis`, true)
+					addThought(currentChainOfThought, createSysPrompt, `Please click an image as a source for image analysis`, true)
 
 					let waitForI2ILoop = () => {
 						return new Promise((resolve, reject) => {
@@ -529,10 +497,10 @@ let getCommands = () => {
 							i2i64 = parts[1];
 						}
 						let analysisResult = await generateAndGetTextFromPrompt(`${createInstructPrompt(analysisPrompt)}${instructendplaceholder}${!!localsettings?.inject_jailbreak_instruct ? localsettings.custom_jailbreak_text : ""}`, undefined, [i2i64])
-						addThought(createSysPrompt, `Image analysed: ${analysisResult}`)
+						addThought(currentChainOfThought, createSysPrompt, `Image analysed: ${analysisResult}`)
 					}
 					else {
-						addThought(createSysPrompt, `User did not select an image - no image analysed`)
+						addThought(currentChainOfThought, createSysPrompt, `User did not select an image - no image analysed`)
 					}
 					i2i64 = undefined;
 					waitingFori2iSelection = false;
@@ -561,7 +529,7 @@ let getCommands = () => {
 				if (!!prompt) {
 					if (!!action?.args?.edit_existing_image) {
 						waitingFori2iSelection = true
-						addThought(createSysPrompt, `Please click an image as a source for img2img generation`, true)
+						addThought(currentChainOfThought, createSysPrompt, `Please click an image as a source for img2img generation`, true)
 
 						let waitForI2ILoop = () => {
 							return new Promise((resolve, reject) => {
@@ -576,21 +544,21 @@ let getCommands = () => {
 						await waitForI2ILoop()
 						if (!!i2i64) {
 							generate_new_image(preparePromptForImageGen(prompt), i2i64, true, calcImageSizing(aspect))
-							addThought(createSysPrompt, `Image generated`)
+							addThought(currentChainOfThought, createSysPrompt, `Image generated`)
 						}
 						else {
-							addThought(createSysPrompt, `User did not select an image - no image generated`)
+							addThought(currentChainOfThought, createSysPrompt, `User did not select an image - no image generated`)
 						}
 						i2i64 = undefined;
 						waitingFori2iSelection = false;
 					}
 					else {
 						generate_new_image(preparePromptForImageGen(prompt), undefined, true, calcImageSizing(aspect))
-						addThought(createSysPrompt, `Image generated`)
+						addThought(currentChainOfThought, createSysPrompt, `Image generated`)
 					}
 				}
 				else {
-					addThought(createSysPrompt, `No prompt provided, image not generated`)
+					addThought(currentChainOfThought, createSysPrompt, `No prompt provided, image not generated`)
 				}
 			}
 		},
@@ -609,7 +577,7 @@ let getCommands = () => {
 				let i2iPrompt = action?.args?.prompt
 				if (!!i2iPrompt) {
 					waitingFori2iSelection = true
-					addThought(createSysPrompt, `Please click an image as a source for img2img generation`, true)
+					addThought(currentChainOfThought, createSysPrompt, `Please click an image as a source for img2img generation`, true)
 
 					let waitForI2ILoop = () => {
 						return new Promise((resolve, reject) => {
@@ -625,16 +593,16 @@ let getCommands = () => {
 					if (!!i2i64) {
 						let aspectI2I = action?.args?.aspect
 						generate_new_image(preparePromptForImageGen(i2iPrompt), i2i64, true, calcImageSizing(aspectI2I))
-						addThought(createSysPrompt, `Image generated`)
+						addThought(currentChainOfThought, createSysPrompt, `Image generated`)
 					}
 					else {
-						addThought(createSysPrompt, `User did not select an image - no image generated`)
+						addThought(currentChainOfThought, createSysPrompt, `User did not select an image - no image generated`)
 					}
 					i2i64 = undefined;
 					waitingFori2iSelection = false;
 				}
 				else {
-					addThought(createSysPrompt, `No prompt provided, image not generated`)
+					addThought(currentChainOfThought, createSysPrompt, `No prompt provided, image not generated`)
 				}
 			}
 		},
@@ -650,18 +618,18 @@ let getCommands = () => {
 				let textToSay = action?.args?.textToSay
 				if (!!textToSay) {
 					tts_speak(textToSay)
-					addThought(createSysPrompt, `Text has been spoken`)
+					addThought(currentChainOfThought, createSysPrompt, `Text has been spoken`)
 				}
 				else {
-					addThought(createSysPrompt, `No text provided, nothing has been said`)
+					addThought(currentChainOfThought, createSysPrompt, `No text provided, nothing has been said`)
 				}
 			}
 		}
 	]
 }
 
-let getEnabledCommands = (overrides = []) => {
-	let enabledCommands = getCommands().filter(command => !!command?.enabled || overrides.includes(command.name))
+let getEnabledCommands = (agentRunState, overrides = []) => {
+	let enabledCommands = getCommands(agentRunState).filter(command => !!command?.enabled || overrides.includes(command.name))
 	let forbiddenAgentCommands = getDocumentFromTextDB('Forbidden agent commands')
 	if (forbiddenAgentCommands !== null) {
 		let commandsToExclude = forbiddenAgentCommands.split("|")
@@ -670,9 +638,10 @@ let getEnabledCommands = (overrides = []) => {
 	return enabledCommands
 }
 
-let getReasoningCommand = (overrides = []) => {
-	let whoToRespondAsOptions = (localsettings.inject_chatnames_instruct ? localsettings.chatopponent.split("||$||") : undefined)
-	if (localsettings.inject_chatnames_instruct && window.eso.currentChatOpponentOverride !== null) {
+let getReasoningCommand = (agentRunState, overrides = []) => {
+	let {agentName} = agentRunState
+	let whoToRespondAsOptions = !!agentName ? [agentName] : (localsettings.inject_chatnames_instruct ? localsettings.chatopponent.split("||$||") : undefined)
+	if (!agentName && localsettings.inject_chatnames_instruct && window.eso.currentChatOpponentOverride !== null) {
 		whoToRespondAsOptions = [window.eso.currentChatOpponentOverride]
 	}
 	window.eso.currentChatOpponentOverride = null;
@@ -685,7 +654,7 @@ let getReasoningCommand = (overrides = []) => {
 					description: "<whose perspective is the response going to be written from>",
 					enum: whoToRespondAsOptions,
 					type: "string",
-					skip: !localsettings.inject_chatnames_instruct
+					skip: !whoToRespondAsOptions
 				},
 				"responsePlanOverview": {
 					type: "string",
@@ -716,16 +685,6 @@ let getReasoningCommand = (overrides = []) => {
 			},
 			"enabled": true,
 			"executor": (action) => {
-				currentOrderOfActionsOverall = action?.args?.orderOfActions.map(act => act.action)
-				currentOrderOfActionDescriptionsOverall = action?.args?.orderOfActions.map(act => act.objective)
-				if (localsettings.inject_chatnames_instruct) {
-					if (!!action?.args?.whoToRespondAs) {
-						mostRecentChatOpponent = action?.args?.whoToRespondAs
-					}
-					else {
-						mostRecentChatOpponent = resetChatOpponentToRandom()
-					}
-				}
 				return false
 			}
 		}
