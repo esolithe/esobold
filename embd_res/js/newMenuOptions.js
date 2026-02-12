@@ -316,9 +316,9 @@ window.addEventListener('load', () => {
     lastSettingContainer.before(createNewSubSection("Esobold agent mode settings"))
     let settingLabelElem = createSettingElemBool("agentBehaviour", "Agent behaviour (experimental)", "Allows the AI to use multiple generations and certain tools to see if it can improve results.  This can include web search (if enabled), dice rolling, and formula evaluation.  This mode requires instruct start and end tags for all roles. Image and TTS only is enabled for local KCPP users.")
     settingLabelElem.onclick = () => {
-        if (document.getElementById("agentBehaviour").checked == true && document.getElementById("separate_end_tags").checked != true) {
-            document.getElementById("separate_end_tags").click()
-        }
+        // if (document.getElementById("agentBehaviour").checked == true && document.getElementById("separate_end_tags").checked != true) {
+        //     document.getElementById("separate_end_tags").click()
+        // }
     }
     lastSettingContainer.before(settingLabelElem)
 

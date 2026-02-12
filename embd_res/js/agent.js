@@ -509,6 +509,37 @@ window.eso.agentUtilityMethods = {
     genericAgentInitialiser, genericAgentVisualiser, genericAgentFinaliser, voidAgentVisualiser
 }
 
+window.eso.agentMacros = {
+    "echo": {
+        printToConsole: true,
+        planToUse: {
+            "responsePlanOverview": "The user has sent a message. I must simply respond with the exact same message.",
+            "orderOfActions": [
+                {
+                    "action": "send_message",
+                    "objective": "Replying with the users message"
+                }
+            ]
+        },
+        agentName: null,
+    },
+    "imageGen": {
+        printToConsole: true,
+        planToUse: {
+            "responsePlanOverview": "The user has sent an image prompt. I must generate an image based on this prompt.",
+            "orderOfActions": [{
+                "action": "generate_image",
+                "objective": "Generate an image based on the user provided prompt"
+            }]
+        },
+        // configOverrides: {
+        //     "generate_image": {
+        //         config: "ZImageAnim.kcpps"
+        //     }
+        // }
+    }
+}
+
 class AgentLogger {
     internalLogs = []
     addToInternalLogs(type, ...args) {
@@ -566,397 +597,440 @@ let getActionSummaryText = (command, promptOverview, wordCountEnabled) => {
 }
 
 let runAgentCycle = async (agentRunState = {}) => {
-    clearSuggestions()
-    // gametext_arr = []
-    // render_gametext()
-    agentRunState = objRefOverride({
-        macroUsed: undefined,
-        excludeSpecificMessagePrefixes: [],
-        agentInitialiser: genericAgentInitialiser,
-        agentVisualiser: genericAgentVisualiser,
-        agentFinaliser: genericAgentFinaliser,
-        printToConsole: true,
-        agentName: "",
-        initialUser: "", 
-        systemPrompt: current_memory,
-        configOverrides: {},
-        isUsingWhitelist: false,
-        agentStopOnRequestForInput: !!localsettings?.agentStopOnRequestForInput
-    }, agentRunState, {
-        logger: new AgentLogger(),
-        cotProcessedUntil: 0,
-    })
-
-    if (!!agentRunState?.agentPrompt)
+    try
     {
-        // Do nothing as it has an override
-    }
-    else if (!!localsettings.instruct_sysprompt) {
-        agentRunState.agentPrompt = localsettings.instruct_sysprompt
-    }
-    else {
-        let sysPrompt = `You are a decision making action AI that evaluates thoughts and takes concise, purposeful actions which lead to a response to the user. Ensure you always send at least one response which is visible to the user.`
-        if (!!agentRunState?.systemPrompt) {
-            sysPrompt += " Ensure responses are in line with the setting overview. Only override the setting overview when the user explicitly instructs you to do so."
-        }
-        sysPrompt += " Providing suggestions will force you to stop taking actions. Only include suggestions when you have nothing else to do or require user input."
-        agentRunState.agentPrompt = sysPrompt
-    }
-
-    let { interactionId, initialPrompt, excludeSpecificMessagePrefixes, agentInitialiser, agentVisualiser, agentFinaliser, printToConsole, logger, configOverrides, isUsingWhitelist, macroUsed } = agentRunState
-    let currentChainOfThought = []
-    let recentActions = []
-    let currentOrderOfActionsOverall = []
-    let currentOrderOfActionDescriptionsOverall = []
-
-    let lastActions = getLastActions(maxActionsInHistory, excludeSpecificMessagePrefixes)
-    lastActions.forEach(action => {
-        switch (action.source) {
-            case "system":
-                addThought(currentChainOfThought, createSysPrompt, action.msg, false, true);
-                break;
-            case "ai":
-                addThought(currentChainOfThought, createAIPrompt, action.msg, false, true);
-                break;
-            case "human":
-                addThought(currentChainOfThought, createInstructPrompt, action.msg, false, true);
-                break;
-        }
-    })
-
-    if (!agentRunState?.initialUser && localsettings.inject_chatnames_instruct)
-    {
-        agentRunState.initialUser = localsettings.chatname
-    }
-
-    let textDBResults = ""
-    if (!!initialPrompt) {
-        // When using a macro, the user must see the text with the macro prefix but the AI must not
-        let macroFreePrompt = initialPrompt.indexOf(`${macroUsed}::`) === 0 ? initialPrompt.substring(macroUsed.length + 2) : initialPrompt;
-        addThought(currentChainOfThought, createInstructPrompt, (!!agentRunState?.inputUser ? `${agentRunState.initialUser}: ${macroFreePrompt}` : macroFreePrompt), false, true)
-        addThought(currentChainOfThought, createInstructPrompt, (!!agentRunState?.inputUser ? `${agentRunState.initialUser}: ${initialPrompt}` : initialPrompt), true, false)
-    }
-    else if (!!lastActions && lastActions.length > 0) {
-        let humanActions = lastActions.reverse().filter(elem => elem.source === "human")
-        let prevInput = (humanActions.length > 0 ? humanActions[0].msg.replace(new RegExp(`^${localsettings.chatname}:\\s*`), "") : "");
-        // let firstElem = lastActions.splice(-1); 
-        // let prevInput = (firstElem.source === "human" ? firstElem.msg.replace(new RegExp(`^${localsettings.chatname}:\\s*`), "") : ""); 
-        if (!!prevInput) {
-            initialPrompt = prevInput
-        }
-    }
-    if (!!initialPrompt && documentdb_provider != "0") {
-        let contentToSearch = documentdb_data
-        if (!!documentdb_searchhistory) {
-            contentToSearch += `\n\n[DOCUMENT BREAK][Chatlog history]${concat_gametext(true)}[DOCUMENT BREAK]`
-        }
-        let ltmSnippets = await DatabaseMinisearch(contentToSearch, initialPrompt, "");
-        for (let i = 0; i < ltmSnippets.length; ++i) {
-            textDBResults += getInfoSnippet(ltmSnippets[i]);
-        }
-    }
-
-    let hasAttemptedToCompleteOnce = false
-    let lastThoughtWasBlank = false
-
-    Array(...document.getElementsByClassName("stopThinking")).forEach(elem => elem.classList.remove("hidden"))
-
-    currentOrderOfActionsOverall = getDocumentFromTextDB('Order of actions')
-    currentOrderOfActionsOverall = !!currentOrderOfActionsOverall ? currentOrderOfActionsOverall.split(",").filter(act => !!act) : []
-    currentOrderOfActionDescriptions = []
-
-    // Get current config and model overrides
-    // let configOverrides = {}
-
-    let manualOverridesForEnabledCommands = [];
-    if (!configOverrides || Object.keys(configOverrides).length === 0) {
-        configOverrides = getDocumentFromTextDB("Agent config overrides")
-        configOverrides = !!configOverrides ? configOverrides.split("|").map(joined => joined.split("::")).filter(arr => arr.length === 2 || arr.length === 3).reduce((obj, elem) => {
-            obj[elem[0]] = {
-                config: elem[1],
-                model: (elem.length > 2 ? elem[2] : "")
-            }
-            return obj
-        }, {}) : {}
-    }
-    manualOverridesForEnabledCommands = Object.keys(configOverrides)
-
-    let originalConfiguration = await reloadUtils.getCurrentConfigAndModel()
-    let previousConfig = JSON.parse(JSON.stringify(originalConfiguration))
-
-    agentRunState = objRefAssign({
-        initialPrompt: initialPrompt,
-        currentChainOfThought,
-        recentActions,
-        currentOrderOfActionsOverall,
-        currentOrderOfActionDescriptionsOverall,
-        lastActions,
-        originalConfiguration,
-        configOverrides,
-        manualOverridesForEnabledCommands
-    }, agentRunState)
-    if (agentInitialiser !== undefined)
-    {
-        await agentInitialiser(agentRunState)
-    }
-
-    if (!!agentRunState?.planToUse && typeof agentRunState.planToUse === "object")
-    {
-        currentOrderOfActionsOverall = agentRunState.planToUse.orderOfActions.map(act => act.action)
-        currentOrderOfActionDescriptionsOverall = agentRunState.planToUse.orderOfActions.map(act => act.objective)
-        objRefOverride(agentRunState, { currentOrderOfActionsOverall, currentOrderOfActionDescriptionsOverall })
-        let argsObject = !!agentRunState.agentName ? objRefAssign({ whoToRespondAs: agentRunState.agentName }, agentRunState.planToUse) : agentRunState.planToUse
-        let completePlanObject = {
-            name: "plan_actions",
-            args: argsObject
-        }
-        addThought(currentChainOfThought, createAIPrompt, getActionSummaryText(completePlanObject, null, false))
-    }
-
-    for (let i = !!agentRunState?.planToUse ? 1 : 0; i < Number(localsettings.agentCOTMax) + 1 && (currentOrderOfActionsOverall.length === 0 || i < currentOrderOfActionsOverall.length + 1) && endCurrent === false; i++) {
-        let nextAction = []
-        let validCommands = getEnabledCommands(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist).map(command => command.name).filter(name => i != 0 || name != "stop_thinking")
-        if (i == 0) {
-            nextAction = getReasoningCommand(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist)
+        clearSuggestions()
+        let textToCheckForMacro = ""
+        if (!!agentRunState?.initialPrompt) {
+            textToCheckForMacro = agentRunState.initialPrompt
         }
         else {
-            // Ensure valid commands does not include stop thinking right away to ensure an action of some type is taken
-            nextAction = JSON.parse(JSON.stringify(currentOrderOfActionsOverall)).splice(i - 1).filter(acts => acts.split("|").find(act => validCommands.includes(act)))
-            nextAction = nextAction.length > 0 ? getCommands(agentRunState).filter(act => nextAction[0].split("|").includes(act.name)) : getEnabledCommands(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist).filter(command => validCommands.includes(command.name))
-
-            // Find any actions which have occured more than the max repeats in settings and remove them from the options
-            if (currentOrderOfActionsOverall.length === 0) {
-                let actionsOverMaxRepeats = recentActions.map(elem => elem?.command?.name).reduce((o, c) => {
-                    let elem = o.find(e => e.name == c)
-                    if (elem === undefined) {
-                        o.push({ name: c, repeats: 1 })
-                    } else {
-                        elem.repeats++
-                    }
-                    return o
-                }, []).filter(o => o.repeats >= localsettings.agentCOTRepeatsMax).map(o => o.name)
-                nextAction = nextAction.filter(act => !actionsOverMaxRepeats.includes(act.name))
-            }
-        }
-
-
-        // Find actions which are identical and have run twice - then remove them from the possible options to run again - applies when plans are not used
-        if (currentOrderOfActionsOverall.length === 0) {
-            let duplicateActions = recentActions.filter((elem, pos, arr) => arr.findIndex((elem2) => JSON.stringify(elem) === JSON.stringify(elem2)) !== pos).map(elem => elem?.command?.name)
-            nextAction = nextAction.filter(act => !duplicateActions.includes(act.name))
-        }
-
-        // If no actions present, end cycle
-        if (nextAction.length === 0) {
-            isCompleted = true
-            hasAttemptedToCompleteOnce = true
-            continue
-        }
-        let jsonGrammar = await getCommandsGNBF(nextAction)
-
-        currentChainOfThought = currentChainOfThought.splice(-maxActionsInHistory)
-        recentActions = recentActions.splice(-maxActionsInHistory)
-        objRefOverride(agentRunState, { currentChainOfThought, recentActions })
-
-        // All content			
-        let truncated_context = concat_gametext(true, "", "", "", false, true); //no need to truncate if memory is empty
-        truncated_context = truncated_context.replace(/\xA0/g, ' '); //replace non breaking space nbsp
-
-        // Context quantities
-        let maxctxlen = localsettings.max_context_length;
-        let maxgenamt = localsettings.max_length;
-        let max_allowed_characters = getMaxAllowedCharacters(truncated_context, maxctxlen, maxgenamt);
-        let max_mem_len = Math.floor(max_allowed_characters * 0.8);
-        let max_anote_len = Math.floor(max_allowed_characters * 0.6);
-        let max_wi_len = Math.floor(max_allowed_characters * 0.5);
-
-        let history = getInitialAgentPrompt(agentRunState, max_mem_len)
-        let wiToInclude = createSysPrompt(substring_to_boundary(getWorldInfoForAgent(agentRunState, truncated_context, max_wi_len) + "\n\n" + textDBResults, max_wi_len))
-        let anToInclude = !!current_anote ? createSysPrompt(substring_to_boundary(current_anotetemplate.replace("<|>", current_anote), max_anote_len)) : ""
-
-        let promptOverview = currentOrderOfActionDescriptionsOverall.length > 0 ? currentOrderOfActionDescriptionsOverall[i - 1] : null
-        if (i === 0) {
-            let planningPrompt = "The last action from the user is the instruction. If you need to ask the user for a response, the action ask_user must be used and be put as the final action in the order. When handling images always use actions to get information when needed especially for descriptions. Produces a list of actions to respond to this instruction."
-            if (!!agentRunState?.agentName)
+            let latestReply = getLastActions(1)
+            if (latestReply.length > 0 && latestReply[0]?.source === "human")
             {
-                planningPrompt += ` You must respond as ${agentRunState.agentName} when using the send_message or ask_user actions. Choose the person based on the user's instruction.`
+                textToCheckForMacro = latestReply[0]?.msg || ""
             }
-            else if (localsettings.inject_chatnames_instruct) {
-                planningPrompt += ` You must respond as ${localsettings.chatopponent.split("||$||").join(" or ")} when using the send_message or ask_user actions. Choose the person based on the user's instruction.`
-            }
-            promptOverview = planningPrompt
         }
-
-        let finalAgentPrompt = getFinalAgentPrompt(agentRunState, nextAction, promptOverview)
-
-        let cotAsText = "", maxLengthOfCot = max_allowed_characters - history.length - wiToInclude.length - anToInclude.length - finalAgentPrompt.length
-        for (let j = currentChainOfThought.length - 1; j >= 0; j--) {
-            if (!!(currentChainOfThought[j]?.onlyDisplay)) {
-                continue
+        let macroContent = {}
+        if (/^\w+::/.test(textToCheckForMacro)) {
+            let macro = textToCheckForMacro.substring(0, textToCheckForMacro.indexOf("::"))
+            if (window?.eso?.agentMacros[macro] !== undefined) {
+                macroContent = window.eso.agentMacros[macro]
+                macroContent.macroUsed = macro
             }
-            if (cotAsText.length + currentChainOfThought[j].wrappedPrompt.length > maxLengthOfCot) {
-                break
-            }
-            cotAsText = currentChainOfThought[j].wrappedPrompt + cotAsText
         }
+        agentRunState = objRefAssign(macroContent, agentRunState)
 
-        let agentRequestBody = substring_to_boundary(current_temp_memory + cotAsText, maxLengthOfCot)
-        if (wi_insertlocation === "0") // WI after memory
-        {
-            history += wiToInclude
-            history += agentRequestBody
+        // gametext_arr = []
+        // render_gametext()
+        agentRunState = objRefOverride({
+            macroUsed: undefined,
+            excludeSpecificMessagePrefixes: [],
+            agentInitialiser: genericAgentInitialiser,
+            agentVisualiser: genericAgentVisualiser,
+            agentFinaliser: genericAgentFinaliser,
+            printToConsole: true,
+            agentName: "",
+            initialUser: "",
+            systemPrompt: current_memory,
+            configOverrides: {},
+            isUsingWhitelist: false,
+            agentStopOnRequestForInput: !!localsettings?.agentStopOnRequestForInput
+        }, agentRunState, {
+            logger: new AgentLogger(),
+            cotProcessedUntil: 0,
+            errors: []
+        })
+
+        if (!!agentRunState?.agentPrompt) {
+            // Do nothing as it has an override
+        }
+        else if (!!localsettings.instruct_sysprompt) {
+            agentRunState.agentPrompt = localsettings.instruct_sysprompt
         }
         else {
-            history += agentRequestBody
-            history += wiToInclude
-        }
-        history += anToInclude
-        history += finalAgentPrompt
-        // Add the start tag for the AI to guide it to respond as the AI
-        history += instructendplaceholder
-        // Add jailbreak if present
-        if (!!localsettings?.inject_jailbreak_instruct) {
-            history += localsettings.custom_jailbreak_text
-        }
-        let resp = await generateAndGetTextFromPrompt(replace_placeholders(history), jsonGrammar, [], recentActions.map(JSON.stringify))
-
-        try {
-            if (resp.trim() == "") {
-                // addThought(currentChainOfThought, createSysPrompt, "Error - Empty response instead of action. Ensure all responses are valid JSON.", lastThoughtWasBlank)
-                isCompleted = true
-                hasAttemptedToCompleteOnce = true
-                continue
+            let sysPrompt = `You are a decision making action AI that evaluates thoughts and takes concise, purposeful actions which lead to a response to the user. Ensure you always send at least one response which is visible to the user.`
+            if (!!agentRunState?.systemPrompt) {
+                sysPrompt += " Ensure responses are in line with the setting overview. Only override the setting overview when the user explicitly instructs you to do so."
             }
-            lastThoughtWasBlank = false
-            let json;
-            if (resp.indexOf("stop_thinking") !== -1) {
-                isCompleted = true
-                hasAttemptedToCompleteOnce = true
-                continue
+            sysPrompt += " Providing suggestions will force you to stop taking actions. Only include suggestions when you have nothing else to do or require user input."
+            agentRunState.agentPrompt = sysPrompt
+        }
+
+        let { interactionId, initialPrompt, excludeSpecificMessagePrefixes, agentInitialiser, agentVisualiser, agentFinaliser, printToConsole, logger, configOverrides, isUsingWhitelist, macroUsed } = agentRunState
+        let currentChainOfThought = []
+        let recentActions = []
+        let currentOrderOfActionsOverall = []
+        let currentOrderOfActionDescriptionsOverall = []
+
+        let lastActions = getLastActions(maxActionsInHistory, excludeSpecificMessagePrefixes)
+        lastActions.forEach(action => {
+            switch (action.source) {
+                case "system":
+                    addThought(currentChainOfThought, createSysPrompt, action.msg, false, true);
+                    break;
+                case "ai":
+                    addThought(currentChainOfThought, createAIPrompt, action.msg, false, true);
+                    break;
+                case "human":
+                    addThought(currentChainOfThought, createInstructPrompt, action.msg, false, true);
+                    break;
+            }
+        })
+
+        if (!agentRunState?.initialUser && localsettings.inject_chatnames_instruct) {
+            agentRunState.initialUser = localsettings.chatname
+        }
+
+        let textDBResults = ""
+        if (!!initialPrompt) {
+            // When using a macro, the user must see the text with the macro prefix but the AI must not
+            let macroFreePrompt = initialPrompt.indexOf(`${macroUsed}::`) === 0 ? initialPrompt.substring(macroUsed.length + 2) : initialPrompt;
+            addThought(currentChainOfThought, createInstructPrompt, (!!agentRunState?.inputUser ? `${agentRunState.initialUser}: ${macroFreePrompt}` : macroFreePrompt), false, true)
+            addThought(currentChainOfThought, createInstructPrompt, (!!agentRunState?.inputUser ? `${agentRunState.initialUser}: ${initialPrompt}` : initialPrompt), true, false)
+        }
+        else if (!!lastActions && lastActions.length > 0) {
+            let humanActions = lastActions.reverse().filter(elem => elem.source === "human")
+            let prevInput = (humanActions.length > 0 ? humanActions[0].msg.replace(new RegExp(`^${localsettings.chatname}:\\s*`), "") : "");
+            if (!!prevInput) {
+                initialPrompt = prevInput
+            }
+        }
+        if (!!initialPrompt && documentdb_provider != "0") {
+            let contentToSearch = documentdb_data
+            if (!!documentdb_searchhistory) {
+                contentToSearch += `\n\n[DOCUMENT BREAK][Chatlog history]${concat_gametext(true)}[DOCUMENT BREAK]`
+            }
+            let ltmSnippets = await DatabaseMinisearch(contentToSearch, initialPrompt, "");
+            for (let i = 0; i < ltmSnippets.length; ++i) {
+                textDBResults += getInfoSnippet(ltmSnippets[i]);
+            }
+        }
+
+        let hasAttemptedToCompleteOnce = false
+        let lastThoughtWasBlank = false
+
+        Array(...document.getElementsByClassName("stopThinking")).forEach(elem => elem.classList.remove("hidden"))
+
+        currentOrderOfActionsOverall = getDocumentFromTextDB('Order of actions')
+        currentOrderOfActionsOverall = !!currentOrderOfActionsOverall ? currentOrderOfActionsOverall.split(",").filter(act => !!act) : []
+        currentOrderOfActionDescriptions = []
+
+        // Get current config and model overrides
+        // let configOverrides = {}
+
+        let manualOverridesForEnabledCommands = [];
+        if (!configOverrides || Object.keys(configOverrides).length === 0) {
+            configOverrides = getDocumentFromTextDB("Agent config overrides")
+            configOverrides = !!configOverrides ? configOverrides.split("|").map(joined => joined.split("::")).filter(arr => arr.length === 2 || arr.length === 3).reduce((obj, elem) => {
+                obj[elem[0]] = {
+                    config: elem[1],
+                    model: (elem.length > 2 ? elem[2] : "")
+                }
+                return obj
+            }, {}) : {}
+        }
+        manualOverridesForEnabledCommands = Object.keys(configOverrides)
+
+        let originalConfiguration = await reloadUtils.getCurrentConfigAndModel()
+        let previousConfig = JSON.parse(JSON.stringify(originalConfiguration))
+
+        agentRunState = objRefAssign({
+            initialPrompt: initialPrompt,
+            currentChainOfThought,
+            recentActions,
+            currentOrderOfActionsOverall,
+            currentOrderOfActionDescriptionsOverall,
+            lastActions,
+            originalConfiguration,
+            configOverrides,
+            manualOverridesForEnabledCommands
+        }, agentRunState)
+        if (agentInitialiser !== undefined) {
+            await agentInitialiser(agentRunState)
+        }
+        if (typeof agentVisualiser === "function") {
+            await agentVisualiser(objRefAssign({}, agentRunState, {agentRunState}))
+        }
+
+        if (!!agentRunState?.planToUse && typeof agentRunState.planToUse === "object") {
+            currentOrderOfActionsOverall = agentRunState.planToUse.orderOfActions.map(act => act.action)
+            currentOrderOfActionDescriptionsOverall = agentRunState.planToUse.orderOfActions.map(act => act.objective)
+            objRefOverride(agentRunState, { currentOrderOfActionsOverall, currentOrderOfActionDescriptionsOverall })
+            let argsObject = !!agentRunState.agentName ? objRefAssign({ whoToRespondAs: agentRunState.agentName }, agentRunState.planToUse) : agentRunState.planToUse
+            let completePlanObject = {
+                name: "plan_actions",
+                args: argsObject
+            }
+            addThought(currentChainOfThought, createAIPrompt, getActionSummaryText(completePlanObject, null, false))
+        }
+
+        for (let i = !!agentRunState?.planToUse ? 1 : 0; i < Number(localsettings.agentCOTMax) + 1 && (currentOrderOfActionsOverall.length === 0 || i < currentOrderOfActionsOverall.length + 1) && endCurrent === false; i++) {
+            let nextAction = []
+            let validCommands = getEnabledCommands(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist).map(command => command.name).filter(name => i != 0 || name != "stop_thinking")
+            if (i == 0) {
+                nextAction = getReasoningCommand(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist)
             }
             else {
-                json = JSON.parse(resp)
+                // Ensure valid commands does not include stop thinking right away to ensure an action of some type is taken
+                nextAction = JSON.parse(JSON.stringify(currentOrderOfActionsOverall)).splice(i - 1).filter(acts => acts.split("|").find(act => validCommands.includes(act)))
+                nextAction = nextAction.length > 0 ? getCommands(agentRunState).filter(act => nextAction[0].split("|").includes(act.name)) : getEnabledCommands(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist).filter(command => validCommands.includes(command.name))
+
+                // Find any actions which have occured more than the max repeats in settings and remove them from the options
+                if (currentOrderOfActionsOverall.length === 0) {
+                    let actionsOverMaxRepeats = recentActions.map(elem => elem?.command?.name).reduce((o, c) => {
+                        let elem = o.find(e => e.name == c)
+                        if (elem === undefined) {
+                            o.push({ name: c, repeats: 1 })
+                        } else {
+                            elem.repeats++
+                        }
+                        return o
+                    }, []).filter(o => o.repeats >= localsettings.agentCOTRepeatsMax).map(o => o.name)
+                    nextAction = nextAction.filter(act => !actionsOverMaxRepeats.includes(act.name))
+                }
             }
-            if (!!json?.command && !!json.command?.name && (json.command.name === "plan_actions" || validCommands.includes(json.command.name))) {
-                // If message has been sent before, skip processing it again and let the agent try again
-                if (recentActions.find((elem) => JSON.stringify(elem) === JSON.stringify(json)) !== undefined) {
-                    recentActions.push(json)
+
+
+            // Find actions which are identical and have run twice - then remove them from the possible options to run again - applies when plans are not used
+            if (currentOrderOfActionsOverall.length === 0) {
+                let duplicateActions = recentActions.filter((elem, pos, arr) => arr.findIndex((elem2) => JSON.stringify(elem) === JSON.stringify(elem2)) !== pos).map(elem => elem?.command?.name)
+                nextAction = nextAction.filter(act => !duplicateActions.includes(act.name))
+            }
+
+            // If no actions present, end cycle
+            if (nextAction.length === 0) {
+                isCompleted = true
+                hasAttemptedToCompleteOnce = true
+                continue
+            }
+            let jsonGrammar = await getCommandsGNBF(nextAction)
+
+            currentChainOfThought = currentChainOfThought.splice(-maxActionsInHistory)
+            recentActions = recentActions.splice(-maxActionsInHistory)
+            objRefOverride(agentRunState, { currentChainOfThought, recentActions })
+
+            // All content			
+            let truncated_context = concat_gametext(true, "", "", "", false, true); //no need to truncate if memory is empty
+            truncated_context = truncated_context.replace(/\xA0/g, ' '); //replace non breaking space nbsp
+
+            // Context quantities
+            let maxctxlen = localsettings.max_context_length;
+            let maxgenamt = localsettings.max_length;
+            let max_allowed_characters = getMaxAllowedCharacters(truncated_context, maxctxlen, maxgenamt);
+            let max_mem_len = Math.floor(max_allowed_characters * 0.8);
+            let max_anote_len = Math.floor(max_allowed_characters * 0.6);
+            let max_wi_len = Math.floor(max_allowed_characters * 0.5);
+
+            let history = getInitialAgentPrompt(agentRunState, max_mem_len)
+            let wiToInclude = createSysPrompt(substring_to_boundary(getWorldInfoForAgent(agentRunState, truncated_context, max_wi_len) + "\n\n" + textDBResults, max_wi_len))
+            let anToInclude = !!current_anote ? createSysPrompt(substring_to_boundary(current_anotetemplate.replace("<|>", current_anote), max_anote_len)) : ""
+
+            let promptOverview = currentOrderOfActionDescriptionsOverall.length > 0 ? currentOrderOfActionDescriptionsOverall[i - 1] : null
+            if (i === 0) {
+                let planningPrompt = "The last action from the user is the instruction. If you need to ask the user for a response, the action ask_user must be used and be put as the final action in the order. When handling images always use actions to get information when needed especially for descriptions. Produces a list of actions to respond to this instruction."
+                if (!!agentRunState?.agentName) {
+                    planningPrompt += ` You must respond as ${agentRunState.agentName} when using the send_message or ask_user actions. Choose the person based on the user's instruction.`
+                }
+                else if (localsettings.inject_chatnames_instruct) {
+                    planningPrompt += ` You must respond as ${localsettings.chatopponent.split("||$||").join(" or ")} when using the send_message or ask_user actions. Choose the person based on the user's instruction.`
+                }
+                promptOverview = planningPrompt
+            }
+
+            let finalAgentPrompt = getFinalAgentPrompt(agentRunState, nextAction, promptOverview)
+
+            let cotAsText = "", maxLengthOfCot = max_allowed_characters - history.length - wiToInclude.length - anToInclude.length - finalAgentPrompt.length
+            for (let j = currentChainOfThought.length - 1; j >= 0; j--) {
+                if (!!(currentChainOfThought[j]?.onlyDisplay)) {
                     continue
                 }
-
-                let action = json
-                recentActions.push(json)
-                
-                addThought(currentChainOfThought, createAIPrompt, getActionSummaryText(action?.command, i > 0 ? promptOverview : null, wordCountEnabled))
-
-                let isCompleted = false;
-                let command = [...getReasoningCommand(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist), ...getCommands(agentRunState)].find(command => command.name === action.command.name)
-                if (!!command && command?.executor !== undefined) {
-                    if (configOverrides[action.command.name]) {
-                        let overrides = configOverrides[action.command.name]
-                        if (!!overrides?.config)
-                        {
-                            if (previousConfig.config !== overrides.config || previousConfig.model !== overrides.model) {
-                                await reloadUtils.reloadAndWait(overrides.config, overrides.model)
-                                logger.debug("Completed reload");
-                                previousConfig.config = overrides.config
-                                previousConfig.model = overrides.model
-                            }
-                        }
-                    }
-
-                    let res = await command.executor(action.command)
-                    if (action.command?.name === "plan_actions")
-                    {
-                        currentOrderOfActionsOverall = action.command?.args?.orderOfActions.map(act => act.action)
-                        currentOrderOfActionDescriptionsOverall = action.command?.args?.orderOfActions.map(act => act.objective)                        
-                        if (!agentRunState?.agentName && localsettings.inject_chatnames_instruct) {
-                            if (!!action?.args?.whoToRespondAs) {
-                                agentRunState.agentName = action?.args?.whoToRespondAs
-                            }
-                            else {
-                                agentRunState.agentName = getRandomChatOpponent()
-                            }
-                        }
-                        objRefOverride(agentRunState, { currentOrderOfActionsOverall, currentOrderOfActionDescriptionsOverall })
-                    }
-
-                    if (typeof agentVisualiser === "function") {
-                        // Render any suggestions generated in the agent logic
-                        let visualiserParams = objRefAssign({
-                            command,
-                            action,
-                            agentRunState
-                        }, agentRunState)
-                        await agentVisualiser(visualiserParams)
-                    }
-                    if (res === true) {
-                        isCompleted = true
-                        hasAttemptedToCompleteOnce = true
-                    }
-
-                    if (previousConfig.config !== originalConfiguration.config || previousConfig.model !== originalConfiguration.model) {
-                        await reloadUtils.reloadAndWait(originalConfiguration.config, originalConfiguration.model)
-                        previousConfig.config = originalConfiguration.config
-                        previousConfig.model = originalConfiguration.model
-                        logger.debug("Completed reload");
-                    }
+                if (cotAsText.length + currentChainOfThought[j].wrappedPrompt.length > maxLengthOfCot) {
+                    break
                 }
+                cotAsText = currentChainOfThought[j].wrappedPrompt + cotAsText
+            }
 
-                if (isCompleted) {
-                    if (!hasAttemptedToCompleteOnce) {
-                        addThought(currentChainOfThought, createAIPrompt, checkFinalThoughtsPrompt)
-                        hasAttemptedToCompleteOnce = true
-                    }
-                    else {
-                        addThought(currentChainOfThought, createSysPrompt, "Chain of thought complete", true)
-                        break
-                    }
-                }
+            let agentRequestBody = substring_to_boundary(current_temp_memory + cotAsText, maxLengthOfCot)
+            if (wi_insertlocation === "0") // WI after memory
+            {
+                history += wiToInclude
+                history += agentRequestBody
             }
             else {
-                if (Object.keys(json).length === 0 || json?.command?.name === "None" || json?.command?.name === "null") {
-                    if (!hasAttemptedToCompleteOnce) {
-                        addThought(currentChainOfThought, createAIPrompt, checkFinalThoughtsPrompt)
-                        hasAttemptedToCompleteOnce = true
+                history += agentRequestBody
+                history += wiToInclude
+            }
+            history += anToInclude
+            history += finalAgentPrompt
+            // Add the start tag for the AI to guide it to respond as the AI
+            history += instructendplaceholder
+            // Add jailbreak if present
+            if (!!localsettings?.inject_jailbreak_instruct) {
+                history += localsettings.custom_jailbreak_text
+            }
+            let resp = await generateAndGetTextFromPrompt(replace_placeholders(history), jsonGrammar, [], recentActions.map(JSON.stringify))
+
+            try {
+                if (resp.trim() == "") {
+                    // addThought(currentChainOfThought, createSysPrompt, "Error - Empty response instead of action. Ensure all responses are valid JSON.", lastThoughtWasBlank)
+                    isCompleted = true
+                    hasAttemptedToCompleteOnce = true
+                    continue
+                }
+                lastThoughtWasBlank = false
+                let json;
+                if (resp.indexOf("stop_thinking") !== -1) {
+                    isCompleted = true
+                    hasAttemptedToCompleteOnce = true
+                    continue
+                }
+                else {
+                    json = JSON.parse(resp)
+                }
+                if (!!json?.command && !!json.command?.name && (json.command.name === "plan_actions" || validCommands.includes(json.command.name))) {
+                    // If message has been sent before, skip processing it again and let the agent try again
+                    if (recentActions.find((elem) => JSON.stringify(elem) === JSON.stringify(json)) !== undefined) {
+                        recentActions.push(json)
+                        continue
                     }
-                    else {
-                        addThought(currentChainOfThought, createSysPrompt, "Chain of thought complete", true)
-                        break
+
+                    let action = json
+                    recentActions.push(json)
+
+                    addThought(currentChainOfThought, createAIPrompt, getActionSummaryText(action?.command, i > 0 ? promptOverview : null, wordCountEnabled))
+
+                    let isCompleted = false;
+                    let command = [...getReasoningCommand(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist), ...getCommands(agentRunState)].find(command => command.name === action.command.name)
+                    if (!!command && command?.executor !== undefined) {
+                        if (configOverrides[action.command.name]) {
+                            let overrides = configOverrides[action.command.name]
+                            if (!!overrides?.config) {
+                                if (previousConfig.config !== overrides.config || previousConfig.model !== overrides.model) {
+                                    await reloadUtils.reloadAndWait(overrides.config, overrides.model)
+                                    logger.debug("Completed reload");
+                                    previousConfig.config = overrides.config
+                                    previousConfig.model = overrides.model
+                                }
+                            }
+                        }
+
+                        let res = await command.executor(action.command)
+                        if (action.command?.name === "plan_actions") {
+                            currentOrderOfActionsOverall = action.command?.args?.orderOfActions.map(act => act.action)
+                            currentOrderOfActionDescriptionsOverall = action.command?.args?.orderOfActions.map(act => act.objective)
+                            if (!agentRunState?.agentName && localsettings.inject_chatnames_instruct) {
+                                if (!!action?.args?.whoToRespondAs) {
+                                    agentRunState.agentName = action?.args?.whoToRespondAs
+                                }
+                                else {
+                                    agentRunState.agentName = getRandomChatOpponent()
+                                }
+                            }
+                            objRefOverride(agentRunState, { currentOrderOfActionsOverall, currentOrderOfActionDescriptionsOverall })
+                        }
+
+                        if (typeof agentVisualiser === "function") {
+                            // Render any suggestions generated in the agent logic
+                            let visualiserParams = objRefAssign({
+                                command,
+                                action,
+                                agentRunState
+                            }, agentRunState)
+                            await agentVisualiser(visualiserParams)
+                        }
+                        if (res === true) {
+                            isCompleted = true
+                            hasAttemptedToCompleteOnce = true
+                        }
+
+                        if (previousConfig.config !== originalConfiguration.config || previousConfig.model !== originalConfiguration.model) {
+                            await reloadUtils.reloadAndWait(originalConfiguration.config, originalConfiguration.model)
+                            previousConfig.config = originalConfiguration.config
+                            previousConfig.model = originalConfiguration.model
+                            logger.debug("Completed reload");
+                        }
+                    }
+
+                    if (isCompleted) {
+                        if (!hasAttemptedToCompleteOnce) {
+                            addThought(currentChainOfThought, createAIPrompt, checkFinalThoughtsPrompt)
+                            hasAttemptedToCompleteOnce = true
+                        }
+                        else {
+                            addThought(currentChainOfThought, createSysPrompt, "Chain of thought complete", true)
+                            break
+                        }
                     }
                 }
                 else {
-                    addThought(currentChainOfThought, createSysPrompt, `Invalid command requested: ${JSON.stringify(json)}`)
-                    // break
+                    if (Object.keys(json).length === 0 || json?.command?.name === "None" || json?.command?.name === "null") {
+                        if (!hasAttemptedToCompleteOnce) {
+                            addThought(currentChainOfThought, createAIPrompt, checkFinalThoughtsPrompt)
+                            hasAttemptedToCompleteOnce = true
+                        }
+                        else {
+                            addThought(currentChainOfThought, createSysPrompt, "Chain of thought complete", true)
+                            break
+                        }
+                    }
+                    else {
+                        addThought(currentChainOfThought, createSysPrompt, `Invalid command requested: ${JSON.stringify(json)}`)
+                        // break
+                    }
                 }
             }
-        }
-        catch (e) {
-            addThought(currentChainOfThought, createSysPrompt, `Chain of thought had an exception: ${e}`)
-            logger.error(`Agent response which errored: ${resp}`, e)
+            catch (e) {
+                agentRunState.errors.push(e)
+                addThought(currentChainOfThought, createSysPrompt, `Chain of thought had an exception: ${e}`)
+                logger.error(`Agent response which errored: ${resp}`, e)
 
-            if (resp === null || resp.indexOf("evaluate_formula") === -1) {
-                break
+                if (resp === null || resp.indexOf("evaluate_formula") === -1) {
+                    break
+                }
+            }
+
+            if (printToConsole) {
+                logger.printPendingLogs()
             }
         }
 
-        if (printToConsole) {
-            logger.printPendingLogs()
+        if (previousConfig.config !== originalConfiguration.config || previousConfig.model !== originalConfiguration.model) {
+            await reloadUtils.reloadAndWait(originalConfiguration.config, originalConfiguration.model)
+            agentRunState.log("Completed reload");
         }
     }
-
-    if (previousConfig.config !== originalConfiguration.config || previousConfig.model !== originalConfiguration.model) {
-        await reloadUtils.reloadAndWait(originalConfiguration.config, originalConfiguration.model)
-        agentRunState.log("Completed reload");
+    catch (e) {
+        agentRunState.errors.push(e)
+        if (agentRunState?.logger !== undefined) {
+            agentRunState.logger.error(`Agent loop errored:`, e)
+        }
+        else {
+            console.error(`Agent loop errored:`, e)
+        }
     }
-
-    // Handle fialiser
-    if (typeof agentFinaliser === "function") {
-        await agentFinaliser(agentRunState)
-    }
-    if (printToConsole)
+    try
     {
-        logger.printPendingLogs()
+        // Handle finaliser
+        if (typeof agentRunState?.agentFinaliser === "function") {
+            await agentRunState.agentFinaliser(agentRunState)
+        }
+    }
+    catch (e)
+    {
+        agentRunState.errors.push(e)
+        if (agentRunState?.logger !== undefined)
+        {
+            agentRunState.logger.error(`Agent finaliser errored:`, e)
+        }
+        else {
+            console.error(`Agent finaliser errored:`, e)
+        }
+        console.error(`Agent run state during error:`, agentRunState)
+    }
+    if (!!agentRunState?.printToConsole && agentRunState?.logger !== undefined)
+    {
+        agentRunState.logger.printPendingLogs()
     }
     if (window?.backgroundAgentLoop !== true) {
         Array(...document.getElementsByClassName("stopThinking")).forEach(elem => elem.classList.add("hidden"))
@@ -995,22 +1069,6 @@ window.execAgentCycle = (argsObj) => {
     })
 }
 
-window.eso.agentMacros = {
-    "echo": {
-        printToConsole: true,
-        planToUse: {
-            "responsePlanOverview": "The user has sent a message. I must simply respond with the exact same message.",
-            "orderOfActions": [
-                {
-                    "action": "send_message",
-                    "objective": "Replying with the users message"
-                }
-            ]
-        },
-        agentName: null,
-    }
-}
-
 // Overrides to lite / UI interactions
 
 let originalPrepareSubmitGeneration = prepare_submit_generation, originalRestartNewGame = restart_new_game;
@@ -1026,21 +1084,10 @@ prepare_submit_generation = async () => {
             await Promise.all(currentAgentCycle.map(c => c.status))
         }
         endCurrent = false
-        let macroContent = {}
-        if (/^\w+::/.test(inputText))
-        {
-            let macro = inputText.substring(0, inputText.indexOf("::"))
-            if (window?.eso?.agentMacros[macro] !== undefined)
-            {
-                macroContent = window.eso.agentMacros[macro]
-                macroContent.macroUsed = macro
-            }
-        }
-        
-        execAgentCycle(objRefAssign(macroContent, {
+        execAgentCycle({
             initialPrompt: inputText,
             printToConsole: true
-        }))
+        })
     }
     else {
         originalPrepareSubmitGeneration()
