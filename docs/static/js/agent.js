@@ -92,7 +92,9 @@ let listOfExclusions = ["Action taken:", "Action taken (words =", "History searc
     "No setting overview provided, nothing has been overwritten", "Current state has been overwritten", "No state provided, nothing has been overwritten", "Current order of actions has been cleared",
     "Current order of actions has been overwritten", "No order of actions provided, nothing has been overwritten", "Error - Empty response instead of action. Ensure all responses are valid JSON.",
     "Current state format has been overwritten", "No valid state format provided, nothing has been overwritten", 
-    `Text has been added to world info:`, `Text was empty - nothing added to world info`, `Chain of thought had an exception`, "Tool call response (hidden from user):","Tool call response error (hidden from user):"]
+    `Text has been added to world info:`, `Text was empty - nothing added to world info`, `Chain of thought had an exception`, "Tool call response (hidden from user):", "Tool call response error (hidden from user):"]
+
+window.agentListOfExclusions = listOfExclusions;
 
 let hideAgentModeCotForAestheticMode = (container = document) => {
     [...container.querySelectorAll("end_of_context_koboldlite_internal > div")]
@@ -114,7 +116,7 @@ render_aesthetic_ui = (input, isPreview) => {
 var loadingNewGame = true
 let originalRepackInstructTurns = repack_instruct_turns, cotOverrideRepack = false;
 
-repack_instruct_turns = (input, usertag, aitag, systag, allow_blank, filterOutActions = (localsettings?.agentHideCOT)) => {
+repack_instruct_turns = (input, usertag, aitag, systag, allow_blank, filterOutActions = (localsettings?.agentHideCOT), excludeSpecificMessagePrefixes = []) => {
     if (isAgentModeEnabledAndSetCorrectly()) {
         let turns = split(input, usertag, aitag, systag)
         let combined_chunks = turns.map(elem => {
@@ -201,6 +203,9 @@ repack_instruct_turns = (input, usertag, aitag, systag, allow_blank, filterOutAc
                 })
         }
 
+        combined_chunks = combined_chunks
+            .filter(elem => !excludeSpecificMessagePrefixes.find(excludedStart => elem.message.trim().indexOf(excludedStart) === 0))
+
         return combined_chunks.map(elem => {
             if (allow_blank || elem.message.trim() != "") {
                 return {
@@ -217,11 +222,11 @@ repack_instruct_turns = (input, usertag, aitag, systag, allow_blank, filterOutAc
     }
 };
 
-let getLastActions = (amountOfActions = 10) => {
+let getLastActions = (amountOfActions = 10, excludeSpecificMessagePrefixes = []) => {
     let exclusions = ["Chain of thought repetition detected - ending", "Chain of thought complete", "plan_actions"]
     // , "Action: {", "Action (words =", "Action taken: ", "Action taken (words ="
     // "Action: {", "Action (words =", "Action taken: ", "Action taken (words ="
-    return repack_instruct_turns(concat_gametext(true), `{{[INPUT]}}`, `{{[OUTPUT]}}`, `{{[SYSTEM]}}`, true, false).map(msg => {
+    return repack_instruct_turns(concat_gametext(true), `{{[INPUT]}}`, `{{[OUTPUT]}}`, `{{[SYSTEM]}}`, true, false, excludeSpecificMessagePrefixes).map(msg => {
         msg.msg = msg.msg.replaceAll("{{[SYSTEM_END]}}", "").replaceAll("{{[INPUT_END]}}", "").replaceAll("{{[OUTPUT_END]}}", "").trim();
         return msg
     }).filter(msg => !/^\n*$/.test(msg.msg) && !!msg.msg && !exclusions.find(exclusion => msg.msg.indexOf(exclusion) !== -1)).splice(-amountOfActions)
@@ -260,29 +265,18 @@ let calcImageSizing = (aspect) => {
     return sizing
 }
 
-let getInitialAgentPrompt = (commands = getEnabledCommands(), max_mem_len) => {
+let getInitialAgentPrompt = (agentRunState, max_mem_len) => {
     prompt = ""
-    if (!!current_memory) {
-        prompt += createSysPrompt(`Setting overview:\n\n${substring_to_boundary(current_memory, max_mem_len)}`)
+    if (!!agentRunState?.systemPrompt) {
+        prompt += createSysPrompt(`Setting overview:\n\n${substring_to_boundary(agentRunState.systemPrompt, max_mem_len)}`)
     }
     return prompt
 }
 
-let getFinalAgentPrompt = (commands, currentOrderOfActions, objectiveForCurrentAction, initialPrompt) => {
+let getFinalAgentPrompt = (currentChainOfThought, commands, currentOrderOfActions, objectiveForCurrentAction, initialPrompt, sysPrompt) => {
     let state = getDocumentFromTextDB('State')
     let prompt = []
 
-    let sysPrompt;
-    if (!!localsettings.instruct_sysprompt) {
-        sysPrompt = localsettings.instruct_sysprompt
-    }
-    else {
-        sysPrompt = `You are a decision making action AI that evaluates thoughts and takes concise, purposeful actions which lead to a response to the user. Ensure you always send at least one response which is visible to the user.`
-        if (current_memory.length > 0) {
-            sysPrompt += " Ensure responses are in line with the setting overview. Only override the setting overview when the user explicitly instructs you to do so."
-        }
-        sysPrompt += " Providing suggestions will force you to stop taking actions. Only include suggestions when you have nothing else to do or require user input."
-    }
     if (state != null) {
         prompt.push(`Current state: ${state}`)
     }
@@ -302,13 +296,13 @@ let getFinalAgentPrompt = (commands, currentOrderOfActions, objectiveForCurrentA
     // 	prompt.push(`Order of actions: ${currentOrderOfActions.join(" -> ")}`)
     // }
     let basePrompt = prompt.join("\n\n")
-    return createSysPrompt(`### Available commands:\n\n${getCommandsAsText(!!commands.find(c => c.name === "plan_actions") ? getEnabledCommands() : commands)}`) + (basePrompt.length > 0 ? createSysPrompt(basePrompt) : "")
+    return createSysPrompt(`### Available commands:\n\n${getCommandsAsText(!!commands.find(c => c.name === "plan_actions") ? getEnabledCommands(currentChainOfThought) : commands)}`) + (basePrompt.length > 0 ? createSysPrompt(basePrompt) : "")
 }
 
 /**
  * Mostly a copy and paste of the main function - tweaked the format returned along with adding a clean cut off for WI
  */
-let getWorldInfoForAgent = (wimatch_context, maxWILength) => {
+let getWorldInfoForAgent = (agentRunState, wimatch_context, maxWILength) => {
     //if world info exists, we inject it right after the memory
     //for each matching key
     if (wi_searchdepth > 0) {
@@ -389,8 +383,8 @@ let getWorldInfoForAgent = (wimatch_context, maxWILength) => {
             }
 
             // If accessing WI for a character's memory, switch based on the current chat opponent
-            if (!!shoulduse && !!getChatOpponentForAgent() && (!!wi.comment && !!wi.wigroup) && (wi.comment.endsWith("_imported_memory") && wi.wigroup === wi.comment.replace("_imported_memory", ""))) {
-                shoulduse = (wi.wigroup == localsettings.chatname) || (wi.wigroup == getChatOpponentForAgent())
+            if (!!shoulduse && !!agentRunState.agentName && (!!wi.comment && !!wi.wigroup) && (wi.comment.endsWith("_imported_memory") && wi.wigroup === wi.comment.replace("_imported_memory", ""))) {
+                shoulduse = (wi.wigroup == localsettings.chatname) || (wi.wigroup == agentRunState.agentName)
             }
 
             if (shoulduse) {
@@ -443,39 +437,195 @@ let actionToText = (action) => {
     return actionAsText
 }
 
-let currentOrderOfActionsOverall = [], currentOrderOfActionDescriptionsOverall = []
-let recentActions = [], maxActionsInHistory = 1000, currentAgentCycle = null, endCurrent = false
+let maxActionsInHistory = 1000, currentAgentCycle = [], endCurrent = false
 
-let runAgentCycle = async (initialPrompt = undefined) => {
+window.objRefAssign = (target, ...sources) => {
+    sources.forEach(source => {
+        if (typeof source === "object") {
+            Object.keys(source).forEach(key => {
+                if (target[key] === undefined) {
+                    target[key] = source[key]
+                }
+            })
+        }
+    })
+    return target
+}
 
+window.objRefOverride = (target, ...sources) => {
+    sources.forEach(source => {
+        if (typeof source === "object") {
+            Object.keys(source).forEach(key => {
+                target[key] = source[key]
+            })
+        }
+    })
+    return target
+}
+
+let logAgentFunctionCall = (agentPhase, agentRunState) => {
+    let { interactionId, logger } = agentRunState
+    logger.debug(`Agent ${agentPhase} #${interactionId}:`, agentRunState)
+}
+
+let genericAgentInitialiser = async (agentRunState) => {
+    // Make no changes to the initial values by default
+    logAgentFunctionCall("initialiser", agentRunState)
+}
+
+let genericAgentVisualiser = async (visualiserParams) => {
+    logAgentFunctionCall("visualiser", visualiserParams)
+    let { currentChainOfThought, interactionId, cotProcessedUntil, printToConsole, agentRunState } = visualiserParams
+    let cotIndex = cotProcessedUntil || 0
+
+    currentChainOfThought.slice(cotIndex).forEach(elem => {
+        let { wrappedPrompt, onlyAdd } = elem;
+        if (!onlyAdd) {
+            gametext_arr.push(wrappedPrompt.replace(/\\\\/g, ""))
+            render_gametext()
+        }
+    })
+    agentRunState.cotProcessedUntil = currentChainOfThought.length
+}
+
+let genericAgentFinaliser = async (agentRunState) => {
+    logAgentFunctionCall("finaliser", agentRunState)
+    renderSuggestions()
+    submit_multiplayer(true)
+    agentRunState.logger.debug(`Agent loop #${agentRunState?.interactionId} completed`)
+}
+
+let voidAgentVisualiser = async (visualiserParams) => {
+    logAgentFunctionCall("visualiser", visualiserParams)
+    let { currentChainOfThought, agentRunState } = visualiserParams
+    agentRunState.cotProcessedUntil = currentChainOfThought.length
+    clearSuggestions();
+}
+
+window.eso.agentUtilityMethods = {
+    genericAgentInitialiser, genericAgentVisualiser, genericAgentFinaliser, voidAgentVisualiser
+}
+
+class AgentLogger {
+    internalLogs = []
+    addToInternalLogs(type, ...args) {
+        this.internalLogs.push({ type, args })
+    }
+    printPendingLogs() {
+        this.internalLogs.forEach(log => {
+            switch (log.type) {
+                case "warn":
+                    console.warn(...log.args)
+                    break;
+                case "debug":
+                    console.debug(...log.args)
+                    break;
+                case "error":
+                    console.error(...log.args)
+                    break;
+                case "log":
+                default:
+                    console.log(...log.args)
+                    break;
+            }
+        })
+        this.internalLogs = []
+    }
+    log(...args) {
+        this.addToInternalLogs("log", ...args)
+    }
+    warn(...args) {
+        this.addToInternalLogs("warn", ...args)
+    }
+    debug(...args) {
+        this.addToInternalLogs("debug", ...args)
+    }
+    error(...args) {
+        this.addToInternalLogs("error", ...args)
+    }
+}
+
+let getActionSummaryText = (command, promptOverview, wordCountEnabled) => {
+    let actionSummary = []
+    if (wordCountEnabled && !!command?.args?.messages) {
+        let wordCount = command?.args?.messages.flatMap(str => str.split(/\s/g).filter(s => s.length > 0)).length
+        actionSummary.push(`Action taken (words = ${wordCount}):`)
+    }
+    else {
+        actionSummary.push(`Action taken:`)
+    }
+
+    if (!!promptOverview) {
+        actionSummary.push(`Aim: ${promptOverview}`)
+    }
+    actionSummary.push(`\`\`\`\n${actionToText(command).trim()}\n\`\`\`\n\n`)
+    return actionSummary.join("\n\n")
+}
+
+let runAgentCycle = async (agentRunState = {}) => {
     clearSuggestions()
-    endCurrent = false
     // gametext_arr = []
     // render_gametext()
-    currentChainOfThought = []
-    recentActions = []
-    currentOrderOfActionsOverall = []
-    currentOrderOfActionDescriptionsOverall = []
+    agentRunState = objRefOverride({
+        excludeSpecificMessagePrefixes: [],
+        agentInitialiser: genericAgentInitialiser,
+        agentVisualiser: genericAgentVisualiser,
+        agentFinaliser: genericAgentFinaliser,
+        printToConsole: true,
+        agentName: "",
+        initialUser: "", 
+        systemPrompt: current_memory,
+    }, agentRunState, {
+        logger: new AgentLogger(),
+        cotProcessedUntil: 0,
+    })
 
-    let lastActions = getLastActions(maxActionsInHistory)
+    if (!!agentRunState?.agentPrompt)
+    {
+        // Do nothing as it has an override
+    }
+    else if (!!localsettings.instruct_sysprompt) {
+        agentRunState.agentPrompt = localsettings.instruct_sysprompt
+    }
+    else {
+        let sysPrompt = `You are a decision making action AI that evaluates thoughts and takes concise, purposeful actions which lead to a response to the user. Ensure you always send at least one response which is visible to the user.`
+        if (!!agentRunState?.systemPrompt) {
+            sysPrompt += " Ensure responses are in line with the setting overview. Only override the setting overview when the user explicitly instructs you to do so."
+        }
+        sysPrompt += " Providing suggestions will force you to stop taking actions. Only include suggestions when you have nothing else to do or require user input."
+        agentRunState.agentPrompt = sysPrompt
+    }
+
+    let { interactionId, initialPrompt, excludeSpecificMessagePrefixes, agentInitialiser, agentVisualiser, agentFinaliser, printToConsole, logger } = agentRunState
+    let currentChainOfThought = []
+    let recentActions = []
+    let currentOrderOfActionsOverall = []
+    let currentOrderOfActionDescriptionsOverall = []
+
+    let lastActions = getLastActions(maxActionsInHistory, excludeSpecificMessagePrefixes)
     lastActions.forEach(action => {
         switch (action.source) {
             case "system":
-                addThought(createSysPrompt, action.msg, false, true);
+                addThought(currentChainOfThought, createSysPrompt, action.msg, false, true);
                 break;
             case "ai":
-                addThought(createAIPrompt, action.msg, false, true);
+                addThought(currentChainOfThought, createAIPrompt, action.msg, false, true);
                 break;
             case "human":
-                addThought(createInstructPrompt, action.msg, false, true);
+                addThought(currentChainOfThought, createInstructPrompt, action.msg, false, true);
                 break;
         }
     })
 
+    if (!agentRunState?.initialUser && localsettings.inject_chatnames_instruct)
+    {
+        agentRunState.initialUser = localsettings.chatname
+    }
+
     let textDBResults = ""
     if (!!initialPrompt) {
-        initialPrompt = (localsettings.inject_chatnames_instruct ? `${localsettings.chatname}: ${initialPrompt}` : initialPrompt)
-        addThought(createInstructPrompt, initialPrompt)
+        initialPrompt = (!!agentRunState?.inputUser ? `${agentRunState.initialUser}: ${initialPrompt}` : initialPrompt)
+        addThought(currentChainOfThought, createInstructPrompt, initialPrompt)
     }
     else if (!!lastActions && lastActions.length > 0) {
         let humanActions = lastActions.reverse().filter(elem => elem.source === "human")
@@ -521,16 +671,44 @@ let runAgentCycle = async (initialPrompt = undefined) => {
     let originalConfiguration = await reloadUtils.getCurrentConfigAndModel()
     let previousConfig = JSON.parse(JSON.stringify(originalConfiguration))
 
-    for (let i = 0; i < Number(localsettings.agentCOTMax) + 1 && (currentOrderOfActionsOverall.length === 0 || i < currentOrderOfActionsOverall.length + 1) && endCurrent === false; i++) {
+    agentRunState = objRefAssign({
+        initialPrompt: initialPrompt,
+        currentChainOfThought,
+        recentActions,
+        currentOrderOfActionsOverall,
+        currentOrderOfActionDescriptionsOverall,
+        lastActions,
+        manualOverridesForEnabledCommands,
+        originalConfiguration
+    }, agentRunState)
+    if (agentInitialiser !== undefined)
+    {
+        await agentInitialiser(agentRunState)
+    }
+
+    if (!!agentRunState?.planToUse && typeof agentRunState.planToUse === "object")
+    {
+        currentOrderOfActionsOverall = agentRunState.planToUse.orderOfActions.map(act => act.action)
+        currentOrderOfActionDescriptionsOverall = agentRunState.planToUse.orderOfActions.map(act => act.objective)
+        objRefOverride(agentRunState, { currentOrderOfActionsOverall, currentOrderOfActionDescriptionsOverall })
+        let argsObject = !!agentRunState.agentName ? objRefAssign({ whoToRespondAs: agentRunState.agentName }, agentRunState.planToUse) : agentRunState.planToUse
+        let completePlanObject = {
+            name: "plan_actions",
+            args: argsObject
+        }
+        addThought(currentChainOfThought, createAIPrompt, getActionSummaryText(completePlanObject, null, false))
+    }
+
+    for (let i = !!agentRunState?.planToUse ? 1 : 0; i < Number(localsettings.agentCOTMax) + 1 && (currentOrderOfActionsOverall.length === 0 || i < currentOrderOfActionsOverall.length + 1) && endCurrent === false; i++) {
         let nextAction = []
         let validCommands = getEnabledCommands(manualOverridesForEnabledCommands).map(command => command.name).filter(name => i != 0 || name != "stop_thinking")
         if (i == 0) {
-            nextAction = getReasoningCommand(manualOverridesForEnabledCommands)
+            nextAction = getReasoningCommand(agentRunState, manualOverridesForEnabledCommands)
         }
         else {
             // Ensure valid commands does not include stop thinking right away to ensure an action of some type is taken
             nextAction = JSON.parse(JSON.stringify(currentOrderOfActionsOverall)).splice(i - 1).filter(acts => acts.split("|").find(act => validCommands.includes(act)))
-            nextAction = nextAction.length > 0 ? getCommands().filter(act => nextAction[0].split("|").includes(act.name)) : getEnabledCommands(manualOverridesForEnabledCommands).filter(command => validCommands.includes(command.name))
+            nextAction = nextAction.length > 0 ? getCommands(agentRunState).filter(act => nextAction[0].split("|").includes(act.name)) : getEnabledCommands(manualOverridesForEnabledCommands).filter(command => validCommands.includes(command.name))
 
             // Find any actions which have occured more than the max repeats in settings and remove them from the options
             if (currentOrderOfActionsOverall.length === 0) {
@@ -564,6 +742,7 @@ let runAgentCycle = async (initialPrompt = undefined) => {
 
         currentChainOfThought = currentChainOfThought.splice(-maxActionsInHistory)
         recentActions = recentActions.splice(-maxActionsInHistory)
+        objRefOverride(agentRunState, { currentChainOfThought, recentActions })
 
         // All content			
         let truncated_context = concat_gametext(true, "", "", "", false, true); //no need to truncate if memory is empty
@@ -577,36 +756,44 @@ let runAgentCycle = async (initialPrompt = undefined) => {
         let max_anote_len = Math.floor(max_allowed_characters * 0.6);
         let max_wi_len = Math.floor(max_allowed_characters * 0.5);
 
-        let history = getInitialAgentPrompt(nextAction, max_mem_len)
-        let wiToInclude = createSysPrompt(substring_to_boundary(getWorldInfoForAgent(truncated_context, max_wi_len) + "\n\n" + textDBResults, max_wi_len))
+        let history = getInitialAgentPrompt(agentRunState, max_mem_len)
+        let wiToInclude = createSysPrompt(substring_to_boundary(getWorldInfoForAgent(agentRunState, truncated_context, max_wi_len) + "\n\n" + textDBResults, max_wi_len))
         let anToInclude = !!current_anote ? createSysPrompt(substring_to_boundary(current_anotetemplate.replace("<|>", current_anote), max_anote_len)) : ""
 
         let promptOverview = currentOrderOfActionDescriptionsOverall.length > 0 ? currentOrderOfActionDescriptionsOverall[i - 1] : null
         if (i === 0) {
             let planningPrompt = "The last action from the user is the instruction. If you need to ask the user for a response, the action ask_user must be used and be put as the final action in the order. When handling images always use actions to get information when needed especially for descriptions. Produces a list of actions to respond to this instruction."
-            if (localsettings.inject_chatnames_instruct) {
+            if (!!agentRunState?.agentName)
+            {
+                planningPrompt += ` You must respond as ${agentRunState.agentName} when using the send_message or ask_user actions. Choose the person based on the user's instruction.`
+            }
+            else if (localsettings.inject_chatnames_instruct) {
                 planningPrompt += ` You must respond as ${localsettings.chatopponent.split("||$||").join(" or ")} when using the send_message or ask_user actions. Choose the person based on the user's instruction.`
             }
             promptOverview = planningPrompt
         }
 
-        let finalAgentPrompt = getFinalAgentPrompt(nextAction, currentOrderOfActionsOverall, promptOverview, initialPrompt)
+        let finalAgentPrompt = getFinalAgentPrompt(currentChainOfThought, nextAction, currentOrderOfActionsOverall, promptOverview, initialPrompt, agentRunState.agentPrompt)
 
         let cotAsText = "", maxLengthOfCot = max_allowed_characters - history.length - wiToInclude.length - anToInclude.length - finalAgentPrompt.length
         for (let j = currentChainOfThought.length - 1; j >= 0; j--) {
-            if (cotAsText.length + currentChainOfThought[j].length > maxLengthOfCot) {
+            if (!!(currentChainOfThought[j]?.onlyDisplay)) {
+                continue
+            }
+            if (cotAsText.length + currentChainOfThought[j].wrappedPrompt.length > maxLengthOfCot) {
                 break
             }
-            cotAsText = currentChainOfThought[j] + cotAsText
+            cotAsText = currentChainOfThought[j].wrappedPrompt + cotAsText
         }
 
+        let agentRequestBody = substring_to_boundary(current_temp_memory + cotAsText, maxLengthOfCot)
         if (wi_insertlocation === "0") // WI after memory
         {
             history += wiToInclude
-            history += substring_to_boundary(current_temp_memory + cotAsText, maxLengthOfCot)
+            history += agentRequestBody
         }
         else {
-            history += substring_to_boundary(current_temp_memory + cotAsText, maxLengthOfCot)
+            history += agentRequestBody
             history += wiToInclude
         }
         history += anToInclude
@@ -621,7 +808,7 @@ let runAgentCycle = async (initialPrompt = undefined) => {
 
         try {
             if (resp.trim() == "") {
-                // addThought(createSysPrompt, "Error - Empty response instead of action. Ensure all responses are valid JSON.", lastThoughtWasBlank)
+                // addThought(currentChainOfThought, createSysPrompt, "Error - Empty response instead of action. Ensure all responses are valid JSON.", lastThoughtWasBlank)
                 isCompleted = true
                 hasAttemptedToCompleteOnce = true
                 continue
@@ -645,36 +832,47 @@ let runAgentCycle = async (initialPrompt = undefined) => {
 
                 let action = json
                 recentActions.push(json)
-
-                let actionSummary = []
-                if (wordCountEnabled && !!action?.command?.args?.messages) {
-                    let wordCount = action?.command?.args?.messages.flatMap(str => str.split(/\s/g).filter(s => s.length > 0)).length
-                    actionSummary.push(`Action taken (words = ${wordCount}):`)
-                }
-                else {
-                    actionSummary.push(`Action taken:`)
-                }
-
-                if (i > 0) {
-                    actionSummary.push(`Aim: ${promptOverview}`)
-                }
-                actionSummary.push(`\`\`\`\n${actionToText(action?.command).trim()}\n\`\`\`\n\n`)
-                addThought(createAIPrompt, actionSummary.join("\n\n"))
+                
+                addThought(currentChainOfThought, createAIPrompt, getActionSummaryText(action?.command, i > 0 ? promptOverview : null, wordCountEnabled))
 
                 let isCompleted = false;
-                let command = [...getReasoningCommand(), ...getCommands()].find(command => command.name === action.command.name)
+                let command = [...getReasoningCommand(agentRunState), ...getCommands(agentRunState)].find(command => command.name === action.command.name)
                 if (!!command && command?.executor !== undefined) {
                     if (configOverrides[action.command.name]) {
                         let overrides = configOverrides[action.command.name]
                         if (previousConfig.config !== overrides.config || previousConfig.model !== overrides.model) {
                             await reloadUtils.reloadAndWait(overrides.config, overrides.model)
-                            console.log("Completed reload");
+                            logger.debug("Completed reload");
                             previousConfig.config = overrides.config
                             previousConfig.model = overrides.model
                         }
                     }
 
                     let res = await command.executor(action.command)
+                    if (action.command?.name === "plan_actions")
+                    {
+                        currentOrderOfActionsOverall = action.command?.args?.orderOfActions.map(act => act.action)
+                        currentOrderOfActionDescriptionsOverall = action.command?.args?.orderOfActions.map(act => act.objective)                        
+                        if (!agentRunState?.agentName && localsettings.inject_chatnames_instruct) {
+                            if (!!action?.args?.whoToRespondAs) {
+                                agentRunState.agentName = action?.args?.whoToRespondAs
+                            }
+                            else {
+                                agentRunState.agentName = getRandomChatOpponent()
+                            }
+                        }
+                        objRefOverride(agentRunState, { currentOrderOfActionsOverall, currentOrderOfActionDescriptionsOverall })
+                    }
+
+                    if (typeof agentVisualiser === "function") {
+                        // Render any suggestions generated in the agent logic
+                        let visualiserParams = objRefAssign({
+                            command,
+                            action,
+                            agentRunState
+                        }, agentRunState)
+                        await agentVisualiser(visualiserParams)
+                    }
                     if (res === true) {
                         isCompleted = true
                         hasAttemptedToCompleteOnce = true
@@ -684,17 +882,17 @@ let runAgentCycle = async (initialPrompt = undefined) => {
                         await reloadUtils.reloadAndWait(originalConfiguration.config, originalConfiguration.model)
                         previousConfig.config = originalConfiguration.config
                         previousConfig.model = originalConfiguration.model
-                        console.log("Completed reload");
+                        logger.debug("Completed reload");
                     }
                 }
 
                 if (isCompleted) {
                     if (!hasAttemptedToCompleteOnce) {
-                        addThought(createAIPrompt, checkFinalThoughtsPrompt)
+                        addThought(currentChainOfThought, createAIPrompt, checkFinalThoughtsPrompt)
                         hasAttemptedToCompleteOnce = true
                     }
                     else {
-                        addThought(createSysPrompt, "Chain of thought complete", true)
+                        addThought(currentChainOfThought, createSysPrompt, "Chain of thought complete", true)
                         break
                     }
                 }
@@ -702,40 +900,98 @@ let runAgentCycle = async (initialPrompt = undefined) => {
             else {
                 if (Object.keys(json).length === 0 || json?.command?.name === "None" || json?.command?.name === "null") {
                     if (!hasAttemptedToCompleteOnce) {
-                        addThought(createAIPrompt, checkFinalThoughtsPrompt)
+                        addThought(currentChainOfThought, createAIPrompt, checkFinalThoughtsPrompt)
                         hasAttemptedToCompleteOnce = true
                     }
                     else {
-                        addThought(createSysPrompt, "Chain of thought complete", true)
+                        addThought(currentChainOfThought, createSysPrompt, "Chain of thought complete", true)
                         break
                     }
                 }
                 else {
-                    addThought(createSysPrompt, `Invalid command requested: ${JSON.stringify(json)}`)
+                    addThought(currentChainOfThought, createSysPrompt, `Invalid command requested: ${JSON.stringify(json)}`)
                     // break
                 }
             }
         }
         catch (e) {
-            addThought(createSysPrompt, `Chain of thought had an exception: ${e}`)
-            console.error(`Agent response which errored: ${resp}`)
+            addThought(currentChainOfThought, createSysPrompt, `Chain of thought had an exception: ${e}`)
+            logger.error(`Agent response which errored: ${resp}`, e)
 
             if (resp === null || resp.indexOf("evaluate_formula") === -1) {
                 break
             }
         }
+
+        if (printToConsole) {
+            logger.printPendingLogs()
+        }
     }
 
     if (previousConfig.config !== originalConfiguration.config || previousConfig.model !== originalConfiguration.model) {
         await reloadUtils.reloadAndWait(originalConfiguration.config, originalConfiguration.model)
-        console.log("Completed reload");
+        agentRunState.log("Completed reload");
     }
 
-    // Render any suggestions generated in the agent logic
-    renderSuggestions()
-    currentAgentCycle = null
-    Array(...document.getElementsByClassName("stopThinking")).forEach(elem => elem.classList.add("hidden"))
-    submit_multiplayer(true)
+    // Handle fialiser
+    if (typeof agentFinaliser === "function") {
+        await agentFinaliser(agentRunState)
+    }
+    if (printToConsole)
+    {
+        logger.printPendingLogs()
+    }
+    if (window?.backgroundAgentLoop !== true) {
+        Array(...document.getElementsByClassName("stopThinking")).forEach(elem => elem.classList.add("hidden"))
+    }
+    return agentRunState
+}
+
+// window.runAgentCycle = runAgentCycle;
+
+// Test object for overriding the argsObj
+/*
+{
+    initialPrompt: null,
+    printToConsole: true,
+    planToUse: {
+        "responsePlanOverview": "The user wants to say hello to the world and mention the date. There is no other information needed so just send a greeting as me.",
+        "orderOfActions": [
+            {
+                "action": "send_message",
+                "objective": "Sending the users a greeting message after they asked for one. I should include the date."
+            }
+        ]
+    },
+    agentName: "Bash Terminal",
+    systemPrompt: "The year is 1984.",
+    agentPrompt: "For each message Bash Terminal sends, it must end the message with an emoji."
+}
+*/
+
+window.execAgentCycle = (argsObj) => {
+    let interactionId = window.crypto.randomUUID()
+    let agentCycleArgs = objRefAssign({interactionId}, argsObj)
+    currentAgentCycle.push({
+        id: interactionId, 
+        status: runAgentCycle(agentCycleArgs)
+    })
+}
+
+window.eso.agentMacros = {
+    "echo": {
+        printToConsole: true,
+        planToUse: {
+            "responsePlanOverview": "The user has sent a message. I must simply respond with the exact same message.",
+            "orderOfActions": [
+                {
+                    "action": "send_message",
+                    "objective": "Replying with the users message"
+                }
+            ]
+        },
+        agentName: null,
+    }
 }
 
 // Overrides to lite / UI interactions
@@ -748,11 +1004,25 @@ prepare_submit_generation = async () => {
         document.getElementById("input_text").value = "";
         // Hack to ensure that images are always saved as new turns		
         localsettings.img_newturn = true
-        if (currentAgentCycle !== null) {
+        if (currentAgentCycle.length > 0) {
             endCurrent = true
-            await currentAgentCycle
+            await Promise.all(currentAgentCycle.map(c => c.status))
         }
-        currentAgentCycle = runAgentCycle(inputText)
+        endCurrent = false
+        let macroContent = {}
+        if (/^\w+::/.test(inputText))
+        {
+            let macro = inputText.substring(0, inputText.indexOf("::"))
+            if (window?.eso?.agentMacros[macro] !== undefined)
+            {
+                macroContent = window.eso.agentMacros[macro]
+            }
+        }
+        
+        execAgentCycle(objRefAssign(macroContent, {
+            initialPrompt: inputText,
+            printToConsole: true
+        }))
     }
     else {
         originalPrepareSubmitGeneration()
@@ -761,8 +1031,7 @@ prepare_submit_generation = async () => {
 
 restart_new_game = () => {
     loadingNewGame = true
-    currentChainOfThought = []
-    recentActions = []
+    stopAgentThinking()
     clearSuggestions()
     originalRestartNewGame()
 }
@@ -770,16 +1039,16 @@ restart_new_game = () => {
 let toggleAgent = () => {
     populate_regex_replacers()
 
-    display_settings()
+    // display_settings()
     document.getElementById("agentBehaviour").checked = !document.getElementById("agentBehaviour").checked
     if (!document.getElementById("agentBehaviour").checked) {
         stopAgentThinking()
     }
     else {
-        document.getElementById("separate_end_tags").checked = true
-        toggle_separate_end_tags()
+        // document.getElementById("separate_end_tags").checked = true
+        // toggle_separate_end_tags()
     }
-    confirm_settings()
+    // confirm_settings()
     updateAgentButtonVisibility();
     render_gametext();
 }
@@ -788,7 +1057,11 @@ let stopAgentThinking = () => {
 
     endCurrent = true
     Array(...document.getElementsByClassName("stopThinking")).forEach(elem => elem.classList.add("hidden"))
-    currentAgentCycle = null
+    currentAgentCycle = []
+    if (window?.intervalIdForBackgroundAgent !== undefined)
+    {
+        clearInterval(window.intervalIdForBackgroundAgent)
+    }
     submit_multiplayer(true)
     trigger_abort_controller()
 }
