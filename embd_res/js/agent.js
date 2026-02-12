@@ -92,7 +92,8 @@ let listOfExclusions = ["Action taken:", "Action taken (words =", "History searc
     "No setting overview provided, nothing has been overwritten", "Current state has been overwritten", "No state provided, nothing has been overwritten", "Current order of actions has been cleared",
     "Current order of actions has been overwritten", "No order of actions provided, nothing has been overwritten", "Error - Empty response instead of action. Ensure all responses are valid JSON.",
     "Current state format has been overwritten", "No valid state format provided, nothing has been overwritten", 
-    `Text has been added to world info:`, `Text was empty - nothing added to world info`, `Chain of thought had an exception`, "Tool call response (hidden from user):", "Tool call response error (hidden from user):"]
+    `Text has been added to world info:`, `Text was empty - nothing added to world info`, `Chain of thought had an exception`, "Tool call response (hidden from user):", "Tool call response error (hidden from user):",
+    "Unique identifer does not exist in world information", "World information search performed:", "Unique identifier was empty - no world information found"]
 
 window.agentListOfExclusions = listOfExclusions;
 
@@ -273,7 +274,9 @@ let getInitialAgentPrompt = (agentRunState, max_mem_len) => {
     return prompt
 }
 
-let getFinalAgentPrompt = (currentChainOfThought, commands, currentOrderOfActions, objectiveForCurrentAction, initialPrompt, sysPrompt) => {
+let getFinalAgentPrompt = (agentRunState, commands, objectiveForCurrentAction) => {
+    let { manualOverridesForEnabledCommands, agentPrompt, isUsingWhitelist, initialPrompt } = agentRunState
+    
     let state = getDocumentFromTextDB('State')
     let prompt = []
 
@@ -284,7 +287,7 @@ let getFinalAgentPrompt = (currentChainOfThought, commands, currentOrderOfAction
     if (currentAgentWIs.length > 0) {
         prompt.push(`Current unique identifiers for world info: ${currentAgentWIs.join(", ")}`)
     }
-    prompt.push(`System prompt for all responses: ${sysPrompt}`)
+    prompt.push(`System prompt for all responses: ${agentPrompt}`)
     if (!!initialPrompt) {
         prompt.push(`Most recent input from user: ${initialPrompt}`)
     }
@@ -296,7 +299,7 @@ let getFinalAgentPrompt = (currentChainOfThought, commands, currentOrderOfAction
     // 	prompt.push(`Order of actions: ${currentOrderOfActions.join(" -> ")}`)
     // }
     let basePrompt = prompt.join("\n\n")
-    return createSysPrompt(`### Available commands:\n\n${getCommandsAsText(!!commands.find(c => c.name === "plan_actions") ? getEnabledCommands(currentChainOfThought) : commands)}`) + (basePrompt.length > 0 ? createSysPrompt(basePrompt) : "")
+    return createSysPrompt(`### Available commands:\n\n${getCommandsAsText(!!commands.find(c => c.name === "plan_actions") ? getEnabledCommands(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist) : commands)}`) + (basePrompt.length > 0 ? createSysPrompt(basePrompt) : "")
 }
 
 /**
@@ -567,6 +570,7 @@ let runAgentCycle = async (agentRunState = {}) => {
     // gametext_arr = []
     // render_gametext()
     agentRunState = objRefOverride({
+        macroUsed: undefined,
         excludeSpecificMessagePrefixes: [],
         agentInitialiser: genericAgentInitialiser,
         agentVisualiser: genericAgentVisualiser,
@@ -575,6 +579,9 @@ let runAgentCycle = async (agentRunState = {}) => {
         agentName: "",
         initialUser: "", 
         systemPrompt: current_memory,
+        configOverrides: {},
+        isUsingWhitelist: false,
+        agentStopOnRequestForInput: !!localsettings?.agentStopOnRequestForInput
     }, agentRunState, {
         logger: new AgentLogger(),
         cotProcessedUntil: 0,
@@ -596,7 +603,7 @@ let runAgentCycle = async (agentRunState = {}) => {
         agentRunState.agentPrompt = sysPrompt
     }
 
-    let { interactionId, initialPrompt, excludeSpecificMessagePrefixes, agentInitialiser, agentVisualiser, agentFinaliser, printToConsole, logger } = agentRunState
+    let { interactionId, initialPrompt, excludeSpecificMessagePrefixes, agentInitialiser, agentVisualiser, agentFinaliser, printToConsole, logger, configOverrides, isUsingWhitelist, macroUsed } = agentRunState
     let currentChainOfThought = []
     let recentActions = []
     let currentOrderOfActionsOverall = []
@@ -624,8 +631,10 @@ let runAgentCycle = async (agentRunState = {}) => {
 
     let textDBResults = ""
     if (!!initialPrompt) {
-        initialPrompt = (!!agentRunState?.inputUser ? `${agentRunState.initialUser}: ${initialPrompt}` : initialPrompt)
-        addThought(currentChainOfThought, createInstructPrompt, initialPrompt)
+        // When using a macro, the user must see the text with the macro prefix but the AI must not
+        let macroFreePrompt = initialPrompt.indexOf(`${macroUsed}::`) === 0 ? initialPrompt.substring(macroUsed.length + 2) : initialPrompt;
+        addThought(currentChainOfThought, createInstructPrompt, (!!agentRunState?.inputUser ? `${agentRunState.initialUser}: ${macroFreePrompt}` : macroFreePrompt), false, true)
+        addThought(currentChainOfThought, createInstructPrompt, (!!agentRunState?.inputUser ? `${agentRunState.initialUser}: ${initialPrompt}` : initialPrompt), true, false)
     }
     else if (!!lastActions && lastActions.length > 0) {
         let humanActions = lastActions.reverse().filter(elem => elem.source === "human")
@@ -658,15 +667,19 @@ let runAgentCycle = async (agentRunState = {}) => {
 
     // Get current config and model overrides
     // let configOverrides = {}
-    let configOverrides = getDocumentFromTextDB("Agent config overrides")
-    configOverrides = !!configOverrides ? configOverrides.split("|").map(joined => joined.split("::")).filter(arr => arr.length === 2 || arr.length === 3).reduce((obj, elem) => {
-        obj[elem[0]] = {
-            config: elem[1],
-            model: (elem.length > 2 ? elem[2] : "")
-        }
-        return obj
-    }, {}) : {}
-    let manualOverridesForEnabledCommands = Object.keys(configOverrides)
+
+    let manualOverridesForEnabledCommands = [];
+    if (!configOverrides || Object.keys(configOverrides).length === 0) {
+        configOverrides = getDocumentFromTextDB("Agent config overrides")
+        configOverrides = !!configOverrides ? configOverrides.split("|").map(joined => joined.split("::")).filter(arr => arr.length === 2 || arr.length === 3).reduce((obj, elem) => {
+            obj[elem[0]] = {
+                config: elem[1],
+                model: (elem.length > 2 ? elem[2] : "")
+            }
+            return obj
+        }, {}) : {}
+    }
+    manualOverridesForEnabledCommands = Object.keys(configOverrides)
 
     let originalConfiguration = await reloadUtils.getCurrentConfigAndModel()
     let previousConfig = JSON.parse(JSON.stringify(originalConfiguration))
@@ -678,8 +691,9 @@ let runAgentCycle = async (agentRunState = {}) => {
         currentOrderOfActionsOverall,
         currentOrderOfActionDescriptionsOverall,
         lastActions,
-        manualOverridesForEnabledCommands,
-        originalConfiguration
+        originalConfiguration,
+        configOverrides,
+        manualOverridesForEnabledCommands
     }, agentRunState)
     if (agentInitialiser !== undefined)
     {
@@ -701,14 +715,14 @@ let runAgentCycle = async (agentRunState = {}) => {
 
     for (let i = !!agentRunState?.planToUse ? 1 : 0; i < Number(localsettings.agentCOTMax) + 1 && (currentOrderOfActionsOverall.length === 0 || i < currentOrderOfActionsOverall.length + 1) && endCurrent === false; i++) {
         let nextAction = []
-        let validCommands = getEnabledCommands(manualOverridesForEnabledCommands).map(command => command.name).filter(name => i != 0 || name != "stop_thinking")
+        let validCommands = getEnabledCommands(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist).map(command => command.name).filter(name => i != 0 || name != "stop_thinking")
         if (i == 0) {
-            nextAction = getReasoningCommand(agentRunState, manualOverridesForEnabledCommands)
+            nextAction = getReasoningCommand(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist)
         }
         else {
             // Ensure valid commands does not include stop thinking right away to ensure an action of some type is taken
             nextAction = JSON.parse(JSON.stringify(currentOrderOfActionsOverall)).splice(i - 1).filter(acts => acts.split("|").find(act => validCommands.includes(act)))
-            nextAction = nextAction.length > 0 ? getCommands(agentRunState).filter(act => nextAction[0].split("|").includes(act.name)) : getEnabledCommands(manualOverridesForEnabledCommands).filter(command => validCommands.includes(command.name))
+            nextAction = nextAction.length > 0 ? getCommands(agentRunState).filter(act => nextAction[0].split("|").includes(act.name)) : getEnabledCommands(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist).filter(command => validCommands.includes(command.name))
 
             // Find any actions which have occured more than the max repeats in settings and remove them from the options
             if (currentOrderOfActionsOverall.length === 0) {
@@ -773,7 +787,7 @@ let runAgentCycle = async (agentRunState = {}) => {
             promptOverview = planningPrompt
         }
 
-        let finalAgentPrompt = getFinalAgentPrompt(currentChainOfThought, nextAction, currentOrderOfActionsOverall, promptOverview, initialPrompt, agentRunState.agentPrompt)
+        let finalAgentPrompt = getFinalAgentPrompt(agentRunState, nextAction, promptOverview)
 
         let cotAsText = "", maxLengthOfCot = max_allowed_characters - history.length - wiToInclude.length - anToInclude.length - finalAgentPrompt.length
         for (let j = currentChainOfThought.length - 1; j >= 0; j--) {
@@ -836,15 +850,18 @@ let runAgentCycle = async (agentRunState = {}) => {
                 addThought(currentChainOfThought, createAIPrompt, getActionSummaryText(action?.command, i > 0 ? promptOverview : null, wordCountEnabled))
 
                 let isCompleted = false;
-                let command = [...getReasoningCommand(agentRunState), ...getCommands(agentRunState)].find(command => command.name === action.command.name)
+                let command = [...getReasoningCommand(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist), ...getCommands(agentRunState)].find(command => command.name === action.command.name)
                 if (!!command && command?.executor !== undefined) {
                     if (configOverrides[action.command.name]) {
                         let overrides = configOverrides[action.command.name]
-                        if (previousConfig.config !== overrides.config || previousConfig.model !== overrides.model) {
-                            await reloadUtils.reloadAndWait(overrides.config, overrides.model)
-                            logger.debug("Completed reload");
-                            previousConfig.config = overrides.config
-                            previousConfig.model = overrides.model
+                        if (!!overrides?.config)
+                        {
+                            if (previousConfig.config !== overrides.config || previousConfig.model !== overrides.model) {
+                                await reloadUtils.reloadAndWait(overrides.config, overrides.model)
+                                logger.debug("Completed reload");
+                                previousConfig.config = overrides.config
+                                previousConfig.model = overrides.model
+                            }
                         }
                     }
 
@@ -1016,6 +1033,7 @@ prepare_submit_generation = async () => {
             if (window?.eso?.agentMacros[macro] !== undefined)
             {
                 macroContent = window.eso.agentMacros[macro]
+                macroContent.macroUsed = macro
             }
         }
         
