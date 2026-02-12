@@ -92,7 +92,7 @@ let listOfExclusions = ["Action taken:", "Action taken (words =", "History searc
     "No setting overview provided, nothing has been overwritten", "Current state has been overwritten", "No state provided, nothing has been overwritten", "Current order of actions has been cleared",
     "Current order of actions has been overwritten", "No order of actions provided, nothing has been overwritten", "Error - Empty response instead of action. Ensure all responses are valid JSON.",
     "Current state format has been overwritten", "No valid state format provided, nothing has been overwritten", 
-    `Text has been added to world info:`, `Text was empty - nothing added to world info`, `Chain of thought had an exception`, "Tool call response (hidden from user):", "Tool call response error (hidden from user):", "Background task: "]
+    `Text has been added to world info:`, `Text was empty - nothing added to world info`, `Chain of thought had an exception`, "Tool call response (hidden from user):", "Tool call response error (hidden from user):"]
 
 window.agentListOfExclusions = listOfExclusions;
 
@@ -494,6 +494,18 @@ let genericAgentFinaliser = async (agentRunState) => {
     submit_multiplayer(true)
     agentRunState.logger.debug(`Agent loop #${agentRunState?.interactionId} completed`)
 }
+
+let voidAgentVisualiser = async (visualiserParams) => {
+    logAgentFunctionCall("visualiser", visualiserParams)
+    let { currentChainOfThought, agentRunState } = visualiserParams
+    agentRunState.cotProcessedUntil = currentChainOfThought.length
+    clearSuggestions();
+}
+
+window.eso.agentUtilityMethods = {
+    genericAgentInitialiser, genericAgentVisualiser, genericAgentFinaliser, voidAgentVisualiser
+}
+
 class AgentLogger {
     internalLogs = []
     addToInternalLogs(type, ...args) {
@@ -555,17 +567,17 @@ let runAgentCycle = async (agentRunState = {}) => {
     // gametext_arr = []
     // render_gametext()
     agentRunState = objRefOverride({
-        backgroundInvocation: false,
         excludeSpecificMessagePrefixes: [],
         agentInitialiser: genericAgentInitialiser,
         agentVisualiser: genericAgentVisualiser,
         agentFinaliser: genericAgentFinaliser,
         printToConsole: true,
-        cotProcessedUntil: 0,
         agentName: "",
+        initialUser: "", 
         systemPrompt: current_memory,
     }, agentRunState, {
-        logger: new AgentLogger()
+        logger: new AgentLogger(),
+        cotProcessedUntil: 0,
     })
 
     if (!!agentRunState?.agentPrompt)
@@ -584,7 +596,7 @@ let runAgentCycle = async (agentRunState = {}) => {
         agentRunState.agentPrompt = sysPrompt
     }
 
-    let { interactionId, initialPrompt, backgroundInvocation, excludeSpecificMessagePrefixes, agentInitialiser, agentVisualiser, agentFinaliser, printToConsole, logger } = agentRunState
+    let { interactionId, initialPrompt, excludeSpecificMessagePrefixes, agentInitialiser, agentVisualiser, agentFinaliser, printToConsole, logger } = agentRunState
     let currentChainOfThought = []
     let recentActions = []
     let currentOrderOfActionsOverall = []
@@ -605,10 +617,14 @@ let runAgentCycle = async (agentRunState = {}) => {
         }
     })
 
+    if (!agentRunState?.initialUser && localsettings.inject_chatnames_instruct)
+    {
+        agentRunState.initialUser = localsettings.chatname
+    }
+
     let textDBResults = ""
     if (!!initialPrompt) {
-        initialPrompt = (localsettings.inject_chatnames_instruct ? `${localsettings.chatname}: ${initialPrompt}` : initialPrompt)
-        initialPrompt = !!backgroundInvocation ? `Background task: ${initialPrompt}` : initialPrompt
+        initialPrompt = (!!agentRunState?.inputUser ? `${agentRunState.initialUser}: ${initialPrompt}` : initialPrompt)
         addThought(currentChainOfThought, createInstructPrompt, initialPrompt)
     }
     else if (!!lastActions && lastActions.length > 0) {
@@ -670,7 +686,7 @@ let runAgentCycle = async (agentRunState = {}) => {
         await agentInitialiser(agentRunState)
     }
 
-    if (agentRunState?.planToUse !== undefined && typeof agentRunState.planToUse === "object")
+    if (!!agentRunState?.planToUse && typeof agentRunState.planToUse === "object")
     {
         currentOrderOfActionsOverall = agentRunState.planToUse.orderOfActions.map(act => act.action)
         currentOrderOfActionDescriptionsOverall = agentRunState.planToUse.orderOfActions.map(act => act.objective)
@@ -747,7 +763,11 @@ let runAgentCycle = async (agentRunState = {}) => {
         let promptOverview = currentOrderOfActionDescriptionsOverall.length > 0 ? currentOrderOfActionDescriptionsOverall[i - 1] : null
         if (i === 0) {
             let planningPrompt = "The last action from the user is the instruction. If you need to ask the user for a response, the action ask_user must be used and be put as the final action in the order. When handling images always use actions to get information when needed especially for descriptions. Produces a list of actions to respond to this instruction."
-            if (localsettings.inject_chatnames_instruct) {
+            if (!!agentRunState?.agentName)
+            {
+                planningPrompt += ` You must respond as ${agentRunState.agentName} when using the send_message or ask_user actions. Choose the person based on the user's instruction.`
+            }
+            else if (localsettings.inject_chatnames_instruct) {
                 planningPrompt += ` You must respond as ${localsettings.chatopponent.split("||$||").join(" or ")} when using the send_message or ask_user actions. Choose the person based on the user's instruction.`
             }
             promptOverview = planningPrompt
@@ -917,7 +937,6 @@ let runAgentCycle = async (agentRunState = {}) => {
     if (typeof agentFinaliser === "function") {
         await agentFinaliser(agentRunState)
     }
-    console.log("Test")
     if (printToConsole)
     {
         logger.printPendingLogs()
