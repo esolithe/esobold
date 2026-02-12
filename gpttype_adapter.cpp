@@ -46,6 +46,11 @@
 #include "tools/mtmd/mtmd-audio.h"
 #include "common/common.h"
 
+#if defined(GGML_USE_HIP)
+// for rocblas_initialize()
+#include "rocblas/rocblas.h"
+#endif
+
 //const
 const int extra_context_handle_fragmentation = 128;
 const int MEDIA_TOKEN_IDENTIFIER_A = -998; //alternate between both, changing when image changes
@@ -2553,6 +2558,10 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
         std::vector<size_t> fit_params_target = std::vector<size_t>(llama_max_devices(),1024*1024*1024);
         if(inputs.autofit)
         {
+            #if defined(GGML_USE_HIP)
+            rocblas_initialize();
+            #endif // defined(GGML_USE_HIP)
+
             common_params temp_params;
             size_t taxmb = inputs.autofit_tax_mb;
             printf("\nAttempting to use llama.cpp's automating fitting code. This will override all your layer configs, may or may not work!\n");
