@@ -116,9 +116,9 @@ let getCommands = (agentRunState) => {
 			"args": {
 				"whoToSendMessageAs": {
 					description: "<whose perspective is the response written from>",
-					pattern: (!!agentRunState?.mostRecentChatOpponent ? `^${agentRunState.mostRecentChatOpponent}$` : undefined),
+					pattern: (!!agentRunState?.agentName ? `^${agentRunState.agentName}$` : undefined),
 					type: "string",
-					skip: !agentRunState?.mostRecentChatOpponent
+					skip: !agentRunState?.agentName
 				},
 				"messages": {
 					description: "<text to send>",
@@ -141,9 +141,9 @@ let getCommands = (agentRunState) => {
 					clearSuggestions()
 					let messageShowToUser = false
 					action?.args?.messages.forEach(message => {
-						if (!!message)
+						if (!!message && message.trim().length > 0)
 						{
-							addThought(currentChainOfThought, createAIPrompt, agentRunState?.mostRecentChatOpponent ? `${agentRunState?.mostRecentChatOpponent}: ${message}` : message)
+							addThought(currentChainOfThought, createAIPrompt, agentRunState?.agentName ? `${agentRunState?.agentName}: ${message}` : message)
 							messageShowToUser = true;
 						}
 					})
@@ -639,9 +639,9 @@ let getEnabledCommands = (agentRunState, overrides = []) => {
 }
 
 let getReasoningCommand = (agentRunState, overrides = []) => {
-	let {mostRecentChatOpponent} = agentRunState
-	let whoToRespondAsOptions = !!mostRecentChatOpponent ? [mostRecentChatOpponent] : (localsettings.inject_chatnames_instruct ? localsettings.chatopponent.split("||$||") : undefined)
-	if (!mostRecentChatOpponent && localsettings.inject_chatnames_instruct && window.eso.currentChatOpponentOverride !== null) {
+	let {agentName} = agentRunState
+	let whoToRespondAsOptions = !!agentName ? [agentName] : (localsettings.inject_chatnames_instruct ? localsettings.chatopponent.split("||$||") : undefined)
+	if (!agentName && localsettings.inject_chatnames_instruct && window.eso.currentChatOpponentOverride !== null) {
 		whoToRespondAsOptions = [window.eso.currentChatOpponentOverride]
 	}
 	window.eso.currentChatOpponentOverride = null;

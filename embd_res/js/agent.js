@@ -265,29 +265,18 @@ let calcImageSizing = (aspect) => {
     return sizing
 }
 
-let getInitialAgentPrompt = (max_mem_len) => {
+let getInitialAgentPrompt = (agentRunState, max_mem_len) => {
     prompt = ""
-    if (!!current_memory) {
-        prompt += createSysPrompt(`Setting overview:\n\n${substring_to_boundary(current_memory, max_mem_len)}`)
+    if (!!agentRunState?.systemPrompt) {
+        prompt += createSysPrompt(`Setting overview:\n\n${substring_to_boundary(agentRunState.systemPrompt, max_mem_len)}`)
     }
     return prompt
 }
 
-let getFinalAgentPrompt = (currentChainOfThought, commands, currentOrderOfActions, objectiveForCurrentAction, initialPrompt) => {
+let getFinalAgentPrompt = (currentChainOfThought, commands, currentOrderOfActions, objectiveForCurrentAction, initialPrompt, sysPrompt) => {
     let state = getDocumentFromTextDB('State')
     let prompt = []
 
-    let sysPrompt;
-    if (!!localsettings.instruct_sysprompt) {
-        sysPrompt = localsettings.instruct_sysprompt
-    }
-    else {
-        sysPrompt = `You are a decision making action AI that evaluates thoughts and takes concise, purposeful actions which lead to a response to the user. Ensure you always send at least one response which is visible to the user.`
-        if (current_memory.length > 0) {
-            sysPrompt += " Ensure responses are in line with the setting overview. Only override the setting overview when the user explicitly instructs you to do so."
-        }
-        sysPrompt += " Providing suggestions will force you to stop taking actions. Only include suggestions when you have nothing else to do or require user input."
-    }
     if (state != null) {
         prompt.push(`Current state: ${state}`)
     }
@@ -394,8 +383,8 @@ let getWorldInfoForAgent = (agentRunState, wimatch_context, maxWILength) => {
             }
 
             // If accessing WI for a character's memory, switch based on the current chat opponent
-            if (!!shoulduse && !!agentRunState.mostRecentChatOpponent && (!!wi.comment && !!wi.wigroup) && (wi.comment.endsWith("_imported_memory") && wi.wigroup === wi.comment.replace("_imported_memory", ""))) {
-                shoulduse = (wi.wigroup == localsettings.chatname) || (wi.wigroup == agentRunState.mostRecentChatOpponent)
+            if (!!shoulduse && !!agentRunState.agentName && (!!wi.comment && !!wi.wigroup) && (wi.comment.endsWith("_imported_memory") && wi.wigroup === wi.comment.replace("_imported_memory", ""))) {
+                shoulduse = (wi.wigroup == localsettings.chatname) || (wi.wigroup == agentRunState.agentName)
             }
 
             if (shoulduse) {
@@ -573,10 +562,28 @@ let runAgentCycle = async (agentRunState = {}) => {
         agentFinaliser: genericAgentFinaliser,
         printToConsole: true,
         cotProcessedUntil: 0,
-        mostRecentChatOpponent: ""
+        agentName: "",
+        systemPrompt: current_memory,
     }, agentRunState, {
         logger: new AgentLogger()
     })
+
+    if (!!agentRunState?.agentPrompt)
+    {
+        // Do nothing as it has an override
+    }
+    else if (!!localsettings.instruct_sysprompt) {
+        agentRunState.agentPrompt = localsettings.instruct_sysprompt
+    }
+    else {
+        let sysPrompt = `You are a decision making action AI that evaluates thoughts and takes concise, purposeful actions which lead to a response to the user. Ensure you always send at least one response which is visible to the user.`
+        if (!!agentRunState?.systemPrompt) {
+            sysPrompt += " Ensure responses are in line with the setting overview. Only override the setting overview when the user explicitly instructs you to do so."
+        }
+        sysPrompt += " Providing suggestions will force you to stop taking actions. Only include suggestions when you have nothing else to do or require user input."
+        agentRunState.agentPrompt = sysPrompt
+    }
+
     let { interactionId, initialPrompt, backgroundInvocation, excludeSpecificMessagePrefixes, agentInitialiser, agentVisualiser, agentFinaliser, printToConsole, logger } = agentRunState
     let currentChainOfThought = []
     let recentActions = []
@@ -668,7 +675,7 @@ let runAgentCycle = async (agentRunState = {}) => {
         currentOrderOfActionsOverall = agentRunState.planToUse.orderOfActions.map(act => act.action)
         currentOrderOfActionDescriptionsOverall = agentRunState.planToUse.orderOfActions.map(act => act.objective)
         objRefOverride(agentRunState, { currentOrderOfActionsOverall, currentOrderOfActionDescriptionsOverall })
-        let argsObject = !!agentRunState.mostRecentChatOpponent ? objRefAssign({ whoToRespondAs: agentRunState.mostRecentChatOpponent }, agentRunState.planToUse) : agentRunState.planToUse
+        let argsObject = !!agentRunState.agentName ? objRefAssign({ whoToRespondAs: agentRunState.agentName }, agentRunState.planToUse) : agentRunState.planToUse
         let completePlanObject = {
             name: "plan_actions",
             args: argsObject
@@ -733,7 +740,7 @@ let runAgentCycle = async (agentRunState = {}) => {
         let max_anote_len = Math.floor(max_allowed_characters * 0.6);
         let max_wi_len = Math.floor(max_allowed_characters * 0.5);
 
-        let history = getInitialAgentPrompt(max_mem_len)
+        let history = getInitialAgentPrompt(agentRunState, max_mem_len)
         let wiToInclude = createSysPrompt(substring_to_boundary(getWorldInfoForAgent(agentRunState, truncated_context, max_wi_len) + "\n\n" + textDBResults, max_wi_len))
         let anToInclude = !!current_anote ? createSysPrompt(substring_to_boundary(current_anotetemplate.replace("<|>", current_anote), max_anote_len)) : ""
 
@@ -746,7 +753,7 @@ let runAgentCycle = async (agentRunState = {}) => {
             promptOverview = planningPrompt
         }
 
-        let finalAgentPrompt = getFinalAgentPrompt(currentChainOfThought, nextAction, currentOrderOfActionsOverall, promptOverview, initialPrompt)
+        let finalAgentPrompt = getFinalAgentPrompt(currentChainOfThought, nextAction, currentOrderOfActionsOverall, promptOverview, initialPrompt, agentRunState.agentPrompt)
 
         let cotAsText = "", maxLengthOfCot = max_allowed_characters - history.length - wiToInclude.length - anToInclude.length - finalAgentPrompt.length
         for (let j = currentChainOfThought.length - 1; j >= 0; j--) {
@@ -826,12 +833,12 @@ let runAgentCycle = async (agentRunState = {}) => {
                     {
                         currentOrderOfActionsOverall = action.command?.args?.orderOfActions.map(act => act.action)
                         currentOrderOfActionDescriptionsOverall = action.command?.args?.orderOfActions.map(act => act.objective)                        
-                        if (!agentRunState?.mostRecentChatOpponent && localsettings.inject_chatnames_instruct) {
+                        if (!agentRunState?.agentName && localsettings.inject_chatnames_instruct) {
                             if (!!action?.args?.whoToRespondAs) {
-                                agentRunState.mostRecentChatOpponent = action?.args?.whoToRespondAs
+                                agentRunState.agentName = action?.args?.whoToRespondAs
                             }
                             else {
-                                agentRunState.mostRecentChatOpponent = getRandomChatOpponent()
+                                agentRunState.agentName = getRandomChatOpponent()
                             }
                         }
                         objRefOverride(agentRunState, { currentOrderOfActionsOverall, currentOrderOfActionDescriptionsOverall })
@@ -943,16 +950,18 @@ prepare_submit_generation = async () => {
             interactionId, 
             initialPrompt: inputText, 
             printToConsole: true,
-            // planToUse: {
-            //     "responsePlanOverview": "The user wants to say hello to the world. There is no other information needed so just send a greeting as me.",
-            //     "orderOfActions": [
-            //         {
-            //             "action": "send_message",
-            //             "objective": "Sending the users a greeting message after they asked for one."
-            //         }
-            //     ]
-            // },
-            // mostRecentChatOpponent: "Bash Terminal",
+            planToUse: {
+                "responsePlanOverview": "The user wants to say hello to the world and mention the date. There is no other information needed so just send a greeting as me.",
+                "orderOfActions": [
+                    {
+                        "action": "send_message",
+                        "objective": "Sending the users a greeting message after they asked for one. I should include the date."
+                    }
+                ]
+            },
+            agentName: "Bash Terminal",
+            systemPrompt: "The year is 1984.",
+            agentPrompt: "For each message Bash Terminal sends, it must end the message with an emoji."
         })})
     }
     else {
