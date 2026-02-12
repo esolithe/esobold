@@ -2138,9 +2138,6 @@ def sd_generate(genparams):
     sample_steps = (1 if sample_steps < 1 else (forced_steplimit if sample_steps > forced_steplimit else sample_steps))
     vid_req_frames = (1 if vid_req_frames < 1 else (100 if vid_req_frames > 100 else vid_req_frames))
 
-    if args.sdclamped:
-        sample_steps = (40 if sample_steps > 40 else sample_steps)
-
     inputs = sd_generation_inputs()
     inputs.prompt = prompt.encode("UTF-8")
     inputs.negative_prompt = negative_prompt.encode("UTF-8")
@@ -4926,7 +4923,7 @@ Change Mode<br>
             response_body = (json.dumps({"temperature":0.75,"speed":1,"length_penalty":1,"repetition_penalty":1,"top_p":1,"top_k":4,"enable_text_splitting":True,"stream_chunk_size":100}).encode()) #some random voices for them to enjoy
 
         elif clean_path.endswith('/api/tags') or clean_path.endswith('/api/ps'): #ollama compatible
-            response_body = (json.dumps({"models":[{"name":"koboldcpp","model":f"{friendlymodelname}:latest","modified_at":"2024-07-19T15:26:55.6122841+08:00","expires_at": "2055-06-04T19:06:25.5433636+08:00","size":394998579,"size_vram":394998579,"digest":"b5dc5e784f2a3ee1582373093acf69a2f4e2ac1710b253a001712b86a61f88bb","details":{"parent_model":"","format":"gguf","family":"koboldcpp","families":["koboldcpp"],"parameter_size":"128M","quantization_level":"Q4_0"}},{"name":"koboldcpp","model":friendlymodelname,"modified_at":"2024-07-19T15:26:55.6122841+08:00","expires_at": "2055-06-04T19:06:25.5433636+08:00","size":394998579,"size_vram":394998579,"digest":"b5dc5e784f2a3ee1582373093acf69a2f4e2ac1710b253a001712b86a61f88bb","details":{"parent_model":"","format":"gguf","family":"koboldcpp","families":["koboldcpp"],"parameter_size":"128M","quantization_level":"Q4_0"}}]}).encode())
+            response_body = (json.dumps({"models":[{"name":"koboldcpp","model":f"{friendlymodelname}:latest","modified_at":"2024-07-19T15:26:55.6122841+08:00","expires_at": "2055-06-04T19:06:25.5433636+08:00","size":394998579,"size_vram":394998579,"digest":"b5dc5e784f2a3ee1582373093acf69a2f4e2ac1710b253a001712b86a61f88bb","details":{"parent_model":"","format":"gguf","family":"koboldcpp","families":["koboldcpp"],"parameter_size":"128M","quantization_level":"Q4_0"}},{"name":"koboldcpp","model":friendlymodelname,"modified_at":"2025-01-01T01:00:00.0000000+00:00","expires_at": "2069-01-01T01:00:00.0000000+00:00","size":394998579,"size_vram":394998579,"digest":"b5dc5e784f2a3ee1582373093acf69a2f4e2ac1710b253a001712b86a61f88bb","details":{"parent_model":"","format":"gguf","family":"koboldcpp","families":["koboldcpp"],"parameter_size":"128M","quantization_level":"Q4_0"}}]}).encode())
         elif clean_path.endswith('/api/version'): #ollama compatible, NOT the kcpp version
             response_body = (json.dumps({"version":"0.7.0"}).encode())
         elif clean_path=='/ping':
@@ -5588,6 +5585,9 @@ Change Mode<br>
 
         elif self.path.endswith('/set_tts_settings'): #return dummy response
             response_body = (json.dumps({"message": "Settings successfully applied"}).encode())
+
+        elif self.path=="/api/show": #ollama compatible
+            response_body = (json.dumps({"parameters":"temperature 1.0","license":"Ollama Emulation. Running on KoboldCpp","modelfile":"KoboldCpp","capabilities":["completion"],"modified_at":"2025-01-01T01:00:00.0000000+00:00","details":{},"model_info":{}}).encode())
 
         elif self.path=="/mcp": #simple mcp proxy
             if not self.secure_endpoint():
