@@ -978,6 +978,22 @@ window.execAgentCycle = (argsObj) => {
     })
 }
 
+window.eso.agentMacros = {
+    "echo": {
+        printToConsole: true,
+        planToUse: {
+            "responsePlanOverview": "The user has sent a message. I must simply respond with the exact same message.",
+            "orderOfActions": [
+                {
+                    "action": "send_message",
+                    "objective": "Replying with the users message"
+                }
+            ]
+        },
+        agentName: null,
+    }
+}
+
 // Overrides to lite / UI interactions
 
 let originalPrepareSubmitGeneration = prepare_submit_generation, originalRestartNewGame = restart_new_game;
@@ -993,10 +1009,20 @@ prepare_submit_generation = async () => {
             await Promise.all(currentAgentCycle.map(c => c.status))
         }
         endCurrent = false
-        execAgentCycle({
+        let macroContent = {}
+        if (/^\w+::/.test(inputText))
+        {
+            let macro = inputText.substring(0, inputText.indexOf("::"))
+            if (window?.eso?.agentMacros[macro] !== undefined)
+            {
+                macroContent = window.eso.agentMacros[macro]
+            }
+        }
+        
+        execAgentCycle(objRefAssign(macroContent, {
             initialPrompt: inputText,
             printToConsole: true
-        })
+        }))
     }
     else {
         originalPrepareSubmitGeneration()
