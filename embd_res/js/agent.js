@@ -928,7 +928,36 @@ let runAgentCycle = async (agentRunState = {}) => {
     return agentRunState
 }
 
-window.runAgentCycle = runAgentCycle;
+// window.runAgentCycle = runAgentCycle;
+
+// Test object for overriding the argsObj
+/*
+{
+    initialPrompt: null,
+    printToConsole: true,
+    planToUse: {
+        "responsePlanOverview": "The user wants to say hello to the world and mention the date. There is no other information needed so just send a greeting as me.",
+        "orderOfActions": [
+            {
+                "action": "send_message",
+                "objective": "Sending the users a greeting message after they asked for one. I should include the date."
+            }
+        ]
+    },
+    agentName: "Bash Terminal",
+    systemPrompt: "The year is 1984.",
+    agentPrompt: "For each message Bash Terminal sends, it must end the message with an emoji."
+}
+*/
+
+window.execAgentCycle = (argsObj) => {
+    let interactionId = window.crypto.randomUUID()
+    let agentCycleArgs = objRefAssign({interactionId}, argsObj)
+    currentAgentCycle.push({
+        id: interactionId, 
+        status: runAgentCycle(agentCycleArgs)
+    })
+}
 
 // Overrides to lite / UI interactions
 
@@ -945,24 +974,10 @@ prepare_submit_generation = async () => {
             await Promise.all(currentAgentCycle.map(c => c.status))
         }
         endCurrent = false
-        let interactionId = window.crypto.randomUUID()
-        currentAgentCycle.push({ id: interactionId, status: runAgentCycle({ 
-            interactionId, 
-            initialPrompt: inputText, 
-            printToConsole: true,
-            planToUse: {
-                "responsePlanOverview": "The user wants to say hello to the world and mention the date. There is no other information needed so just send a greeting as me.",
-                "orderOfActions": [
-                    {
-                        "action": "send_message",
-                        "objective": "Sending the users a greeting message after they asked for one. I should include the date."
-                    }
-                ]
-            },
-            agentName: "Bash Terminal",
-            systemPrompt: "The year is 1984.",
-            agentPrompt: "For each message Bash Terminal sends, it must end the message with an emoji."
-        })})
+        execAgentCycle({
+            initialPrompt: inputText,
+            printToConsole: true
+        })
     }
     else {
         originalPrepareSubmitGeneration()
