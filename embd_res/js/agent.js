@@ -537,6 +537,18 @@ window.eso.agentMacros = {
         //         config: "ZImageAnim.kcpps"
         //     }
         // }
+    },
+    "tellAJoke": {
+        printToConsole: true,
+        planToUse: {
+            "responsePlanOverview": "The user has asked me to tell a joke. If they include a prompt, base it on that.",
+            "orderOfActions": [
+                {
+                    "action": "send_message",
+                    "objective": "Tell the user a funny joke."
+                }
+            ]
+        }
     }
 }
 
@@ -614,7 +626,7 @@ let runAgentCycle = async (agentRunState = {}) => {
         let macroContent = {}
         if (/^\w+::/.test(textToCheckForMacro)) {
             let macro = textToCheckForMacro.substring(0, textToCheckForMacro.indexOf("::"))
-            let macros = localsettings.agentSavedMacros || window.eso.agentMacros
+            let macros = JSON.parse(JSON.stringify(localsettings.agentSavedMacros || window.eso.agentMacros))
             if (macros[macro] !== undefined) {
                 macroContent = macros[macro]
                 macroContent.macroUsed = macro
