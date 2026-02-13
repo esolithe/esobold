@@ -98,7 +98,7 @@ let objToText = (obj, depth = 0) => {
 
 let wordCountEnabled = false
 let getCommands = (agentRunState) => {
-	let { currentChainOfThought } = agentRunState
+	let { currentChainOfThought, agentStopOnRequestForInput } = agentRunState
 	return [
 		{
 			"name": "do_nothing",
@@ -154,7 +154,7 @@ let getCommands = (agentRunState) => {
 							let actualSuggestions = suggestions.map(String).filter(text => text.trim().length > 0)
 							if (actualSuggestions.length > 0) {
 								setSuggestions(actualSuggestions)
-								return !!localsettings?.agentStopOnRequestForInput
+								return !!agentStopOnRequestForInput
 							}
 						}
 						catch {
@@ -318,6 +318,36 @@ let getCommands = (agentRunState) => {
 				}
 				else {
 					addThought(currentChainOfThought, createSysPrompt, `Text was empty - nothing added to world info`)
+				}
+			}
+		},
+		{
+			"name": "read_world_information",
+			"description": "Reads an entry describing an entity. The information is stored under a unique identifier. This information is included when certain keywords are mentioned. This does not show the information to the user.",
+			"args": {
+				"uniqueIdentifier": "<unique identifier (such as a characters name, location etc)>",
+			},
+			"enabled": true,
+			"executor": (action) => {
+				let uniqueIdentifier = action?.args?.uniqueIdentifier
+				if (!!uniqueIdentifier) {
+					uniqueIdentifier = uniqueIdentifier.toLowerCase()
+					let wiSnippets = current_wi.filter(wi => wi?.comment === uniqueIdentifier)
+					if (wiSnippets.length === 0) {
+						addThought(currentChainOfThought, createSysPrompt, `Unique identifer does not exist in world information`)
+					}
+					else {
+						let wiContent = "World information search performed:";
+						let wiEntries = []
+						for (let i = 0; i < wiSnippets.length; ++i) {
+							let entry = wiSnippets[i]
+							wiEntries.push(`[Info Snippet\nPrimary keys: ${entry?.key || "N/A"}\nSecondary keys: ${entry?.keysecondary || "N/A"}\nContent: ${entry?.content || "N/A"}]`);
+						}
+						addThought(currentChainOfThought, createSysPrompt, `${wiContent}\n${wiEntries.join("\n\n")}`)
+					}
+				}
+				else {
+					addThought(currentChainOfThought, createSysPrompt, `Unique identifier was empty - no world information found`)
 				}
 			}
 		},
@@ -628,17 +658,17 @@ let getCommands = (agentRunState) => {
 	]
 }
 
-let getEnabledCommands = (agentRunState, overrides = []) => {
-	let enabledCommands = getCommands(agentRunState).filter(command => !!command?.enabled || overrides.includes(command.name))
+let getEnabledCommands = (agentRunState, overrides = [], isUsingWhitelist = false) => {
+	let enabledCommands = getCommands(agentRunState).filter(command => (!isUsingWhitelist && !!command?.enabled) || overrides.includes(command.name))
 	let forbiddenAgentCommands = getDocumentFromTextDB('Forbidden agent commands')
-	if (forbiddenAgentCommands !== null) {
+	if (!isUsingWhitelist && forbiddenAgentCommands !== null) {
 		let commandsToExclude = forbiddenAgentCommands.split("|")
 		enabledCommands = enabledCommands.filter(command => !commandsToExclude.includes(command.name))
 	}
 	return enabledCommands
 }
 
-let getReasoningCommand = (agentRunState, overrides = []) => {
+let getReasoningCommand = (agentRunState, overrides = [], isUsingWhitelist = false) => {
 	let {agentName} = agentRunState
 	let whoToRespondAsOptions = !!agentName ? [agentName] : (localsettings.inject_chatnames_instruct ? localsettings.chatopponent.split("||$||") : undefined)
 	if (!agentName && localsettings.inject_chatnames_instruct && window.eso.currentChatOpponentOverride !== null) {
@@ -670,7 +700,7 @@ let getReasoningCommand = (agentRunState, overrides = []) => {
 							properties: {
 								action: {
 									type: "string",
-									enum: getEnabledCommands(overrides).map(c => c.name)
+									enum: getEnabledCommands(agentRunState, overrides, isUsingWhitelist).map(c => c.name)
 								},
 								objective: {
 									type: "string"
