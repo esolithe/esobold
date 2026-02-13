@@ -614,8 +614,9 @@ let runAgentCycle = async (agentRunState = {}) => {
         let macroContent = {}
         if (/^\w+::/.test(textToCheckForMacro)) {
             let macro = textToCheckForMacro.substring(0, textToCheckForMacro.indexOf("::"))
-            if (window?.eso?.agentMacros[macro] !== undefined) {
-                macroContent = window.eso.agentMacros[macro]
+            let macros = localsettings.agentSavedMacros || window.eso.agentMacros
+            if (macros[macro] !== undefined) {
+                macroContent = macros[macro]
                 macroContent.macroUsed = macro
             }
         }

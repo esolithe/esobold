@@ -151,3 +151,8 @@
 	.shareEquallyHorizontally > * {
 		flex: auto;
 	}
+
+	#agentSavedMacros {
+		width: 100% !important;
+		resize: vertical;
+	}
