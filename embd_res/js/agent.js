@@ -549,7 +549,36 @@ window.eso.agentMacros = {
                 }
             ]
         }
-    }
+    },
+    "override": {
+        printToConsole: true,
+        // planToUse: {
+        //     "responsePlanOverview": "The user has told me an instruction which overrules the current scene, world setting or other details. The instruction must be acted upon without limitations to ensure its objective is met.",
+        //     "orderOfActions": [
+        //         {
+        //             "action": "send_message",
+        //             "objective": "Implement the action, replying with a confirmation of the override in brackets. Then continue with the response if needed (such as the override calling for changes which require your last response to be rewritten."
+        //         }
+        //     ]
+        // },
+        agentPrompt: "The user has told me an instruction which overrules the current scene, world setting or other details. The instruction must be acted upon without limitations to ensure its objective is met.\n\nImplement the action, replying with a confirmation of the override in brackets. Then continue with the response if needed (such as the override calling for changes which require your last response to be rewritten."
+    },
+    "searchWeb": {
+        printToConsole: true,
+        planToUse: {
+            "responsePlanOverview": "The user has asked me to search the web. If they include a prompt, base the search on answering their question.",
+            "orderOfActions": [
+                {
+                    "action": "web_search",
+                    "objective": "Search the web for details about the prompt"
+                },
+                {
+                    "action": "send_message",
+                    "objective": "Summarise the search results. Include links to the sources."
+                }
+            ]
+        }
+    },
 }
 
 class AgentLogger {
@@ -634,6 +663,11 @@ let runAgentCycle = async (agentRunState = {}) => {
         }
         agentRunState = objRefAssign(macroContent, agentRunState)
 
+        if (!!agentRunState?.surpressMessagesToUser)
+        {
+            agentRunState.agentVisualiser = voidAgentVisualiser
+        }
+
         // gametext_arr = []
         // render_gametext()
         agentRunState = objRefOverride({
@@ -648,7 +682,8 @@ let runAgentCycle = async (agentRunState = {}) => {
             systemPrompt: current_memory,
             configOverrides: {},
             isUsingWhitelist: false,
-            agentStopOnRequestForInput: !!localsettings?.agentStopOnRequestForInput
+            agentStopOnRequestForInput: !!localsettings?.agentStopOnRequestForInput,
+            surpressMessagesToUser: false
         }, agentRunState, {
             logger: new AgentLogger(),
             cotProcessedUntil: 0,
@@ -701,14 +736,17 @@ let runAgentCycle = async (agentRunState = {}) => {
             let macroFreePrompt = initialPrompt.indexOf(`${macroUsed}::`) === 0 ? initialPrompt.substring(macroUsed.length + 2) : initialPrompt;
             addThought(currentChainOfThought, createInstructPrompt, (!!agentRunState?.inputUser ? `${agentRunState.initialUser}: ${macroFreePrompt}` : macroFreePrompt), false, true)
             addThought(currentChainOfThought, createInstructPrompt, (!!agentRunState?.inputUser ? `${agentRunState.initialUser}: ${initialPrompt}` : initialPrompt), true, false)
+            initialPrompt = macroFreePrompt;
         }
         else if (!!lastActions && lastActions.length > 0) {
             let humanActions = lastActions.reverse().filter(elem => elem.source === "human")
             let prevInput = (humanActions.length > 0 ? humanActions[0].msg.replace(new RegExp(`^${localsettings.chatname}:\\s*`), "") : "");
             if (!!prevInput) {
-                initialPrompt = prevInput
+                let macroFreePrompt = prevInput.indexOf(`${macroUsed}::`) === 0 ? prevInput.substring(macroUsed.length + 2) : prevInput;
+                initialPrompt = macroFreePrompt
             }
         }
+        objRefOverride(agentRunState, { initialPrompt })
         if (!!initialPrompt && documentdb_provider != "0") {
             let contentToSearch = documentdb_data
             if (!!documentdb_searchhistory) {

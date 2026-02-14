@@ -39,7 +39,7 @@ display_settings = () => {
     document.getElementById("legacySaveMechanisms").checked = localsettings.legacySaveMechanisms;
     document.getElementById("fullScreenEditorForInputs").checked = localsettings.fullScreenEditorForInputs;
     document.getElementById("corpoHideLeftPanel").checked = localsettings.corpoHideLeftPanel;
-    document.getElementById("agentSavedMacros").textContent = JSON.stringify(localsettings?.agentSavedMacros || window.eso.agentMacros, null, 2)
+    document.getElementById("agentSavedMacros").value = JSON.stringify(localsettings?.agentSavedMacros || window.eso.agentMacros, null, 2)
 }
 
 updateLegacySaveButtonState = () => {
@@ -69,8 +69,15 @@ confirm_settings = () => {
     localsettings.corpoHideLeftPanel = (document.getElementById("corpoHideLeftPanel").checked ? true : false);
     try
     {
-        let obj = JSON.parse(document.getElementById("agentSavedMacros").value)
-        localsettings.agentSavedMacros = obj;
+        if (document.getElementById("agentSavedMacros").value === "")
+        {
+            localsettings.agentSavedMacros = JSON.parse(JSON.stringify(window.eso.agentMacros))
+        }
+        else
+        {
+            let obj = JSON.parse(document.getElementById("agentSavedMacros").value)
+            localsettings.agentSavedMacros = obj;
+        }
 
         updateEditorState();
         originalConfirmSettings();
@@ -347,6 +354,7 @@ window.addEventListener('load', () => {
     lastSettingContainer.before(settingLabelElem)
 
     settingLabelElem = createSettingElementTextArea("agentSavedMacros", "Macros which can be used to trigger the agent with custom logic.", "Macros which can be used to trigger the agent with custom logic. Macros can be invoked by 'macroName::prompt'.")
+    settingLabelElem.querySelector("#agentSavedMacros").classList.add("fullScreenTextEditNoAuto")
     lastSettingContainer.before(settingLabelElem)
 
     // Hidden as this is no longer is in use for now
