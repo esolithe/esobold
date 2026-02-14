@@ -160,8 +160,6 @@ class ModelBase:
                 self.ftype = gguf.LlamaFileType.MOSTLY_F16
                 logger.info("heuristics unable to detect tensor dtype, defaulting to --outtype f16")
 
-        self.dequant_model()
-
         # Configure GGUF Writer
         self.gguf_writer = gguf.GGUFWriter(path=None, arch=gguf.MODEL_ARCH_NAMES[self.model_arch], endianess=self.endianess, use_temp_file=self.use_temp_file,
                                            split_max_tensors=split_max_tensors, split_max_size=split_max_size, dry_run=dry_run, small_first_shard=small_first_shard)
@@ -527,6 +525,8 @@ class ModelBase:
         return ()
 
     def prepare_tensors(self):
+        self.dequant_model()
+
         # Handle empty tensor_map for models with block_count=0 (like MobileNetV5)
         if self.tensor_map.mapping:
             max_name_len = max(len(s) for _, s in self.tensor_map.mapping.values()) + len(".weight,")
@@ -1261,6 +1261,9 @@ class TextModel(ModelBase):
         if chkhsh == "6c81ce329e0802883b22eabab0d3fa48357337ef1ecb45443828bf1f6254833f":
             # ref: https://huggingface.co/LGAI-EXAONE/K-EXAONE-236B-A23B
             res = "exaone-moe"
+        if chkhsh == "d30d75d9059f1aa2c19359de71047b3ae408c70875e8a3ccf8c5fba56c9d8af4":
+            # ref: https://huggingface.co/Qwen/Qwen3.5-9B-Instruct
+            res = "qwen35"
 
         if res is None:
             logger.warning("\n")
@@ -1605,6 +1608,23 @@ class TextModel(ModelBase):
         special_vocab._set_special_token("bos", tokenizer.get_added_vocab()["<|endoftext|>"])
         special_vocab.add_to_gguf(self.gguf_writer)
 
+    def _set_vocab_glm(self):
+        from transformers import AutoTokenizer
+        tokenizer = AutoTokenizer.from_pretrained(self.dir_model)
+        special_vocab = gguf.SpecialVocab(self.dir_model, load_merges=True)
+        tokens, toktypes, tokpre = self.get_vocab_base()
+        self.gguf_writer.add_tokenizer_model("gpt2")
+        self.gguf_writer.add_tokenizer_pre(tokpre)
+        self.gguf_writer.add_token_list(tokens)
+        self.gguf_writer.add_token_types(toktypes)
+        # Special tokens
+        # Note: Using <|endoftext|> (151329) for eot causes endless generation
+        special_vocab._set_special_token("bos", tokenizer.get_added_vocab()["[gMASK]"])  # 151331
+        special_vocab._set_special_token("eot", tokenizer.get_added_vocab()["<|user|>"])  # 151336
+        special_vocab._set_special_token("unk", tokenizer.get_added_vocab()["<|endoftext|>"]) # 151329
+        special_vocab._set_special_token("eom", tokenizer.get_added_vocab()["<|observation|>"])  # 151338
+        special_vocab.add_to_gguf(self.gguf_writer)
+
     def _set_vocab_interns1(self):
         tokens: list[str] = []
         toktypes: list[int] = []
@@ -1812,7 +1832,7 @@ class MmprojModel(ModelBase):
     preprocessor_config: dict[str, Any]
     global_config: dict[str, Any]
 
-    n_block_keys = ["n_layers", "num_hidden_layers", "n_layer", "num_layers", "depth", "encoder_layers"]
+    n_block_keys = ["n_layers", "num_hidden_layers", "n_layer", "num_layers", "depth", "encoder_layers", "vt_num_hidden_layers"]
 
     has_vision_encoder: bool = True # by default
     has_audio_encoder: bool = False
@@ -1867,7 +1887,15 @@ class MmprojModel(ModelBase):
         preprocessor_config_path = self.dir_model / "preprocessor_config.json"
         if preprocessor_config_path.is_file():
             with open(preprocessor_config_path, "r", encoding="utf-8") as f:
-                self.preprocessor_config = json.load(f)
+                cfg = json.load(f)
+                # move media_proc_cfg to root level for compat
+                if "media_proc_cfg" in cfg:
+                    cfg = {
+                        **cfg,
+                        **cfg["media_proc_cfg"],
+                    }
+                # merge configs
+                self.preprocessor_config = {**self.preprocessor_config, **cfg}
 
         # prefer processor_config.json if possible
         processor_config_path = self.dir_model / "processor_config.json"
@@ -1916,10 +1944,10 @@ class MmprojModel(ModelBase):
             self.image_size = self.find_vparam(["image_size"])
             self.gguf_writer.add_vision_image_size(self.image_size)
             self.gguf_writer.add_vision_patch_size(self.find_vparam(["patch_size"]))
-            self.gguf_writer.add_vision_embedding_length(self.find_vparam(["hidden_size"]))
-            self.gguf_writer.add_vision_feed_forward_length(self.find_vparam(["intermediate_size"]))
+            self.gguf_writer.add_vision_embedding_length(self.find_vparam(["hidden_size", "vt_hidden_size"]))
+            self.gguf_writer.add_vision_feed_forward_length(self.find_vparam(["intermediate_size", "vt_intermediate_size"]))
             self.gguf_writer.add_vision_block_count(self.find_vparam(self.n_block_keys))
-            self.gguf_writer.add_vision_head_count(self.find_vparam(["num_attention_heads", "num_heads"]))
+            self.gguf_writer.add_vision_head_count(self.find_vparam(["num_attention_heads", "num_heads", "vt_num_attention_heads"]))
 
             # preprocessor config
             image_mean = _MISTRAL_COMMON_DATASET_MEAN if self.is_mistral_format else self.preprocessor_config["image_mean"]
@@ -4287,6 +4315,7 @@ class Qwen3NextModel(Qwen2MoeModel):
         self.gguf_writer.add_ssm_group_count(self.hparams["linear_num_key_heads"])
         self.gguf_writer.add_ssm_time_step_rank(self.hparams["linear_num_value_heads"])
         self.gguf_writer.add_ssm_inner_size(self.hparams["linear_value_head_dim"] * self.hparams["linear_num_value_heads"])
+        self.gguf_writer.add_full_attention_interval(self.hparams.get("full_attention_interval", 4))
         if (rope_dim := self.hparams.get("head_dim")) is None:
             rope_dim = self.hparams["hidden_size"] // self.hparams["num_attention_heads"]
         self.gguf_writer.add_rope_dimension_count(int(rope_dim * self.hparams.get("partial_rotary_factor", 0.25)))
@@ -4351,7 +4380,7 @@ class RND1Model(Qwen2MoeModel):
             self.gguf_writer.add_mask_token_id(mask_token_id)
 
 
-@ModelBase.register("Qwen3VLForConditionalGeneration", "Qwen3VLMoeForConditionalGeneration")
+@ModelBase.register("Qwen3VLForConditionalGeneration", "Qwen3VLMoeForConditionalGeneration", "Qwen3_5ForConditionalGeneration", "Qwen3_5MoeForConditionalGeneration")
 class Qwen3VLVisionModel(MmprojModel):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -4395,6 +4424,10 @@ class Qwen3VLVisionModel(MmprojModel):
         assert self.hparams_vision is not None
         # Skip text model tensors - they go in the text model file
         if name.startswith("model.language_model.") or name.startswith("lm_head."):
+            return
+
+        # Skip MTP tensors
+        if name.startswith("mtp."):
             return
 
         if name.startswith("model.visual."):
@@ -4557,6 +4590,93 @@ class Qwen3VLMoeTextModel(Qwen3MoeModel):
             return
 
         yield from super().modify_tensors(data_torch, name, bid)
+
+
+class _LinearAttentionVReorderBase(Qwen3NextModel):
+    model_arch = gguf.MODEL_ARCH.QWEN3NEXT  # overridden by subclasses
+    """reorders V heads from grouped to tiled order for ggml broadcast
+
+    see https://github.com/ggml-org/llama.cpp/pull/19468#discussion_r2786394306
+
+    Linear attention may has num_k_heads < num_v_heads. The HF weights store
+    V heads grouped by K head: [G0_v0..v{r-1}, G1_v0..v{r-1}, ...].
+    ggml binary ops use tiled broadcast: [K0, K1, ..., K0, K1, ...].
+    We reorder V heads to tiled order so ggml_repeat can replace the expensive
+    interleaved repeat: [G0_v0, G1_v0, ..., G0_v1, G1_v1, ...].
+    """
+
+    @staticmethod
+    def _reorder_v_heads(tensor: Tensor, dim: int, num_k_heads: int, num_v_per_k: int, head_dim: int) -> Tensor:
+        """Reorder V heads from grouped (by K head) to tiled order along the given dimension."""
+        shape = list(tensor.shape)
+        if dim < 0:
+            dim += len(shape)
+        new_shape = shape[:dim] + [num_k_heads, num_v_per_k, head_dim] + shape[dim + 1:]
+        tensor = tensor.reshape(*new_shape)
+        perm = list(range(len(new_shape)))
+        perm[dim], perm[dim + 1] = perm[dim + 1], perm[dim]
+        return tensor.permute(*perm).contiguous().reshape(*shape)
+
+    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        num_k_heads = self.hparams.get("linear_num_key_heads", 0)
+        num_v_heads = self.hparams.get("linear_num_value_heads", 0)
+
+        if num_k_heads > 0 and num_v_heads > 0 and num_k_heads != num_v_heads and "linear_attn." in name:
+            head_k_dim = self.hparams["linear_key_head_dim"]
+            head_v_dim = self.hparams["linear_value_head_dim"]
+            num_v_per_k = num_v_heads // num_k_heads
+
+            if ".in_proj_qkv." in name:
+                # QKV weight: reorder only the V rows
+                q_dim = head_k_dim * num_k_heads
+                k_dim = head_k_dim * num_k_heads
+                q = data_torch[:q_dim]
+                k = data_torch[q_dim:q_dim + k_dim]
+                v = data_torch[q_dim + k_dim:]
+                v = self._reorder_v_heads(v, 0, num_k_heads, num_v_per_k, head_v_dim)
+                data_torch = torch.cat([q, k, v], dim=0)
+
+            elif ".in_proj_z." in name:
+                # Z gate weight: reorder rows (num_v_heads * head_v_dim)
+                data_torch = self._reorder_v_heads(data_torch, 0, num_k_heads, num_v_per_k, head_v_dim)
+
+            elif ".in_proj_b." in name or ".in_proj_a." in name:
+                # Beta/Alpha weight: reorder rows (num_v_heads, head_dim=1)
+                data_torch = self._reorder_v_heads(data_torch, 0, num_k_heads, num_v_per_k, 1)
+
+            elif ".A_log" in name or ".dt_bias" in name or ".dt_proj" in name:
+                # A_log / dt_bias: 1D parameters with num_v_heads elements
+                if data_torch.ndim == 1:
+                    data_torch = self._reorder_v_heads(
+                        data_torch.unsqueeze(-1), 0, num_k_heads, num_v_per_k, 1
+                    ).squeeze(-1)
+                else:
+                    data_torch = self._reorder_v_heads(data_torch, -1, num_k_heads, num_v_per_k, 1)
+
+            elif ".conv1d" in name:
+                # Conv1d kernel: reorder only the V channel portion
+                data = data_torch.squeeze()
+                qk_channels = head_k_dim * num_k_heads * 2
+                qk_part = data[:qk_channels]
+                v_part = data[qk_channels:]
+                v_part = self._reorder_v_heads(v_part, 0, num_k_heads, num_v_per_k, head_v_dim)
+                data_torch = torch.cat([qk_part, v_part], dim=0)
+
+            elif ".out_proj." in name:
+                # Out projection weight: reorder columns (input dimension)
+                data_torch = self._reorder_v_heads(data_torch, 1, num_k_heads, num_v_per_k, head_v_dim)
+
+        yield from super().modify_tensors(data_torch, name, bid)
+
+
+@ModelBase.register("Qwen3_5ForConditionalGeneration")
+class Qwen3_5TextModel(_LinearAttentionVReorderBase):
+    model_arch = gguf.MODEL_ARCH.QWEN35
+
+
+@ModelBase.register("Qwen3_5MoeForConditionalGeneration")
+class Qwen3_5MoeTextModel(_LinearAttentionVReorderBase):
+    model_arch = gguf.MODEL_ARCH.QWEN35MOE
 
 
 @ModelBase.register("GPT2LMHeadModel")
@@ -7600,11 +7720,15 @@ class DeepseekModel(TextModel):
     "DeepseekV2ForCausalLM",
     "DeepseekV3ForCausalLM",
     "KimiVLForConditionalGeneration",
+    "KimiK25ForConditionalGeneration",
     "YoutuForCausalLM",
     "YoutuVLForConditionalGeneration",
 )
 class DeepseekV2Model(TextModel):
     model_arch = gguf.MODEL_ARCH.DEEPSEEK2
+
+    # TODO @ngxson : remove this when we support MTP for deepseek models
+    skip_mtp = True
 
     def set_vocab(self):
         try:
@@ -7718,8 +7842,8 @@ class DeepseekV2Model(TextModel):
     _experts: list[dict[str, Tensor]] | None = None
 
     def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
-        # skip vision tensors and remove "language_model." for Kimi-VL
-        if "vision_tower" in name or "multi_modal_projector" in name:
+        # skip vision tensors and remove "language_model." for Kimi-VL and Kimi-K2.5
+        if "vision_tower" in name or "multi_modal_projector" in name or "mm_projector" in name:
             return
         if name.startswith("siglip2.") or name.startswith("merger."):
             return
@@ -7737,10 +7861,11 @@ class DeepseekV2Model(TextModel):
             name = name.replace("e_score_correction_bias", "e_score_correction.bias")
 
         # skip Multi-Token Prediction (MTP) layers
-        block_count = self.hparams["num_hidden_layers"]
-        match = re.match(r"model.layers.(\d+)", name)
-        if match and int(match.group(1)) >= block_count:
-            return
+        if self.skip_mtp:
+            block_count = self.hparams["num_hidden_layers"]
+            match = re.match(r"model.layers.(\d+)", name)
+            if match and int(match.group(1)) >= block_count:
+                return
 
         # process the experts separately
         if name.find("mlp.experts") != -1:
@@ -8580,24 +8705,7 @@ class Glm4MoeModel(TextModel):
         self.tensor_map = gguf.get_tensor_name_map(self.model_arch, self.block_count)
 
     def set_vocab(self):
-        from transformers import AutoTokenizer
-
-        tokenizer = AutoTokenizer.from_pretrained(self.dir_model)
-        special_vocab = gguf.SpecialVocab(self.dir_model, load_merges=True)
-        tokens, toktypes, tokpre = self.get_vocab_base()
-        self.gguf_writer.add_tokenizer_model("gpt2")
-        self.gguf_writer.add_tokenizer_pre(tokpre)
-        self.gguf_writer.add_token_list(tokens)
-        self.gguf_writer.add_token_types(toktypes)
-
-        # Special tokens
-        # Note: Using <|endoftext|> (151329) for eot causes endless generation
-        special_vocab._set_special_token("bos", tokenizer.get_added_vocab()["[gMASK]"])  # 151331
-        special_vocab._set_special_token("eot", tokenizer.get_added_vocab()["<|user|>"])  # 151336
-        special_vocab._set_special_token("unk", tokenizer.get_added_vocab()["<|endoftext|>"]) # 151329
-        special_vocab._set_special_token("eom", tokenizer.get_added_vocab()["<|observation|>"])  # 151338
-
-        special_vocab.add_to_gguf(self.gguf_writer)
+        return self._set_vocab_glm()
 
     def set_gguf_parameters(self):
         super().set_gguf_parameters()
@@ -8697,26 +8805,38 @@ class Glm4MoeModel(TextModel):
 class Glm4MoeLiteModel(DeepseekV2Model):
     model_arch = gguf.MODEL_ARCH.DEEPSEEK2
 
-    # copied from Glm4MoeModel
     def set_vocab(self):
-        from transformers import AutoTokenizer
+        return self._set_vocab_glm()
 
-        tokenizer = AutoTokenizer.from_pretrained(self.dir_model)
-        special_vocab = gguf.SpecialVocab(self.dir_model, load_merges=True)
-        tokens, toktypes, tokpre = self.get_vocab_base()
-        self.gguf_writer.add_tokenizer_model("gpt2")
-        self.gguf_writer.add_tokenizer_pre(tokpre)
-        self.gguf_writer.add_token_list(tokens)
-        self.gguf_writer.add_token_types(toktypes)
 
-        # Special tokens
-        # Note: Using <|endoftext|> (151329) for eot causes endless generation
-        special_vocab._set_special_token("bos", tokenizer.get_added_vocab()["[gMASK]"])  # 151331
-        special_vocab._set_special_token("eot", tokenizer.get_added_vocab()["<|user|>"])  # 151336
-        special_vocab._set_special_token("unk", tokenizer.get_added_vocab()["<|endoftext|>"]) # 151329
-        special_vocab._set_special_token("eom", tokenizer.get_added_vocab()["<|observation|>"])  # 151338
+@ModelBase.register("GlmMoeDsaForCausalLM")
+class GlmMoeDsaModel(DeepseekV2Model):
+    model_arch = gguf.MODEL_ARCH.GLM_DSA
+    skip_mtp = False
 
-        special_vocab.add_to_gguf(self.gguf_writer)
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.block_count = self.hparams["num_hidden_layers"] + self.hparams.get("num_nextn_predict_layers", 0)
+        self.tensor_map = gguf.get_tensor_name_map(self.model_arch, self.block_count)
+
+    def set_vocab(self):
+        return self._set_vocab_glm()
+
+    def set_gguf_parameters(self):
+        super().set_gguf_parameters()
+
+        rope_dim = self.hparams["qk_rope_head_dim"]
+        partial_rotary_factor = self.hparams.get("partial_rotary_factor", 1.0)
+        self.gguf_writer.add_rope_dimension_count(int(rope_dim * partial_rotary_factor))
+
+        # NextN/MTP prediction layers
+        if (num_nextn_predict_layers := self.hparams.get("num_nextn_predict_layers")) is not None:
+            self.gguf_writer.add_nextn_predict_layers(num_nextn_predict_layers)
+
+        # DSA indexer parameters
+        self.gguf_writer.add_indexer_head_count(self.hparams["index_n_heads"])
+        self.gguf_writer.add_indexer_key_length(self.hparams["index_head_dim"])
+        self.gguf_writer.add_indexer_top_k(self.hparams["index_topk"])
 
 
 @ModelBase.register("GlmForCausalLM", "ChatGLMModel", "ChatGLMForConditionalGeneration")
@@ -11079,6 +11199,103 @@ class KimiVLModel(MmprojModel):
                 yield from super().modify_tensors(wv, name.replace("wqkv", "wv"), bid)
             else:
                 yield from super().modify_tensors(data_torch, name, bid)
+
+
+@ModelBase.register("KimiK25ForConditionalGeneration")
+class KimiK25Model(MmprojModel):
+    """Kimi-K2.5 with MoonViT3d vision encoder"""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        assert self.hparams_vision is not None, "Kimi-K2.5 requires vision_config in model config"
+
+        self.merge_kernel_size = tuple(self.hparams_vision.get("merge_kernel_size", [2, 2]))
+        self.patch_size = self.hparams_vision.get("patch_size", 14)
+
+        # Set image_size for compatibility with base class
+        # Use position embedding dimensions as image_size reference
+        pos_emb_h = self.hparams_vision.get("init_pos_emb_height", 64)
+        self.hparams_vision["image_size"] = pos_emb_h * self.patch_size
+
+    def set_gguf_parameters(self):
+        # Base class MmprojModel.set_gguf_parameters() already writes:
+        # - vision_block_count, vision_head_count, vision_embedding_length
+        # - vision_feed_forward_length, vision_patch_size, image_mean, image_std
+        # via find_vparam() which handles the vt_* prefixed keys in Kimi-K2.5's config
+        super().set_gguf_parameters()
+        assert self.hparams_vision is not None
+
+        self.gguf_writer.add_clip_projector_type(gguf.VisionProjectorType.KIMIK25)
+
+        # Position embedding parameters (for interpolation)
+        self.gguf_writer.add_uint32("vision.pos_emb_height", self.hparams_vision.get("init_pos_emb_height", 64))
+        self.gguf_writer.add_uint32("vision.pos_emb_width", self.hparams_vision.get("init_pos_emb_width", 64))
+        self.gguf_writer.add_uint32("vision.pos_emb_time", self.hparams_vision.get("init_pos_emb_time", 4))
+
+        # Projector parameters
+        self.gguf_writer.add_vision_use_gelu(self.hparams_vision.get("projector_hidden_act", "gelu") == "gelu")
+        self.gguf_writer.add_vision_attention_layernorm_eps(self.hparams_vision.get("projector_ln_eps", 1e-5))
+        self.gguf_writer.add_vision_projector_scale_factor(self.merge_kernel_size[0])
+
+        # Image size limits
+        # Note: in_patch_limit is for images, in_patch_limit_each_frame is for video (not supported yet)
+        in_patch_limit = self.preprocessor_config.get("in_patch_limit", 16384)
+        min_patches = 8  # reasonable minimum
+        pixels_per_patch = self.patch_size ** 2
+        self.gguf_writer.add_vision_min_pixels(min_patches * pixels_per_patch)
+        self.gguf_writer.add_vision_max_pixels(in_patch_limit * pixels_per_patch)
+
+    @staticmethod
+    def permute(weights: Tensor, n_head: int) -> Tensor:
+        out_dim, in_dim = weights.shape
+        head_dim = out_dim // n_head
+        w = weights.reshape(n_head, head_dim // 4, 2, 2, in_dim)
+        w = w.permute(0, 2, 1, 3, 4)
+        return w.reshape(out_dim, in_dim)
+
+    def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        # Only process vision and projector tensors
+        is_vision = any(x in name for x in ["vision_tower", "mm_projector"])
+
+        if not is_vision:
+            return
+
+        assert self.hparams_vision is not None
+        n_head = self.hparams_vision.get("num_attention_heads", 16)
+
+        # Permute Q/K weights/biases from interleaved to split RoPE format
+        # This allows using build_rope_2d at runtime without post-permutation.
+        if "wqkv" in name:
+            out_dim = data_torch.shape[0]
+            qkv_dim = out_dim // 3
+            head_dim = qkv_dim // n_head
+
+            if "weight" in name:
+                wq, wk, wv = data_torch[:qkv_dim, :], data_torch[qkv_dim:2 * qkv_dim, :], data_torch[2 * qkv_dim:, :]
+                wq = self.permute(wq, n_head)
+                wk = self.permute(wk, n_head)
+                data_torch = torch.cat([wq, wk, wv], dim=0)
+            elif "bias" in name:
+                bq, bk, bv = data_torch[:qkv_dim], data_torch[qkv_dim:2 * qkv_dim], data_torch[2 * qkv_dim:]
+                bq = bq.reshape(n_head, head_dim // 4, 2, 2).permute(0, 2, 1, 3).reshape(-1)
+                bk = bk.reshape(n_head, head_dim // 4, 2, 2).permute(0, 2, 1, 3).reshape(-1)
+                data_torch = torch.cat([bq, bk, bv], dim=0)
+
+        # Temporal embeddings: (T, 1, C) → (T, C)
+        if "pos_emb.time_weight" in name:
+            T, _, C = data_torch.shape
+            data_torch = data_torch.reshape(T, C)
+
+        # PatchMergerMLP tensor name mapping
+        # proj.0.weight → proj.linear_1.weight
+        # proj.2.weight → proj.linear_2.weight
+        if "mm_projector.proj.0." in name:
+            name = name.replace(".proj.0.", ".proj.linear_1.")
+        elif "mm_projector.proj.2." in name:
+            name = name.replace(".proj.2.", ".proj.linear_2.")
+
+        yield from super().modify_tensors(data_torch, name, bid)
 
 
 @ModelBase.register("CogVLMForCausalLM")

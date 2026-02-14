@@ -338,9 +338,9 @@ static void zeros(std::ofstream & file, size_t n) {
 }
 
 template <typename T>
-struct no_init {
+struct do_no_init {
     T value;
-    no_init() { /* do nothing */ }
+    do_no_init() { /* do nothing */ }
 };
 
 void quantize_gguf(const std::string & ifile, const std::string & ofile, struct quantization_params * params) {
@@ -376,7 +376,7 @@ void quantize_gguf(const std::string & ifile, const std::string & ofile, struct 
         }
     }
 
-    std::vector<no_init<uint8_t>> work;
+    std::vector<do_no_init<uint8_t>> work;
 
     std::ofstream fout;
     auto close_ofstream = [&]() {

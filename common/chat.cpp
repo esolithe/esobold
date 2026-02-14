@@ -510,7 +510,7 @@ json common_chat_msg_diff_to_json_oaicompat(const common_chat_msg_diff & diff) {
 }
 
 #include "chat-parser.cpp"
-#include "common/unicode.cpp"
+#include "common/unicode.h"
 #include "peg-parser.cpp"
 #include "chat-peg-parser.cpp"
 

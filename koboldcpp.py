@@ -2138,6 +2138,11 @@ def sd_generate(genparams):
     sample_steps = (1 if sample_steps < 1 else (forced_steplimit if sample_steps > forced_steplimit else sample_steps))
     vid_req_frames = (1 if vid_req_frames < 1 else (100 if vid_req_frames > 100 else vid_req_frames))
 
+    swap_refimg = (True if tryparseint(genparams.get("send_as_refimg", 0),0) else False)
+    if len(extra_images_arr)==0 and swap_refimg and init_images and init_images!="" and not mask:
+        extra_images_arr = [init_images]
+        init_images = ""
+
     inputs = sd_generation_inputs()
     inputs.prompt = prompt.encode("UTF-8")
     inputs.negative_prompt = negative_prompt.encode("UTF-8")

@@ -497,6 +497,8 @@ add_library(common2
             tools/mtmd/clip.h
             src/unicode.h
             src/unicode.cpp
+            common/unicode.h
+            common/unicode.cpp
             src/llama-impl.h
             src/llama-impl.cpp
             src/unicode-data.cpp

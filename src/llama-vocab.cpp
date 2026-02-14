@@ -593,6 +593,13 @@ struct llm_tokenizer_bpe : llm_tokenizer {
                     "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
                 };
                 break;
+            case LLAMA_VOCAB_PRE_TYPE_QWEN35:
+                regex_exprs = {
+                    // original regex from tokenizer.json
+                    // "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?[\\p{L}\\p{M}]+|\\p{N}| ?[^\\s\\p{L}\\p{M}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+"
+                    "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?[\\p{L}\\p{M}]+|\\p{N}| ?[^\\s\\p{L}\\p{M}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
+                };
+                break;
             case LLAMA_VOCAB_PRE_TYPE_PORO:
             case LLAMA_VOCAB_PRE_TYPE_BLOOM:
             case LLAMA_VOCAB_PRE_TYPE_GPT3_FINNISH:
@@ -2163,6 +2170,10 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
                 pre_type = LLAMA_VOCAB_PRE_TYPE_QWEN2;
                 clean_spaces = false;
             } else if (
+                    tokenizer_pre == "qwen35") {
+                pre_type = LLAMA_VOCAB_PRE_TYPE_QWEN35;
+                clean_spaces = false;
+            } else if (
                 tokenizer_pre == "stablelm2") {
                 pre_type = LLAMA_VOCAB_PRE_TYPE_STABLELM2;
             } else if (
@@ -2705,10 +2716,10 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
                 attr = LLAMA_TOKEN_ATTR_USER_DEFINED;
             }
 
-            if(t.first=="[THINK]" || t.first=="[/THINK]" || t.first=="<think>" || t.first=="</think>")
-            {
-                 LLAMA_LOG_WARN("%s: setting token '%s' (%d) attribute to USER_DEFINED (%u), old attributes: %u\n",
-                        __func__, t.first.c_str(), t.second, LLAMA_TOKEN_ATTR_USER_DEFINED, attr);
+            if (t.first == "[THINK]" || t.first == "[/THINK]" || t.first == "<think>" || t.first == "</think>" ||
+                t.first == "[CALL_ID]" || t.first == "[TOOL_CONTENT]" || t.first == "[TOOL_CALLS]" || t.first == "[ARGS]") {
+                LLAMA_LOG_WARN("%s: setting token '%s' (%d) attribute to USER_DEFINED (%u), old attributes: %u\n",
+                               __func__, t.first.c_str(), t.second, LLAMA_TOKEN_ATTR_USER_DEFINED, attr);
                 attr = LLAMA_TOKEN_ATTR_USER_DEFINED;
             }
         }
