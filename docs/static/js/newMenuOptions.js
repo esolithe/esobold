@@ -39,6 +39,7 @@ display_settings = () => {
     document.getElementById("legacySaveMechanisms").checked = localsettings.legacySaveMechanisms;
     document.getElementById("fullScreenEditorForInputs").checked = localsettings.fullScreenEditorForInputs;
     document.getElementById("corpoHideLeftPanel").checked = localsettings.corpoHideLeftPanel;
+    document.getElementById("agentSavedMacros").textContent = JSON.stringify(localsettings?.agentSavedMacros || window.eso.agentMacros, null, 2)
 }
 
 updateLegacySaveButtonState = () => {
@@ -66,9 +67,20 @@ confirm_settings = () => {
     localsettings.legacySaveMechanisms = (document.getElementById("legacySaveMechanisms").checked ? true : false);
     localsettings.fullScreenEditorForInputs = (document.getElementById("fullScreenEditorForInputs").checked ? true : false);
     localsettings.corpoHideLeftPanel = (document.getElementById("corpoHideLeftPanel").checked ? true : false);
-    updateEditorState();
-    originalConfirmSettings();
-    updateLegacySaveButtonState();
+    try
+    {
+        let obj = JSON.parse(document.getElementById("agentSavedMacros").value)
+        localsettings.agentSavedMacros = obj;
+
+        updateEditorState();
+        originalConfirmSettings();
+        updateLegacySaveButtonState();
+    }
+    catch (e)
+    {
+        console.log(e)
+        handleError(e)
+    }
 }
 
 window.addEventListener('load', () => {
@@ -116,6 +128,9 @@ window.addEventListener('load', () => {
     }
     if (localsettings?.corpoHideLeftPanel == undefined) {
         localsettings.corpoHideLeftPanel = false
+    }
+    if (localsettings?.agentSavedMacros == undefined) {
+        localsettings.agentSavedMacros = window.eso.agentMacros
     }
 
     // Overwrite the switching to handle new dynamically added menus
@@ -316,9 +331,9 @@ window.addEventListener('load', () => {
     lastSettingContainer.before(createNewSubSection("Esobold agent mode settings"))
     let settingLabelElem = createSettingElemBool("agentBehaviour", "Agent behaviour (experimental)", "Allows the AI to use multiple generations and certain tools to see if it can improve results.  This can include web search (if enabled), dice rolling, and formula evaluation.  This mode requires instruct start and end tags for all roles. Image and TTS only is enabled for local KCPP users.")
     settingLabelElem.onclick = () => {
-        if (document.getElementById("agentBehaviour").checked == true && document.getElementById("separate_end_tags").checked != true) {
-            document.getElementById("separate_end_tags").click()
-        }
+        // if (document.getElementById("agentBehaviour").checked == true && document.getElementById("separate_end_tags").checked != true) {
+        //     document.getElementById("separate_end_tags").click()
+        // }
     }
     lastSettingContainer.before(settingLabelElem)
 
@@ -329,6 +344,9 @@ window.addEventListener('load', () => {
     lastSettingContainer.before(settingLabelElem)
 
     settingLabelElem = createSettingElemBool("agentStopOnRequestForInput", "Stop on request for input from agent", "Stops the current agent processing if it asks for user input")
+    lastSettingContainer.before(settingLabelElem)
+
+    settingLabelElem = createSettingElementTextArea("agentSavedMacros", "Macros which can be used to trigger the agent with custom logic.", "Macros which can be used to trigger the agent with custom logic. Macros can be invoked by 'macroName::prompt'.")
     lastSettingContainer.before(settingLabelElem)
 
     // Hidden as this is no longer is in use for now
