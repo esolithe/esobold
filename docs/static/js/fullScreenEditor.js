@@ -36,7 +36,14 @@ let addFullScreenEditorButtons = () => {
                 e.onclick = () => {
                     let content = document.createElement("textarea");
                     content.classList.add("fullScreenEditContent");
-                    content.value = replaceAll(c.value, "\\n", "\n");
+                    if (c.classList.contains("fullScreenTextEditNoAuto"))
+                    {
+                        content.value = c.value
+                    }
+                    else
+                    {
+                        content.value = replaceAll(c.value, "\\n", "\n");
+                    }
                     content.style.height = "70vh"
                     content.style.width = "70vw"
                     content.style.resize = "none"

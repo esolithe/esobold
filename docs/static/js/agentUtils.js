@@ -184,7 +184,7 @@ let getCommands = (agentRunState) => {
 			"executor": async (action) => {
 				await (new Promise((resolve, reject) => { PerformWebsearch(`${action?.args?.query}`, resolve) }));
 				let webResp = objToText(lastSearchResults);
-				addThought(currentChainOfThought, createSysPrompt, `Web search results: \n${webResp, 1}`)
+				addThought(currentChainOfThought, createSysPrompt, `Web search results: \n${webResp}`)
 			}
 		},
 		{
