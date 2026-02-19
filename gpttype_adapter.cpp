@@ -2681,6 +2681,8 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
         }
         llama_attach_threadpool(llama_ctx_v4, threadpool1, threadpool2);
 
+        std::vector<llama_adapter_lora *> loras;
+        std::vector<float> lorascales;
         if (lora_filename != "")
         {
             printf("\nAttempting to apply LORA adapter: %s\n", lora_filename.c_str());
@@ -2689,7 +2691,10 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
                 fprintf(stderr, "%s: error: failed to apply lora adapter\n", __func__);
                 return ModelLoadResult::FAIL;
             }
-            llama_set_adapter_lora(llama_ctx_v4, adapter, inputs.lora_multiplier);
+
+            loras.push_back(adapter);
+            lorascales.push_back(inputs.lora_multiplier);
+            llama_set_adapters_lora(llama_ctx_v4, loras.data(), loras.size(), lorascales.data());
         }
 
         if(mmproj_filename != "" && file_format==FileFormat::GGUF_GENERIC)

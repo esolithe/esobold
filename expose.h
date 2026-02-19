@@ -6,6 +6,7 @@ const int images_max = 8;
 const int audio_max = 4;
 const int logprobs_max = 10;
 const int overridekv_max = 4;
+const int lora_filenames_max = 4;
 
 // match kobold's sampler list and order
 enum samplers
@@ -188,7 +189,7 @@ struct sd_load_model_inputs
     const char * clip1_filename = nullptr;
     const char * clip2_filename = nullptr;
     const char * vae_filename = nullptr;
-    const char * lora_filename = nullptr;
+    const char * lora_filenames[lora_filenames_max] = {};
     const float lora_multiplier = 1.0f;
     const int lora_apply_mode = 0;
     const char * photomaker_filename = nullptr;

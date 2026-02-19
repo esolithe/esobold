@@ -78,8 +78,8 @@ struct SDParams {
 
     bool chroma_use_dit_mask     = true;
 
-    std::string lora_path;
-    sd_lora_t lora_spec;
+    std::vector<std::string> lora_paths;
+    std::vector<sd_lora_t> lora_specs;
     uint32_t lora_count;
 };
 
@@ -207,7 +207,15 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
     set_sd_quiet(sd_is_quiet);
     executable_path = inputs.executable_path;
     std::string taesdpath = "";
-    std::string lorafilename = inputs.lora_filename;
+    std::vector<std::string> lorafilenames;
+    for(int i=0;i<lora_filenames_max;++i)
+    {
+        std::string temp = inputs.lora_filenames[i];
+        if(temp!="")
+        {
+            lorafilenames.push_back(temp);
+        }
+    }
     std::string vaefilename = inputs.vae_filename;
     std::string t5xxl_filename = inputs.t5xxl_filename;
     std::string clip1_filename = inputs.clip1_filename;
@@ -223,13 +231,16 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
 
     int lora_apply_mode = std::max(0, std::min(2, inputs.lora_apply_mode));
 
-    if(lorafilename!="")
+    if(lorafilenames.size()>0)
     {
-        const char* lora_apply_mode_name = lora_apply_mode == 1 ? "immediately"
-                                         : lora_apply_mode == 2 ? "at runtime"
-                                         : "auto";
-        printf("With LoRA: %s at %f power, apply mode: %s\n",
-            lorafilename.c_str(),inputs.lora_multiplier,lora_apply_mode_name);
+        for(int i=0;i<lorafilenames.size();++i)
+        {
+            const char* lora_apply_mode_name = lora_apply_mode == 1 ? "immediately"
+                                            : lora_apply_mode == 2 ? "at runtime"
+                                            : "auto";
+            printf("With LoRA: %s at %f power, apply mode: %s\n",
+                lorafilenames[i].c_str(),inputs.lora_multiplier,lora_apply_mode_name);
+        }
     }
     if(inputs.taesd)
     {
@@ -315,7 +326,7 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
     sd_params->clip_l_path = clip1_filename;
     sd_params->clip_g_path = clip2_filename;
     sd_params->stacked_id_embeddings_path = photomaker_filename;
-    sd_params->lora_path = lorafilename;
+    sd_params->lora_paths = lorafilenames;
     //if t5 is set, and model is a gguf, load it as a diffusion model path
     bool endswithgguf = (sd_params->model_path.rfind(".gguf") == sd_params->model_path.size() - 5);
     if((sd_params->t5xxl_path!="" || sd_params->clip_l_path!="" || sd_params->clip_g_path!="") && endswithgguf)
@@ -405,15 +416,21 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
     std::filesystem::path mpath(inputs.model_filename);
     sdmodelfilename = mpath.filename().string();
 
-    sd_params->lora_spec = {};
-    sd_params->lora_spec.path = sd_params->lora_path.c_str();
-    sd_params->lora_spec.multiplier = inputs.lora_multiplier;
-
-    if(sd_params->lora_path!="" && sd_params->lora_spec.multiplier>0)
+    sd_params->lora_specs.clear();
+    sd_params->lora_specs.reserve(lora_filenames_max*2);
+    for(int i=0;i<sd_params->lora_paths.size();++i)
     {
-        printf("\nApply LoRA...\n");
-        sd_params->lora_count = 1;
-        sd_ctx->sd->apply_loras(&sd_params->lora_spec, sd_params->lora_count);
+        sd_lora_t spec = {};
+        spec.path = sd_params->lora_paths[i].c_str();
+        spec.multiplier = inputs.lora_multiplier;
+        sd_params->lora_specs.push_back(spec);
+    }
+
+    if(sd_params->lora_specs.size()>0 && inputs.lora_multiplier>0)
+    {
+        printf("\nApply %d LoRAs...\n",sd_params->lora_specs.size());
+        sd_params->lora_count = sd_params->lora_specs.size();
+        sd_ctx->sd->apply_loras(sd_params->lora_specs.data(), sd_params->lora_count);
     }
 
     input_extraimage_buffers.reserve(max_extra_images);
@@ -1011,7 +1028,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
 
     // needs to be "reapplied" because sdcpp tracks previously applied LoRAs
     // and weights, and apply/unapply the differences at each gen
-    params.loras = &sd_params->lora_spec;
+    params.loras = sd_params->lora_specs.data();
     params.lora_count = sd_params->lora_count;
 
     params.ref_images = reference_imgs.data();

@@ -64,6 +64,7 @@ default_vae_tile_threshold = 768
 default_native_ctx = 16384
 overridekv_max = 4
 default_autofit_padding = 1024
+lora_filenames_max = 4
 
 # abuse prevention
 stop_token_max = 256
@@ -73,7 +74,7 @@ dry_seq_break_max = 128
 extra_images_max = 4 # for kontext/qwen img
 
 # global vars
-KcppVersion = "1.108"
+KcppVersion = "1.108.1"
 showdebug = True
 kcpp_instance = None #global running instance
 global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None}
@@ -318,7 +319,7 @@ class sd_load_model_inputs(ctypes.Structure):
                 ("clip1_filename", ctypes.c_char_p),
                 ("clip2_filename", ctypes.c_char_p),
                 ("vae_filename", ctypes.c_char_p),
-                ("lora_filename", ctypes.c_char_p),
+                ("lora_filenames", ctypes.c_char_p * lora_filenames_max),
                 ("lora_multiplier", ctypes.c_float),
                 ("lora_apply_mode", ctypes.c_int),
                 ("photomaker_filename", ctypes.c_char_p),
@@ -1946,7 +1947,7 @@ def sd_quant_option(value):
     except Exception:
         return 0
 
-def sd_load_model(model_filename,vae_filename,lora_filename,t5xxl_filename,clip1_filename,clip2_filename,photomaker_filename,upscaler_filename):
+def sd_load_model(model_filename,vae_filename,lora_filenames,t5xxl_filename,clip1_filename,clip2_filename,photomaker_filename,upscaler_filename):
     global args
     inputs = sd_load_model_inputs()
     inputs.model_filename = model_filename.encode("UTF-8")
@@ -1969,7 +1970,12 @@ def sd_load_model(model_filename,vae_filename,lora_filename,t5xxl_filename,clip1
     inputs.taesd = True if args.sdvaeauto else False
     inputs.tiled_vae_threshold = args.sdtiledvae
     inputs.vae_filename = vae_filename.encode("UTF-8")
-    inputs.lora_filename = lora_filename.encode("UTF-8")
+    for n in range(lora_filenames_max):
+        if n >= len(lora_filenames):
+            inputs.lora_filenames[n] = "".encode("UTF-8")
+        else:
+            inputs.lora_filenames[n] = lora_filenames[n].encode("UTF-8")
+
     inputs.lora_multiplier = args.sdloramult
     inputs.t5xxl_filename = t5xxl_filename.encode("UTF-8")
     inputs.clip1_filename = clip1_filename.encode("UTF-8")
@@ -3691,18 +3697,22 @@ ws ::= | " " | "\n" [ \t]{0,20}
                         messages_string += curr_content
                     elif isinstance(curr_content, list): #is an array
                         for item in curr_content:
-                            if item['type']=="text":
-                                    messages_string += item['text']
-                            elif item['type']=="image_url":
-                                if 'image_url' in item and item['image_url'] and item['image_url']['url'] and item['image_url']['url'].startswith("data:image"):
-                                    images_added.append(item['image_url']['url'].split(",", 1)[1])
-                                    attachedimgid += 1
-                                    messages_string += f"\n(Attached Image {attachedimgid})\n"
-                            elif item['type']=="input_audio":
-                                if 'input_audio' in item and item['input_audio'] and item['input_audio']['data']:
-                                    audio_added.append(item['input_audio']['data'])
-                                    attachedaudid += 1
-                                    messages_string += f"\n(Attached Audio {attachedaudid})\n"
+                            if isinstance(item, dict):
+                                if item['type']=="text":
+                                        messages_string += item['text']
+                                elif item['type']=="image_url":
+                                    if 'image_url' in item and item['image_url'] and item['image_url']['url'] and item['image_url']['url'].startswith("data:image"):
+                                        images_added.append(item['image_url']['url'].split(",", 1)[1])
+                                        attachedimgid += 1
+                                        messages_string += f"\n(Attached Image {attachedimgid})\n"
+                                elif item['type']=="input_audio":
+                                    if 'input_audio' in item and item['input_audio'] and item['input_audio']['data']:
+                                        audio_added.append(item['input_audio']['data'])
+                                        attachedaudid += 1
+                                        messages_string += f"\n(Attached Audio {attachedaudid})\n"
+                            elif isinstance(item, str):
+                                messages_string += item # If item is just a string, append it directly
+
                     # If last message, add any tools calls after message content and before message end token if any
                     if message_index == len(messages_array):
                         used_tool_json = determine_tool_json_to_use(genparams, messages_string, assistant_message_start, (message['role'] == "tool"))
@@ -4306,15 +4316,14 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
 
     async def handle_sse_stream(self, genparams, api_format):
         global friendlymodelname, currfinishreason
-        # if tools, do not send anything - OAI tool calls will be handled with fakestreaming!
         using_openai_tools = genparams.get('using_openai_tools', False)
-        if api_format == 4 and using_openai_tools:
-            return
         self.send_response(200)
         self.send_header("X-Accel-Buffering", "no")
         self.send_header("cache-control", "no-cache")
         self.send_header("connection", "keep-alive")
         self.end_headers(content_type='text/event-stream')
+        if api_format == 4 and using_openai_tools: # if tools, do not send anything else - OAI tool calls will be handled with fakestreaming!
+            return
 
         encap_in_thinking = False
         encap_first_loop = True
@@ -5919,12 +5928,6 @@ Change Mode<br>
                             self.end_headers(content_type='application/json')
                             self.wfile.write(genresp)
                         elif api_format == 4 and genparams.get('using_openai_tools', False): #special case, fake streaming for openai tool calls
-                            self.send_response(200)
-                            self.send_header("X-Accel-Buffering", "no")
-                            self.send_header("cache-control", "no-cache")
-                            self.send_header("connection", "keep-alive")
-                            self.end_headers(content_type='text/event-stream')
-
                             content_text = None
                             toolsdata_res = []
                             try:
@@ -6262,7 +6265,7 @@ def RunServerMultiThreaded(addr, port, server_handler):
             sys.exit(0)
 
 # Based on https://github.com/mathgeniuszach/xdialog/blob/main/xdialog/zenity_dialogs.py - MIT license | - Expanded version by Henk717
-def zenity(filetypes=None, initialdir="", initialfile="", **kwargs) -> Tuple[int, str]:
+def zenity(filetypes=None, initialdir="", initialfile="", multiple=False, **kwargs) -> Tuple[int, object]:
     global zenity_recent_dir, zenity_permitted
 
     if not zenity_permitted:
@@ -6327,6 +6330,10 @@ def zenity(filetypes=None, initialdir="", initialfile="", **kwargs) -> Tuple[int
     initialpath = os.path.join(initialdir, initialfile)
     args.append(f'--filename={initialpath}')
 
+    if multiple:
+        args.append("--multiple")
+        args.append("--separator=|")
+
     clean_env = os.environ.copy()
     clean_env.pop("LD_LIBRARY_PATH", None)
     clean_env["PATH"] = "/usr/bin:/bin"
@@ -6341,15 +6348,18 @@ def zenity(filetypes=None, initialdir="", initialfile="", **kwargs) -> Tuple[int
     result = procres.stdout.decode('utf-8').strip()
     if procres.returncode==0 and result:
         directory = result
-        if not os.path.isdir(result):
-            directory = os.path.dirname(result)
+        if multiple:
+            result = tuple(result.split("|"))
+            directory = result[0]
+        if not os.path.isdir(directory):
+            directory = os.path.dirname(directory)
         zenity_recent_dir = directory
     return (procres.returncode, result)
 
 # note: In this section we wrap around file dialogues to allow for zenity
 def zentk_askopenfilename(**options):
     try:
-        result = zenity(filetypes=options.get("filetypes"), initialdir=options.get("initialdir"), title=options.get("title"))[1]
+        result = zenity(filetypes=options.get("filetypes"), initialdir=options.get("initialdir"), multiple=False, title=options.get("title"))[1]
         if result and not os.path.isfile(result):
             print("A folder was selected while we need a file, ignoring selection.")
             return ''
@@ -6358,9 +6368,21 @@ def zentk_askopenfilename(**options):
         result = askopenfilename(**options)
     return result
 
+def zentk_askopenfilenames(**options):
+    try:
+        result = zenity(filetypes=options.get("filetypes"), initialdir=options.get("initialdir"), multiple=True, title=options.get("title"))[1]
+        for itm in result:
+            if itm and not os.path.isfile(itm):
+                print("A folder was selected while we need a file, ignoring selection.")
+                return ''
+    except Exception:
+        from tkinter.filedialog import askopenfilenames
+        result = askopenfilenames(**options)
+    return result
+
 def zentk_askdirectory(**options):
     try:
-        result = zenity(initialdir=options.get("initialdir"), title=options.get("title"), directory=True)[1]
+        result = zenity(initialdir=options.get("initialdir"), multiple=False, title=options.get("title"), directory=True)[1]
     except Exception:
         from tkinter.filedialog import askdirectory
         result = askdirectory(**options)
@@ -6368,7 +6390,7 @@ def zentk_askdirectory(**options):
 
 def zentk_asksaveasfilename(**options):
     try:
-        result = zenity(filetypes=options.get("filetypes"), initialdir=options.get("initialdir"), initialfile=options.get("initialfile"), title=options.get("title"), save=True)[1]
+        result = zenity(filetypes=options.get("filetypes"), initialdir=options.get("initialdir"), initialfile=options.get("initialfile"), multiple=False, title=options.get("title"), save=True)[1]
     except Exception:
         from tkinter.filedialog import asksaveasfilename
         result = asksaveasfilename(**options)
@@ -6472,6 +6494,7 @@ def show_gui():
     windowwidth = original_windowwidth
     windowheight = original_windowheight
     ctk.set_appearance_mode("dark")
+    ctk.deactivate_automatic_dpi_awareness()
     root = ctk.CTk(fg_color="#2b2b2b")
     if corrupt_scaler:
         print("Adjusting tk scaling to try and fix scaling issues...")
@@ -6815,7 +6838,7 @@ def show_gui():
         return entry, label
 
     #file dialog types: 0=openfile,1=savefile,2=opendir
-    def makefileentry(parent, text, searchtext, var, row=0, width=200, filetypes=[], onchoosefile=None, singlerow=False, singlecol=True, dialog_type=0, tooltiptxt=""):
+    def makefileentry(parent, text, searchtext, var, row=0, width=200, filetypes=[], onchoosefile=None, singlerow=False, singlecol=True, dialog_type=0, tooltiptxt="", multiple=False):
         label = makelabel(parent, text, row,0,tooltiptxt,columnspan=3)
         def getfilename(var, text):
             initialDir = os.path.dirname(var.get())
@@ -6831,7 +6854,11 @@ def show_gui():
                     fnam = str(fnam).strip()
                     fnam = f"{fnam}.jsondb" if ".jsondb" not in fnam.lower() else fnam
             else:
-                fnam = zentk_askopenfilename(title=text,filetypes=filetypes, initialdir=initialDir)
+                if multiple:
+                    fnam = zentk_askopenfilenames(title=text,filetypes=filetypes, initialdir=initialDir)
+                    fnam = "|".join(fnam)
+                else:
+                    fnam = zentk_askopenfilename(title=text,filetypes=filetypes, initialdir=initialDir)
             if fnam:
                 var.set(fnam)
                 if onchoosefile:
@@ -7046,7 +7073,10 @@ def show_gui():
         pass
 
     def changed_autofit(*args):
+        global runmode_untouched
+        orig_rmu = runmode_untouched
         changerunmode(1,1,1)
+        runmode_untouched = orig_rmu
         changed_gpulayers_estimate()
 
     def changed_gpulayers_estimate(*args):
@@ -7239,7 +7269,7 @@ def show_gui():
         "Use ContextShift": [contextshift_var, "Uses Context Shifting to reduce reprocessing.\nRecommended. Check the wiki for more info."],
         "Remote Tunnel": [remotetunnel_var,  "Creates a trycloudflare tunnel.\nAllows you to access koboldcpp from other devices over an internet URL."],
         "Use FlashAttention": [flashattention_var, "Enable flash attention for GGUF models."],
-        "AutoFit": [autofit_var, "Automatically attempt to fit the model in the best possible way. Overrides everything else.\nNot recommended for multi model setups. Experimental."],
+        "Force AutoFit": [autofit_var, "Automatically attempt to fit the model in the best possible way. Overrides everything else.\nNot recommended for multi model setups. Experimental."],
         "Quiet Mode": [quietmode, "Prevents all generation related terminal output from being displayed."]
     }
 
@@ -7308,7 +7338,7 @@ def show_gui():
 
     makecheckbox(hardware_tab, "Use FlashAttention", flashattention_var, 100, command=toggleflashattn,  tooltiptxt="Enable flash attention for GGUF models.")
 
-    makecheckbox(hardware_tab, "AutoFit", autofit_var, 100,0,command=changed_autofit,padx=160, tooltiptxt="Automatically attempt to fit the model in the best possible way. Overrides everything else.\nNot recommended for multi model setups. Experimental.")
+    makecheckbox(hardware_tab, "Force AutoFit", autofit_var, 100,0,command=changed_autofit,padx=160, tooltiptxt="Automatically attempt to fit the model in the best possible way. Overrides everything else.\nNot recommended for multi model setups. Experimental.")
     ctk.CTkButton(hardware_tab , text = "Run Benchmark", command = guibench ).grid(row=110,column=0, stick="nw", padx= 8, pady=2)
 
 
@@ -7471,7 +7501,7 @@ def show_gui():
     makelabelcombobox(images_tab, "Compress Weights: ", sd_quant_var, 8, width=(60), padx=(126), labelpadx=8, tooltiptxt="Quantizes the SD model weights to save memory.\nHigher levels save more memory, and cause more quality degradation.", values=sd_quant_choices)
     sd_quant_var.trace_add("write", changed_gpulayers_estimate)
 
-    makefileentry(images_tab, "Image LoRA:", "Select SD lora file",sd_lora_var, 20, width=160, singlerow=True, filetypes=[("*.safetensors *.gguf", "*.safetensors *.gguf")],tooltiptxt="Select a .safetensors or .gguf SD LoRA model file to be loaded. Should be unquantized!")
+    makefileentry(images_tab, "Image LoRA:", "Select SD lora file",sd_lora_var, 20, width=160, singlerow=True, filetypes=[("*.safetensors *.gguf", "*.safetensors *.gguf")],tooltiptxt="Select a .safetensors or .gguf SD LoRA model file to be loaded. Should be unquantized!", multiple=True)
     makelabelentry(images_tab, "Multiplier:" , sd_loramult_var, 20, 50,padx=(390),singleline=True,tooltip="What mutiplier value to apply the SD LoRA with.",labelpadx=(330))
 
     makefileentry(images_tab, "T5-XXL File:", "Select T5-XXL model file (SD3, Flux, WAN)",sd_t5xxl_var, 24, width=280, singlerow=True, filetypes=[("*.safetensors *.gguf","*.safetensors *.gguf")],tooltiptxt="Select a .safetensors t5xxl file to be loaded.")
@@ -7802,10 +7832,10 @@ def show_gui():
             args.sdupscaler = sd_upscaler_var.get()
         args.sdquant = sd_quant_option(sd_quant_var.get())
         if sd_lora_var.get() != "":
-            args.sdlora = sd_lora_var.get()
+            args.sdlora = [item.strip() for item in sd_lora_var.get().split("|") if item]
             args.sdloramult = float(sd_loramult_var.get())
         else:
-            args.sdlora = ""
+            args.sdlora = None
 
         if gen_defaults_var.get() != "":
             args.gendefaults = gen_defaults_var.get()
@@ -8053,8 +8083,13 @@ def show_gui():
         sd_upscaler_var.set(dict["sdupscaler"] if ("sdupscaler" in dict and dict["sdupscaler"]) else "")
         sd_vaeauto_var.set(1 if ("sdvaeauto" in dict and dict["sdvaeauto"]) else 0)
         sd_tiled_vae_var.set(str(dict["sdtiledvae"]) if ("sdtiledvae" in dict and dict["sdtiledvae"]) else str(default_vae_tile_threshold))
-
-        sd_lora_var.set(dict["sdlora"] if ("sdlora" in dict and dict["sdlora"]) else "")
+        if "sdlora" in dict and dict["sdlora"]:
+            if isinstance((dict["sdlora"]), list):
+                sd_lora_var.set("|".join(dict["sdlora"]))
+            else:
+                sd_lora_var.set(dict["sdlora"] if ("sdlora" in dict and dict["sdlora"]) else "")
+        else:
+            sd_lora_var.set("")
         sd_loramult_var.set(str(dict["sdloramult"]) if ("sdloramult" in dict and dict["sdloramult"]) else "1.0")
         gen_defaults_var.set(dict["gendefaults"] if ("gendefaults" in dict and dict["gendefaults"]) else "")
         gen_defaults_overwrite_var.set(1 if "gendefaultsoverwrite" in dict and dict["gendefaultsoverwrite"] else 0)
@@ -8498,6 +8533,8 @@ def convert_invalid_args(args):
         dict["gendefaults"] = dict["sdgendefaults"]
     if "flashattention" in dict and "noflashattention" not in dict:
         dict["noflashattention"] = not dict["flashattention"]
+    if "sdlora" in dict and isinstance(dict["sdlora"], str):
+        dict["sdlora"] = ([dict["sdlora"]] if dict["sdlora"] else None)
     return args
 
 def setuptunnel(global_memory, has_sd):
@@ -9354,10 +9391,11 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
         dlfile = download_model_from_url(args.sdvae,[".gguf",".safetensors"],min_file_size=500000)
         if dlfile:
             args.sdvae = dlfile
-    if args.sdlora and args.sdlora!="":
-        dlfile = download_model_from_url(args.sdlora,[".gguf",".safetensors"],min_file_size=500000)
-        if dlfile:
-            args.sdlora = dlfile
+    if args.sdlora and len(args.sdlora)>0:
+        for i in range(0,len(args.sdlora)):
+            dlfile = download_model_from_url(args.sdlora[i],[".gguf",".safetensors"],min_file_size=500000)
+            if dlfile:
+                args.sdlora[i] = dlfile
     if args.mmproj and args.mmproj!="":
         dlfile = download_model_from_url(args.mmproj,[".gguf"],min_file_size=500000)
         if dlfile:
@@ -9634,18 +9672,20 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
                 exitcounter = 999
                 exit_with_error(2,f"Cannot find image model file: {imgmodel}")
         else:
-            imglora = ""
+            imgloras = []
             imgvae = ""
             imgt5xxl = ""
             imgclip1 = ""
             imgclip2 = ""
             imgphotomaker = ""
             imgupscaler = ""
-            if args.sdlora:
-                if os.path.exists(args.sdlora):
-                    imglora = os.path.abspath(args.sdlora)
-                else:
-                    print("Missing SD LORA model file...")
+            if args.sdlora and len(args.sdlora)>0:
+                for i in range (0,len(args.sdlora)):
+                    curr = args.sdlora[i]
+                    if os.path.exists(curr):
+                        imgloras.append(os.path.abspath(curr))
+                    else:
+                        print(f"Missing SD LORA model file {curr}...")
             if args.sdvae:
                 if os.path.exists(args.sdvae):
                     imgvae = os.path.abspath(args.sdvae)
@@ -9682,7 +9722,7 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
             friendlysdmodelname = os.path.basename(imgmodel)
             friendlysdmodelname = os.path.splitext(friendlysdmodelname)[0]
             friendlysdmodelname = sanitize_string(friendlysdmodelname)
-            loadok = sd_load_model(imgmodel,imgvae,imglora,imgt5xxl,imgclip1,imgclip2,imgphotomaker,imgupscaler)
+            loadok = sd_load_model(imgmodel,imgvae,imgloras,imgt5xxl,imgclip1,imgclip2,imgphotomaker,imgupscaler)
             print("Load Image Model OK: " + str(loadok))
             if not loadok:
                 exitcounter = 999
@@ -10128,7 +10168,7 @@ if __name__ == '__main__':
     sdparsergroup.add_argument("--sdmodel", metavar=('[filename]'), help="Specify an image generation safetensors or gguf model to enable image generation.", default="")
     sdparsergroup.add_argument("--sdthreads", metavar=('[threads]'), help="Use a different number of threads for image generation if specified. Otherwise, has the same value as --threads.", type=int, default=0)
     sdparsergroup.add_argument("--sdclamped", metavar=('[maxres]'), help="If specified, limit generation steps and image size for shared use. Accepts an extra optional parameter that indicates maximum resolution (eg. 768 clamps to 768x768, min 512px, disabled if 0).", nargs='?', const=512, type=int, default=0)
-    sdparsergroup.add_argument("--sdclampedsoft", metavar=('[maxres]'), help="If specified, limit max image size to curb memory usage. Similar to --sdclamped, but less strict, allows trade-offs between width and height (e.g. 640 would allow 640x640, 512x768 and 768x512 images). Total resolution cannot exceed 1MP.", type=int, default=0)
+    sdparsergroup.add_argument("--sdclampedsoft", metavar=('[maxres]'), help="If specified, limit max image size to curb memory usage. Similar to --sdclamped, but less strict, allows trade-offs between width and height (e.g. 640 would allow 640x640, 512x768 and 768x512 images).", type=int, default=0)
     sdparsergroup.add_argument("--sdt5xxl", metavar=('[filename]'), help="Specify a T5-XXL safetensors model. Leave blank if prebaked or unused.", default="")
     sdparsergroup.add_argument("--sdclip1", "--sdclipl", metavar=('[filename]'), help="Specify first safetensors Clip model (SD3 or Flux Clip-L, WAN or QwenImg vision). Leave blank if prebaked or unused.", default="")
     sdparsergroup.add_argument("--sdclip2", "--sdclipg", metavar=('[filename]'), help="Specify second safetensors Clip model (SD3 Clip-G). Leave blank if prebaked or unused.", default="")
@@ -10144,8 +10184,8 @@ if __name__ == '__main__':
     sdparsergroupvae.add_argument("--sdvaeauto", help="Uses a built-in tiny VAE via TAE SD, which is very fast, and fixed bad VAEs.", action='store_true')
     sdparsergrouplora = sdparsergroup.add_mutually_exclusive_group()
     sdparsergrouplora.add_argument("--sdquant",  metavar=('[quantization level 0/1/2]'), help="If specified, loads the model quantized to save memory. 0=off, 1=q8, 2=q4", type=int, choices=[0,1,2], nargs="?", const=2, default=0)
-    sdparsergrouplora.add_argument("--sdlora", metavar=('[filename]'), help="Specify an image generation LORA safetensors model to be applied.", default="")
-    sdparsergroup.add_argument("--sdloramult", metavar=('[amount]'), help="Multiplier for the image LORA model to be applied.", type=float, default=1.0)
+    sdparsergrouplora.add_argument("--sdlora", metavar=('[filename]'), help="Specify image generation LoRAs safetensors models to be applied. Multiple LoRAs are accepted.", nargs='+')
+    sdparsergroup.add_argument("--sdloramult", metavar=('[amount]'), help="Multiplier for the image LoRA model to be applied.", type=float, default=1.0)
     sdparsergroup.add_argument("--sdtiledvae", metavar=('[maxres]'), help="Adjust the automatic VAE tiling trigger for images above this size. 0 disables vae tiling.", type=int, default=default_vae_tile_threshold)
     whisperparsergroup = parser.add_argument_group('Whisper Transcription Commands')
     whisperparsergroup.add_argument("--whispermodel", metavar=('[filename]'), help="Specify a Whisper .bin model to enable Speech-To-Text transcription.", default="")
