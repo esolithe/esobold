@@ -12,7 +12,7 @@ Current version indicated by LITEVER below.
 -->
 <head>
 	<script id="init-config">
-	const LITEVER = 313;
+	const LITEVER = 314;
 	const urlParams = new URLSearchParams(window.location.search);
 	var localflag = urlParams.get('local'); //this will be replaced automatically in embedded kcpp
 	const STORAGE_PREFIX = (localflag?"e_":"")+"kaihordewebui_";
@@ -7137,7 +7137,7 @@ Current version indicated by LITEVER below.
 						pending_toolcall_objs.push(pending_toolcall_last_obj);
 						pending_toolcall_last_obj = null;
 					}
-					if(synchro_polled_response=="" && last_stop_reason=="tool_calls" && pending_toolcall_objs!=null && pending_toolcall_objs.length>0)
+					if((synchro_polled_response=="" || (synchro_polled_response.includes("<think>") && synchro_polled_response.includes("</think>"))) && last_stop_reason=="tool_calls" && pending_toolcall_objs!=null && pending_toolcall_objs.length>0)
 					{
 						//a tool call was triggered instead
 						synchro_polled_resptoolcalls = [];
@@ -24240,6 +24240,7 @@ Current version indicated by LITEVER below.
 	var suppressScrollEvent = false;
 	var autoscrollTimeout = null;
 	let autoscrollRAF = null;
+	var lastScrollTop = 0;
 	function handle_autoscroll(alwaysscroll = true) {
 		if (!localsettings.autoscroll) return;
 
@@ -24256,8 +24257,7 @@ Current version indicated by LITEVER below.
 			if (!boxes.length) return;
 
 			// ---- READ PHASE (no writes) ----
-			const threshold = autoscrollEnabled ? 210 : 75;
-
+			const threshold = autoscrollEnabled ? 195 : 70;
 			const scrollData = boxes.map(el => {
 				const maxScrollTop = el.scrollHeight - el.clientHeight + 10;
 				const isAtBottom =
@@ -24279,14 +24279,18 @@ Current version indicated by LITEVER below.
 	function attach_scroll_detection(element)
 	{
 		element.addEventListener("scroll", () => {
+			const currentScrollTop = element.scrollTop;
+        	const delta = currentScrollTop - lastScrollTop;
+        	lastScrollTop = currentScrollTop;
 			if (suppressScrollEvent) { return; }
+			if (delta>=0) { return; }
 			autoscrollEnabled = false;
 			if (autoscrollTimeout) {
 				clearTimeout(autoscrollTimeout);
 			}
 			autoscrollTimeout = setTimeout(() => {
 				autoscrollEnabled = true;
-			}, 100);
+			}, 180);
 		});
 	}
 
