@@ -12,7 +12,7 @@ Current version indicated by LITEVER below.
 -->
 <head>
 	<script id="init-config">
-	const LITEVER = 314;
+	const LITEVER = 315;
 	const urlParams = new URLSearchParams(window.location.search);
 	var localflag = urlParams.get('local'); //this will be replaced automatically in embedded kcpp
 	const STORAGE_PREFIX = (localflag?"e_":"")+"kaihordewebui_";
@@ -3708,6 +3708,7 @@ Current version indicated by LITEVER below.
 	const koboldcpp_savedata_save_endpoint = "/api/extra/data/save";
 	const koboldcpp_savedata_load_endpoint = "/api/extra/data/load";
 	const koboldcpp_mcp_endpoint = "/mcp";
+	const koboldcpp_voices_endpoint = "/speakers_list";
 
 	const oai_models_endpoint = "/models";
 	const oai_submit_endpoint = "/completions";
@@ -4119,7 +4120,7 @@ Current version indicated by LITEVER below.
 		wordsearch_enabled: false,
 
 		max_context_length: (localflag?8192:3800),
-		max_length: (localflag?896:460),
+		max_length: (localflag?1024:500),
 		last_maxctx: 0,
 		auto_ctxlen: true,
 		auto_genamt: true,
@@ -5456,6 +5457,16 @@ Current version indicated by LITEVER below.
 			return "";
 		}
 		const safeStart = escapeRegExp(localsettings.start_thinking_tag);
+		const safeStop = escapeRegExp(localsettings.stop_thinking_tag);
+		return `${safeStart}([\\s\\S]*?)${safeStop}`;
+	}
+	function get_orphaned_thinking_regex()
+	{
+		if(!localsettings.start_thinking_tag || !localsettings.stop_thinking_tag)
+		{
+			return "";
+		}
+		const safeStart = escapeRegExp(get_instructendplaceholder());
 		const safeStop = escapeRegExp(localsettings.stop_thinking_tag);
 		return `${safeStart}([\\s\\S]*?)${safeStop}`;
 	}
@@ -7673,6 +7684,10 @@ Current version indicated by LITEVER below.
 		if(localsettings.tts_mode==XTTS_ID || localsettings.tts_mode==ALLTALK_ID)
 		{
 			fetch_xtts_voices(true,localsettings.tts_mode==XTTS_ID);
+		}
+		else if(localsettings.tts_mode==KCPP_TTS_ID)
+		{
+			fetch_kcpp_voices();
 		}
 		if(localsettings.generate_images_mode==2)
 		{
@@ -17411,9 +17426,9 @@ Current version indicated by LITEVER below.
 		}
 	}
 
-	function set_voice_clone()
+	function set_voice_json()
 	{
-		inputBoxOkCancel("Set the Voice Clone JSON to clone an existing voice.<br><br><a href='https://github.com/LostRuins/koboldcpp/tree/concedo/examples/outetts/speakers' target='_blank'>You can download existing voice clone JSONs, or make your own.</span><br>","Apply Voice Clone JSON",kcpp_tts_json,"Paste JSON Here",()=>{
+		inputBoxOkCancel("OuteTTS ONLY - Set the OuteTTS Voice JSON to copy an existing voice.<br><br><a href='https://github.com/LostRuins/koboldcpp/tree/concedo/examples/outetts/speakers' target='_blank'>You can download existing voice JSONs, or make your own.</span><br>","Apply OuteTTS Voice JSON",kcpp_tts_json,"Paste JSON Here",()=>{
 		let userinput = getInputBoxValue().trim();
 		try
 		{
@@ -18490,6 +18505,28 @@ Current version indicated by LITEVER below.
 		}
 	}
 
+	function fetch_kcpp_voices()
+	{
+		    fetch(apply_proxy_url(custom_kobold_endpoint + koboldcpp_voices_endpoint), {
+			method: 'GET', // or 'PUT'
+			headers: get_kobold_header(),
+			})
+			.then(x => x.json())
+			.then(data => {
+				console.log(data);
+				let dropdown = document.getElementById("kcpp_tts_voice");
+					let selectionhtml = ``;
+					for (var i = 0; i < data.length; ++i) {
+						// Check for XTTS voices if set
+						let sel = (localsettings.kcpp_tts_voice!=""&&localsettings.kcpp_tts_voice==data[i]);
+						selectionhtml += `<option value="` + data[i] + `"`+(sel?" selected":"")+`>`+data[i]+`</option>`;
+					}
+					selectionhtml += `<option value="custom">custom</option><option value="voicejson">voicejson</option>`;
+					dropdown.innerHTML = selectionhtml;
+			}).catch((error) => {
+			});
+	}
+
 	function manual_tts()
 	{
 		let ssval = localsettings.tts_mode;
@@ -18530,7 +18567,7 @@ Current version indicated by LITEVER below.
 			if (userinput != null && userinput!="" && ssval > 0) {
 				tts_speak(userinput,downloadtts,embedtts,false);
 			}
-		},true);
+		},true,true);
 	}
 
 	function test_tts()
@@ -18583,6 +18620,7 @@ Current version indicated by LITEVER below.
 		}
 		else if(selectedTTS == KCPP_TTS_ID) {
 			document.getElementById("kcpp_tts_container").classList.remove("hidden");
+			fetch_kcpp_voices();
 			if(is_using_kcpp_with_tts())
 			{
 				document.getElementById("nokcpptts").classList.add("hidden");
@@ -18645,10 +18683,10 @@ Current version indicated by LITEVER below.
 		} else {
 			document.getElementById("kcpp_tts_voice_custom").classList.add("hidden");
 		}
-		if (document.getElementById("kcpp_tts_voice").value == "voiceclone") {
-			document.getElementById("kcpp_tts_voice_clone").classList.remove("hidden");
+		if (document.getElementById("kcpp_tts_voice").value == "voicejson") {
+			document.getElementById("kcpp_tts_voice_json").classList.remove("hidden");
 		} else {
-			document.getElementById("kcpp_tts_voice_clone").classList.add("hidden");
+			document.getElementById("kcpp_tts_voice_json").classList.add("hidden");
 		}
 
 	}
@@ -18833,14 +18871,14 @@ Current version indicated by LITEVER below.
 					};
 				} else {
 					sub_endpt = apply_proxy_url(custom_kobold_endpoint + koboldcpp_tts_endpoint);
-					let is_voiceclone = (document.getElementById("kcpp_tts_voice").value == "voiceclone");
+					let is_voicejson = (document.getElementById("kcpp_tts_voice").value == "voicejson");
 					let is_custom = (document.getElementById("kcpp_tts_voice").value == "custom");
 					payload =
 					{
 						"input": text,
 						"voice": (is_custom)?document.getElementById("kcpp_tts_voice_custom").value:document.getElementById("kcpp_tts_voice").value
 					};
-					if(is_voiceclone && vcjson)
+					if(is_voicejson && vcjson)
 					{
 						payload.speaker_json = vcjson;
 					}
@@ -19578,6 +19616,14 @@ Current version indicated by LITEVER below.
 				{
 					let pat = new RegExp(get_thinking_regex(), "gm");
 					truncated_context = truncated_context.replace(pat, "");
+
+					//fallback, check for orphaned think tags and remove those as well
+					if(localsettings.opmode==4 && localsettings.stop_thinking_tag && truncated_context.includes(localsettings.stop_thinking_tag))
+					{
+						let endmatcher = get_instructendplaceholder();
+						let pat = new RegExp(get_orphaned_thinking_regex(), "gm");
+						truncated_context = truncated_context.replace(pat, endmatcher);
+					}
 				}
 				else if(localsettings.strip_thinking_mode==1) //strip except recent
 				{
@@ -19588,6 +19634,14 @@ Current version indicated by LITEVER below.
 						let afterPart = truncated_context.slice(lastInstructIdx);
 						let pat = new RegExp(get_thinking_regex(), "gm");	// Remove all thinking before splitpoint
 						beforePart = beforePart.replace(pat, "");
+
+						//fallback, check for orphaned think tags and remove those as well
+						if(localsettings.opmode==4 && localsettings.stop_thinking_tag && beforePart.includes(localsettings.stop_thinking_tag))
+						{
+							let pat = new RegExp(get_orphaned_thinking_regex(), "gm");
+							beforePart = beforePart.replace(pat, endmatcher);
+						}
+
 						truncated_context = beforePart + afterPart; // Combine and done
 					}
 				}
@@ -22993,7 +23047,7 @@ Current version indicated by LITEVER below.
 
 	// AUDIO MANIPULATION FUNCTIONS
 	//convert any audio to a webm blob (high compression)
-	function convertAudioToCompressedBase64(inputBase64, onDone) {
+	function convertAudioToCompressedBase64(inputBase64, onDone, audio_quality=40) { //quality is kbps
 		// Step 1: Convert base64 string to Blob
 		const matches = inputBase64.match(/^data:(audio\/[a-zA-Z0-9-]+);base64,(.+)$/);
 		if (!matches) {
@@ -23019,7 +23073,7 @@ Current version indicated by LITEVER below.
 				const samplefreq = buffer.sampleRate;
 				const samples = buffer.getChannelData(0); // mono
 				const durationInSeconds = buffer.duration;
-				const mp3encoder = new lamejs.Mp3Encoder(1, samplefreq, 40); // mono, 16kHz, 40kbps
+				const mp3encoder = new lamejs.Mp3Encoder(1, samplefreq, audio_quality); // mono, 16kHz, 40kbps
 				const sampleBlockSize = 1152; //can be anything but make it a multiple of 576 to make encoders life easier
 				let mp3Data = [];
 				for (let i = 0; i < samples.length; i += sampleBlockSize) {
@@ -30233,12 +30287,12 @@ Current version indicated by LITEVER below.
 								<option value="shouty">shouty</option>
 								<option value="chatty">chatty</option>
 								<option value="custom">custom</option>
-								<option value="voiceclone">voiceclone</option>
+								<option value="voicejson">voicejson</option>
 								</select>
 							</div>
 							<div>
 							<input type="text" value="" placeholder="(Name)" id="kcpp_tts_voice_custom" style="margin-left:3px; width:56px;">
-							<button id="kcpp_tts_voice_clone" type="button" class="btn btn-primary" style="margin-left:3px; width:56px;" onclick="set_voice_clone()">Setup</button>
+							<button id="kcpp_tts_voice_json" type="button" class="btn btn-primary" style="margin-left:3px; width:56px;" onclick="set_voice_json()">Setup</button>
 							</div>
 							</div>
 						</div>
