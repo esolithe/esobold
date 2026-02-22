@@ -308,6 +308,8 @@ and it will install everything required. Alternatively, you can download the abo
 - Llama.cpp source repo is at https://github.com/ggml-org/llama.cpp (MIT)
 - Stable-diffusion.cpp source repo is at https://github.com/leejet/stable-diffusion.cpp (MIT)
 - TTS.cpp source repo is at https://github.com/mmwillet/TTS.cpp (MIT)
+- Qwen3TTS source repo is at https://github.com/predict-woo/qwen3-tts.cpp (MIT)
+- AceStep.cpp source repo is at https://github.com/ServeurpersoCom/acestep.cpp (MIT)
 - KoboldCpp source repo is at https://github.com/LostRuins/koboldcpp (AGPL)
 - KoboldAI Lite source repo is at https://github.com/LostRuins/lite.koboldai.net (AGPL)
 - For any further enquiries, contact @concedo on discord, or LostRuins on github.

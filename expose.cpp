@@ -242,6 +242,15 @@ extern "C"
         return embeddingstype_generate(inputs);
     }
 
+    bool music_load_model(const music_load_model_inputs inputs)
+    {
+        return musictype_load_model(inputs);
+    }
+    music_generation_outputs music_generate(const music_generation_inputs inputs)
+    {
+        return musictype_generate(inputs);
+    }
+
     const char * new_token(int idx) {
         if (generated_tokens.size() <= idx || idx < 0) return nullptr;
 

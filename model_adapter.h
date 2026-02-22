@@ -120,6 +120,9 @@ tts_generation_outputs ttstype_generate(const tts_generation_inputs inputs);
 bool embeddingstype_load_model(const embeddings_load_model_inputs inputs);
 embeddings_generation_outputs embeddingstype_generate(const embeddings_generation_inputs inputs);
 
+bool musictype_load_model(const music_load_model_inputs inputs);
+music_generation_outputs musictype_generate(const music_generation_inputs inputs);
+
 void timer_start();
 double timer_check();
 void print_tok_vec(std::vector<int> &embd);
@@ -130,9 +133,7 @@ bool ArrStartWith(const std::vector<int> targetArray, const std::vector<int> sea
 int ArrFindIndexOf(const std::vector<int> targetArray, const std::vector<int> searchSeq);
 
 FileFormat check_file_format(const std::string & fname, FileFormatExtraMeta * fileformatmeta);
-void ContextFastForward(std::vector<int> &current_context_tokens, std::vector<int> &embd_inp,
- int &n_past, std::vector<int> &last_n_tokens, const int nctx, std::vector<int> &smartcontext,
- const bool useSmartContext, const bool requireFullSubset, const int minimum_to_proceed);
+void ContextFastForward(std::vector<int> &current_context_tokens, std::vector<int> &embd_inp, int &n_past, std::vector<int> &last_n_tokens, const int nctx, std::vector<int> &smartcontext, const bool useSmartContext, const bool requireFullSubset, const int minimum_to_proceed);
 bool gguf_tensor_exists(const std::string & filename, std::string tensor_name, bool exactmatch);
 std::string gguf_get_model_arch(const std::string & filename);
 

@@ -142,11 +142,11 @@ struct tts_runner * runner_from_file(const std::string & fname, int n_threads, g
         return nullptr;
     }
     std::string arch = std::string(gguf_get_val_str(meta_ctx, arch_key));
-    if (SUPPORTED_ARCHITECTURES.find(arch) == SUPPORTED_ARCHITECTURES.end()) {
+    if (TTSCPP_SUPPORTED_ARCHITECTURES.find(arch) == TTSCPP_SUPPORTED_ARCHITECTURES.end()) {
         fprintf(stdout,"%s failed for file %s. The architecture '%s' is not supported.", __func__, fname.c_str(), arch.c_str());
         return nullptr;
     }
-    tts_arch arch_type = SUPPORTED_ARCHITECTURES.at(arch);
+    tts_arch arch_type = TTSCPP_SUPPORTED_ARCHITECTURES.at(arch);
     switch(arch_type) {
         case PARLER_TTS_ARCH:
             return parler_tts_from_file(meta_ctx, weight_ctx, n_threads, config, arch_type, cpu_only);
@@ -356,7 +356,7 @@ void quantize_gguf(const std::string & ifile, const std::string & ofile, struct 
     if (arch_key != -1) {
         arch = std::string(gguf_get_val_str(meta_ctx, arch_key));
     }
-    tts_arch arch_type = SUPPORTED_ARCHITECTURES.at(arch);
+    tts_arch arch_type = TTSCPP_SUPPORTED_ARCHITECTURES.at(arch);
 
     if (params->quantize_type != GGML_TYPE_Q5_0 && params->quantize_type != GGML_TYPE_Q8_0 && params->quantize_type != GGML_TYPE_F16 && params->quantize_type != GGML_TYPE_Q4_0) {
         fprintf(stdout, "Warning, %s is untested for quantization type '%d'. Use at your own risk.\n", arch.c_str(), params->quantize_type);

@@ -291,6 +291,7 @@ struct tts_generation_inputs
     const char * custom_speaker_voice = "";
     const char * custom_speaker_text = "";
     const char * custom_speaker_data = "";
+    const char * reference_audio = "";
 };
 struct tts_generation_outputs
 {
@@ -323,6 +324,30 @@ struct embeddings_generation_outputs
     int status = -1;
     int count = 0;
     const char * data = "";
+};
+
+struct music_load_model_inputs
+{
+    const char * musicllm_filename = nullptr;
+    const char * musicembedding_filename = nullptr;
+    const char * musicdiffusion_filename = nullptr;
+    const char * musicvae_filename = nullptr;
+    const char * executable_path = nullptr;
+    const int kcpp_main_gpu = 0;
+    const char * vulkan_info = nullptr;
+    const char * devices_override = nullptr;
+    const bool quiet = false;
+    const int debugmode = 0;
+};
+struct music_generation_inputs
+{
+    const bool is_codes = false; //if true, generate codes, else, generate diffusion music
+    const char * caption = nullptr;
+};
+struct music_generation_outputs
+{
+    int status = -1;
+    const char * codes_json = "";
 };
 
 extern std::string executable_path;

@@ -1140,7 +1140,6 @@ struct ggml_cuda_graph_node_properties {
 };
 
 static_assert(std::is_trivial<ggml_cuda_graph_node_properties>::value, "ggml_cuda_graph_node_properties must be trivial");
-static bool cugraph_warned_rec = false;
 struct ggml_cuda_graph {
 #ifdef USE_CUDA_GRAPH
     ~ggml_cuda_graph() {
@@ -1156,8 +1155,7 @@ struct ggml_cuda_graph {
     size_t num_nodes = 0;
     std::vector<cudaGraphNode_t> nodes;
     bool disable_due_to_gpu_arch = false;
-    bool disable_due_to_too_many_updates = false;
-    int number_consecutive_updates = 0;
+    bool warmup_complete = false;
     std::vector<ggml_cuda_graph_node_properties> props;
 
     // these are extra tensors (inputs) that participate in the ggml graph but are not nodes
@@ -1166,25 +1164,9 @@ struct ggml_cuda_graph {
     // ref: https://github.com/ggml-org/llama.cpp/pull/19165
     std::vector<ggml_cuda_graph_node_properties> extra;
 
-    void record_update(bool use_graph, bool update_required) {
-        if (use_graph && update_required) {
-            number_consecutive_updates++;
-        } else {
-            number_consecutive_updates = 0;
-        }
-        if (number_consecutive_updates >= 4) {
-            if(!cugraph_warned_rec)
-            {
-                cugraph_warned_rec = true;
-                GGML_LOG_DEBUG("%s: disabling CUDA graphs due to too many consecutive updates\n", __func__);
-            }
-            disable_due_to_too_many_updates = true;
-        }
-    }
-
     bool is_enabled() const {
         static const bool disable_cuda_graphs_due_to_env = (getenv("GGML_CUDA_DISABLE_GRAPHS") != nullptr);
-        return !(disable_due_to_gpu_arch || disable_cuda_graphs_due_to_env || disable_due_to_too_many_updates);
+        return !(disable_due_to_gpu_arch || disable_cuda_graphs_due_to_env);
     }
 #endif
 };

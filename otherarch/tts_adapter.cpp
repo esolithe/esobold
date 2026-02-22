@@ -42,6 +42,15 @@
 #include "snac_model.cpp"
 #include "general_neural_audio_codec.cpp"
 
+//imports required for qwen3tts to work
+#include "qwen3_tts.cpp"
+#include "text_tokenizer.cpp"
+#include "gguf_loader.cpp"
+#include "tts_transformer.cpp"
+#include "audio_tokenizer_decoder.cpp"
+#include "audio_tokenizer_encoder.cpp"
+#include "coreml_code_predictor_stub.cpp"
+
 enum TTS_VER
 {
     TTS_VER_2,
@@ -64,84 +73,6 @@ struct wav_header {
     uint32_t data_size;
 };
 
-// #include <vector>
-// #include <cstdio>
-// #include <cmath>
-
-// static void audio_post_clean(std::vector<float>& data) { // detect clicks
-//     const float silenceThreshold = 1e-5f;
-//     const float noiseThreshold   = 1e-3f;
-//     const size_t minSilence      = 100;   // samples
-//     const size_t noiseSpan       = 150;   // samples
-//     const size_t minSilence2      = 100;   // samples
-
-//     size_t len = data.size();
-
-//     int silencecounterA = 0;
-//     int noisecounterA   = 0;
-//     int silencecounterB = 0;
-//     int state = 0; // 0 = finding first silence, 1 = measuring noise, 2 = finding second silence
-
-//     size_t noiseStart = 0;
-
-//     for (size_t i = 0; i < len; ++i) {
-//         float sample = std::fabs(data[i]);
-
-//         if (state == 0) { // finding first silence
-//             if (sample < silenceThreshold) {
-//                 silencecounterA++;
-//             } else {
-//                 if (silencecounterA >= minSilence) {
-//                     state = 1;
-//                     noisecounterA = 1;
-//                     noiseStart = i;
-//                 } else {
-//                     silencecounterA = 0;
-//                     noisecounterA = 0;
-//                     silencecounterB = 0;
-//                 }
-//             }
-//         }
-//         if (state == 1) { // measuring noise span
-//             noisecounterA++;
-//             if(sample>noiseThreshold)
-//             {
-//                 state = 0;
-//                 silencecounterA = 0;
-//                 noisecounterA = 0;
-//                 silencecounterB = 0;
-//             }
-//             else if(noisecounterA>noiseSpan)
-//             {
-//                 state = 2;
-//             }
-//         }
-//         if (state == 2) { // finding second silence
-//             if (sample < silenceThreshold) {
-//                 silencecounterB++;
-//                 if (silencecounterB >= minSilence2) {
-//                     // full click detected
-//                     size_t noiseend = noiseStart + noisecounterA - 1;
-//                     //printf("Click detected from %zu to %zu\n", noiseStart, noiseend);
-//                     for(size_t j=noiseStart;j<noiseend;++j)
-//                     {
-//                         data[j] *= 0.01f; //greatly suppress noise
-//                     }
-//                     // reset to search again
-//                     state = 0;
-//                     silencecounterA = 0;
-//                     noisecounterA = 0;
-//                     silencecounterB = 0;
-//                 }
-//             } else {
-//                 state = 0;
-//                 silencecounterA = 0;
-//                 noisecounterA = 0;
-//                 silencecounterB = 0;
-//             }
-//         }
-//     }
-// }
 
 static std::string save_wav16_base64(const std::vector<float> &data, int sample_rate) {
     std::ostringstream oss;
@@ -609,6 +540,10 @@ static generation_configuration * ttscpp_config = nullptr;
 static struct tts_runner * ttscpp_runner = nullptr;
 static std::string detectedarch = "";
 
+//qwen3tts specific
+static bool is_qwen3tts_file = false;
+static qwen3_tts::Qwen3TTS qwen3tts_runner;
+
 int total_tts_gens = 0;
 static std::string tts_executable_path = "";
 
@@ -646,7 +581,13 @@ bool ttstype_load_model(const tts_load_model_inputs inputs)
     detectedarch = gguf_get_model_arch(modelfile_ttc);
 
     is_ttscpp_file = false;
-    if (detectedarch!="" && SUPPORTED_ARCHITECTURES.find(detectedarch) != SUPPORTED_ARCHITECTURES.end()) {
+    is_qwen3tts_file = false;
+    if (detectedarch=="qwen3-tts")
+    {
+        is_qwen3tts_file = true;
+        printf("\nLoading Qwen3-TTS Model: %s, Arch: %s \n",modelfile_ttc.c_str(), detectedarch.c_str());
+    }
+    else if (detectedarch!="" && TTSCPP_SUPPORTED_ARCHITECTURES.find(detectedarch) != TTSCPP_SUPPORTED_ARCHITECTURES.end()) {
         is_ttscpp_file = true;
         printf("\nLoading TTS.CPP Model: %s, Arch: %s \n",modelfile_ttc.c_str(), detectedarch.c_str());
         if(detectedarch=="kokoro")
@@ -674,7 +615,16 @@ bool ttstype_load_model(const tts_load_model_inputs inputs)
             printf("\nTTS Load Error: Failed to initialize TTSCPP!\n");
             return false;
         }
-    } else { //outetts only
+    }
+    else if(is_qwen3tts_file)
+    {
+        if (!qwen3tts_runner.load_models(modelfile_ttc,modelfile_cts)) {
+            printf("\nQwen3TTS Load Error: %s\n", qwen3tts_runner.get_error().c_str());
+            return false;
+        }
+    }
+    else  //outetts only
+    {
         llama_model_params tts_model_params = llama_model_default_params();
         llama_context_params tts_ctx_params = llama_context_default_params();
 
@@ -1205,7 +1155,7 @@ static tts_generation_outputs ttstype_generate_outetts(const tts_generation_inpu
     else
     {
         // spectral operations
-        const int n_embd = llama_model_n_embd(model_cts);
+        const int n_embd = llama_model_n_embd_out(model_cts);
         const float * embd = llama_get_embeddings(cts_ctx);
         std::vector<float> audio = embd_to_audio(embd, n_codes, n_embd, nthreads);
 
@@ -1253,11 +1203,97 @@ static tts_generation_outputs ttstype_generate_outetts(const tts_generation_inpu
     }
 }
 
+static tts_generation_outputs ttstype_generate_qwen3tts(const tts_generation_inputs inputs)
+{
+    tts_generation_outputs output;
+
+    if(!qwen3tts_runner.is_loaded())
+    {
+        printf("\nWarning: KCPP TTS not initialized! Make sure both TTS and WavTokenizer models are loaded.\n");
+        output.data = "";
+        output.status = 0;
+        return output;
+    }
+    else
+    {
+        double ttstime = 0;
+        timer_start();
+
+        qwen3_tts::tts_result result;
+        std::string prompt = inputs.prompt;
+        qwen3_tts::tts_params qwen3tts_params;
+        std::string custom_reference_audio_str = inputs.reference_audio;
+        std::vector<float> custom_reference_audio_pcmf32;
+        std::string speakerstr = inputs.custom_speaker_voice;
+
+        if(ttsdebugmode==1 && !tts_is_quiet)
+        {
+            printf("\nUsing Audio Seed: %d, Speaker: %s", inputs.audio_seed,speakerstr.c_str());
+        }
+        qwen3tts_runner.set_seed(inputs.audio_seed);
+
+        if(custom_reference_audio_str!="")
+        {
+            std::vector<uint8_t> media_data_buffer = kcpp_base64_decode(custom_reference_audio_str);
+
+            //qwen3tts uses 24khz
+            bool ok = kcpp_decode_audio_from_buf(media_data_buffer.data(), media_data_buffer.size(), 24000, custom_reference_audio_pcmf32);
+            if (!ok) {
+                printf("\nError: Cannot read input audio file.\n");
+                output.data = "";
+                output.status = 0;
+                return output;
+            }
+        }
+
+        if(!tts_is_quiet)
+        {
+            printf("\nTTS Generating...");
+        }
+
+        if (custom_reference_audio_pcmf32.empty()) {
+            result = qwen3tts_runner.synthesize(prompt, qwen3tts_params);
+        } else {
+            std::size_t reuse_hash_value = std::hash<std::string>{}(custom_reference_audio_str);
+
+            std::string msg = "\nUsing reference voice...\n";
+            printf("%s",msg.c_str());
+            result = qwen3tts_runner.synthesize_with_voice(prompt, custom_reference_audio_pcmf32.data(),custom_reference_audio_pcmf32.size(), qwen3tts_params, reuse_hash_value);
+        }
+
+        if (!result.success) {
+            printf("\nError: TTS vocoder generation failed : %s\n", result.error_msg.c_str());
+            output.data = "";
+            output.status = 0;
+            return output;
+        }
+
+        ttstime = timer_check();
+        printf("\nTTS Generated audio in %.2fs.\n",ttstime);
+        last_generated_audio = save_wav16_base64(result.audio, result.sample_rate);
+        output.data = last_generated_audio.c_str();
+        output.status = 1;
+        last_generation_settings_audio_seed = inputs.audio_seed;
+        last_generation_settings_speaker_seed = 0;
+        last_generation_settings_prompt = std::string(prompt);
+        total_tts_gens += 1;
+        return output;
+
+    }
+}
+
 tts_generation_outputs ttstype_generate(const tts_generation_inputs inputs)
 {
-    if (is_ttscpp_file) {
+    if (is_ttscpp_file)
+    {
         return ttstype_generate_ttscpp(inputs);
-    } else {
+    }
+    else if(is_qwen3tts_file)
+    {
+        return ttstype_generate_qwen3tts(inputs);
+    }
+    else
+    {
         return ttstype_generate_outetts(inputs);
     }
 }
