@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KoboldCpp Music Generation</title>
+
+<style>
+:root{
+  --bg:#0f172a;
+  --panel:#1e293b;
+  --accent:#6366f1;
+  --accent2:#22d3ee;
+  --text:#f1f5f9;
+  --muted:#94a3b8;
+  --danger:#ef4444;
+}
+*{box-sizing:border-box}
+body{
+  margin:0;
+  font-family:Inter,system-ui,sans-serif;
+  background:linear-gradient(135deg,#0f172a,#1e1b4b);
+  color:var(--text);
+}
+header{
+  padding:16px 20px;
+  font-size:20px;
+  font-weight:600;
+  background:rgba(0,0,0,0.3);
+  backdrop-filter:blur(10px);
+}
+.wrapper{
+  display:grid;
+  grid-template-columns:minmax(340px,500px) 1fr;
+  gap:20px;
+  padding:20px;
+}
+@media(max-width:1100px){
+  .wrapper{grid-template-columns:1fr;}
+}
+.panel{
+  background:var(--panel);
+  padding:18px;
+  border-radius:16px;
+  box-shadow:0 10px 40px rgba(0,0,0,.4);
+}
+h2{
+  margin:0 0 14px 0;
+  font-size:16px;
+  color:var(--accent2);
+}
+input,textarea{
+  width:100%;
+  padding:8px 10px;
+  border-radius:8px;
+  border:none;
+  background:#0f172a;
+  color:var(--text);
+  font-size:14px;
+}
+textarea{resize:vertical;min-height:90px;}
+label{font-size:12px;color:var(--muted);}
+.form-grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(120px,1fr));
+  gap:10px;
+}
+.compact-row{
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(100px,1fr));
+  gap:8px;
+}
+button{
+  padding:8px 12px;
+  border-radius:8px;
+  border:none;
+  cursor:pointer;
+  font-weight:600;
+  font-size:14px;
+}
+.primary{background:var(--accent);color:white;}
+.secondary{background:#334155;color:white;}
+.danger{background:var(--danger);color:white;}
+.actions{
+  display:flex;
+  gap:10px;
+  margin-top:12px;
+  flex-wrap:wrap;
+  align-items:center;
+}
+.library-grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fill,minmax(320px,1fr));
+  gap:14px;
+}
+.library-item{
+  background:#0f172a;
+  padding:12px;
+  border-radius:12px;
+  display:flex;
+  flex-direction:column;
+}
+.library-item h4{
+  margin:0 0 6px 0;
+  font-size:14px;
+}
+.meta{
+  font-size:11px;
+  color:var(--muted);
+  margin-bottom:6px;
+}
+audio{width:100%;margin-top:6px;}
+.advanced-toggle{
+  margin-top:8px;
+  font-size:12px;
+  cursor:pointer;
+  color:var(--accent2);
+}
+.hidden{display:none}
+.pagination{
+  margin-top:12px;
+  display:flex;
+  justify-content:center;
+  align-items:center;
+  gap:10px;
+}
+
+/* Small inline spinner */
+.inline-spinner{
+  width:18px;
+  height:18px;
+  border:3px solid rgba(255,255,255,.2);
+  border-top:3px solid var(--accent2);
+  border-radius:50%;
+  animation:spin 1s linear infinite;
+}
+@keyframes spin{
+  to{transform:rotate(360deg);}
+}
+
+/* Message Box */
+#messageBox{
+  position:fixed;
+  bottom:20px;
+  right:20px;
+  background:#1e293b;
+  padding:12px 16px;
+  border-radius:12px;
+  box-shadow:0 10px 30px rgba(0,0,0,.5);
+  display:none;
+  max-width:300px;
+  font-size:13px;
+}
+</style>
+
+</head>
+<body>
+
+<header>
+<img style="width: 36px; height: 36px; vertical-align: middle; margin-right:4px" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAMAAACdt4HsAAAAAXNSR0IB2cksfwAAAAlwSFlzAAALEwAACxMBAJqcGAAAADxQTFRFS2Si+X5+pmBfHyApLjZSS2SjP057Vzw5EA4Sf1ZT+9Sv1WpqnYx/7qaYw7vUAAAAS2Sj9PPzgnrLS2SjAzrF9gAAABR0Uk5T///////w////////////AKj//yMlHqVpAAAD3klEQVR4nKWXi7KjIAyGFSgxEjhV3/9d90+8onZPd810prWSDwi50fyoTNP7/X79g2D4NJlqo+rvV/Mf8npPM2B6/4+6ihKaB/pGaH4e6IPw00y3+48xhBC3J32Id+NeUzN9UPfer4RoD/eIqbnuwLS7zncLAfqdPvvDmvY9XAE6vuuImEAw8fNT1/kr4Qqw+YhdIocfJl0glxyTvyG8m7MNY1B9diAkmgGUODnH7Km7AF53AGEjUJtWYdUPzn0LyC6AQO0qCUCi1PKXAM5tCwXeAC0ROf36AqA2VACmbQ8yP9DVimeA6lPKkLaW3EPylXAARBXV701OhOVPI6hcAXH1mTyP7e8AMyEc4mQDzP7XrfOfl5D7ndAdfXID6NwMyXACEpEbgPTCLJn1hEGoAep/OKheQiCEEhj1HgBQX1ZxQMPLlyVsABwejkp8EGEQAkxRA4RgIRYhTxme1fkKoBZwAHjLA+b/cgLQ8gZ4gZ+tVtgAnboaa+Lg0IwRhBqAmX0cI0WFqHN3FUAXAOPpzIWhPzZYQgUAu4ljiaKTaKwtZtwAIdv8XkocR9+UYM5/BMTRxzJKsWEu+RPAAsBxKSWWgTHS18cofiwhlCJD4cApUb0CNWKA/5dhwAqKD2UIXAEoFgUMkIJTCCcjzkGE890BQhXA685WQNqD6ujKWDRhhI7EdKUCtKSGxd8ASEr+6sqNApKPeD/iFEpT6nAUcAMgMmBzqwVPgJCd80X3AIlDDcjSzH8PJbD7AGiT020WjfcCN0jI5WwJGk5axP4eikeyvQd4HE5i7I4xEpWANKg0m2p0OUIcQKJnd7uCaABMRebOSOoB1WUVYACzaGSs012NaI5gAC0GcPWD9iLI6/qVdGeXY7R6xu1M0FAhG7s865ctw97Zoz85kuXi5T2EbaZatLileQA+VifrYGrT7ruL+lbZ0orYcXQJpry/tl+26l1s8sOy+BxMqKjr23nf7mhFnktbOgJOGQmnVG0ZVve06VvDUFmEztGIhHAy2YHA+qsCuFNS1T0Edf41AOZ1b7uwH1tYYFA4p3U1owiOOu+AsyxrQ3AIXwrLXtryL4BPpW0rrvMaPgHSx+K6l3cj3Oin1lH6S3nfd+KDa51lAjJhE6ddz7XRu29xUH51O95SgNOahDTB3PPvLc7cZPWYEVlVlp5AkGtJK/63XZoq0jBsvUrPeNDvr/tE1SnD3qxIEVuNfAsY0J9w4Ux2ZKizHPLHFdw127r7HIS2ZpvFTHHbbN+3+2Qm29p9NvXv2v3twkHHCwd9vnA8vvI8vnQ9vvY9v3g+vvo+v3w/u/7/AZoAPJwrbZ1IAAAAAElFTkSuQmCC"/>
+<span>KoboldCpp Music Generation UI</span></header>
+
+<div class="wrapper">
+
+<div class="panel">
+  <h2>Song Setup</h2>
+
+  <label>Caption</label>
+  <input id="caption">
+
+  <div style="margin-top:10px">
+    <label>Lyrics</label>
+    <textarea id="lyrics"></textarea>
+  </div>
+
+  <div class="form-grid" style="margin-top:12px">
+    <div><label>BPM</label><input id="bpm" type="number"></div>
+    <div><label>Duration</label><input id="duration" type="number"></div>
+    <div><label>Key</label><input id="keyscale"></div>
+    <div><label>Time Sig</label><input id="timesignature"></div>
+    <div><label>Language</label><input id="vocal_language"></div>
+    <div><label>Seed</label><input id="seed" type="number"></div>
+  </div>
+
+  <div class="advanced-toggle" onclick="toggleAdvanced()">⚙ Advanced Settings</div>
+
+  <div id="advanced" class="hidden">
+    <div class="compact-row" style="margin-top:10px">
+      <div><label>Temp</label><input id="lm_temperature" type="number" step="0.01"></div>
+      <div><label>CFG</label><input id="lm_cfg_scale" type="number" step="0.1"></div>
+      <div><label>Top P</label><input id="lm_top_p" type="number" step="0.01"></div>
+      <div><label>Steps</label><input id="inference_steps" type="number"></div>
+    </div>
+  </div>
+
+  <div style="margin-top:14px">
+    <label>API Base URL (optional)</label>
+    <div style="display:flex; gap:6px;">
+      <input id="baseUrl" placeholder="http://localhost:5001">
+    </div>
+  </div>
+
+  <div class="actions" id="actionContainer">
+    <div id="normalActions" style="display:flex; gap:10px; flex-wrap:wrap;">
+      <button class="secondary" onclick="planSong()">Plan</button>
+      <button class="primary" onclick="generateSong()">Generate</button>
+      <button class="danger" onclick="clearFields()">Clear</button>
+      <button onclick="exportPlan()">Export JSON</button>
+      <button onclick="document.getElementById('importFile').click()">Import JSON</button>
+    </div>
+
+    <button id="abortBtn" class="danger hidden" onclick="abortRequest()">Abort</button>
+    <div id="inlineSpinner" class="inline-spinner hidden"></div>
+
+    <input type="file" id="importFile" hidden accept="application/json" onchange="importPlan(event)">
+  </div>
+
+</div>
+
+<div class="panel">
+  <h2>Your Library</h2>
+  <div id="library" class="library-grid"></div>
+  <div class="pagination">
+    <button onclick="prevPage()">Prev</button>
+    <span id="pageInfo"></span>
+    <button onclick="nextPage()">Next</button>
+  </div>
+</div>
+
+</div>
+
+<div id="messageBox"><span id="messageText"></span></div>
+
+<script>
+const DB_NAME="kobo_music_db";
+const STORE="kobo_music_tracks";
+const PAGE_SIZE=20;
+
+let db;
+let currentPage=1;
+let totalItems=0;
+let currentController=null;
+
+function setLoading(isLoading){
+  document.getElementById("normalActions").style.display = isLoading ? "none" : "flex";
+  document.getElementById("abortBtn").classList.toggle("hidden", !isLoading);
+  document.getElementById("inlineSpinner").classList.toggle("hidden", !isLoading);
+}
+
+function abortRequest(){
+  if(currentController){
+    currentController.abort();
+    currentController=null;
+    setLoading(false);
+    showMessage("Request aborted.");
+  }
+}
+
+function showMessage(msg, timeout=3000){
+  const box=document.getElementById("messageBox");
+  document.getElementById("messageText").innerText=msg;
+  box.style.display="block";
+  setTimeout(()=>box.style.display="none",timeout);
+}
+
+function buildUrl(path){
+  let BASE_URL=document.getElementById("baseUrl").value.trim();
+  if(!BASE_URL) return path;
+  return BASE_URL.replace(/\/$/,"")+path;
+}
+
+function initDB(){
+  return new Promise((res,rej)=>{
+    const req=indexedDB.open(DB_NAME,2);
+    req.onupgradeneeded=e=>{
+      db=e.target.result;
+      db.createObjectStore(STORE,{keyPath:"id",autoIncrement:true});
+    };
+    req.onsuccess=e=>{db=e.target.result;res()};
+    req.onerror=rej;
+  });
+}
+
+function toggleAdvanced(){
+  document.getElementById("advanced").classList.toggle("hidden");
+}
+
+function getFormData(){
+  const ids=["caption","lyrics","bpm","duration","keyscale","timesignature",
+  "vocal_language","seed","lm_temperature","lm_cfg_scale","lm_top_p","inference_steps"];
+  const data={};
+  ids.forEach(id=>{
+    const el=document.getElementById(id);
+    if(!el) return;
+    const v=el.value;
+    if(v!=="") data[id]=isNaN(v)?v:Number(v);
+  });
+  return data;
+}
+
+function updateForm(data){
+  //let origseed = document.getElementById("seed").value;
+  Object.keys(data).forEach(k=>{
+    if(document.getElementById(k))
+      document.getElementById(k).value=data[k]??"";
+  });
+  //if(origseed=="-1" || origseed=="")
+  //{
+  //  document.getElementById("seed").value = "-1";
+  //}
+}
+
+function deriveTitle(caption){
+  let rnd_id = Math.floor(Math.random() * 8999) + 1000;
+  if(!caption)
+  {
+    caption = "Untitled";
+  }
+  let output = caption.trim().split("\n")[0].slice(0,30);
+  output += ` ${rnd_id}`;
+  return output;
+}
+
+async function planSong(){
+  try{
+    currentController=new AbortController();
+    setLoading(true);
+
+    const res=await fetch(buildUrl("/api/extra/music/prepare"),{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify(getFormData()),
+      signal:currentController.signal
+    });
+
+    if(!res.ok) throw new Error();
+    const data=await res.json();
+    updateForm(data);
+    showMessage("Plan generated.");
+
+  }catch(e){
+    if(e.name!=="AbortError")
+      showMessage("⚠ Unable to connect to server.");
+  }finally{
+    currentController=null;
+    setLoading(false);
+  }
+}
+
+async function generateSong(){
+  try{
+    currentController=new AbortController();
+    setLoading(true);
+
+    const payload=getFormData();
+    const res=await fetch(buildUrl("/api/extra/music/generate"),{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify(payload),
+      signal:currentController.signal
+    });
+
+    if(!res.ok) throw new Error();
+    const wavBlob=await res.blob();
+    const tx=db.transaction(STORE,"readwrite");
+    tx.objectStore(STORE).add({
+      title:deriveTitle(payload.caption),
+      date:new Date().toISOString(),
+      params:JSON.parse(JSON.stringify(payload)),
+      audio:wavBlob
+    });
+
+    tx.oncomplete=()=>{
+      currentPage=1;
+      loadLibrary();
+      showMessage("Song generated successfully!");
+    };
+
+  }catch(e){
+    if(e.name!=="AbortError")
+      showMessage("⚠ Failed to generate song.");
+  }finally{
+    currentController=null;
+    setLoading(false);
+  }
+}
+
+function downloadTrackJSON(id){
+  const tx = db.transaction(STORE, "readonly");
+  const store = tx.objectStore(STORE);
+  const req = store.get(id);
+
+  req.onsuccess = function(){
+    const item = req.result;
+    if(!item || !item.params){
+      showMessage("No JSON data found.");
+      return;
+    }
+
+    const blob = new Blob(
+      [JSON.stringify(item.params, null, 2)],
+      { type: "application/json" }
+    );
+
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${item.title}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  req.onerror = function(){
+    showMessage("Failed to load JSON.");
+  };
+}
+
+/* Library functions unchanged */
+
+function loadLibrary(){
+  const container=document.getElementById("library");
+  container.innerHTML="";
+  const tx=db.transaction(STORE,"readonly");
+  const store=tx.objectStore(STORE);
+  let items=[];
+  store.openCursor(null,"prev").onsuccess=e=>{
+    const cursor=e.target.result;
+    if(cursor){
+      items.push(cursor.value);
+      cursor.continue();
+    } else {
+      totalItems=items.length;
+      const start=(currentPage-1)*PAGE_SIZE;
+      const pageItems=items.slice(start,start+PAGE_SIZE);
+      pageItems.forEach(item=>{
+        const div=document.createElement("div");
+        div.className="library-item";
+        const url=URL.createObjectURL(item.audio);
+        div.innerHTML=`
+          <h4>${item.title}</h4>
+          <div class="meta">${new Date(item.date).toLocaleString()}</div>
+          <audio controls src="${url}"></audio>
+          <div style="margin-top:6px;display:flex;gap:6px;">
+            <a href="${url}" download="${item.title}.wav">
+                <button class="secondary">Download</button>
+            </a>
+            <button class="secondary" onclick="downloadTrackJSON(${item.id})">
+                Get JSON
+            </button>
+
+            <button class="danger" onclick="deleteTrack(${item.id})">Delete</button>
+          </div>
+        `;
+        container.appendChild(div);
+      });
+      const totalPages=Math.ceil(totalItems/PAGE_SIZE)||1;
+      document.getElementById("pageInfo").innerText=
+        `Page ${currentPage} / ${totalPages}`;
+    }
+  };
+}
+
+function nextPage(){ if(currentPage<Math.ceil(totalItems/PAGE_SIZE)){currentPage++;loadLibrary();}}
+function prevPage(){ if(currentPage>1){currentPage--;loadLibrary();}}
+function deleteTrack(id){
+  const tx=db.transaction(STORE,"readwrite");
+  tx.objectStore(STORE).delete(id);
+  tx.oncomplete=loadLibrary;
+}
+function clearFields()
+{
+    const fields = document.querySelectorAll('.form-grid input, #advanced input');
+    fields.forEach(field => {
+    field.value = '';
+    });
+    document.getElementById("caption").value = "";
+    document.getElementById("lyrics").value = "";
+}
+function exportPlan(){
+  const data=getFormData();
+  const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");
+  a.href=url;
+  a.download="music_plan.json";
+  a.click();
+}
+function importPlan(event){
+  const file=event.target.files[0];
+  if(!file) return;
+  const reader=new FileReader();
+  reader.onload=e=>{
+    const data=JSON.parse(e.target.result);
+    updateForm(data);
+  };
+  reader.readAsText(file);
+}
+
+initDB().then(loadLibrary);
+</script>
+
+</body>
+</html>
