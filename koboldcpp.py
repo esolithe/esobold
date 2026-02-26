@@ -63,7 +63,7 @@ savestate_limit = 0 #savestate slots start at 0, only set when load model
 default_vae_tile_threshold = 768
 default_native_ctx = 16384
 default_genlen = 1024
-overridekv_max = 4
+overridekv_max = 16
 default_autofit_padding = 1024
 lora_filenames_max = 4
 
@@ -143,6 +143,8 @@ embedded_kcpp_docs_gz = None
 embedded_kcpp_sdui = None
 embedded_kcpp_sdui_gz = None
 embedded_lcpp_ui_gz = None
+embedded_musicui = None
+embedded_musicui_gz = None
 voicebank = {}
 voicelist = ["kobo","cheery","sleepy","shouty","chatty"]
 sslvalid = False
@@ -449,6 +451,7 @@ class music_load_model_inputs(ctypes.Structure):
                 ("musicembedding_filename", ctypes.c_char_p),
                 ("musicdiffusion_filename", ctypes.c_char_p),
                 ("musicvae_filename", ctypes.c_char_p),
+                ("lowvram", ctypes.c_bool),
                 ("executable_path", ctypes.c_char_p),
                 ("kcpp_main_gpu", ctypes.c_int),
                 ("vulkan_info", ctypes.c_char_p),
@@ -458,11 +461,12 @@ class music_load_model_inputs(ctypes.Structure):
 
 class music_generation_inputs(ctypes.Structure):
     _fields_ = [("is_codes", ctypes.c_bool),
-                ("caption", ctypes.c_char_p)]
+                ("input_json", ctypes.c_char_p)]
 
 class music_generation_outputs(ctypes.Structure):
     _fields_ = [("status", ctypes.c_int),
-                ("codes_json", ctypes.c_char_p)]
+                ("codes_json", ctypes.c_char_p),
+                ("data", ctypes.c_char_p)]
 
 class StdoutRedirector:
     def __init__(self, writer):
@@ -2953,20 +2957,34 @@ def music_load_model(musicllm,musicembedding,musicdiffusion,musicvae):
     inputs.musicembedding_filename = musicembedding.encode("UTF-8")
     inputs.musicdiffusion_filename = musicdiffusion.encode("UTF-8")
     inputs.musicvae_filename = musicvae.encode("UTF-8")
+    inputs.lowvram = True if args.musiclowvram else False
     inputs = set_backend_props(inputs)
     ret = handle.music_load_model(inputs)
     return ret
 
 def music_generate_codes(genparams):
     global args
-    caption = genparams.get("caption", "interesting music song")
+    input_json = json.dumps(genparams)
     inputs = music_generation_inputs()
     inputs.is_codes = True
-    inputs.caption = caption.encode("UTF-8")
+    inputs.input_json = input_json.encode("UTF-8")
     ret = handle.music_generate(inputs)
     outstr = ""
     if ret.status==1:
         outstr = ret.codes_json.decode("UTF-8","ignore")
+        outstr = json.dumps(json.loads(outstr))
+    return outstr
+
+def music_generate_audio(genparams):
+    global args
+    input_json = json.dumps(genparams)
+    inputs = music_generation_inputs()
+    inputs.is_codes = False
+    inputs.input_json = input_json.encode("UTF-8")
+    ret = handle.music_generate(inputs)
+    outstr = ""
+    if ret.status==1:
+        outstr = ret.data.decode("UTF-8","ignore")
     return outstr
 
 def tokenize_ids(countprompt,tcaddspecial):
@@ -4744,7 +4762,7 @@ Change Mode<br>
         self.wfile.write(finalhtml)
 
     def do_GET(self):
-        global embedded_kailite, embedded_kcpp_docs, embedded_kcpp_sdui, embedded_kailite_gz, embedded_kcpp_docs_gz, embedded_kcpp_sdui_gz, embedded_lcpp_ui_gz
+        global embedded_kailite, embedded_kcpp_docs, embedded_kcpp_sdui, embedded_kailite_gz, embedded_kcpp_docs_gz, embedded_kcpp_sdui_gz, embedded_lcpp_ui_gz, embedded_musicui, embedded_musicui_gz
         global last_req_time, start_time, cached_chat_template, has_vision_support, has_audio_support, has_whisper, friendlymodelname
         global savedata_obj, has_multiplayer, multiplayer_turn_major, multiplayer_turn_minor, multiplayer_story_data_compressed, multiplayer_dataformat, multiplayer_lastactive, maxctx, maxhordelen, friendlymodelname, lastuploadedcomfyimg, lastgeneratedcomfyimg, KcppVersion, totalgens, preloaded_story, exitcounter, currentusergenkey, friendlysdmodelname, fullsdmodelpath, password, friendlyembeddingsmodelname, voicelist
 
@@ -5104,6 +5122,16 @@ Change Mode<br>
                 response_body = embedded_kcpp_sdui
             else:
                 response_body = ("KoboldCpp API is running, but KCPP SDUI is not loaded").encode()
+
+        elif clean_path.startswith(("/musicui")):
+            content_type = 'text/html'
+            if supports_gzip and embedded_musicui_gz is not None:
+                response_body = embedded_musicui_gz
+                content_encoding = 'gzip'
+            elif embedded_musicui is not None:
+                response_body = embedded_musicui
+            else:
+                response_body = ("KoboldCpp API is running, but KCPP MusicUI is not loaded").encode()
 
         elif clean_path=="/v1":
             content_type = 'text/html'
@@ -5794,6 +5822,8 @@ Change Mode<br>
             is_extract_text = False
             is_tts = False
             is_embeddings = False
+            is_music_codes = False
+            is_music_audio = False
             response_body = None
             use_jinja = args.jinja
 
@@ -5893,13 +5923,17 @@ Change Mode<br>
                 is_tts = True
             elif self.path.endswith('/api/extra/embeddings') or self.path.endswith('/v1/embeddings'):
                 is_embeddings = True
+            elif self.path.endswith('/api/extra/music/prepare'):
+                is_music_codes = True
+            elif self.path.endswith('/api/extra/music/generate'):
+                is_music_audio = True
 
             if response_body is not None:
                 self.send_response(response_code)
                 self.send_header('content-length', str(len(response_body)))
                 self.end_headers(content_type='application/json')
                 self.wfile.write(response_body)
-            elif is_imggen or is_img_upscale or is_transcribe or is_tts or is_embeddings or is_extract_text or api_format > 0:
+            elif is_imggen or is_img_upscale or is_transcribe or is_tts or is_embeddings or is_music_codes or is_music_audio or is_extract_text or api_format > 0:
                 global last_req_time
                 last_req_time = time.time()
 
@@ -6217,6 +6251,37 @@ Change Mode<br>
                         print("Create Embeddings: The response could not be sent, maybe connection was terminated?")
                         time.sleep(0.2) #short delay
                     return
+                elif is_music_codes:
+                    try:
+                        gendat = music_generate_codes(genparams)
+                        genresp = (json.dumps({"error":"music code generation failed"}).encode())
+                        if gendat:
+                            genresp = gendat.encode()
+                        self.send_response(200)
+                        self.send_header('content-length', str(len(genresp)))
+                        self.end_headers(content_type='application/json')
+                        self.wfile.write(genresp)
+                    except Exception as ex:
+                        utfprint(ex,1)
+                        print("Music Gen Codes: The response could not be sent, maybe connection was terminated?")
+                        time.sleep(0.2) #short delay
+                    return
+                elif is_music_audio:
+                    try:
+                        gendat = music_generate_audio(genparams)
+                        wav_data = b''
+                        if gendat:
+                            wav_data = base64.b64decode(gendat) # Decode the Base64 string into binary data
+                        self.send_response(200)
+                        self.send_header('content-length', str(len(wav_data)))  # Set content length
+                        self.send_header('Content-Disposition', 'attachment; filename="output.wav"')
+                        self.end_headers(content_type='audio/wav')
+                        self.wfile.write(wav_data) # Write the binary WAV data to the response
+                    except Exception as ex:
+                        utfprint(ex,1)
+                        print("Music Gen Audio: The response could not be sent, maybe connection was terminated?")
+                        time.sleep(0.2) #short delay
+                    return
 
         finally:
             time.sleep(0.05)
@@ -6461,6 +6526,18 @@ def zentk_asksaveasfilename(**options):
         result = asksaveasfilename(**options)
     return result
 ### End of MIT license
+
+def save_config_dict(filename, savdict, template):
+    filenamestr = str(filename).strip()
+    if not filenamestr.endswith(".kcpps") and not template:
+        filenamestr += ".kcpps"
+    if not filenamestr.endswith(".kcppt") and template:
+        filenamestr += ".kcppt"
+    do_not_save = {'analyze', 'config', 'exportconfig', 'exporttemplate', 'testmemory', 'unpack', 'version'}
+    filtered = {k: v for k, v in savdict.items() if k not in do_not_save}
+    with open(filenamestr, 'w') as file:
+        file.write(json.dumps(filtered,indent=2))
+    return filenamestr
 
 # note: customtkinter-5.2.0
 def show_gui():
@@ -6813,6 +6890,7 @@ def show_gui():
     musicembeddings_var = ctk.StringVar()
     musicdiffusion_var = ctk.StringVar()
     musicvae_var = ctk.StringVar()
+    musiclowvram_var = ctk.IntVar(value=0)
 
     embeddings_model_var = ctk.StringVar()
     embeddings_ctx_var = ctk.StringVar(value=str(""))
@@ -7619,7 +7697,7 @@ def show_gui():
     makefileentry(audio_tab, "MusicEmbeds:", "Select music embedding model (e.g Qwen3-Embedding-0.6B)", musicembeddings_var, 32, width=280, singlerow=True, dialog_type=0, tooltiptxt="Select music embedding model (e.g Qwen3-Embedding-0.6B)")
     makefileentry(audio_tab, "MusicDiffuser:", "Select music diffusion (DiT) model (e.g acestep-v15-turbo)", musicdiffusion_var, 34, width=280, singlerow=True, dialog_type=0, tooltiptxt="Select music diffusion (DiT) model (e.g acestep-v15-turbo)")
     makefileentry(audio_tab, "MusicVAE:", "Select music VAE model", musicvae_var, 36, width=280, singlerow=True, dialog_type=0, tooltiptxt="Select music VAE model")
-
+    makecheckbox(audio_tab, "Music Low VRAM", musiclowvram_var, 38, 0,tooltiptxt="Unload music models when not in use.")
 
     admin_tab = tabcontent["Admin"]
     def toggleadmin(a,b,c):
@@ -7941,6 +8019,7 @@ def show_gui():
         args.musicembeddings = musicembeddings_var.get()
         args.musicdiffusion = musicdiffusion_var.get()
         args.musicvae = musicvae_var.get()
+        args.musiclowvram = musiclowvram_var.get()==1
 
         args.admin = (admin_var.get()==1 and not args.cli)
         args.admindir = admin_dir_var.get()
@@ -8191,6 +8270,7 @@ def show_gui():
         musicembeddings_var.set(dict["musicembeddings"] if ("musicembeddings" in dict and dict["musicembeddings"]) else "")
         musicdiffusion_var.set(dict["musicdiffusion"] if ("musicdiffusion" in dict and dict["musicdiffusion"]) else "")
         musicvae_var.set(dict["musicvae"] if ("musicvae" in dict and dict["musicvae"]) else "")
+        musiclowvram_var.set(dict["musiclowvram"] if ("musiclowvram" in dict) else 0)
 
         embeddings_model_var.set(dict["embeddingsmodel"] if ("embeddingsmodel" in dict and dict["embeddingsmodel"]) else "")
         embeddings_ctx_var.set(str(dict["embeddingsmaxctx"]) if ("embeddingsmaxctx" in dict and dict["embeddingsmaxctx"]) else "")
@@ -8219,12 +8299,7 @@ def show_gui():
         filename = zentk_asksaveasfilename(filetypes=file_type, defaultextension=".kcpps",title="Save kcpps settings config file")
         if not filename:
             return
-        filenamestr = str(filename).strip()
-        if not filenamestr.lower().endswith(".kcpps"):
-            filenamestr += ".kcpps"
-        file = open(filenamestr, 'w')
-        file.write(json.dumps(savdict,indent=2))
-        file.close()
+        save_config_dict(filename, savdict, False)
         pass
 
     def load_config_gui(): #this is used to populate the GUI with a config file, whereas load_config_cli simply overwrites cli args
@@ -8796,14 +8871,7 @@ def save_config_cli(filename, template):
         savdict["istemplate"] = False
     if filename is None:
         return
-    filenamestr = str(filename).strip()
-    if not filenamestr.endswith(".kcpps") and not template:
-        filenamestr += ".kcpps"
-    if not filenamestr.endswith(".kcppt") and template:
-        filenamestr += ".kcppt"
-    file = open(filenamestr, 'w')
-    file.write(json.dumps(savdict))
-    file.close()
+    filenamestr = save_config_dict(filename, savdict, template)
     print(f"\nSaved configuration file as {filenamestr}\nIt can be loaded with --config [filename] in future.")
     pass
 
@@ -9167,13 +9235,6 @@ def main(launch_args, default_args):
         analyze_gguf_model_wrapper(args.analyze)
         return
 
-    if args.exportconfig and args.exportconfig!="":
-        save_config_cli(args.exportconfig,False)
-        return
-    if args.exporttemplate and args.exporttemplate!="":
-        save_config_cli(args.exporttemplate,True)
-        return
-
     if args.config and len(args.config)==1: #handle initial config loading for launch
         cfgname = args.config[0]
         if isinstance(cfgname, str):
@@ -9195,6 +9256,13 @@ def main(launch_args, default_args):
         if dlfile:
             args.model_param = dlfile
         load_config_cli(args.model_param)
+
+    if args.exportconfig:
+        save_config_cli(args.exportconfig,False)
+        return
+    if args.exporttemplate:
+        save_config_cli(args.exporttemplate,True)
+        return
 
     # show the GUI launcher if a model was not provided
     if args.showgui or (not args.model_param and not args.sdmodel and not args.whispermodel and not args.ttsmodel and not args.embeddingsmodel and not args.musicdiffusion and not args.mcpfile and not args.nomodel):
@@ -9342,7 +9410,7 @@ def main(launch_args, default_args):
                 input()
 
 def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
-    global embedded_kailite, embedded_kcpp_docs, embedded_kcpp_sdui, embedded_kailite_gz, embedded_kcpp_docs_gz, embedded_kcpp_sdui_gz, embedded_lcpp_ui_gz, start_time, exitcounter, global_memory, using_gui_launcher
+    global embedded_kailite, embedded_kcpp_docs, embedded_kcpp_sdui, embedded_kailite_gz, embedded_kcpp_docs_gz, embedded_kcpp_sdui_gz, embedded_lcpp_ui_gz, embedded_musicui, embedded_musicui_gz, start_time, exitcounter, global_memory, using_gui_launcher
     global libname, args, friendlymodelname, friendlysdmodelname, fullsdmodelpath, password, fullwhispermodelpath, ttsmodelpath, embeddingsmodelpath, musicdiffusionmodelpath, friendlyembeddingsmodelname, has_audio_support, has_vision_support, cached_chat_template
 
     start_server = True
@@ -9962,6 +10030,15 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
     except Exception:
         print("Could not find Embedded llama.cpp UI.")
 
+    try:
+        with open(os.path.join(embddir, "kcpp_musicui.embd"), mode='rb') as f:
+            embedded_musicui = f.read()
+            embedded_musicui_gz = gzip.compress(embedded_musicui)
+            if args.musicllm or args.musicdiffusion:
+                print("Embedded MusicUI loaded.")
+    except Exception:
+        print("Could not find Embedded MusicUI.")
+
     # load all TTS audio files
     if args.ttsdir and args.ttsmodel and os.path.isdir(args.ttsdir):
         try:
@@ -10026,6 +10103,7 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
     enabledmlist.append("VectorEmbeddings") if "embeddings" in caps and caps["embeddings"] else disabledmlist.append("VectorEmbeddings")
     enabledmlist.append("AdminControl") if "admin" in caps and caps["admin"]!=0 else disabledmlist.append("AdminControl")
     enabledmlist.append("MCPBridge") if "mcp" in caps and caps["mcp"] else disabledmlist.append("MCPBridge")
+    enabledmlist.append("MusicGen") if "music" in caps and caps["music"] else disabledmlist.append("MusicGen")
 
     print(f"======\nActive Modules: {' '.join(enabledmlist)}")
     print(f"Inactive Modules: {' '.join(disabledmlist)}")
@@ -10054,6 +10132,8 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
             print(f"Starting llama.cpp secondary WebUI at {endpoint_url}/lcpp/")
             if args.sdmodel:
                 print(f"StableUI is available at {endpoint_url}/sdui/")
+            if args.musicdiffusion or args.musicllm:
+                print(f"MusicUI is available at {endpoint_url}/musicui/")
         elif global_memory:
             val = global_memory["tunnel_url"]
             if val:
@@ -10064,6 +10144,8 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
                 print(f"Starting llama.cpp secondary WebUI at {endpoint_url}/lcpp/")
                 if args.sdmodel:
                     print(f"StableUI is available at {endpoint_url}/sdui/")
+                if args.musicdiffusion or args.musicllm:
+                    print(f"MusicUI is available at {endpoint_url}/musicui/")
             global_memory["load_complete"] = True
         if args.launch:
             def launch_browser_thread():
@@ -10169,7 +10251,7 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
                 print(f"Flags: {benchflagstr}")
                 print(f"Timestamp: {datetimestamp}")
                 print(f"Backend: {libname}")
-                print(f"Layers: {args.gpulayers}")
+                print(f"Layers: {args.gpulayers if not args.autofit else 'Autofit'}")
                 print(f"Model: {benchmodel}")
                 print(f"MaxCtx: {benchmaxctx}")
                 print(f"GenAmount: {benchlen}\n-----")
@@ -10364,6 +10446,7 @@ if __name__ == '__main__':
     musicparsergroup.add_argument("--musicembeddings", metavar=('[filename]'), help="Select music embedding model (e.g Qwen3-Embedding-0.6B)", default="")
     musicparsergroup.add_argument("--musicdiffusion", metavar=('[filename]'), help="Select music diffusion (DiT) model (e.g acestep-v15-turbo)", default="")
     musicparsergroup.add_argument("--musicvae", metavar=('[filename]'), help="Select music VAE model", default="")
+    musicparsergroup.add_argument("--musiclowvram", help="Unload music models when not in use", action='store_true')
 
     embeddingsparsergroup = parser.add_argument_group('Embeddings Model Commands')
     embeddingsparsergroup.add_argument("--embeddingsmodel", metavar=('[filename]'), help="Specify an embeddings model to be loaded for generating embedding vectors.", default="")

@@ -5,7 +5,7 @@ const int tensor_split_max = 16;
 const int images_max = 8;
 const int audio_max = 4;
 const int logprobs_max = 10;
-const int overridekv_max = 4;
+const int overridekv_max = 16;
 const int lora_filenames_max = 4;
 
 // match kobold's sampler list and order
@@ -332,6 +332,7 @@ struct music_load_model_inputs
     const char * musicembedding_filename = nullptr;
     const char * musicdiffusion_filename = nullptr;
     const char * musicvae_filename = nullptr;
+    const bool lowvram = false;
     const char * executable_path = nullptr;
     const int kcpp_main_gpu = 0;
     const char * vulkan_info = nullptr;
@@ -342,12 +343,13 @@ struct music_load_model_inputs
 struct music_generation_inputs
 {
     const bool is_codes = false; //if true, generate codes, else, generate diffusion music
-    const char * caption = nullptr;
+    const char * input_json = nullptr;
 };
 struct music_generation_outputs
 {
     int status = -1;
     const char * codes_json = "";
+    const char * data = "";
 };
 
 extern std::string executable_path;

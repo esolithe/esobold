@@ -2,7 +2,7 @@
 //
 // Architecture: conv1(64->2048,k=7) -> 5xblock(snake+convT+3xresunit) -> snake+conv2(128->2,k=7)
 // ResUnit(ch, dil): skip=x -> snake->conv(k=7,dil)->snake->conv(k=1)->+skip
-// Snake: x + sin^2(e^a * x) / e^b
+// Snake: x + sin^2(e^a * x) * (1/e^b)
 // Weight norm fused at load: w = g*v/||v||
 // Upsample: 10x6x4x4x2 = 1920x
 
@@ -327,13 +327,14 @@ static int vae_ggml_compute(
         int T_latent,           // window length to decode
         int win_start = 0) {    // offset into latent
 
-    // Build graph only when T_latent changes
+    // Build graph only when T_latent changes (cached for tiled decode reuse)
     if (m->graph_T != T_latent) {
         if (m->graph_ctx) {
             ggml_backend_sched_reset(m->sched);
             ggml_free(m->graph_ctx);
             free(m->graph_buf);
         }
+        // Graph context (generous fixed allocation)
         size_t ctx_size = ggml_tensor_overhead() * 1024 + ggml_graph_overhead_custom(8192, false);
         m->graph_buf = (uint8_t *)malloc(ctx_size);
         struct ggml_init_params p = { ctx_size, m->graph_buf, true };

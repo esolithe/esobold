@@ -40,15 +40,22 @@ struct Qwen3Config {
 struct Qwen3Layer {
     struct ggml_tensor * input_layernorm;       // [H]
     struct ggml_tensor * post_attn_layernorm;   // [H]
-    struct ggml_tensor * q_proj;                // [H, Nh*D] ggml = [Nh*D, H] PyTorch
-    struct ggml_tensor * k_proj;                // [H, Nkv*D]
-    struct ggml_tensor * v_proj;                // [H, Nkv*D]
-    struct ggml_tensor * o_proj;                // [Nh*D, H]
-    struct ggml_tensor * q_norm;                // [D]
-    struct ggml_tensor * k_norm;                // [D]
-    struct ggml_tensor * gate_proj;             // [H, FFN]
-    struct ggml_tensor * up_proj;               // [H, FFN]
-    struct ggml_tensor * down_proj;             // [FFN, H]
+
+    // Attention (fused or separate, same pattern as DiT)
+    struct ggml_tensor * qkv;                  // [H, (Nh+2*Nkv)*D] full fused (or NULL)
+    struct ggml_tensor * qk;                   // [H, (Nh+Nkv)*D] Q+K fused (or NULL)
+    struct ggml_tensor * q_proj;               // [H, Nh*D]  (NULL when fused)
+    struct ggml_tensor * k_proj;               // [H, Nkv*D] (NULL when fused)
+    struct ggml_tensor * v_proj;               // [H, Nkv*D] (NULL when QKV fused)
+    struct ggml_tensor * o_proj;               // [Nh*D, H]
+    struct ggml_tensor * q_norm;               // [D]
+    struct ggml_tensor * k_norm;               // [D]
+
+    // MLP (fused or separate)
+    struct ggml_tensor * gate_up;              // [H, 2*FFN] fused (or NULL)
+    struct ggml_tensor * gate_proj;            // [H, FFN] (NULL when fused)
+    struct ggml_tensor * up_proj;              // [H, FFN] (NULL when fused)
+    struct ggml_tensor * down_proj;            // [FFN, H]
 };
 
 // Standalone model (text encoder)
@@ -113,10 +120,25 @@ static struct ggml_tensor * qwen3_build_self_attn(
     int Nh  = c.n_heads;
     int Nkv = c.n_kv_heads;
 
-    // 1) Q/K/V projections
-    struct ggml_tensor * q = qwen3_linear(ctx, ly->q_proj, x);  // [Nh*D, S]
-    struct ggml_tensor * k = qwen3_linear(ctx, ly->k_proj, x);  // [Nkv*D, S]
-    struct ggml_tensor * v = qwen3_linear(ctx, ly->v_proj, x);  // [Nkv*D, S]
+    // 1) Q/K/V projections (fused, partial, or separate)
+    struct ggml_tensor * q, * k, * v;
+    int q_dim  = Nh * D;
+    int kv_dim = Nkv * D;
+    if (ly->qkv) {
+        struct ggml_tensor * qkv = qwen3_linear(ctx, ly->qkv, x);
+        q = ggml_cont(ctx, ggml_view_2d(ctx, qkv, q_dim,  S, qkv->nb[1], 0));
+        k = ggml_cont(ctx, ggml_view_2d(ctx, qkv, kv_dim, S, qkv->nb[1], (size_t)q_dim * qkv->nb[0]));
+        v = ggml_cont(ctx, ggml_view_2d(ctx, qkv, kv_dim, S, qkv->nb[1], (size_t)(q_dim + kv_dim) * qkv->nb[0]));
+    } else if (ly->qk) {
+        struct ggml_tensor * qk = qwen3_linear(ctx, ly->qk, x);
+        q = ggml_cont(ctx, ggml_view_2d(ctx, qk, q_dim,  S, qk->nb[1], 0));
+        k = ggml_cont(ctx, ggml_view_2d(ctx, qk, kv_dim, S, qk->nb[1], (size_t)q_dim * qk->nb[0]));
+        v = qwen3_linear(ctx, ly->v_proj, x);
+    } else {
+        q = qwen3_linear(ctx, ly->q_proj, x);
+        k = qwen3_linear(ctx, ly->k_proj, x);
+        v = qwen3_linear(ctx, ly->v_proj, x);
+    }
 
     // 2) Reshape to heads: [X*D, S] -> [D, X, S]
     q = ggml_reshape_3d(ctx, q, D, Nh,  S);
@@ -154,16 +176,22 @@ static struct ggml_tensor * qwen3_build_self_attn(
     return qwen3_linear(ctx, ly->o_proj, attn);
 }
 
-// MLP: SwiGLU
+// MLP: SwiGLU (fused gate+up or separate)
 static struct ggml_tensor * qwen3_build_mlp(
         struct ggml_context * ctx,
         Qwen3Layer * ly,
         struct ggml_tensor * x,   // [H, S]
         int S) {
     (void)S;
-    struct ggml_tensor * gate = qwen3_linear(ctx, ly->gate_proj, x);
-    struct ggml_tensor * up   = qwen3_linear(ctx, ly->up_proj,   x);
-    struct ggml_tensor * ff   = ggml_swiglu_split(ctx, gate, up);
+    struct ggml_tensor * ff;
+    if (ly->gate_up) {
+        struct ggml_tensor * gu = qwen3_linear(ctx, ly->gate_up, x);
+        ff = ggml_swiglu(ctx, gu);
+    } else {
+        struct ggml_tensor * gate = qwen3_linear(ctx, ly->gate_proj, x);
+        struct ggml_tensor * up   = qwen3_linear(ctx, ly->up_proj,   x);
+        ff = ggml_swiglu_split(ctx, gate, up);
+    }
     return qwen3_linear(ctx, ly->down_proj, ff);
 }
 
@@ -209,17 +237,47 @@ static struct ggml_tensor * qwen3_build_layers(
 
 // Loading
 static void qwen3_load_layer(WeightCtx * wctx, const GGUFModel & gf,
-                               Qwen3Layer * ly, const std::string & prefix) {
+                               Qwen3Layer * ly, const std::string & prefix, int layer_idx = -1) {
     ly->input_layernorm      = gf_load_tensor_f32(wctx, gf, prefix + ".input_layernorm.weight");
     ly->post_attn_layernorm  = gf_load_tensor_f32(wctx, gf, prefix + ".post_attention_layernorm.weight");
-    ly->q_proj = gf_load_tensor(wctx, gf, prefix + ".self_attn.q_proj.weight");
-    ly->k_proj = gf_load_tensor(wctx, gf, prefix + ".self_attn.k_proj.weight");
-    ly->v_proj = gf_load_tensor(wctx, gf, prefix + ".self_attn.v_proj.weight");
+
+    // Attention: try Q+K+V fused, then Q+K partial, then separate
+    ly->qkv = gf_load_qkv_fused(wctx, gf,
+                    prefix + ".self_attn.q_proj.weight",
+                    prefix + ".self_attn.k_proj.weight",
+                    prefix + ".self_attn.v_proj.weight");
+    if (!ly->qkv) {
+        ly->qk = gf_load_pair_fused(wctx, gf,
+                        prefix + ".self_attn.q_proj.weight",
+                        prefix + ".self_attn.k_proj.weight");
+        if (ly->qk) {
+            ly->v_proj = gf_load_tensor(wctx, gf, prefix + ".self_attn.v_proj.weight");
+            if (layer_idx == 0) fprintf(stderr, "[Qwen3] Attn: Q+K fused, V separate\n");
+        } else {
+            ly->q_proj = gf_load_tensor(wctx, gf, prefix + ".self_attn.q_proj.weight");
+            ly->k_proj = gf_load_tensor(wctx, gf, prefix + ".self_attn.k_proj.weight");
+            ly->v_proj = gf_load_tensor(wctx, gf, prefix + ".self_attn.v_proj.weight");
+            if (layer_idx == 0) fprintf(stderr, "[Qwen3] Attn: all separate\n");
+        }
+    } else {
+        if (layer_idx == 0) fprintf(stderr, "[Qwen3] Attn: Q+K+V fused\n");
+    }
+
     ly->o_proj = gf_load_tensor(wctx, gf, prefix + ".self_attn.o_proj.weight");
     ly->q_norm = gf_load_tensor_f32(wctx, gf, prefix + ".self_attn.q_norm.weight");
     ly->k_norm = gf_load_tensor_f32(wctx, gf, prefix + ".self_attn.k_norm.weight");
-    ly->gate_proj = gf_load_tensor(wctx, gf, prefix + ".mlp.gate_proj.weight");
-    ly->up_proj   = gf_load_tensor(wctx, gf, prefix + ".mlp.up_proj.weight");
+
+    // MLP: try gate+up fused, then separate
+    ly->gate_up = gf_load_pair_fused(wctx, gf,
+                    prefix + ".mlp.gate_proj.weight",
+                    prefix + ".mlp.up_proj.weight");
+    if (ly->gate_up) {
+        if (layer_idx == 0) fprintf(stderr, "[Qwen3] MLP: gate+up fused\n");
+    } else {
+        ly->gate_proj = gf_load_tensor(wctx, gf, prefix + ".mlp.gate_proj.weight");
+        ly->up_proj   = gf_load_tensor(wctx, gf, prefix + ".mlp.up_proj.weight");
+        if (layer_idx == 0) fprintf(stderr, "[Qwen3] MLP: gate+up separate\n");
+    }
     ly->down_proj = gf_load_tensor(wctx, gf, prefix + ".mlp.down_proj.weight");
 }
 
@@ -259,10 +317,12 @@ static bool qwen3_load_text_encoder(Qwen3GGML * m, const char * gguf_path) {
     m->embed_tokens = gf_load_tensor(&m->wctx, gf, "embed_tokens.weight");
     m->final_norm   = gf_load_tensor_f32(&m->wctx, gf, "norm.weight");
 
+    fprintf(stderr, "[Load] TextEncoder: %dL, H=%d, Nh=%d/%d\n",
+            m->cfg.n_layers, m->cfg.hidden_size, m->cfg.n_heads, m->cfg.n_kv_heads);
     for (int i = 0; i < m->cfg.n_layers; i++) {
         char prefix[64];
         snprintf(prefix, sizeof(prefix), "layers.%d", i);
-        qwen3_load_layer(&m->wctx, gf, &m->layers[i], prefix);
+        qwen3_load_layer(&m->wctx, gf, &m->layers[i], prefix, i);
     }
 
     if (!wctx_alloc(&m->wctx, m->backend)) {
@@ -271,8 +331,6 @@ static bool qwen3_load_text_encoder(Qwen3GGML * m, const char * gguf_path) {
     }
     gf_close(&gf);
 
-    fprintf(stderr, "[Load] TextEncoder: %dL, H=%d, Nh=%d/%d\n",
-            m->cfg.n_layers, m->cfg.hidden_size, m->cfg.n_heads, m->cfg.n_kv_heads);
     return true;
 }
 
@@ -284,7 +342,7 @@ static void qwen3_forward(Qwen3GGML * m, const int * token_ids, int S, float * o
     const Qwen3Config & c = m->cfg;
     int H = c.hidden_size;
 
-    // Graph context
+    // Graph context (generous fixed allocation)
     size_t ctx_size = 2048 * ggml_tensor_overhead() + ggml_graph_overhead();
     struct ggml_init_params gp = { ctx_size, NULL, true };
     struct ggml_context * ctx = ggml_init(gp);

@@ -233,7 +233,7 @@ static bool qw3lm_load(Qwen3LM * m, const char * gguf_path, int max_seq_len, int
     for (int i = 0; i < c.n_layers; i++) {
         char prefix[64];
         snprintf(prefix, sizeof(prefix), "model.layers.%d", i);
-        qwen3_load_layer(&m->wctx, gf, &m->layers[i], prefix);
+        qwen3_load_layer(&m->wctx, gf, &m->layers[i], prefix, i);
     }
 
     wctx_alloc(&m->wctx, m->backend);
@@ -278,10 +278,25 @@ static struct ggml_tensor * qw3lm_build_attn(
     int Nkv = c.n_kv_heads;
     int S   = n_tokens;
 
-    // QKV projections
-    struct ggml_tensor * q = qwen3_linear(ctx, ly->q_proj, x);  // [Nh*D, S]
-    struct ggml_tensor * k = qwen3_linear(ctx, ly->k_proj, x);  // [Nkv*D, S]
-    struct ggml_tensor * v = qwen3_linear(ctx, ly->v_proj, x);  // [Nkv*D, S]
+    // QKV projections (fused, partial, or separate)
+    struct ggml_tensor * q, * k, * v;
+    int q_dim  = Nh * D;
+    int kv_dim = Nkv * D;
+    if (ly->qkv) {
+        struct ggml_tensor * qkv = qwen3_linear(ctx, ly->qkv, x);
+        q = ggml_cont(ctx, ggml_view_2d(ctx, qkv, q_dim,  S, qkv->nb[1], 0));
+        k = ggml_cont(ctx, ggml_view_2d(ctx, qkv, kv_dim, S, qkv->nb[1], (size_t)q_dim * qkv->nb[0]));
+        v = ggml_cont(ctx, ggml_view_2d(ctx, qkv, kv_dim, S, qkv->nb[1], (size_t)(q_dim + kv_dim) * qkv->nb[0]));
+    } else if (ly->qk) {
+        struct ggml_tensor * qk = qwen3_linear(ctx, ly->qk, x);
+        q = ggml_cont(ctx, ggml_view_2d(ctx, qk, q_dim,  S, qk->nb[1], 0));
+        k = ggml_cont(ctx, ggml_view_2d(ctx, qk, kv_dim, S, qk->nb[1], (size_t)q_dim * qk->nb[0]));
+        v = qwen3_linear(ctx, ly->v_proj, x);
+    } else {
+        q = qwen3_linear(ctx, ly->q_proj, x);
+        k = qwen3_linear(ctx, ly->k_proj, x);
+        v = qwen3_linear(ctx, ly->v_proj, x);
+    }
 
     // Reshape to heads: [X*D, S] -> [D, X, S]
     q = ggml_reshape_3d(ctx, q, D, Nh,  S);
@@ -351,7 +366,7 @@ static void qw3lm_forward(Qwen3LM * m, const int * token_ids, int n_tokens,
         return;
     }
 
-    // Graph context
+    // Graph context (generous fixed allocation)
     size_t ctx_size = (size_t)16384 * ggml_tensor_overhead() + ggml_graph_overhead();
     struct ggml_init_params gp = { ctx_size, NULL, true };
     struct ggml_context * ctx = ggml_init(gp);
@@ -490,76 +505,9 @@ static void qw3lm_forward_batch(Qwen3LM * m, const int * token_ids,
         }
     }
 
-    // Exact tensor count for context allocation
-    // qwen3_f32(t) creates 0 tensors if t is F32, 1 (ggml_cast) if not.
-    // Count conditionally based on actual weight types.
-    //
-    // GLOBAL (2):
-    //   embed_out (new_tensor_2d)                          1
-    //   positions (new_tensor_1d)                          1
-    //
-    // PER LAYER fixed (17):
-    //   qwen3_rms_norm(input_layernorm):
-    //     ggml_rms_norm + ggml_mul                         2
-    //   q_proj, k_proj, v_proj (qwen3_linear = mul_mat)    3
-    //   reshape_3d (q, k, v)                               3
-    //   ggml_rms_norm(q) + ggml_mul(q, q_norm)             2
-    //   ggml_rms_norm(k) + ggml_mul(k, k_norm)             2
-    //   ggml_rope_ext (q, k)                               2
-    //   ggml_cont (q, k, v)                                3
-    //
-    // PER LAYER * N (16 each):
-    //   view_3d (qi, ki, vi)                               3
-    //   permute (qi, ki, vi)                               3
-    //   cont (ki, vi)                                      2
-    //   view_3d (k_dst, v_dst)                             2
-    //   cpy (ki, vi)                                       2
-    //   view_3d (k_full, v_full)                           2
-    //   flash_attn_ext                                     1
-    //   reshape_2d                                         1
-    //
-    // CONCATS: N-1 (first element reuses reshape_2d)
-    //
-    // PER LAYER post (9):
-    //   qwen3_linear(o_proj)                               1
-    //   ggml_add (residual)                                1
-    //   qwen3_rms_norm(post_attn_layernorm):
-    //     ggml_rms_norm + ggml_mul                         2
-    //   qwen3_build_mlp:
-    //     gate_proj, up_proj (mul_mat)                     2
-    //     ggml_swiglu_split                                1
-    //     down_proj (mul_mat)                              1
-    //   ggml_add (residual)                                1
-    //
-    // PER LAYER conditional casts (0 to 4):
-    //   qwen3_f32(input_layernorm)    0 or 1
-    //   qwen3_f32(q_norm)             0 or 1
-    //   qwen3_f32(k_norm)             0 or 1
-    //   qwen3_f32(post_attn_norm)     0 or 1
-    //
-    // POST LAYERS (3):
-    //   qwen3_rms_norm(final_norm): ggml_rms_norm + ggml_mul   2
-    //   ggml_mul_mat (lm_head)                                 1
-    //
-    // POST conditional cast (0 or 1):
-    //   qwen3_f32(final_norm)         0 or 1
-    //
-    // TOTAL = 5 + n_layers * (25 + 17*N + casts_per_layer) + 3 + cast_final
-    //       = 8 + n_layers * (25 + 17*N + casts_per_layer) + cast_final
-
-    int casts_per_layer = 0;
-    if (m->layers[0].input_layernorm->type     != GGML_TYPE_F32) casts_per_layer++;
-    if (m->layers[0].q_norm->type              != GGML_TYPE_F32) casts_per_layer++;
-    if (m->layers[0].k_norm->type              != GGML_TYPE_F32) casts_per_layer++;
-    if (m->layers[0].post_attn_layernorm->type != GGML_TYPE_F32) casts_per_layer++;
-    int cast_final = (m->final_norm->type != GGML_TYPE_F32) ? 1 : 0;
-
-    size_t n_tensors = 8
-        + (size_t)c.n_layers * (25 + 17 * N + casts_per_layer)
-        + cast_final;
-    size_t est = n_tensors * ggml_tensor_overhead()
-        + ggml_graph_overhead_custom(16384, false);
-    struct ggml_init_params gp = { est, NULL, true };
+    // Graph context (generous fixed allocation, ~6 MB, negligible vs model weights)
+    size_t ctx_size = (size_t)16384 * ggml_tensor_overhead() + ggml_graph_overhead_custom(16384, false);
+    struct ggml_init_params gp = { ctx_size, NULL, true };
     struct ggml_context * ctx = ggml_init(gp);
     struct ggml_cgraph * gf = ggml_new_graph_custom(ctx, 16384, false);
 
@@ -581,10 +529,25 @@ static void qw3lm_forward_batch(Qwen3LM * m, const int * token_ids,
         // Pre-attention norm [H, N]
         struct ggml_tensor * norm = qwen3_rms_norm(ctx, hidden, ly->input_layernorm, c.rms_norm_eps);
 
-        // Batched QKV projections (weights read once for N tokens)
-        struct ggml_tensor * q = qwen3_linear(ctx, ly->q_proj, norm);   // [Nh*D, N]
-        struct ggml_tensor * k = qwen3_linear(ctx, ly->k_proj, norm);   // [Nkv*D, N]
-        struct ggml_tensor * v = qwen3_linear(ctx, ly->v_proj, norm);   // [Nkv*D, N]
+        // Batched QKV projections (fused, partial, or separate)
+        struct ggml_tensor * q, * k, * v;
+        int q_dim  = Nh * D;
+        int kv_dim = Nkv * D;
+        if (ly->qkv) {
+            struct ggml_tensor * qkv = qwen3_linear(ctx, ly->qkv, norm);
+            q = ggml_cont(ctx, ggml_view_2d(ctx, qkv, q_dim,  N, qkv->nb[1], 0));
+            k = ggml_cont(ctx, ggml_view_2d(ctx, qkv, kv_dim, N, qkv->nb[1], (size_t)q_dim * qkv->nb[0]));
+            v = ggml_cont(ctx, ggml_view_2d(ctx, qkv, kv_dim, N, qkv->nb[1], (size_t)(q_dim + kv_dim) * qkv->nb[0]));
+        } else if (ly->qk) {
+            struct ggml_tensor * qk = qwen3_linear(ctx, ly->qk, norm);
+            q = ggml_cont(ctx, ggml_view_2d(ctx, qk, q_dim,  N, qk->nb[1], 0));
+            k = ggml_cont(ctx, ggml_view_2d(ctx, qk, kv_dim, N, qk->nb[1], (size_t)q_dim * qk->nb[0]));
+            v = qwen3_linear(ctx, ly->v_proj, norm);
+        } else {
+            q = qwen3_linear(ctx, ly->q_proj, norm);
+            k = qwen3_linear(ctx, ly->k_proj, norm);
+            v = qwen3_linear(ctx, ly->v_proj, norm);
+        }
 
         // Reshape to heads: [D, Heads, N]
         q = ggml_reshape_3d(ctx, q, D, Nh,  N);

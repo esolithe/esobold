@@ -19,14 +19,15 @@ void request_init(AceRequest * r) {
     r->duration           = -1.0f;
     r->keyscale           = "";
     r->timesignature      = "";
-    r->vocal_language     = "unknown";
+    r->vocal_language     = "en";
     r->task_type          = "text2music";
     r->seed               = -1;
-    r->thinking           = true;
+    r->thinking           = false;
     r->lm_temperature     = 0.85f;
     r->lm_cfg_scale       = 2.0f;
     r->lm_top_p           = 0.9f;
-    r->lm_negative_prompt = "NO USER INPUT";
+    r->lm_top_k           = 0;
+    r->lm_negative_prompt = "";
     r->audio_codes        = "";
     r->inference_steps    = 8;
     r->guidance_scale     = 1.0f;
@@ -198,19 +199,22 @@ static std::string read_file(const char * path) {
     return buf;
 }
 
-// Public API
-bool request_parse(AceRequest * r, const char * path) {
-    request_init(r);
-
+bool request_parse(AceRequest * r, const char * path)
+{
     std::string json = read_file(path);
     if (json.empty()) {
         fprintf(stderr, "[Request] ERROR: cannot read %s\n", path);
         return false;
     }
+    return request_parse_from_str(r, json);
+}
 
+// Public API
+bool request_parse_from_str(AceRequest * r, std::string json) {
+    request_init(r);
     std::vector<JsonPair> pairs;
     if (!parse_json_flat(json.c_str(), &pairs)) {
-        fprintf(stderr, "[Request] ERROR: malformed JSON in %s\n", path);
+        fprintf(stderr, "[Request] ERROR: malformed JSON\n");
         return false;
     }
 
@@ -230,13 +234,14 @@ bool request_parse(AceRequest * r, const char * path) {
 
         // ints
         else if (k == "bpm")                r->bpm                = atoi(v.c_str());
-        else if (k == "seed")               r->seed               = atoi(v.c_str());
+        else if (k == "seed")               r->seed               = strtoll(v.c_str(), nullptr, 10);
 
         // floats
         else if (k == "duration")           r->duration           = (float)atof(v.c_str());
         else if (k == "lm_temperature")     r->lm_temperature     = (float)atof(v.c_str());
         else if (k == "lm_cfg_scale")       r->lm_cfg_scale       = (float)atof(v.c_str());
         else if (k == "lm_top_p")           r->lm_top_p           = (float)atof(v.c_str());
+        else if (k == "lm_top_k")           r->lm_top_k           = atoi(v.c_str());
         else if (k == "inference_steps")    r->inference_steps    = atoi(v.c_str());
         else if (k == "guidance_scale")     r->guidance_scale     = (float)atof(v.c_str());
         else if (k == "shift")              r->shift              = (float)atof(v.c_str());
@@ -247,7 +252,7 @@ bool request_parse(AceRequest * r, const char * path) {
         // unknown keys: silently ignored (forward compat)
     }
 
-    fprintf(stderr, "[Request] parsed %s (%zu fields)\n", path, pairs.size());
+    fprintf(stderr, "[Request] parsed json (%zu fields)\n", pairs.size());
     return true;
 }
 
@@ -269,11 +274,12 @@ bool request_write(const AceRequest * r, const char * path) {
     fprintf(f, "  \"timesignature\": \"%s\",\n",      json_escape(r->timesignature).c_str());
     fprintf(f, "  \"vocal_language\": \"%s\",\n",     json_escape(r->vocal_language).c_str());
     fprintf(f, "  \"task_type\": \"%s\",\n",          json_escape(r->task_type).c_str());
-    fprintf(f, "  \"seed\": %d,\n",                   r->seed);
+    fprintf(f, "  \"seed\": %lld,\n",                 (long long)r->seed);
     fprintf(f, "  \"thinking\": %s,\n",               r->thinking ? "true" : "false");
     fprintf(f, "  \"lm_temperature\": %.2f,\n",       r->lm_temperature);
     fprintf(f, "  \"lm_cfg_scale\": %.1f,\n",         r->lm_cfg_scale);
     fprintf(f, "  \"lm_top_p\": %.2f,\n",             r->lm_top_p);
+    fprintf(f, "  \"lm_top_k\": %d,\n",               r->lm_top_k);
     fprintf(f, "  \"lm_negative_prompt\": \"%s\",\n", json_escape(r->lm_negative_prompt).c_str());
     fprintf(f, "  \"inference_steps\": %d,\n",        r->inference_steps);
     fprintf(f, "  \"guidance_scale\": %.1f,\n",       r->guidance_scale);
@@ -288,16 +294,16 @@ bool request_write(const AceRequest * r, const char * path) {
 }
 
 void request_dump(const AceRequest * r, FILE * f) {
-    fprintf(f, "[Request] task=%s thinking=%s seed=%d\n",
-            r->task_type.c_str(), r->thinking ? "true" : "false", r->seed);
+    fprintf(f, "[Request] task=%s thinking=%s seed=%lld\n",
+            r->task_type.c_str(), r->thinking ? "true" : "false", (long long)r->seed);
     fprintf(f, "  caption:    %.60s%s\n",
             r->caption.c_str(), r->caption.size() > 60 ? "..." : "");
     fprintf(f, "  lyrics:     %zu bytes\n", r->lyrics.size());
     fprintf(f, "  bpm=%d dur=%.0f key=%s ts=%s lang=%s\n",
             r->bpm, r->duration, r->keyscale.c_str(),
             r->timesignature.c_str(), r->vocal_language.c_str());
-    fprintf(f, "  lm: temp=%.2f cfg=%.1f top_p=%.2f\n",
-            r->lm_temperature, r->lm_cfg_scale, r->lm_top_p);
+    fprintf(f, "  lm: temp=%.2f cfg=%.1f top_p=%.2f top_k=%d\n",
+            r->lm_temperature, r->lm_cfg_scale, r->lm_top_p, r->lm_top_k);
     fprintf(f, "  dit: steps=%d guidance=%.1f shift=%.1f\n",
             r->inference_steps, r->guidance_scale, r->shift);
     fprintf(f, "  audio_codes: %s\n",

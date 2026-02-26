@@ -149,6 +149,10 @@ static struct ggml_tensor * dit_load_proj_in_w(
         exit(1);
     }
     struct ggml_tensor * src = ggml_get_tensor(gf.meta, name.c_str());
+    if (!src) {
+        fprintf(stderr, "[GGUF] FATAL: meta tensor '%s' not found\n", name.c_str());
+        exit(1);
+    }
     size_t offset = gguf_get_tensor_offset(gf.gguf, idx);
     const void * raw = gf.mapping + gf.data_offset + offset;
 
@@ -196,6 +200,10 @@ static struct ggml_tensor * dit_load_proj_out_w(
         exit(1);
     }
     struct ggml_tensor * src = ggml_get_tensor(gf.meta, name.c_str());
+    if (!src) {
+        fprintf(stderr, "[GGUF] FATAL: meta tensor '%s' not found\n", name.c_str());
+        exit(1);
+    }
     size_t offset = gguf_get_tensor_offset(gf.gguf, idx);
     const void * raw = gf.mapping + gf.data_offset + offset;
 
@@ -287,6 +295,8 @@ static bool dit_ggml_load(DiTGGML * m, const char * gguf_path, DiTGGMLConfig cfg
                 ly.sa_v_proj = gf_load_tensor(&m->wctx, gf, p + ".self_attn.v_proj.weight");
                 if (i == 0) fprintf(stderr, "[DiT] Self-attn: all separate (3 types differ)\n");
             }
+        } else {
+            if (i == 0) fprintf(stderr, "[DiT] Self-attn: Q+K+V fused\n");
         }
         ly.sa_q_norm = gf_load_tensor_f32(&m->wctx, gf, p + ".self_attn.q_norm.weight");
         ly.sa_k_norm = gf_load_tensor_f32(&m->wctx, gf, p + ".self_attn.k_norm.weight");
@@ -311,6 +321,8 @@ static bool dit_ggml_load(DiTGGML * m, const char * gguf_path, DiTGGMLConfig cfg
                 ly.ca_v_proj = gf_load_tensor(&m->wctx, gf, p + ".cross_attn.v_proj.weight");
                 if (i == 0) fprintf(stderr, "[DiT] Cross-attn: all separate\n");
             }
+        } else {
+            if (i == 0) fprintf(stderr, "[DiT] Cross-attn: Q+K+V fused\n");
         }
         ly.ca_q_norm = gf_load_tensor_f32(&m->wctx, gf, p + ".cross_attn.q_norm.weight");
         ly.ca_k_norm = gf_load_tensor_f32(&m->wctx, gf, p + ".cross_attn.k_norm.weight");
@@ -1085,7 +1097,7 @@ static void dit_ggml_generate(
 
     fprintf(stderr, "[DiT] Batch N=%d, T=%d, S=%d, enc_S=%d\n", N, T, S, enc_S);
 
-    // Build graph once (shapes are constant across steps)
+    // Graph context (generous fixed allocation, shapes are constant across steps)
     size_t ctx_size = ggml_tensor_overhead() * 8192 + ggml_graph_overhead_custom(8192, false);
     std::vector<uint8_t> ctx_buf(ctx_size);
 

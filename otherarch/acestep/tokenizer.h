@@ -131,6 +131,7 @@ static int detok_ggml_decode(DetokGGML * m, const int * codes, int T_5Hz,
     // Step 2: build ggml graph for one token
     // input [6] -> project_out [2048] -> embed_tokens [2048]
     //   -> broadcast + special_tokens [2048, 5] -> 2L encoder -> norm -> proj_out [64, 5]
+    // Graph context (generous fixed allocation)
     size_t ctx_size = ggml_tensor_overhead() * 512 + ggml_graph_overhead_custom(4096, false);
     std::vector<uint8_t> ctx_buf(ctx_size);
     struct ggml_init_params p = { ctx_size, ctx_buf.data(), true };

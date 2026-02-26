@@ -24,13 +24,14 @@ struct AceRequest {
 
     // generation
     std::string task_type;          // "text2music"
-    int         seed;               // -1 = random
+    int64_t     seed;               // -1 = random
 
     // LM control
     bool        thinking;           // true
     float       lm_temperature;     // 0.85
     float       lm_cfg_scale;       // 2.0
     float       lm_top_p;           // 0.9
+    int         lm_top_k;           // 0 = disabled (matches Python None)
     std::string lm_negative_prompt; // "NO USER INPUT"
 
     // codes (Python-compatible string: "3101,11837,27514,...")
@@ -49,6 +50,8 @@ void request_init(AceRequest * r);
 // Parse JSON file into struct. Missing fields keep their defaults.
 // Returns false on file error or malformed JSON.
 bool request_parse(AceRequest * r, const char * path);
+
+bool request_parse_from_str(AceRequest * r, std::string json);
 
 // Write struct to JSON file (overwrites). Returns false on file error.
 bool request_write(const AceRequest * r, const char * path);
