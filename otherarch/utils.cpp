@@ -487,6 +487,49 @@ std::string save_wav16_base64(const std::vector<float> &data, int sample_rate) {
     return kcpp_base64_encode(wav_data); //return as base64 string
 }
 
+//assumes planar stereo input from acestep
+std::string save_stereo_wav16_base64(const std::vector<float> & raw_audio, int T_audio, int sample_rate) {
+    std::ostringstream oss(std::ios::binary);
+    const int n_channels = 2;
+    const int bits = 16;
+    const int byte_rate = sample_rate * n_channels * (bits / 8);
+    const int block_align = n_channels * (bits / 8);
+    const int data_size = T_audio * n_channels * (bits / 8);
+    const int file_size = 36 + data_size;
+    oss.write("RIFF", 4);
+    oss.write(reinterpret_cast<const char*>(&file_size), 4);
+    oss.write("WAVE", 4);
+    oss.write("fmt ", 4);
+    int32_t fmt_size = 16;
+    oss.write(reinterpret_cast<const char*>(&fmt_size), 4);
+    int16_t audio_fmt = 1; // PCM
+    oss.write(reinterpret_cast<const char*>(&audio_fmt), 2);
+    int16_t nc = n_channels;
+    oss.write(reinterpret_cast<const char*>(&nc), 2);
+    oss.write(reinterpret_cast<const char*>(&sample_rate), 4);
+    oss.write(reinterpret_cast<const char*>(&byte_rate), 4);
+    int16_t ba = block_align;
+    oss.write(reinterpret_cast<const char*>(&ba), 2);
+    int16_t bp = bits;
+    oss.write(reinterpret_cast<const char*>(&bp), 2);
+    oss.write("data", 4);
+    oss.write(reinterpret_cast<const char*>(&data_size), 4);
+
+    // EXPECTS PLANAR INPUT:
+    // raw_audio[0 ... T_audio-1]           = Left
+    // raw_audio[T_audio ... 2*T_audio-1]   = Right
+    for (int t = 0; t < T_audio; ++t) {
+        for (int c = 0; c < 2; ++c) {
+            float s = raw_audio[c * T_audio + t];
+            s = std::max(-1.0f, std::min(1.0f, s));  // clamp to [-1, 1]
+            int16_t v = static_cast<int16_t>(s * 32767.0f);
+            oss.write(reinterpret_cast<const char*>(&v), 2);
+        }
+    }
+    std::string wav_data = oss.str();
+    return kcpp_base64_encode(wav_data);
+}
+
 //a very rudimentary all in one sampling function which has no dependencies
 int32_t kcpp_quick_sample(float * logits, const int n_logits, const std::vector<int32_t> & last_n_tokens, float rep_pen, float top_p, int top_k, float temp, std::mt19937 & rng)
 {

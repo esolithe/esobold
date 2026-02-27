@@ -342,13 +342,15 @@ struct music_load_model_inputs
 };
 struct music_generation_inputs
 {
-    const bool is_codes = false; //if true, generate codes, else, generate diffusion music
+    const bool is_planner_mode = false; //if true, generate codes, else, generate diffusion music
+    const bool stereo = false;
+    const bool gen_codes = false;
     const char * input_json = nullptr;
 };
 struct music_generation_outputs
 {
     int status = -1;
-    const char * codes_json = "";
+    const char * music_output_json = "";
     const char * data = "";
 };
 

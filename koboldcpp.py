@@ -92,6 +92,7 @@ password = "" #if empty, no auth key required
 fullwhispermodelpath = "" #if empty, it's not initialized
 ttsmodelpath = "" #if empty, not initialized
 embeddingsmodelpath = "" #if empty, not initialized
+musicllmmodelpath = "" #if empty, not initialized
 musicdiffusionmodelpath = "" #if empty, not initialized
 maxctx = 8192
 maxhordectx = 0 #set to whatever maxctx is if 0
@@ -460,12 +461,14 @@ class music_load_model_inputs(ctypes.Structure):
                 ("debugmode", ctypes.c_int)]
 
 class music_generation_inputs(ctypes.Structure):
-    _fields_ = [("is_codes", ctypes.c_bool),
+    _fields_ = [("is_planner_mode", ctypes.c_bool),
+                ("stereo", ctypes.c_bool),
+                ("gen_codes", ctypes.c_bool),
                 ("input_json", ctypes.c_char_p)]
 
 class music_generation_outputs(ctypes.Structure):
     _fields_ = [("status", ctypes.c_int),
-                ("codes_json", ctypes.c_char_p),
+                ("music_output_json", ctypes.c_char_p),
                 ("data", ctypes.c_char_p)]
 
 class StdoutRedirector:
@@ -1154,7 +1157,7 @@ def convert_json_to_gbnf(json_obj):
         return ""
 
 def get_capabilities():
-    global savedata_obj, has_multiplayer, KcppVersion, friendlymodelname, friendlysdmodelname, fullsdmodelpath, password, fullwhispermodelpath, ttsmodelpath, embeddingsmodelpath, musicdiffusionmodelpath, has_audio_support, has_vision_support, mcp_connections
+    global savedata_obj, has_multiplayer, KcppVersion, friendlymodelname, friendlysdmodelname, fullsdmodelpath, password, fullwhispermodelpath, ttsmodelpath, embeddingsmodelpath, musicdiffusionmodelpath, musicllmmodelpath, has_audio_support, has_vision_support, mcp_connections
     has_llm = not (friendlymodelname=="inactive")
     has_txt2img = not (friendlysdmodelname=="inactive" or fullsdmodelpath=="")
     has_password = (password!="")
@@ -1162,7 +1165,7 @@ def get_capabilities():
     has_search = True if args.websearch else False
     has_tts = (ttsmodelpath!="")
     has_embeddings = (embeddingsmodelpath!="")
-    has_music = (musicdiffusionmodelpath!="")
+    has_music = (musicdiffusionmodelpath!="" or musicllmmodelpath!="")
     embeddingModel = ""
     try:
         embeddingModel = os.path.basename(embeddingsmodelpath)
@@ -2966,12 +2969,14 @@ def music_generate_codes(genparams):
     global args
     input_json = json.dumps(genparams)
     inputs = music_generation_inputs()
-    inputs.is_codes = True
+    inputs.is_planner_mode = True
+    inputs.stereo = genparams.get('stereo', False)
+    inputs.gen_codes =  genparams.get('gen_codes', False)
     inputs.input_json = input_json.encode("UTF-8")
     ret = handle.music_generate(inputs)
     outstr = ""
     if ret.status==1:
-        outstr = ret.codes_json.decode("UTF-8","ignore")
+        outstr = ret.music_output_json.decode("UTF-8","ignore")
         outstr = json.dumps(json.loads(outstr))
     return outstr
 
@@ -2979,7 +2984,9 @@ def music_generate_audio(genparams):
     global args
     input_json = json.dumps(genparams)
     inputs = music_generation_inputs()
-    inputs.is_codes = False
+    inputs.is_planner_mode = False
+    inputs.stereo = genparams.get('stereo', False)
+    inputs.gen_codes =  genparams.get('gen_codes', False)
     inputs.input_json = input_json.encode("UTF-8")
     ret = handle.music_generate(inputs)
     outstr = ""
@@ -6615,7 +6622,7 @@ def show_gui():
             if dlfile:
                 args.model_param = dlfile
             load_config_cli(args.model_param)
-        if not args.model_param and not args.sdmodel and not args.whispermodel and not args.ttsmodel and not args.embeddingsmodel and not args.musicdiffusion and not args.mcpfile and not args.nomodel:
+        if not args.model_param and not args.sdmodel and not args.whispermodel and not args.ttsmodel and not args.embeddingsmodel and not args.musicdiffusion and not args.musicllm and not args.mcpfile and not args.nomodel:
             global exitcounter
             exitcounter = 999
             exit_with_error(2,"No gguf model or kcpps file was selected. Exiting.")
@@ -7790,7 +7797,7 @@ def show_gui():
 
     # launch
     def guilaunch():
-        if model_var.get() == "" and sd_model_var.get() == "" and whisper_model_var.get() == "" and tts_model_var.get() == "" and embeddings_model_var.get() == "" and musicdiffusion_var.get() == "" and nomodel.get()!=1:
+        if model_var.get() == "" and sd_model_var.get() == "" and whisper_model_var.get() == "" and tts_model_var.get() == "" and embeddings_model_var.get() == "" and musicdiffusion_var.get() == "" and musicllm_var.get() == "" and nomodel.get()!=1:
             tmp = zentk_askopenfilename(title="Select ggml model .bin or .gguf file")
             model_var.set(tmp)
         nonlocal nextstate
@@ -8408,7 +8415,7 @@ def show_gui():
         kcpp_exporting_template = False
         export_vars()
 
-        if not args.model_param and not args.sdmodel and not args.whispermodel and not args.ttsmodel and not args.embeddingsmodel and not args.musicdiffusion and not args.mcpfile and not args.nomodel:
+        if not args.model_param and not args.sdmodel and not args.whispermodel and not args.ttsmodel and not args.embeddingsmodel and not args.musicdiffusion and not args.musicllm and not args.mcpfile and not args.nomodel:
             exitcounter = 999
             print("")
             time.sleep(0.5)
@@ -9265,7 +9272,7 @@ def main(launch_args, default_args):
         return
 
     # show the GUI launcher if a model was not provided
-    if args.showgui or (not args.model_param and not args.sdmodel and not args.whispermodel and not args.ttsmodel and not args.embeddingsmodel and not args.musicdiffusion and not args.mcpfile and not args.nomodel):
+    if args.showgui or (not args.model_param and not args.sdmodel and not args.whispermodel and not args.ttsmodel and not args.embeddingsmodel and not args.musicdiffusion and not args.musicllm and not args.mcpfile and not args.nomodel):
         #give them a chance to pick a file
         print("For command line arguments, please refer to --help")
         print("***")
@@ -9411,7 +9418,7 @@ def main(launch_args, default_args):
 
 def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
     global embedded_kailite, embedded_kcpp_docs, embedded_kcpp_sdui, embedded_kailite_gz, embedded_kcpp_docs_gz, embedded_kcpp_sdui_gz, embedded_lcpp_ui_gz, embedded_musicui, embedded_musicui_gz, start_time, exitcounter, global_memory, using_gui_launcher
-    global libname, args, friendlymodelname, friendlysdmodelname, fullsdmodelpath, password, fullwhispermodelpath, ttsmodelpath, embeddingsmodelpath, musicdiffusionmodelpath, friendlyembeddingsmodelname, has_audio_support, has_vision_support, cached_chat_template
+    global libname, args, friendlymodelname, friendlysdmodelname, fullsdmodelpath, password, fullwhispermodelpath, ttsmodelpath, embeddingsmodelpath, musicdiffusionmodelpath, musicllmmodelpath, friendlyembeddingsmodelname, has_audio_support, has_vision_support, cached_chat_template
 
     start_server = True
 
@@ -9966,27 +9973,55 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
                 exit_with_error(3,"Could not load Embeddings model!")
 
     #handle music model
-    if (args.musicdiffusion and args.musicdiffusion!="") or (args.musicllm and args.musicllm!="") or (args.musicembeddings and args.musicembeddings!="") or (args.musicvae and args.musicvae!=""):
-        if not os.path.exists(args.musicllm) or not os.path.exists(args.musicembeddings) or not os.path.exists(args.musicdiffusion) or not os.path.exists(args.musicvae):
-            if args.ignoremissing:
-                print("Ignoring missing Music model files!")
-                args.musicllm = None
-                args.musicembeddings = None
-                args.musicdiffusion = None
-                args.musicvae = None
+    mu_has_llm = True if (args.musicllm and args.musicllm!="") else False
+    mu_has_embed = True if  (args.musicembeddings and args.musicembeddings!="") else False
+    mu_has_diff = True if (args.musicdiffusion and args.musicdiffusion!="") else False
+    mu_has_vae = True if (args.musicvae and args.musicvae!="") else False
+    if mu_has_llm or mu_has_embed or mu_has_diff or mu_has_vae:
+        if mu_has_llm and not any([mu_has_embed, mu_has_diff, mu_has_vae]):
+            if not os.path.exists(args.musicllm):
+                if args.ignoremissing:
+                    print("Ignoring missing Music LLM model file!")
+                    args.musicllm = None
+                else:
+                    exitcounter = 999
+                    exit_with_error(2, "Cannot find Music LLM model file!")
             else:
+                musicllmpath = os.path.abspath(args.musicllm)
+                loadok = music_load_model(musicllmpath, "", "", "")
+                print("Load Music LLM Only OK: " + str(loadok))
+                if not loadok:
+                    exitcounter = 999
+                    exit_with_error(3, "Could not load Music LLM model!")
+        elif mu_has_diff:
+            if not (mu_has_embed and mu_has_vae):
                 exitcounter = 999
-                exit_with_error(2,"Cannot find music model files or missing a music model. Make sure ALL 4 music models (llm,embed,diffusion and vae) are loaded!")
-        else:
-            musicdiffusionmodelpath = os.path.abspath(args.musicdiffusion)
-            musicembedpath = os.path.abspath(args.musicembeddings)
-            musicllmpath = os.path.abspath(args.musicllm)
-            musicvaepath = os.path.abspath(args.musicvae)
-            loadok = music_load_model(musicllmpath,musicembedpath,musicdiffusionmodelpath,musicvaepath)
-            print("Load Music Model OK: " + str(loadok))
-            if not loadok:
-                exitcounter = 999
-                exit_with_error(3,"Could not load Music model!")
+                exit_with_error(2,"Invalid config: Music Diffusion requires Music embedding and Music VAE models!")
+
+            paths_to_check = [args.musicdiffusion,args.musicembeddings,args.musicvae]
+            if mu_has_llm:
+                paths_to_check.append(args.musicllm)
+
+            if not all(os.path.exists(p) for p in paths_to_check):
+                if args.ignoremissing:
+                    print("Ignoring missing Music model files!")
+                    args.musicllm = None
+                    args.musicembeddings = None
+                    args.musicdiffusion = None
+                    args.musicvae = None
+                else:
+                    exitcounter = 999
+                    exit_with_error(2,"Cannot find required music diffusion/embedding/VAE model files!")
+            else:
+                musicdiffusionmodelpath = os.path.abspath(args.musicdiffusion)
+                musicembedpath = os.path.abspath(args.musicembeddings)
+                musicvaepath = os.path.abspath(args.musicvae)
+                musicllmpath = os.path.abspath(args.musicllm) if mu_has_llm else ""
+                loadok = music_load_model(musicllmpath,musicembedpath,musicdiffusionmodelpath,musicvaepath)
+                print("Load Music Models OK: " + str(loadok))
+                if not loadok:
+                    exitcounter = 999
+                    exit_with_error(3, "Could not load Music models!")
 
     #load embedded lite
     embddir = os.path.join(os.path.abspath(os.path.dirname(os.path.realpath(__file__))),"embd_res")

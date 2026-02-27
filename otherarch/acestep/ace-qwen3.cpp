@@ -917,14 +917,17 @@ static std::vector<std::string> generate_phase1_batch(
                 seqs[i].fsm.apply_mask(lc);
 
             // After </think>: audio code constraint unless lyrics_mode
-            // if (seqs[i].codes_phase && !lyrics_mode) {
-            //     for (int v = 0; v < AUDIO_CODE_BASE; v++)
-            //         if (v != TOKEN_IM_END) lc[v] = -1e9f;
-            // }
+            if (seqs[i].codes_phase && !lyrics_mode) {
+                for (int v = 0; v < AUDIO_CODE_BASE; v++)
+                    if (v != TOKEN_IM_END) lc[v] = -1e9f;
+            }
 
-            // kcpp: prevent outputting audio codes
-            for (int v = AUDIO_CODE_BASE; v < AUDIO_CODE_COUNT+AUDIO_CODE_BASE; v++)
-                if (v != TOKEN_IM_END) lc[v] = -1e9f;
+            // kcpp: prevent outputting audio codes during lyrics
+            if(lyrics_mode)
+            {
+                for (int v = AUDIO_CODE_BASE; v < AUDIO_CODE_COUNT+AUDIO_CODE_BASE; v++)
+                    if (v != TOKEN_IM_END) lc[v] = -1e9f;
+            }
 
             int tok = kcpp_quick_sample(lc,V,quicklastntoks,1.04f,top_p,30,temperature,acestep_lm_rng);
             quicklastntoks.push_back(tok);
@@ -1560,12 +1563,8 @@ std::string acestep_prepare_request(const music_generation_inputs inputs)
     ace.timesignature  = req.timesignature;
     ace.vocal_language = req.vocal_language;
 
-    //kcpp: codes suck don't use them
-    req.thinking = false;
-    req.audio_codes = "";
-
     bool user_has_codes = !req.audio_codes.empty();
-    bool need_lm_codes  = false;//req.thinking && !user_has_codes;
+    bool need_lm_codes  = inputs.gen_codes && !user_has_codes;
 
     bool is_simple = ace.lyrics.empty();
 

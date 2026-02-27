@@ -868,8 +868,8 @@ std::string acestep_generate_audio(const music_generation_inputs inputs)
 
     // Context building
     // Silence latent for this T
-    std::vector<float> silence(Oc * T);
-    memcpy(silence.data(), silence_full.data(), (size_t)(Oc * T) * sizeof(float));
+    // std::vector<float> silence(Oc * T);
+    // memcpy(silence.data(), silence_full.data(), (size_t)(Oc * T) * sizeof(float));
 
     // Decode audio codes if provided
     int decoded_T = 0;
@@ -895,7 +895,7 @@ std::string acestep_generate_audio(const music_generation_inputs inputs)
     for (int t = 0; t < T; t++) {
         const float * src = (t < decoded_T)
             ? decoded_latents.data() + t * Oc
-            : silence.data() + t * Oc;
+            : silence_full.data() + (t - decoded_T) * Oc;
         for (int c = 0; c < Oc; c++)
             context_single[t * ctx_ch + c] = src[c];
         for (int c = 0; c < Oc; c++)
@@ -984,9 +984,15 @@ std::string acestep_generate_audio(const music_generation_inputs inputs)
 
     // output wav
     float muslen = (float)T_audio / 48000.0f;
-    std::vector<float> mono = mix_planar_stereo_to_mono(audio.data(), T_audio);
-    std::vector<float> resampled_buf = resample_wav(mono,48000,32000);
-    std::string finalb64 = save_wav16_base64(resampled_buf, 32000);
+    std::string finalb64;
+    if(inputs.stereo)
+    {
+        finalb64 = save_stereo_wav16_base64(audio,T_audio,48000);
+    } else {
+        std::vector<float> mono = mix_planar_stereo_to_mono(audio.data(), T_audio);
+        std::vector<float> resampled_buf = resample_wav(mono,48000,32000);
+        finalb64 = save_wav16_base64(resampled_buf, 32000);
+    }
 
     if(acestep_dit_lowvram)
     {
