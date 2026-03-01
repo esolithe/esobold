@@ -220,3 +220,257 @@ full process restart:
    call to `handle.unload_model()` followed by `handle.load_model(new_inputs)`, keeping
    the HTTP server running throughout.  The `fault_recovery_mode` / `terminate()` path
    can be retained as a fallback for catastrophic failures.
+
+---
+
+## Detailed Steps: Replacing the Process-Restart with In-Process Model Switching
+
+This section maps the existing `koboldcpp.py` model-switching logic to the concrete
+changes needed to perform the switch in-process, inside the same worker process that is
+already serving HTTP requests.
+
+---
+
+### Step A — Understand the Current Switching Flow
+
+The current flow involves **two separate processes**: a manager (outer) and a worker
+(inner).
+
+#### Manager process  (`koboldcpp.py`, ≈ line 9340 onwards)
+
+```
+while True:
+    restart_target = global_memory["restart_target"]
+    if restart_target != "":
+        kcpp_instance.terminate()           # ← kills the HTTP server
+        kcpp_instance.join(timeout=10)
+        reload_from_new_args(defaultargs)   # ← mutates global `args`
+        # or reload_new_config(targetfilepath, defaultargs)
+        # or sets args.nomodel = True  (for "unload_model")
+        global_memory["modelOverride"] = modelFilepath  # optional model override
+        kcpp_instance = multiprocessing.Process(target=kcpp_main_process, ...)
+        kcpp_instance.start()               # ← starts a fresh HTTP server
+```
+
+#### Worker process (`kcpp_main_process`, ≈ line 9426)
+
+On startup the worker:
+1. Calls `init_library()` to load the shared `.dll` / `.so` and bind ctypes.
+2. Calls `load_model(model_filename)` which calls `handle.load_model(inputs)` (C++).
+3. Sets Python globals: `friendlymodelname`, `has_audio_support`, `has_vision_support`,
+   `cached_chat_template`, `maxctx`, `fullsdmodelpath`, etc.
+4. Starts the HTTP server threads (`serve_forever()`).
+5. Sets `global_memory["load_complete"] = True`.
+
+The key insight is that **steps 2–3 are the only things that must change** during a
+model switch — steps 1 and 4 can remain running throughout.
+
+---
+
+### Step B — Move Model-Reload Signal from Manager to Worker
+
+Instead of the manager terminating the worker and spawning a new one, the reload signal
+should be consumed **inside the worker** so that the HTTP server stays alive.
+
+**New signal flow:**
+
+1. The admin API handler (≈ line 5682) continues to write
+   `global_memory["restart_target"]` exactly as today — no change needed there.
+2. Add a **background reload thread** inside `kcpp_main_process` that polls
+   `global_memory["restart_target"]` (or receives a threading `Event`).
+3. When the reload thread detects a non-empty `restart_target`, it performs the
+   in-process reload (Steps C–E below) instead of exiting.
+4. The manager loop is simplified: it no longer needs to terminate/spawn the worker.
+   It only needs to handle the rare case where the worker crashes unexpectedly (keeping
+   the existing `fault_recovery_mode` path as a safety net).
+
+```python
+# New thread added inside kcpp_main_process:
+reload_event = threading.Event()
+
+def model_reload_thread():
+    while True:
+        reload_event.wait()          # blocks until signalled; no polling overhead
+        reload_event.clear()
+        target = global_memory.get("restart_target", "")
+        if target != "":
+            perform_in_process_reload(target)
+
+threading.Thread(target=model_reload_thread, daemon=True).start()
+```
+
+The admin API handler (≈ line 5682) must also call `reload_event.set()` after writing
+`global_memory["restart_target"]` to wake the reload thread immediately with no delay.
+
+---
+
+### Step C — Wait for Any In-Flight Generation to Complete
+
+Before unloading, the worker must ensure no generation is active.
+
+```python
+def perform_in_process_reload(restart_target):
+    global_memory["restart_target"] = ""      # clear flag immediately
+    global_memory["load_complete"] = False    # signal "not ready" to clients
+
+    # Abort any active generation
+    handle.abort_generate()
+
+    # Wait for the generation lock to become free
+    with modelbusy:                           # blocks until generation finishes
+        _do_reload(restart_target)
+```
+
+`modelbusy` (≈ line 100) is the `threading.Lock()` already used to serialise
+generation requests.  Acquiring it guarantees the C++ model is idle before any C++
+resources are freed.
+
+---
+
+### Step D — Update Python-Layer State via Existing Helpers
+
+The existing `reload_from_new_args` and `reload_new_config` functions already translate
+a new config file or `.gguf` path into a fully populated global `args` object.  They can
+be reused unchanged:
+
+```python
+def _do_reload(restart_target):
+    global friendlymodelname, has_audio_support, has_vision_support
+    global cached_chat_template, maxctx, fullsdmodelpath, friendlysdmodelname
+
+    defaultargs = vars(default_args)   # same as the manager uses today
+
+    if restart_target == "unload_model":
+        reload_from_new_args(defaultargs)
+        args.model_param = None
+        args.model = None
+        args.nomodel = True
+    elif restart_target.endswith(".gguf"):
+        reload_from_new_args(defaultargs)
+        args.model_param = os.path.join(os.path.abspath(args.admindir), restart_target)
+    else:
+        reload_new_config(
+            os.path.join(os.path.abspath(args.admindir), restart_target),
+            defaultargs
+        )
+
+    # Apply optional per-request model override
+    if global_memory.get("modelOverride"):
+        args.model_param = global_memory["modelOverride"]
+        global_memory["modelOverride"] = None
+
+    # Update global_memory bookkeeping (same as the manager does today)
+    args.currentConfig = restart_target
+    global_memory["currentConfig"] = restart_target
+    global_memory["restart_target"] = ""
+    global_memory["restart_model"] = ""
+```
+
+---
+
+### Step E — Call the C++ Unload then Load
+
+This is where the new C++ API (Steps 1–5 in the previous section) is actually used:
+
+```python
+    # --- Unload the current model from C++ ---
+    handle.unload_model()                 # NEW: calls gpttype_unload_model() in C++
+
+    # Reset Python model-state globals
+    friendlymodelname    = "inactive"
+    has_audio_support    = False
+    has_vision_support   = False
+    cached_chat_template = None
+    fullsdmodelpath      = ""
+    friendlysdmodelname  = ""
+
+    if args.model_param:
+        # --- Load the new model via the existing Python load_model() ---
+        modelname = os.path.abspath(args.model_param)
+        print(f"In-process reload: Loading {modelname}", flush=True)
+        loadok = load_model(modelname)       # reuses the existing Python function
+        print(f"Load OK: {loadok}")
+
+        if loadok:
+            # Update multimodal flags (same as kcpp_main_process does on startup)
+            if args.mmproj:
+                has_audio_support  = handle.has_audio_support()
+                has_vision_support = handle.has_vision_support()
+
+            # Refresh cached chat template
+            ctbytes = handle.get_chat_template()
+            cached_chat_template = ctypes.string_at(ctbytes).decode("UTF-8", "ignore")
+
+            # Rebuild friendlymodelname (same logic as kcpp_main_process)
+            newname = os.path.splitext(os.path.basename(modelname))[0]
+            friendlymodelname = "koboldcpp/" + sanitize_string(newname)
+        else:
+            print("In-process reload FAILED — no model is now loaded.")
+
+    # Signal that the server is ready again
+    global_memory["load_complete"] = True
+```
+
+`load_model()` (Python, ≈ line 1623) already reads all relevant fields from `args` and
+calls `handle.load_model(inputs)`.  Because `reload_from_new_args` / `reload_new_config`
+have already updated `args` in Step D, calling `load_model()` here picks up the new
+parameters without any further change to that function.
+
+---
+
+### Step F — Simplify the Manager Loop
+
+Once the worker handles its own reloads, the manager loop no longer needs to
+terminate/respawn for normal model switches.  It can be simplified to:
+
+```python
+# Manager loop (koboldcpp.py, ≈ line 9340)
+while True:
+    time.sleep(0.2)
+    if not kcpp_instance or not kcpp_instance.is_alive():
+        if fault_recovery_mode:
+            # existing recovery logic — kept as-is
+            ...
+        else:
+            break  # worker crashed without recovery; exit
+    if fault_recovery_mode and global_memory["load_complete"]:
+        fault_recovery_mode = False
+    # restart_target is now consumed by the worker — no action needed here
+```
+
+The `fault_recovery_mode` path (terminate + respawn on crash) remains untouched as a
+safety net for unrecoverable C++ failures.
+
+---
+
+### Step G — Handle the `unload_model` (no-model) Case
+
+When `restart_target == "unload_model"` the intent is to serve requests with no text
+model loaded (image / audio only, or idle).  After Step E with `args.model_param = None`
+the worker skips `load_model()`, leaving `friendlymodelname = "inactive"`.  The HTTP
+server continues to run, correctly reporting `"llm": false` from the `/api/extra/version`
+capabilities endpoint.
+
+---
+
+### Summary: Python-Layer State Reset Checklist
+
+The following Python globals must be explicitly reset whenever a new model is loaded or
+unloaded in-process.  These are all set during `kcpp_main_process` startup and must be
+refreshed after each in-process reload:
+
+| Global | Reset value (unload) | Updated value (load) |
+|---|---|---|
+| `friendlymodelname` | `"inactive"` | `"koboldcpp/" + sanitize_string(basename)` |
+| `has_audio_support` | `False` | `handle.has_audio_support()` |
+| `has_vision_support` | `False` | `handle.has_vision_support()` |
+| `cached_chat_template` | `None` | `handle.get_chat_template()` decoded |
+| `fullsdmodelpath` | `""` | unchanged (SD not reloaded) |
+| `friendlysdmodelname` | `""` | unchanged (SD not reloaded) |
+| `maxctx` | `args.contextsize` | set inside `load_model()` from `args` |
+| `global_memory["load_complete"]` | `False` | `True` when done |
+| `global_memory["currentModel"]` | `None` | `args.model_param` |
+| `global_memory["currentConfig"]` | updated | updated |
+
+Note: `modelbusy`, `requestsinqueue`, `totalgens`, `exitcounter`, and all HTTP server
+threads do **not** need to be reset — they persist across model reloads.
