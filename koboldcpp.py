@@ -5734,24 +5734,32 @@ Change Mode<br>
         elif self.path.endswith('/set_tts_settings'): #return dummy response
             response_body = (json.dumps({"message": "Settings successfully applied"}).encode())
 
-        elif self.path.endswith('/api/admin/park'): # Park all models to RAM (unload GPU memory)
+        elif self.path.endswith('/api/admin/park'): # Park models to RAM (unload GPU memory). Optional body: {"models": ["llm","sd",...]}
             resp = {"success": False}
             if args.admin and self.check_header_password(args.adminpassword):
-                try:
-                    perform_park_to_ram()
-                    resp = {"success": True}
-                except Exception as ex:
-                    resp = {"success": False, "error": str(ex)}
+                subsystems, err_resp = _parse_park_models_body(body)
+                if err_resp is not None:
+                    resp = err_resp
+                else:
+                    try:
+                        perform_park_to_ram(subsystems)
+                        resp = {"success": True}
+                    except Exception as ex:
+                        resp = {"success": False, "error": str(ex)}
             response_body = (json.dumps(resp).encode())
 
-        elif self.path.endswith('/api/admin/unpark'): # Unpark all models (reload into GPU)
+        elif self.path.endswith('/api/admin/unpark'): # Unpark models (reload into GPU). Optional body: {"models": ["llm","sd",...]}
             resp = {"success": False}
             if args.admin and self.check_header_password(args.adminpassword):
-                try:
-                    perform_unpark()
-                    resp = {"success": True}
-                except Exception as ex:
-                    resp = {"success": False, "error": str(ex)}
+                subsystems, err_resp = _parse_park_models_body(body)
+                if err_resp is not None:
+                    resp = err_resp
+                else:
+                    try:
+                        perform_unpark(subsystems)
+                        resp = {"success": True}
+                    except Exception as ex:
+                        resp = {"success": False, "error": str(ex)}
             response_body = (json.dumps(resp).encode())
 
         elif self.path=="/api/show": #ollama compatible
@@ -8911,42 +8919,66 @@ def reload_new_config(filename,defaultargs): #for changing config after launch
         except Exception as e:
             print(f"Reload New Config Failed: {e}")
 
-def perform_park_to_ram():
+VALID_PARK_SUBSYSTEMS = {"llm", "sd", "whisper", "tts", "embeddings", "music"}
+
+def _parse_park_models_body(body):
+    """Parse the optional 'models' list from a park/unpark POST body.
+    Returns (subsystems, error_resp) where exactly one is non-None."""
+    try:
+        tempbody = json.loads(body)
+        if isinstance(tempbody, dict) and "models" in tempbody:
+            raw = tempbody["models"]
+            if isinstance(raw, list) and len(raw) > 0:
+                unknown = [s for s in raw if str(s).lower() not in VALID_PARK_SUBSYSTEMS]
+                if unknown:
+                    return None, {"success": False, "error": f"Unknown subsystem(s): {unknown}. Valid values: {sorted(VALID_PARK_SUBSYSTEMS)}"}
+                return [str(s).lower() for s in raw], None
+    except Exception as ex:
+        print(f"park/unpark: could not parse request body: {ex}")
+    return None, None  # no models field → park/unpark all
+
+def perform_park_to_ram(subsystems=None):
+    """Park models to RAM (unload from GPU). If subsystems is None or empty, park all loaded models.
+    subsystems: optional list/set of subsystem names from VALID_PARK_SUBSYSTEMS."""
     global llm_parked, sd_parked, whisper_parked, tts_parked, embeddings_parked, music_parked
     global friendlymodelname, fullsdmodelpath, fullwhispermodelpath, ttsmodelpath, embeddingsmodelpath, musicdiffusionmodelpath, musicllmmodelpath
-    print("Parking models to RAM (unloading from GPU)...")
-    if handle and friendlymodelname != "inactive" and not llm_parked:
+    target = set(s.lower() for s in subsystems) if subsystems else VALID_PARK_SUBSYSTEMS
+    print(f"Parking models to RAM: {', '.join(sorted(target)) if subsystems else 'all'}...")
+    if ("llm" in target) and handle and friendlymodelname != "inactive" and not llm_parked:
         handle.unload_model()
         llm_parked = True
         print("LLM parked.")
-    if handle and fullsdmodelpath != "" and not sd_parked:
+    if ("sd" in target) and handle and fullsdmodelpath != "" and not sd_parked:
         handle.sd_unload_model()
         sd_parked = True
         print("SD parked.")
-    if handle and fullwhispermodelpath != "" and not whisper_parked:
+    if ("whisper" in target) and handle and fullwhispermodelpath != "" and not whisper_parked:
         handle.whisper_unload_model()
         whisper_parked = True
         print("Whisper parked.")
-    if handle and ttsmodelpath != "" and not tts_parked:
+    if ("tts" in target) and handle and ttsmodelpath != "" and not tts_parked:
         handle.tts_unload_model()
         tts_parked = True
         print("TTS parked.")
-    if handle and embeddingsmodelpath != "" and not embeddings_parked:
+    if ("embeddings" in target) and handle and embeddingsmodelpath != "" and not embeddings_parked:
         handle.embeddings_unload_model()
         embeddings_parked = True
         print("Embeddings parked.")
-    if handle and (musicdiffusionmodelpath != "" or musicllmmodelpath != "") and not music_parked:
+    if ("music" in target) and handle and (musicdiffusionmodelpath != "" or musicllmmodelpath != "") and not music_parked:
         # Music adapter does not expose a separate unload function; GPU memory stays until process restart.
         music_parked = True
         print("Music parked (inference blocked; GPU unload not supported for music adapter).")
     print("Park complete.")
 
-def perform_unpark():
+def perform_unpark(subsystems=None):
+    """Unpark models (reload into GPU). If subsystems is None or empty, unpark all parked models.
+    subsystems: optional list/set of subsystem names from VALID_PARK_SUBSYSTEMS."""
     global llm_parked, sd_parked, whisper_parked, tts_parked, embeddings_parked, music_parked
     global friendlymodelname, fullsdmodelpath, fullwhispermodelpath, ttsmodelpath, embeddingsmodelpath, musicdiffusionmodelpath, musicllmmodelpath
     global has_audio_support, has_vision_support, cached_chat_template
-    print("Unparking models (reloading into GPU)...")
-    if llm_parked and friendlymodelname != "inactive":
+    target = set(s.lower() for s in subsystems) if subsystems else VALID_PARK_SUBSYSTEMS
+    print(f"Unparking models: {', '.join(sorted(target)) if subsystems else 'all'}...")
+    if ("llm" in target) and llm_parked and friendlymodelname != "inactive":
         modelname = args.model_param
         if modelname and os.path.exists(modelname):
             loadok = load_model(modelname)
@@ -8960,7 +8992,7 @@ def perform_unpark():
                 print("LLM unpark failed!")
         else:
             print("LLM unpark skipped: model file missing.")
-    if sd_parked:
+    if ("sd" in target) and sd_parked:
         if fullsdmodelpath != "" and os.path.exists(fullsdmodelpath):
             # Reload SD model via the existing sd_load_model Python function
             imgloras = []
@@ -8983,7 +9015,7 @@ def perform_unpark():
         else:
             sd_parked = False
             print("SD unparked (model file missing, skipping reload).")
-    if whisper_parked:
+    if ("whisper" in target) and whisper_parked:
         if fullwhispermodelpath != "" and os.path.exists(fullwhispermodelpath):
             loadok = whisper_load_model(fullwhispermodelpath)
             if loadok:
@@ -8994,7 +9026,7 @@ def perform_unpark():
         else:
             whisper_parked = False
             print("Whisper unparked (no reload needed).")
-    if tts_parked:
+    if ("tts" in target) and tts_parked:
         wavtokpath = args.ttswavtokenizer if args.ttswavtokenizer else None
         if wavtokpath:
             wavtokpath = os.path.abspath(wavtokpath)
@@ -9004,14 +9036,14 @@ def perform_unpark():
             print("TTS unparked.")
         else:
             print("TTS unpark failed!")
-    if embeddings_parked:
+    if ("embeddings" in target) and embeddings_parked:
         loadok = embeddings_load_model(embeddingsmodelpath)
         if loadok:
             embeddings_parked = False
             print("Embeddings unparked.")
         else:
             print("Embeddings unpark failed!")
-    if music_parked:
+    if ("music" in target) and music_parked:
         # Music adapter does not expose a separate unload/reload function; inference is re-enabled as-is.
         music_parked = False
         print("Music unparked.")
