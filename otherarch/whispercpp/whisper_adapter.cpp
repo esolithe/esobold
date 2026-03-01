@@ -27,6 +27,10 @@ static std::string whisper_output_text = "";
 
 int total_transcribe_gens = 0;
 
+void whispertype_unload_model() {
+    if (whisper_ctx != nullptr) { whisper_free(whisper_ctx); whisper_ctx = nullptr; }
+}
+
 
 static bool read_audio(const std::string & b64data, std::vector<float>& pcmf32)
 {

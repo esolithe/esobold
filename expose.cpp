@@ -207,6 +207,10 @@ extern "C"
     {
         return sdtype_load_model(inputs);
     }
+    void sd_unload_model()
+    {
+        sdtype_unload_model();
+    }
     sd_generation_outputs sd_generate(const sd_generation_inputs inputs)
     {
         return sdtype_generate(inputs);
@@ -223,6 +227,10 @@ extern "C"
     bool whisper_load_model(const whisper_load_model_inputs inputs)
     {
         return whispertype_load_model(inputs);
+    }
+    void whisper_unload_model()
+    {
+        whispertype_unload_model();
     }
     whisper_generation_outputs whisper_generate(const whisper_generation_inputs inputs)
     {

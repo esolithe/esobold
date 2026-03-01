@@ -851,6 +851,10 @@ def init_library():
     handle.detokenize.restype = ctypes.c_char_p
     handle.unload_model.argtypes = []
     handle.unload_model.restype = None
+    handle.sd_unload_model.argtypes = []
+    handle.sd_unload_model.restype = None
+    handle.whisper_unload_model.argtypes = []
+    handle.whisper_unload_model.restype = None
     handle.tts_unload_model.argtypes = []
     handle.tts_unload_model.restype = None
     handle.embeddings_unload_model.argtypes = []
@@ -8916,11 +8920,13 @@ def perform_park_to_ram():
         llm_parked = True
         print("LLM parked.")
     if handle and fullsdmodelpath != "" and not sd_parked:
+        handle.sd_unload_model()
         sd_parked = True
-        print("SD parked (no GPU unload for SD).")
+        print("SD parked.")
     if handle and fullwhispermodelpath != "" and not whisper_parked:
+        handle.whisper_unload_model()
         whisper_parked = True
-        print("Whisper parked (no GPU unload for Whisper).")
+        print("Whisper parked.")
     if handle and ttsmodelpath != "" and not tts_parked:
         handle.tts_unload_model()
         tts_parked = True
@@ -8930,8 +8936,9 @@ def perform_park_to_ram():
         embeddings_parked = True
         print("Embeddings parked.")
     if handle and (musicdiffusionmodelpath != "" or musicllmmodelpath != "") and not music_parked:
+        # Music adapter does not expose a separate unload function; GPU memory stays until process restart.
         music_parked = True
-        print("Music parked (no GPU unload for Music).")
+        print("Music parked (inference blocked; GPU unload not supported for music adapter).")
     print("Park complete.")
 
 def perform_unpark():
@@ -8954,8 +8961,28 @@ def perform_unpark():
         else:
             print("LLM unpark skipped: model file missing.")
     if sd_parked:
-        sd_parked = False
-        print("SD unparked.")
+        if fullsdmodelpath != "" and os.path.exists(fullsdmodelpath):
+            # Reload SD model via the existing sd_load_model Python function
+            imgloras = []
+            if args.sdlora and len(args.sdlora) > 0:
+                for curr in args.sdlora:
+                    if os.path.exists(curr):
+                        imgloras.append(os.path.abspath(curr))
+            imgvae = os.path.abspath(args.sdvae) if args.sdvae and os.path.exists(args.sdvae) else ""
+            imgt5xxl = os.path.abspath(args.sdt5xxl) if args.sdt5xxl and os.path.exists(args.sdt5xxl) else ""
+            imgclip1 = os.path.abspath(args.sdclip1) if args.sdclip1 and os.path.exists(args.sdclip1) else ""
+            imgclip2 = os.path.abspath(args.sdclip2) if args.sdclip2 and os.path.exists(args.sdclip2) else ""
+            imgphotomaker = os.path.abspath(args.sdphotomaker) if args.sdphotomaker and os.path.exists(args.sdphotomaker) else ""
+            imgupscaler = os.path.abspath(args.sdupscaler) if args.sdupscaler and os.path.exists(args.sdupscaler) else ""
+            loadok = sd_load_model(fullsdmodelpath, imgvae, imgloras, imgt5xxl, imgclip1, imgclip2, imgphotomaker, imgupscaler)
+            if loadok:
+                sd_parked = False
+                print("SD unparked.")
+            else:
+                print("SD unpark failed!")
+        else:
+            sd_parked = False
+            print("SD unparked (model file missing, skipping reload).")
     if whisper_parked:
         if fullwhispermodelpath != "" and os.path.exists(fullwhispermodelpath):
             loadok = whisper_load_model(fullwhispermodelpath)
@@ -8985,6 +9012,7 @@ def perform_unpark():
         else:
             print("Embeddings unpark failed!")
     if music_parked:
+        # Music adapter does not expose a separate unload/reload function; inference is re-enabled as-is.
         music_parked = False
         print("Music unparked.")
     print("Unpark complete.")

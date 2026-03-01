@@ -108,11 +108,13 @@ std::string gpttype_detokenize(const std::vector<int> & input, bool render_speci
 const std::vector<TopPicksData> gpttype_get_top_picks_data();
 
 bool sdtype_load_model(const sd_load_model_inputs inputs);
+void sdtype_unload_model();
 sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs);
 sd_generation_outputs sdtype_upscale(const sd_upscale_inputs inputs);
 sd_info_outputs sdtype_get_info();
 
 bool whispertype_load_model(const whisper_load_model_inputs inputs);
+void whispertype_unload_model();
 whisper_generation_outputs whispertype_generate(const whisper_generation_inputs inputs);
 
 bool ttstype_load_model(const tts_load_model_inputs inputs);
