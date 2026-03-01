@@ -3704,6 +3704,8 @@ Current version indicated by LITEVER below.
 	const koboldcpp_admin_reload_endpoint = "/api/admin/reload_config";
 	const koboldcpp_admin_savestate_endpoint = "/api/admin/save_state";
 	const koboldcpp_admin_loadstate_endpoint = "/api/admin/load_state";
+	const koboldcpp_admin_park_endpoint = "/api/admin/park";
+	const koboldcpp_admin_unpark_endpoint = "/api/admin/unpark";
 	const koboldcpp_savedata_list_endpoint = "/api/extra/data/list";
 	const koboldcpp_savedata_save_endpoint = "/api/extra/data/save";
 	const koboldcpp_savedata_load_endpoint = "/api/extra/data/load";
@@ -14285,6 +14287,66 @@ Current version indicated by LITEVER below.
 		}).catch((error) => {
 			console.log("Error: " + error);
 			msgbox(error,"Error");
+		});
+	}
+
+	function trigger_admin_park()
+	{
+		let checkedModels = ["llm","sd","whisper","tts","embeddings","music"].filter(id => document.getElementById("park_chk_"+id).checked);
+		let parktxt = document.getElementById("parktxt");
+		parktxt.innerText = "Parking...";
+		let header = {'Content-Type': 'application/json'};
+		if(last_admin_key!="")
+		{
+			header['Authorization'] = 'Bearer ' + last_admin_key;
+		}
+		let body = checkedModels.length > 0 ? JSON.stringify({"models": checkedModels}) : "{}";
+		fetch(apply_proxy_url(custom_kobold_endpoint + koboldcpp_admin_park_endpoint), {
+			method: 'POST',
+			headers: header,
+			body: body
+		})
+		.then(x => x.json())
+		.then(values => {
+			if (values && values.success) {
+				let label = checkedModels.length > 0 ? checkedModels.join(", ") : "all";
+				parktxt.innerText = `Parked: ${label}`;
+			} else {
+				parktxt.innerText = "Park failed: " + (values && values.error ? values.error : "unknown error");
+			}
+		}).catch((error) => {
+			console.log("Error: " + error);
+			parktxt.innerText = "Park failed: " + error;
+		});
+	}
+
+	function trigger_admin_unpark()
+	{
+		let checkedModels = ["llm","sd","whisper","tts","embeddings","music"].filter(id => document.getElementById("park_chk_"+id).checked);
+		let parktxt = document.getElementById("parktxt");
+		parktxt.innerText = "Unparking...";
+		let header = {'Content-Type': 'application/json'};
+		if(last_admin_key!="")
+		{
+			header['Authorization'] = 'Bearer ' + last_admin_key;
+		}
+		let body = checkedModels.length > 0 ? JSON.stringify({"models": checkedModels}) : "{}";
+		fetch(apply_proxy_url(custom_kobold_endpoint + koboldcpp_admin_unpark_endpoint), {
+			method: 'POST',
+			headers: header,
+			body: body
+		})
+		.then(x => x.json())
+		.then(values => {
+			if (values && values.success) {
+				let label = checkedModels.length > 0 ? checkedModels.join(", ") : "all";
+				parktxt.innerText = `Unparked: ${label}`;
+			} else {
+				parktxt.innerText = "Unpark failed: " + (values && values.error ? values.error : "unknown error");
+			}
+		}).catch((error) => {
+			console.log("Error: " + error);
+			parktxt.innerText = "Unpark failed: " + error;
 		});
 	}
 
@@ -31564,6 +31626,26 @@ Current version indicated by LITEVER below.
 					<button type="button" style="margin-left:2px;width:146px" class="btn btn-primary" onclick="trigger_admin_reload()">Reload KoboldCpp</button>
 				</div>
 				<div class="menutext">Warning: This will terminate the current KoboldCpp instance and relaunch it with a new config. If an invalid configuration is selected, the new server may fail to relaunch!</div>
+				<br>
+			</div>
+			<div>
+				<b class="color_white" style="padding: 5px;">Park / Unpark Subsystems:</b><br>
+				<div style="padding: 5px;">
+					<div class="menutext" style="margin-bottom:4px;">Select subsystems to park (unload from GPU) or unpark (reload into GPU). Leave all unchecked to affect all subsystems at once.</div>
+					<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px;">
+						<label style="color:white;white-space:nowrap;"><input type="checkbox" id="park_chk_llm"> LLM</label>
+						<label style="color:white;white-space:nowrap;"><input type="checkbox" id="park_chk_sd"> Image (SD)</label>
+						<label style="color:white;white-space:nowrap;"><input type="checkbox" id="park_chk_whisper"> Whisper</label>
+						<label style="color:white;white-space:nowrap;"><input type="checkbox" id="park_chk_tts"> TTS</label>
+						<label style="color:white;white-space:nowrap;"><input type="checkbox" id="park_chk_embeddings"> Embeddings</label>
+						<label style="color:white;white-space:nowrap;"><input type="checkbox" id="park_chk_music"> Music</label>
+					</div>
+					<div style="display:flex;gap:6px;">
+						<button type="button" class="btn btn-primary" onclick="trigger_admin_park()">Park Selected</button>
+						<button type="button" class="btn btn-primary" onclick="trigger_admin_unpark()">Unpark Selected</button>
+					</div>
+					<div class="menutext" id="parktxt" style="margin-top:4px;"></div>
+				</div>
 				<br>
 			</div>
 			<div class="popupfooter">
