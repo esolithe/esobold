@@ -9091,6 +9091,19 @@ def perform_in_process_reload(restart_target, restart_model, defaultargs):
     embeddings_parked = False
     music_parked = False
 
+    # Reset model path globals — they will be repopulated on successful reload below
+    fullsdmodelpath = ""
+    friendlysdmodelname = "inactive"
+    fullwhispermodelpath = ""
+    ttsmodelpath = ""
+    embeddingsmodelpath = ""
+    musicdiffusionmodelpath = ""
+    musicllmmodelpath = ""
+    friendlyembeddingsmodelname = "inactive"
+    has_audio_support = False
+    has_vision_support = False
+    cached_chat_template = None
+
     # Reload text model
     if args.model_param and os.path.exists(args.model_param):
         modelname = os.path.abspath(args.model_param)
@@ -9100,9 +9113,6 @@ def perform_in_process_reload(restart_target, restart_model, defaultargs):
         if args.mmproj and args.mmproj != "":
             has_audio_support = handle.has_audio_support()
             has_vision_support = handle.has_vision_support()
-        else:
-            has_audio_support = False
-            has_vision_support = False
         if loadok and args.model_param:
             ctbytes = handle.get_chat_template()
             cached_chat_template = ctypes.string_at(ctbytes).decode("UTF-8", "ignore")
@@ -9117,6 +9127,77 @@ def perform_in_process_reload(restart_target, restart_model, defaultargs):
                 friendlymodelname = "debug-" + friendlymodelname
     else:
         friendlymodelname = "inactive"
+
+    # Reload SD model
+    if args.sdmodel and args.sdmodel != "" and os.path.exists(args.sdmodel):
+        imgmodel = os.path.abspath(args.sdmodel)
+        imgloras = []
+        if args.sdlora and len(args.sdlora) > 0:
+            for curr in args.sdlora:
+                if os.path.exists(curr):
+                    imgloras.append(os.path.abspath(curr))
+        imgvae = os.path.abspath(args.sdvae) if args.sdvae and os.path.exists(args.sdvae) else ""
+        imgt5xxl = os.path.abspath(args.sdt5xxl) if args.sdt5xxl and os.path.exists(args.sdt5xxl) else ""
+        imgclip1 = os.path.abspath(args.sdclip1) if args.sdclip1 and os.path.exists(args.sdclip1) else ""
+        imgclip2 = os.path.abspath(args.sdclip2) if args.sdclip2 and os.path.exists(args.sdclip2) else ""
+        imgphotomaker = os.path.abspath(args.sdphotomaker) if args.sdphotomaker and os.path.exists(args.sdphotomaker) else ""
+        imgupscaler = os.path.abspath(args.sdupscaler) if args.sdupscaler and os.path.exists(args.sdupscaler) else ""
+        loadok = sd_load_model(imgmodel, imgvae, imgloras, imgt5xxl, imgclip1, imgclip2, imgphotomaker, imgupscaler)
+        print("In-process reload SD OK: " + str(loadok))
+        if loadok:
+            fullsdmodelpath = imgmodel
+            friendlysdmodelname = sanitize_string(os.path.splitext(os.path.basename(imgmodel))[0])
+
+    # Reload Whisper model
+    if args.whispermodel and args.whispermodel != "" and os.path.exists(args.whispermodel):
+        wpath = os.path.abspath(args.whispermodel)
+        loadok = whisper_load_model(wpath)
+        print("In-process reload Whisper OK: " + str(loadok))
+        if loadok:
+            fullwhispermodelpath = wpath
+
+    # Reload TTS model
+    if args.ttsmodel and args.ttsmodel != "" and os.path.exists(args.ttsmodel):
+        ttspath = os.path.abspath(args.ttsmodel)
+        wavtokpath = os.path.abspath(args.ttswavtokenizer) if args.ttswavtokenizer and os.path.exists(args.ttswavtokenizer) else None
+        loadok = tts_load_model(ttspath, wavtokpath)
+        print("In-process reload TTS OK: " + str(loadok))
+        if loadok:
+            ttsmodelpath = ttspath
+
+    # Reload Embeddings model
+    if args.embeddingsmodel and args.embeddingsmodel != "" and os.path.exists(args.embeddingsmodel):
+        embpath = os.path.abspath(args.embeddingsmodel)
+        loadok = embeddings_load_model(embpath)
+        print("In-process reload Embeddings OK: " + str(loadok))
+        if loadok:
+            embeddingsmodelpath = embpath
+            friendlyembeddingsmodelname = sanitize_string(os.path.splitext(os.path.basename(embpath))[0])
+
+    # Reload Music models
+    mu_has_llm = bool(args.musicllm and args.musicllm != "")
+    mu_has_embed = bool(args.musicembeddings and args.musicembeddings != "")
+    mu_has_diff = bool(args.musicdiffusion and args.musicdiffusion != "")
+    mu_has_vae = bool(args.musicvae and args.musicvae != "")
+    if mu_has_llm and not any([mu_has_embed, mu_has_diff, mu_has_vae]):
+        if os.path.exists(args.musicllm):
+            mllmpath = os.path.abspath(args.musicllm)
+            loadok = music_load_model(mllmpath, "", "", "")
+            print("In-process reload Music LLM OK: " + str(loadok))
+            if loadok:
+                musicllmmodelpath = mllmpath
+    elif mu_has_diff and mu_has_embed and mu_has_vae:
+        paths_ok = all(os.path.exists(p) for p in [args.musicdiffusion, args.musicembeddings, args.musicvae] + ([args.musicllm] if mu_has_llm else []))
+        if paths_ok:
+            mdiff = os.path.abspath(args.musicdiffusion)
+            membed = os.path.abspath(args.musicembeddings)
+            mvae = os.path.abspath(args.musicvae)
+            mllm = os.path.abspath(args.musicllm) if mu_has_llm else ""
+            loadok = music_load_model(mllm, membed, mdiff, mvae)
+            print("In-process reload Music OK: " + str(loadok))
+            if loadok:
+                musicdiffusionmodelpath = mdiff
+                musicllmmodelpath = mllm
 
 def load_config_cli(filename):
     print("Loading .kcpps configuration file...")
