@@ -745,6 +745,8 @@ std::string acestep_generate_audio(const music_generation_inputs inputs)
         req.caption = "An interesting song";
     }
     req.thinking = false;
+    req.inference_steps = (req.inference_steps>100?100:req.inference_steps); //clamp to 100
+    req.duration = (req.duration>420?420:req.duration); //clamp to 7 min
 
     const int FRAMES_PER_SECOND = 25;
     int Oc = music_dit_cfg.out_channels;          // 64
