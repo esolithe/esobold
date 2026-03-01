@@ -867,3 +867,413 @@ Extending the table from Step E to include all subsystems:
 Capability flags derived from these globals (`has_txt2img`, `has_whisper`, `has_tts`,
 `has_music`, `has_embeddings`) are computed dynamically in `get_capabilities()` / the
 `/api/extra/version` handler — they do not need to be reset directly.
+
+---
+
+## Two Types of Model Unloading
+
+The previous sections treat "unloading" as a single concept: free all resources and either
+reload a different model or remain in a no-model state.  In practice there are **two
+distinct operations** with different trade-offs:
+
+| | **Type 1: Full Unload** | **Type 2: Park to RAM** |
+|---|---|---|
+| VRAM freed? | Yes | Yes |
+| CPU RAM freed? | Yes | No — weights kept in RAM |
+| Inference possible? | No | **No (explicitly blocked)** |
+| Restore to active | Full cold load from disk | VRAM re-allocation + RAM→VRAM copy (faster) |
+| Disk I/O on restore | Yes | No (already in RAM) |
+| Use case | Permanent model change / free all memory | Temporarily yield GPU to another model |
+
+The requirement is that a **parked model must not accept inference requests** — it merely
+waits in RAM ready for rapid restoration.  This is the key distinction from the existing
+load-time RAM-offload flags (`--sdoffloadcpu`, `--musiclowvram`), which keep weights in
+RAM but still allow inference through automatic per-request GPU swapping.
+
+---
+
+### State Machine
+
+Each model slot can be in one of three states:
+
+```
+              park_to_ram()              unpark()
+  ┌──────────────────────────┐   ┌──────────────────────────┐
+  │                          ▼   │                          │
+[Active]  ──park──▶  [Parked (RAM)]  ──unpark──▶  [Active]
+  │                          │
+  │ full_unload()            │ full_unload()
+  ▼                          ▼
+[Unloaded]  ◀──────────────────────────────────────────────
+  │
+  └──── load_model() ──▶  [Active]
+```
+
+Transitions:
+- **Active → Parked**: release VRAM, block inference, retain weights in CPU RAM.
+- **Active → Unloaded**: release both VRAM and RAM entirely.
+- **Parked → Active**: reallocate VRAM, copy RAM→VRAM, unblock inference.
+- **Parked → Unloaded**: free remaining CPU RAM.
+- **Unloaded → Active**: full cold load from disk (same as current "load_model").
+
+---
+
+### Distinction from Existing Load-Time RAM Flags
+
+The existing flags that keep weights in RAM were designed as **permanent load-time
+settings**, not runtime state transitions:
+
+| Flag / Mode | Where configured | Inference allowed? | When to use |
+|---|---|---|---|
+| `--sdoffloadcpu` | load time (`args.sdoffloadcpu`) | **Yes** — auto-swap per request | Low-VRAM machines where SD is always active |
+| `--musiclowvram` | load time (`args.musiclowvram`) | **Yes** — reload from disk between requests | Music generation on VRAM-constrained setups |
+| **Park to RAM (new)** | runtime API command | **No** — 503 returned | Temporarily freeing GPU for another model |
+
+The park/unpark feature is orthogonal: it is an administrative command issued at runtime
+that suspends a model, regardless of whether that model was originally loaded with or
+without a RAM-offload flag.
+
+---
+
+### Python-Layer Implementation for Park / Unpark
+
+A new Python global (per subsystem) tracks the parked state.  It is checked at the top
+of every inference handler before acquiring `modelbusy`:
+
+```python
+# New globals in koboldcpp.py
+llm_parked      = False  # text generation model
+sd_parked       = False  # image generation model
+whisper_parked  = False  # transcription model
+tts_parked      = False  # TTS model
+embeddings_parked = False  # embeddings model
+music_parked    = False  # music generation model
+```
+
+An early-exit guard is inserted in each relevant handler:
+
+```python
+def perform_park_to_ram(subsystem: str):
+    """Park the named subsystem model, freeing VRAM while retaining weights in RAM."""
+    global llm_parked, sd_parked, ...
+    if subsystem == "llm":
+        handle.abort_generate()
+        with modelbusy:
+            _park_llm()
+        llm_parked = True
+    elif subsystem == "sd":
+        _park_sd()
+        sd_parked = True
+    # ... etc.
+
+def perform_unpark(subsystem: str):
+    """Restore a parked model back to VRAM."""
+    global llm_parked, sd_parked, ...
+    if subsystem == "llm":
+        _restore_llm_to_vram()
+        llm_parked = False
+    elif subsystem == "sd":
+        _restore_sd_to_vram()
+        sd_parked = False
+```
+
+Inference endpoints return `503 Model Parked` when the relevant flag is set:
+
+```python
+# Example guard inside the generation handler
+if llm_parked:
+    self.send_response(503)
+    self.wfile.write(json.dumps({
+        "detail": {
+            "msg": "Text generation model is parked in RAM. Use /api/admin/unpark to restore.",
+            "type": "model_parked",
+        }
+    }).encode())
+    return
+```
+
+A new admin endpoint pair is added:
+
+- `POST /api/admin/park?subsystem=<name>` — transitions the named subsystem to Parked.
+- `POST /api/admin/unpark?subsystem=<name>` — transitions the named subsystem back to Active.
+
+Subsystem names: `llm`, `sd`, `whisper`, `tts`, `embeddings`, `music`.
+
+---
+
+### Per-Subsystem: Park-to-RAM Feasibility
+
+---
+
+#### Subsystem 1: Text Generation (LLM — llama.cpp)
+
+**Dynamic VRAM→RAM tensor migration**: Not available in llama.cpp's public API.  There
+is no `llama_model_push_to_cpu()` or equivalent.  The `n_gpu_layers` parameter is
+set at model-load time and cannot be changed on a live `llama_model`.
+
+**Best approximation — sequential re-load to CPU**:
+
+The park operation for the LLM subsystem is a two-step process:
+
+1. **Free VRAM**: call `gpttype_unload_model()` (Step 2 in the C++ changes section).
+   This frees the `llama_context`, `llama_model`, clip contexts, and thread pools from
+   VRAM.  After this step no GPU memory is held.
+2. **Retain in RAM via mmap**: re-invoke `gpttype_load_model()` immediately with
+   `n_gpu_layers = 0` and `use_mmap = true`.  With mmap enabled, llama.cpp maps the
+   GGUF file into the process's virtual address space.  The OS page cache then retains
+   the file contents in RAM — no VRAM is allocated.  The inference path is blocked by the
+   `llm_parked` flag, so no forward pass is attempted.
+
+**Quick-restore advantage**: On unpark, reloading with the original `n_gpu_layers`
+benefits from the OS file cache.  If the GGUF file is still in the page cache (which is
+likely if it was just mmap'd), the GPU tensor upload is substantially faster than a
+cold load, since the OS does not need to read from disk.
+
+**Steps required**:
+
+- C++: the same `gpttype_unload_model()` function used for full unload also handles Step 1.
+- Python:
+  ```python
+  def _park_llm():
+      handle.unload_model()           # Step 1: free VRAM and all contexts
+      _save_llm_args()                # remember current n_gpu_layers etc.
+      args_copy = copy.deepcopy(args)
+      args_copy.gpulayers = 0         # Step 2: reload with CPU-only
+      args_copy.use_mmap = True       # keep file in OS page cache
+      _load_model_from_args(args_copy)
+
+  def _restore_llm_to_vram():
+      handle.unload_model()           # free CPU-only model
+      _load_model_from_args(args)     # reload with original n_gpu_layers
+  ```
+
+**Limitation**: the park round-trip requires two full model loads (unload → CPU load →
+unload → GPU load).  On restore, the file is already mmap'd (likely still in the page
+cache), so the GPU load should be faster than a cold start, but it is not instant.
+
+---
+
+#### Subsystem 2: Image Generation (sd.cpp)
+
+**Dynamic VRAM→RAM tensor migration**: **Fully supported** via the existing
+`GGMLRunner` mechanism in `ggml_extend.hpp`.  When a model is loaded with
+`offload_params_to_cpu = true`, the `GGMLRunner` maintains two ggml contexts:
+`params_ctx` (CPU RAM) and `offload_ctx` (a mirror for VRAM upload).  At the start of
+each `compute()` call, `offload_params_to_runtime_backend()` allocates VRAM and
+copies RAM→VRAM; after compute, `offload_params_to_params_backend()` copies back and
+frees VRAM.
+
+This means **the RAM-park end-state already exists** when `--sdoffloadcpu` is used: the
+weights live in `params_ctx` (CPU buffer) and VRAM is only held during an active
+generation.
+
+**Park operation (two cases)**:
+
+*Case A — Model loaded with `--sdoffloadcpu`*:
+- Weights are already in CPU RAM (`params_backend = CPU`).
+- If no generation is currently active, `params_on_runtime_backend == false`, meaning no
+  VRAM is held at all.
+- Park = set `sd_parked = true` (prevents `compute()` from being reached).
+- Zero additional C++ work needed; the desired RAM-park state is the model's normal
+  resting state in this mode.
+
+*Case B — Model loaded without `--sdoffloadcpu` (weights in VRAM)*:
+- A dynamic move from VRAM to RAM requires new C++ code: allocate a CPU ggml buffer,
+  iterate over all model `GGMLRunner` instances, copy each tensor from `params_backend`
+  (GPU) to a CPU buffer, then free the GPU `params_buffer`.
+- This is non-trivial because `sd_ctx_t` contains several independent `GGMLRunner`
+  instances (diffusion model, VAE, CLIP encoders, T5).
+- **Recommended approach**: reload with `offload_params_to_cpu = true` (identical to
+  Case A) — free the GPU-loaded context and load a new one in CPU mode.  This is one
+  extra load but produces a correctly parked context.
+
+**Unpark operation** (both cases, if loaded via Case A or after Case B conversion):
+- Clear `sd_parked`.
+- Inference resumes; on the next `compute()` call, `offload_params_to_runtime_backend()`
+  automatically allocates VRAM and copies weights — no explicit "restore" step needed.
+- First-inference latency is slightly higher (tensor copy time), but subsequent
+  inferences do not pay this cost because they reuse the in-RAM buffer.
+
+**Summary for SD**:
+
+| Scenario | Park mechanism | Unpark mechanism | VRAM during park |
+|---|---|---|---|
+| Loaded with `--sdoffloadcpu` | Set `sd_parked = true` | Clear `sd_parked` | Zero |
+| Loaded without `--sdoffloadcpu` | Reload with `offload_params_to_cpu=true` + set `sd_parked` | Clear `sd_parked` | Zero |
+
+---
+
+#### Subsystem 3: Voice Transcription (whisper.cpp)
+
+**Dynamic VRAM→RAM migration**: Not available.  `whisper_context_params.use_gpu` is a
+load-time setting.
+
+**Park operation**: reload with `use_gpu = false`.
+- `whisper_init_from_file_with_params()` accepts `cparams.use_gpu = false` which places
+  all encoder tensors in CPU RAM.
+- The model file is small (39 MB – 1.5 GB), so the reload is fast regardless.
+- Set `whisper_parked = true` after the CPU reload.
+
+**Unpark operation**: reload with `use_gpu = true`.
+- If the Whisper model file is still in the OS page cache (very likely given the small
+  file size), the GPU load will be faster than a cold start.
+- Clear `whisper_parked`.
+
+**C++ required**:
+- Add the `whisper_free()` guard to `whispertype_load_model()` (as covered in the
+  subsystem analysis section) so that the park re-load does not leak the old context.
+
+---
+
+#### Subsystem 4: Text-to-Speech (tts_adapter.cpp)
+
+**Dynamic VRAM→RAM migration**: Not available (llama.cpp-based, same as LLM).
+
+**Park operation**:
+- Call `ttstype_unload_model()` (new function, described in the subsystem section).
+- Reload with `n_gpu_layers = 0` (CPU-only mode, i.e., `args.ttsgpu = False`).
+- Set `tts_parked = true`.
+
+**Unpark operation**:
+- Call `ttstype_unload_model()` to free the CPU-only instance.
+- Reload with original `ttsgpu` setting.
+- Clear `tts_parked`.
+
+**Note**: TTS models (OuteTTS, Parler-TTS) are relatively small (≤ 5 GB), so the
+sequential unload/reload cycle is fast.  Since `use_mmap = true` is typical for
+llama-based models, the file stays in the OS page cache.
+
+---
+
+#### Subsystem 5: Vector Embeddings (embeddings_adapter.cpp)
+
+**Dynamic VRAM→RAM migration**: Not available (llama.cpp-based, same as LLM).
+
+**Park operation**:
+- Call `embeddingstype_unload_model()` (new function).
+- Reload with `gpulayers = 0` (CPU-only; `args.embeddingsgpu = False`).
+- Set `embeddings_parked = true`.
+
+**Unpark operation**:
+- Call `embeddingstype_unload_model()` to free CPU instance.
+- Reload with original `embeddingsgpu` setting.
+- Clear `embeddings_parked`.
+
+**Note**: Embedding models are typically 100 MB – 2 GB.  CPU inference for embeddings is
+acceptable in most use cases, but the `embeddings_parked` flag prevents any inference
+during the parked state so the CPU-loaded model is never actually used for computation.
+
+---
+
+#### Subsystem 6: Music Generation (ACE-Step)
+
+**Current `--musiclowvram` behaviour (not a true park)**:
+
+The `lowvram` flag causes the LM and DiT components to be **fully unloaded after each
+generation** and reloaded from disk before the next:
+
+```cpp
+// ace-qwen3.cpp ≈ line 1696 (after generation):
+if (acestep_lm_lowvram) { unload_acestep_lm(); }   // qw3lm_free() — disk reload next time
+// dit-vae.cpp ≈ line 950:
+if (acestep_dit_lowvram) { unload_acestep_dit_core(); }
+```
+
+This is a **disk-reload pattern**, not a RAM-park: the model files must be read from
+disk on the next generation.  It frees VRAM but does not keep weights in RAM between
+requests.
+
+**Dynamic VRAM→RAM migration**: The music backend uses its own `backend_init()` which
+always picks the best available GPU backend (`ggml_backend_init_best()`).  There is no
+built-in CPU-fallback equivalent for the LM or DiT components at runtime.
+
+**True RAM park — two approaches**:
+
+*Approach A — Suspend after the next `lowvram` unload*:
+- Enable `lowvram` mode, allow the next generation to complete, then set `music_parked = true`.
+- After the post-generation unload, VRAM is free and no weights are in memory.  This is
+  effectively a full unload followed by a parked label — not a true RAM park.
+- Advantage: no new C++ code required.
+
+*Approach B — Reload to CPU backend*:
+- Add a `cpu_only` parameter to `load_acestep_lm()` and `load_acestep_dit()`.
+- When `cpu_only = true`, pass `GGML_BACKEND_DEVICE_TYPE_CPU` to
+  `ggml_backend_init_by_type()` instead of `ggml_backend_init_best()`.
+- This loads both components into CPU RAM.  Inference is blocked by `music_parked`.
+- On unpark, free the CPU-loaded models and reload with GPU backend.
+- This is the true RAM-park for music and provides a faster restore than Approach A
+  (RAM→GPU copy vs. disk read).
+- C++ effort: medium (modify `backend.h`'s `backend_init()` to accept a CPU-only flag,
+  thread it through `load_acestep_lm/dit()` parameters).
+
+**Recommendation**: implement Approach B alongside the park-to-RAM feature for other
+subsystems.  The ACE-Step backend already has the cleanest unload/reload infrastructure,
+so adding a CPU-fallback mode is straightforward.
+
+---
+
+### Updated Subsystem Summary Table
+
+| Subsystem | Full unload support | Dynamic park-to-RAM | Best park mechanism | Quick restore? |
+|---|---|---|---|---|
+| **LLM (llama.cpp)** | Via `gpttype_unload_model()` (new) | No — sequential reload | Unload + CPU reload (`n_gpu_layers=0`, mmap) | Partial (mmap file cache) |
+| **Image gen (sd.cpp)** | Via `free_sd_ctx()` (one guard) | **Yes** — when loaded with `--sdoffloadcpu` | Set `sd_parked` flag; no tensor move | **Yes** — first-inference GPU swap |
+| **Transcription (whisper)** | Via `whisper_free()` (one guard) | No — load-time choice | Unload + CPU reload (`use_gpu=false`) | Fast (small file, page cache) |
+| **TTS** | Via `ttstype_unload_model()` (new) | No — sequential reload | Unload + CPU reload (`n_gpu_layers=0`) | Partial (mmap file cache) |
+| **Embeddings** | Via `embeddingstype_unload_model()` (new) | No — sequential reload | Unload + CPU reload (`gpulayers=0`) | Partial (mmap file cache) |
+| **Music (ACE-Step)** | Via `unload_acestep_lm/dit()` (exists) | Partial — Approach A (disk-reload after lowvram) | Approach B: CPU backend reload | Approach B: yes (RAM→GPU copy) |
+
+---
+
+### Behaviour While Parked
+
+When a subsystem is parked:
+
+1. **Inference requests are refused with `503`** and a `"model_parked"` type in the
+   error detail.  This applies to all endpoints that use the parked subsystem (e.g.,
+   `/api/generate` for LLM, `/sdapi/v1/txt2img` for SD, `/api/extra/tts` for TTS).
+
+2. **Status endpoints continue to work**.  The `/api/extra/version` and
+   `/api/v1/model` endpoints report the model name but add `"parked": true` to the
+   response JSON.
+
+3. **Capability flags are updated**: `has_txt2img`, `has_llm`, `has_tts`, etc. return
+   `false` while the corresponding subsystem is parked, so clients do not attempt
+   inference.
+
+4. **Memory queries** (`/api/extra/perf`) reflect the freed VRAM, allowing callers to
+   verify that the park operation succeeded before loading a new model.
+
+5. **Only one subsystem needs to be parked at a time** for the GPU-sharing use case;
+   multiple subsystems can be parked simultaneously if needed.
+
+---
+
+### Updated Python-Layer State Reset Checklist
+
+The following table is extended with park-state columns:
+
+| Global | Full-unload value | Parked value | Active (loaded) value |
+|---|---|---|---|
+| `friendlymodelname` | `"inactive"` | model name (unchanged) | `"koboldcpp/" + sanitize_string(basename)` |
+| `llm_parked` | `False` | **`True`** | `False` |
+| `has_audio_support` | `False` | `False` | `handle.has_audio_support()` |
+| `has_vision_support` | `False` | `False` | `handle.has_vision_support()` |
+| `cached_chat_template` | `None` | `None` (no inference) | `handle.get_chat_template()` decoded |
+| `maxctx` | `args.contextsize` | `args.contextsize` | set inside `load_model()` |
+| `fullsdmodelpath` | `""` | path retained | `os.path.abspath(args.sdmodel)` |
+| `friendlysdmodelname` | `"inactive"` | model name (unchanged) | `sanitize_string(basename_no_ext)` |
+| `sd_parked` | `False` | **`True`** | `False` |
+| `fullwhispermodelpath` | `""` | path retained | `os.path.abspath(args.whispermodel)` |
+| `whisper_parked` | `False` | **`True`** | `False` |
+| `ttsmodelpath` | `""` | path retained | `os.path.abspath(args.ttsmodel)` |
+| `tts_parked` | `False` | **`True`** | `False` |
+| `embeddingsmodelpath` | `""` | path retained | `os.path.abspath(args.embeddingsmodel)` |
+| `embeddings_parked` | `False` | **`True`** | `False` |
+| `musicdiffusionmodelpath` | `""` | path retained | `os.path.abspath(args.musicdiffusion)` |
+| `music_parked` | `False` | **`True`** | `False` |
+| `global_memory["load_complete"]` | `False` | `True` (server alive) | `True` |
+
+Note: model name globals (`friendlymodelname`, `fullsdmodelpath`, etc.) are **retained**
+in the parked state — the model is still registered, it is just suspended.  This allows
+clients to display the model name and park status without reloading metadata.
