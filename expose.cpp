@@ -198,6 +198,11 @@ extern "C"
         return gpttype_generate(inputs);
     }
 
+    void unload_model()
+    {
+        gpttype_unload_model();
+    }
+
     bool sd_load_model(const sd_load_model_inputs inputs)
     {
         return sdtype_load_model(inputs);
@@ -228,6 +233,10 @@ extern "C"
     {
         return ttstype_load_model(inputs);
     }
+    void tts_unload_model()
+    {
+        ttstype_unload_model();
+    }
     tts_generation_outputs tts_generate(const tts_generation_inputs inputs)
     {
         return ttstype_generate(inputs);
@@ -236,6 +245,10 @@ extern "C"
     bool embeddings_load_model(const embeddings_load_model_inputs inputs)
     {
         return embeddingstype_load_model(inputs);
+    }
+    void embeddings_unload_model()
+    {
+        embeddingstype_unload_model();
     }
     embeddings_generation_outputs embeddings_generate(const embeddings_generation_inputs inputs)
     {

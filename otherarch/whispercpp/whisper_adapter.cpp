@@ -89,6 +89,12 @@ bool whispertype_load_model(const whisper_load_model_inputs inputs)
         whisper_log_set(cb_log_disable, NULL);
     }
 
+    // Free any previously loaded context before loading a new one
+    if (whisper_ctx != nullptr) {
+        whisper_free(whisper_ctx);
+        whisper_ctx = nullptr;
+    }
+
     // whisper init
     struct whisper_context_params cparams = whisper_context_default_params();
     cparams.use_gpu    = true;

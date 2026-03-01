@@ -473,7 +473,9 @@ static std::string TruncateToFirstNumberWords(const std::string& input, int limi
 }
 
 static llama_context * ttc_ctx = nullptr; //text to codes ctx
+static llama_model * ttc_model = nullptr;
 static llama_context * cts_ctx = nullptr; //codes to speech
+static llama_model * cts_model = nullptr;
 
 static TTS_VER ttsver = TTS_VER_2;
 static int ttsdebugmode = 0;
@@ -504,6 +506,17 @@ static qwen3_tts::Qwen3TTS qwen3tts_runner;
 
 int total_tts_gens = 0;
 static std::string tts_executable_path = "";
+static bool tts_backend_was_init = false;
+
+void ttstype_unload_model() {
+    if (cts_ctx != nullptr) { llama_free(cts_ctx); cts_ctx = nullptr; }
+    if (ttc_ctx != nullptr) { llama_free(ttc_ctx); ttc_ctx = nullptr; }
+    if (cts_model != nullptr) { llama_model_free(cts_model); cts_model = nullptr; }
+    if (ttc_model != nullptr) { llama_model_free(ttc_model); ttc_model = nullptr; }
+    // note: ttscpp_runner has no virtual destructor, so it cannot be safely deleted through base ptr
+    ttscpp_runner = nullptr;
+    if (ttscpp_config != nullptr) { delete ttscpp_config; ttscpp_config = nullptr; }
+}
 
 bool ttstype_load_model(const tts_load_model_inputs inputs)
 {
@@ -532,7 +545,12 @@ bool ttstype_load_model(const tts_load_model_inputs inputs)
         putenv((char*)ttsvulkandeviceenv.c_str());
     }
 
-    llama_backend_init();
+    ttstype_unload_model(); // free any previously loaded TTS model
+
+    if (!tts_backend_was_init) {
+        llama_backend_init();
+        tts_backend_was_init = true;
+    }
 
     std::string modelfile_ttc = inputs.ttc_model_filename;
     std::string modelfile_cts = inputs.cts_model_filename;
@@ -609,19 +627,19 @@ bool ttstype_load_model(const tts_load_model_inputs inputs)
             tts_model_params.devices = devices_override.data();
         }
 
-        llama_model * ttcmodel = llama_model_load_from_file(modelfile_ttc.c_str(), tts_model_params);
-        ttc_ctx = llama_init_from_model(ttcmodel, tts_ctx_params);
+        ttc_model = llama_model_load_from_file(modelfile_ttc.c_str(), tts_model_params);
+        ttc_ctx = llama_init_from_model(ttc_model, tts_ctx_params);
 
         if (ttc_ctx == nullptr) {
             printf("\nTTS Load Error: Failed to initialize ttc context!\n");
             return false;
         }
 
-        llama_model * ctsmodel = llama_model_load_from_file(modelfile_cts.c_str(), tts_model_params);
+        cts_model = llama_model_load_from_file(modelfile_cts.c_str(), tts_model_params);
 
         tts_ctx_params.embeddings = true; //this requires embeddings instead
         tts_ctx_params.n_ubatch = tts_ctx_params.n_batch;
-        cts_ctx = llama_init_from_model(ctsmodel, tts_ctx_params);
+        cts_ctx = llama_init_from_model(cts_model, tts_ctx_params);
 
         if (cts_ctx == nullptr) {
             printf("\nTTS Load Error: Failed to initialize cts context!\n");
@@ -637,7 +655,7 @@ bool ttstype_load_model(const tts_load_model_inputs inputs)
             return false;
         }
 
-        const llama_vocab * ttcvocab = llama_model_get_vocab(ttcmodel);
+        const llama_vocab * ttcvocab = llama_model_get_vocab(ttc_model);
         llama_tokens testoks = common_tokenize(ttcvocab,"<|space|>",false,true);
         if (testoks.size() == 1) {
             ttsver = TTS_VER_3;

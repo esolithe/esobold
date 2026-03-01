@@ -310,6 +310,20 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
         putenv((char*)sdvulkandeviceenv.c_str());
     }
 
+    // Free any previously loaded contexts before loading a new one
+    if (sd_ctx != nullptr) {
+        free_sd_ctx(sd_ctx);
+        sd_ctx = nullptr;
+    }
+    if (upscaler_ctx != nullptr) {
+        free_upscaler_ctx(upscaler_ctx);
+        upscaler_ctx = nullptr;
+    }
+    if (sd_params != nullptr) {
+        delete sd_params;
+        sd_params = nullptr;
+    }
+
     sd_params = new SDParams();
     sd_params->model_path = inputs.model_filename;
     sd_params->wtype = SD_TYPE_COUNT;

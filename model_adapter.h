@@ -97,6 +97,7 @@ enum ModelLoadResult
 };
 
 ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in_file_format, FileFormatExtraMeta file_format_meta);
+void gpttype_unload_model();
 generation_outputs gpttype_generate(const generation_inputs inputs);
 bool gpttype_generate_abort();
 std::string gpttype_get_chat_template();
@@ -115,9 +116,11 @@ bool whispertype_load_model(const whisper_load_model_inputs inputs);
 whisper_generation_outputs whispertype_generate(const whisper_generation_inputs inputs);
 
 bool ttstype_load_model(const tts_load_model_inputs inputs);
+void ttstype_unload_model();
 tts_generation_outputs ttstype_generate(const tts_generation_inputs inputs);
 
 bool embeddingstype_load_model(const embeddings_load_model_inputs inputs);
+void embeddingstype_unload_model();
 embeddings_generation_outputs embeddingstype_generate(const embeddings_generation_inputs inputs);
 
 bool musictype_load_model(const music_load_model_inputs inputs);
