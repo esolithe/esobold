@@ -1640,7 +1640,7 @@ def auto_set_backend_cli():
         print(f"Auto Selected Default Backend (flag={cpusupport})\n")
 
 def load_model(model_filename):
-    global args, calulated_gpu_overhead, savestate_limit
+    global args, calulated_gpu_overhead, savestate_limit, llm_parked
     inputs = load_model_inputs()
     inputs.model_filename = model_filename.encode("UTF-8")
     inputs.max_context_length = maxctx #initial value to use for ctx, can be overwritten
@@ -1730,6 +1730,8 @@ def load_model(model_filename):
     inputs.pipelineparallel = (not args.nopipelineparallel)
     inputs = set_backend_props(inputs)
     ret = handle.load_model(inputs)
+    if ret:
+        llm_parked = False
     return ret
 
 def generate(genparams, stream_flag=False):
@@ -2006,7 +2008,7 @@ def sd_quant_option(value):
         return 0
 
 def sd_load_model(model_filename,vae_filename,lora_filenames,t5xxl_filename,clip1_filename,clip2_filename,photomaker_filename,upscaler_filename):
-    global args
+    global args, sd_parked
     inputs = sd_load_model_inputs()
     inputs.model_filename = model_filename.encode("UTF-8")
     thds = args.threads
@@ -2045,6 +2047,8 @@ def sd_load_model(model_filename,vae_filename,lora_filenames,t5xxl_filename,clip
     inputs.lora_apply_mode = 0 #auto for now
     inputs = set_backend_props(inputs)
     ret = handle.sd_load_model(inputs)
+    if ret:
+        sd_parked = False
     return ret
 
 def sd_oai_tranform_params(genparams):
@@ -2255,11 +2259,13 @@ def sd_generate(genparams):
 
 
 def whisper_load_model(model_filename):
-    global args
+    global args, whisper_parked
     inputs = whisper_load_model_inputs()
     inputs.model_filename = model_filename.encode("UTF-8")
     inputs = set_backend_props(inputs)
     ret = handle.whisper_load_model(inputs)
+    if ret:
+        whisper_parked = False
     return ret
 
 def extract_text(genparams):
@@ -2850,7 +2856,7 @@ def whisper_generate(genparams):
     return outstr
 
 def tts_load_model(ttc_model_filename,cts_model_filename):
-    global args
+    global args, tts_parked
     inputs = tts_load_model_inputs()
     inputs.ttc_model_filename = ttc_model_filename.encode("UTF-8") if ttc_model_filename else "".encode("UTF-8")
     inputs.cts_model_filename = cts_model_filename.encode("UTF-8") if cts_model_filename else "".encode("UTF-8")
@@ -2865,6 +2871,8 @@ def tts_load_model(ttc_model_filename,cts_model_filename):
     inputs.ttsmaxlen = args.ttsmaxlen if args.ttsmaxlen < 4096 else 4096
     inputs = set_backend_props(inputs)
     ret = handle.tts_load_model(inputs)
+    if ret:
+        tts_parked = False
     return ret
 
 def tts_prepare_voice_json(jsonstr):
@@ -2935,7 +2943,7 @@ def tts_generate(genparams):
     return outstr
 
 def embeddings_load_model(model_filename):
-    global args
+    global args, embeddings_parked
     inputs = embeddings_load_model_inputs()
     inputs.model_filename = model_filename.encode("UTF-8")
     inputs.gpulayers = (999 if args.embeddingsgpu else 0)
@@ -2945,6 +2953,8 @@ def embeddings_load_model(model_filename):
     inputs.embeddingsmaxctx = (args.embeddingsmaxctx if args.embeddingsmaxctx else args.contextsize) # for us to clamp to contextsize if embeddingsmaxctx unspecified
     inputs = set_backend_props(inputs)
     ret = handle.embeddings_load_model(inputs)
+    if ret:
+        embeddings_parked = False
     return ret
 
 def embeddings_generate(genparams):
@@ -2980,7 +2990,7 @@ def embeddings_generate(genparams):
     return {"count":tokcnt, "data":tokarrs}
 
 def music_load_model(musicllm,musicembedding,musicdiffusion,musicvae):
-    global args
+    global args, music_parked
     inputs = music_load_model_inputs()
     inputs.musicllm_filename = musicllm.encode("UTF-8")
     inputs.musicembedding_filename = musicembedding.encode("UTF-8")
@@ -2989,6 +2999,8 @@ def music_load_model(musicllm,musicembedding,musicdiffusion,musicvae):
     inputs.lowvram = True if args.musiclowvram else False
     inputs = set_backend_props(inputs)
     ret = handle.music_load_model(inputs)
+    if ret:
+        music_parked = False
     return ret
 
 def music_generate_codes(genparams):

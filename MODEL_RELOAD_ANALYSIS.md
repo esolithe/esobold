@@ -148,6 +148,25 @@ When a subsystem is unparked:
 - After a successful LLM unpark, `cached_chat_template` is refreshed from the C++ layer
   (so the template is never stale after a park/unpark cycle).
 
+### Self-managing park flags
+
+Each Python load function (`load_model`, `sd_load_model`, `whisper_load_model`,
+`tts_load_model`, `embeddings_load_model`, `music_load_model`) clears its own park flag
+on a successful C++ load:
+
+```python
+ret = handle.sd_load_model(inputs)
+if ret:
+    sd_parked = False   # ← automatic; works regardless of who called sd_load_model
+return ret
+```
+
+This means the park state is always consistent regardless of the call path.  Whether a
+model is loaded at server startup, via `perform_unpark`, via `perform_in_process_reload`,
+or directly by any future code, a successful load always leaves `<subsystem>_parked =
+False`.  `perform_unpark` also clears the flag explicitly after the call for clarity, but
+the load function itself is the authoritative source.
+
 ---
 
 ## Reload Code Flow
@@ -168,9 +187,10 @@ for each subsystem in target:
 target = subsystems or ALL_SUBSYSTEMS
 for each subsystem in target:
     if subsystem is parked:
-        call C load function using stored path
-        if load OK:  clear <subsystem>_parked flag
-        else:        leave flag True (load failure visible)
+        call load function using stored path
+        # load function clears <subsystem>_parked = False on success
+        if load failed: leave flag True (load failure visible)
+        if file missing: clear flag directly (nothing to reload)
 ```
 
 ### `perform_in_process_reload(restart_target, restart_model, defaultargs)`
