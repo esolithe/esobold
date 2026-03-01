@@ -8909,17 +8909,22 @@ def reload_from_new_args(newargs):
         print(f"Reload New Config Failed: {e}")
 
 def reload_new_config(filename,defaultargs): #for changing config after launch
-    with open(filename, 'r', encoding='utf-8', errors='ignore') as f:
-        try:
-            config = json.load(f)
-            for key, value in defaultargs.items():   # Fill missing defaults directly into config
-                if key not in config:
-                    config[key] = value
-            reload_from_new_args(config)
-        except Exception as e:
-            print(f"Reload New Config Failed: {e}")
+    try:
+        with open(filename, 'r', encoding='utf-8', errors='ignore') as f:
+            try:
+                config = json.load(f)
+                for key, value in defaultargs.items():   # Fill missing defaults directly into config
+                    if key not in config:
+                        config[key] = value
+                reload_from_new_args(config)
+            except Exception as e:
+                print(f"Reload New Config Failed: {e}")
+    except Exception as e:
+        print(f"Reload New Config Failed (could not read file): {e}")
 
 VALID_PARK_SUBSYSTEMS = {"llm", "sd", "whisper", "tts", "embeddings", "music"}
+NON_LLM_MODEL_ATTRS = ["sdmodel","whispermodel","ttsmodel","ttswavtokenizer",
+                       "embeddingsmodel","musicllm","musicembeddings","musicdiffusion","musicvae"]
 
 def _parse_park_models_body(body):
     """Parse the optional 'models' list from a park/unpark POST body.
@@ -8986,6 +8991,8 @@ def perform_unpark(subsystems=None):
                 if args.mmproj and args.mmproj != "":
                     has_audio_support = handle.has_audio_support()
                     has_vision_support = handle.has_vision_support()
+                ctbytes = handle.get_chat_template()
+                cached_chat_template = ctypes.string_at(ctbytes).decode("UTF-8", "ignore")
                 llm_parked = False
                 print("LLM unparked.")
             else:
@@ -9065,13 +9072,14 @@ def perform_in_process_reload(restart_target, restart_model, defaultargs):
         args.model_param = None
         args.model = None
         args.nomodel = True
+        # Clear all other model paths so subsystems are not inadvertently reloaded
+        for _attr in NON_LLM_MODEL_ATTRS:
+            setattr(args, _attr, "")
     elif restart_target.endswith(".gguf"):
         dirpath = os.path.abspath(args.admindir)
         targetfilepath = os.path.join(dirpath, restart_target)
         # Save non-LLM model paths before resetting args so they survive the reload
-        _non_llm_attrs = ["sdmodel","whispermodel","ttsmodel","ttswavtokenizer",
-                          "embeddingsmodel","musicllm","musicembeddings","musicdiffusion","musicvae"]
-        _saved_non_llm = {attr: getattr(args, attr, "") for attr in _non_llm_attrs}
+        _saved_non_llm = {attr: getattr(args, attr, "") for attr in NON_LLM_MODEL_ATTRS}
         reload_from_new_args(defaultargs)
         args.model_param = targetfilepath
         # Restore non-LLM model paths so those subsystems can be reloaded
