@@ -124,6 +124,14 @@ has_audio_support = False
 has_vision_support = False
 has_whisper = False
 cached_chat_template = None
+
+# Per-subsystem park state — when True the model is in RAM but inference is blocked
+llm_parked = False
+sd_parked = False
+whisper_parked = False
+tts_parked = False
+embeddings_parked = False
+music_parked = False
 savedata_obj = None
 mcp_connections = [] #every element is linked to one mcp source, contains obj {"client":obj, "tools":[]}
 mcp_lock = threading.Lock()
@@ -841,6 +849,12 @@ def init_library():
     handle.last_logprobs.restype = last_logprobs_outputs
     handle.detokenize.argtypes = [token_count_outputs]
     handle.detokenize.restype = ctypes.c_char_p
+    handle.unload_model.argtypes = []
+    handle.unload_model.restype = None
+    handle.tts_unload_model.argtypes = []
+    handle.tts_unload_model.restype = None
+    handle.embeddings_unload_model.argtypes = []
+    handle.embeddings_unload_model.restype = None
 
 def set_backend_props(inputs):
     # we must force an explicit tensor split
@@ -1159,14 +1173,15 @@ def convert_json_to_gbnf(json_obj):
 
 def get_capabilities():
     global savedata_obj, has_multiplayer, KcppVersion, friendlymodelname, friendlysdmodelname, fullsdmodelpath, password, fullwhispermodelpath, ttsmodelpath, embeddingsmodelpath, musicdiffusionmodelpath, musicllmmodelpath, has_audio_support, has_vision_support, mcp_connections
-    has_llm = not (friendlymodelname=="inactive")
-    has_txt2img = not (friendlysdmodelname=="inactive" or fullsdmodelpath=="")
+    global llm_parked, sd_parked, whisper_parked, tts_parked, embeddings_parked, music_parked
+    has_llm = not (friendlymodelname=="inactive") and not llm_parked
+    has_txt2img = not (friendlysdmodelname=="inactive" or fullsdmodelpath=="") and not sd_parked
     has_password = (password!="")
-    has_whisper = (fullwhispermodelpath!="")
+    has_whisper = (fullwhispermodelpath!="") and not whisper_parked
     has_search = True if args.websearch else False
-    has_tts = (ttsmodelpath!="")
-    has_embeddings = (embeddingsmodelpath!="")
-    has_music = (musicdiffusionmodelpath!="" or musicllmmodelpath!="")
+    has_tts = (ttsmodelpath!="") and not tts_parked
+    has_embeddings = (embeddingsmodelpath!="") and not embeddings_parked
+    has_music = (musicdiffusionmodelpath!="" or musicllmmodelpath!="") and not music_parked
     embeddingModel = ""
     try:
         embeddingModel = os.path.basename(embeddingsmodelpath)
@@ -1179,7 +1194,7 @@ def get_capabilities():
     has_server_saving = args.admin and not (args.admindatadir == "")
     had_admin_with_hf = args.adminallowhf
     admin_type = (2 if args.admin and args.admindir and args.adminpassword else (1 if args.admin and args.admindir else 0))
-    return {"result":"KoboldCpp", "version":KcppVersion, "protected":has_password, "llm":has_llm, "txt2img":has_txt2img,"vision":has_vision_support,"audio":has_audio_support,"transcribe":has_whisper,"multiplayer":has_multiplayer,"websearch":has_search,"tts":has_tts, "embeddings":has_embeddings, "music":has_music, "savedata":(savedata_obj is not None), "admin": admin_type, "guidance": has_guidance, "jinja": has_jinja, "mcp":has_mcp, "hasServerSaving": has_server_saving, "hasAdminWithHF": had_admin_with_hf, "embeddingModel": embeddingModel}
+    return {"result":"KoboldCpp", "version":KcppVersion, "protected":has_password, "llm":has_llm, "txt2img":has_txt2img,"vision":has_vision_support,"audio":has_audio_support,"transcribe":has_whisper,"multiplayer":has_multiplayer,"websearch":has_search,"tts":has_tts, "embeddings":has_embeddings, "music":has_music, "savedata":(savedata_obj is not None), "admin": admin_type, "guidance": has_guidance, "jinja": has_jinja, "mcp":has_mcp, "hasServerSaving": has_server_saving, "hasAdminWithHF": had_admin_with_hf, "embeddingModel": embeddingModel, "parked":{"llm":llm_parked,"sd":sd_parked,"whisper":whisper_parked,"tts":tts_parked,"embeddings":embeddings_parked,"music":music_parked}}
 
 def dump_gguf_metadata(file_path): #if you're gonna copy this into your own project at least credit concedo
     chunk_size = 1024*1024*12  # read first 12mb of file
@@ -4315,8 +4330,16 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             return result
 
     async def generate_text(self, genparams, api_format, stream_flag):
-        global friendlymodelname, chatcompl_adapter, currfinishreason
+        global friendlymodelname, chatcompl_adapter, currfinishreason, llm_parked
         currfinishreason = None
+
+        if llm_parked:
+            genout = {"text": "", "status": -1, "stopreason": -2, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+            self.send_response(503)
+            self.send_header('content-length', '0')
+            self.end_headers(content_type='application/json')
+            self.wfile.write(json.dumps({"detail": {"msg": "Text generation model is parked in RAM. Use /api/admin/unpark to restore.", "type": "model_parked"}}).encode())
+            return genout
 
         def run_blocking():  # api format 1=basic,2=kai,3=oai,4=oai-chat
             # flag instance as non-idle for a while
@@ -5707,6 +5730,26 @@ Change Mode<br>
         elif self.path.endswith('/set_tts_settings'): #return dummy response
             response_body = (json.dumps({"message": "Settings successfully applied"}).encode())
 
+        elif self.path.endswith('/api/admin/park'): # Park all models to RAM (unload GPU memory)
+            resp = {"success": False}
+            if args.admin and self.check_header_password(args.adminpassword):
+                try:
+                    perform_park_to_ram()
+                    resp = {"success": True}
+                except Exception as ex:
+                    resp = {"success": False, "error": str(ex)}
+            response_body = (json.dumps(resp).encode())
+
+        elif self.path.endswith('/api/admin/unpark'): # Unpark all models (reload into GPU)
+            resp = {"success": False}
+            if args.admin and self.check_header_password(args.adminpassword):
+                try:
+                    perform_unpark()
+                    resp = {"success": True}
+                except Exception as ex:
+                    resp = {"success": False, "error": str(ex)}
+            response_body = (json.dumps(resp).encode())
+
         elif self.path=="/api/show": #ollama compatible
             response_body = (json.dumps({"parameters":"temperature 1.0","license":"Ollama Emulation. Running on KoboldCpp","modelfile":"KoboldCpp","capabilities":["completion"],"modified_at":"2025-01-01T01:00:00.0000000+00:00","details":{},"model_info":{}}).encode())
 
@@ -6150,6 +6193,11 @@ Change Mode<br>
                     return
                 elif is_imggen: #image gen
                     try:
+                        if sd_parked:
+                            self.send_response(503)
+                            self.end_headers(content_type='application/json')
+                            self.wfile.write(json.dumps({"detail": {"msg": "Image generation model is parked in RAM. Use /api/admin/unpark to restore.", "type": "model_parked"}}).encode())
+                            return
                         if is_comfyui_imggen:
                             lastgeneratedcomfyimg = b''
                             genparams = sd_comfyui_tranform_params(genparams)
@@ -6182,6 +6230,11 @@ Change Mode<br>
                 elif is_transcribe:
                     try:
                         global fullwhispermodelpath, has_audio_support
+                        if whisper_parked:
+                            self.send_response(503)
+                            self.end_headers(content_type='application/json')
+                            self.wfile.write(json.dumps({"detail": {"msg": "Whisper model is parked in RAM. Use /api/admin/unpark to restore.", "type": "model_parked"}}).encode())
+                            return
                         gendat = None
                         if genparams.get("audio_data","") and fullwhispermodelpath=="" and has_audio_support: #if we have no whisper model but an audio-capable projector, use that instead
                             adapter_obj = {} if chatcompl_adapter is None else chatcompl_adapter
@@ -6228,6 +6281,11 @@ Change Mode<br>
                     return
                 elif is_tts:
                     try:
+                        if tts_parked:
+                            self.send_response(503)
+                            self.end_headers(content_type='application/json')
+                            self.wfile.write(json.dumps({"detail": {"msg": "TTS model is parked in RAM. Use /api/admin/unpark to restore.", "type": "model_parked"}}).encode())
+                            return
                         gendat = tts_generate(genparams)
                         wav_data = b''
                         if gendat:
@@ -6244,6 +6302,11 @@ Change Mode<br>
                     return
                 elif is_embeddings:
                     try:
+                        if embeddings_parked:
+                            self.send_response(503)
+                            self.end_headers(content_type='application/json')
+                            self.wfile.write(json.dumps({"detail": {"msg": "Embeddings model is parked in RAM. Use /api/admin/unpark to restore.", "type": "model_parked"}}).encode())
+                            return
                         gendat = embeddings_generate(genparams)
                         outdatas = []
                         odidx = 0
@@ -6267,6 +6330,11 @@ Change Mode<br>
                     return
                 elif is_music_codes:
                     try:
+                        if music_parked:
+                            self.send_response(503)
+                            self.end_headers(content_type='application/json')
+                            self.wfile.write(json.dumps({"detail": {"msg": "Music model is parked in RAM. Use /api/admin/unpark to restore.", "type": "model_parked"}}).encode())
+                            return
                         gendat = music_generate_codes(genparams)
                         genresp = (json.dumps({"error":"music code generation failed"}).encode())
                         if gendat:
@@ -6282,6 +6350,11 @@ Change Mode<br>
                     return
                 elif is_music_audio:
                     try:
+                        if music_parked:
+                            self.send_response(503)
+                            self.end_headers(content_type='application/json')
+                            self.wfile.write(json.dumps({"detail": {"msg": "Music model is parked in RAM. Use /api/admin/unpark to restore.", "type": "model_parked"}}).encode())
+                            return
                         gendat = music_generate_audio(genparams)
                         wav_data = b''
                         if gendat:
@@ -8834,6 +8907,157 @@ def reload_new_config(filename,defaultargs): #for changing config after launch
         except Exception as e:
             print(f"Reload New Config Failed: {e}")
 
+def perform_park_to_ram():
+    global llm_parked, sd_parked, whisper_parked, tts_parked, embeddings_parked, music_parked
+    global friendlymodelname, fullsdmodelpath, fullwhispermodelpath, ttsmodelpath, embeddingsmodelpath, musicdiffusionmodelpath, musicllmmodelpath
+    print("Parking models to RAM (unloading from GPU)...")
+    if handle and friendlymodelname != "inactive" and not llm_parked:
+        handle.unload_model()
+        llm_parked = True
+        print("LLM parked.")
+    if handle and fullsdmodelpath != "" and not sd_parked:
+        sd_parked = True
+        print("SD parked (no GPU unload for SD).")
+    if handle and fullwhispermodelpath != "" and not whisper_parked:
+        whisper_parked = True
+        print("Whisper parked (no GPU unload for Whisper).")
+    if handle and ttsmodelpath != "" and not tts_parked:
+        handle.tts_unload_model()
+        tts_parked = True
+        print("TTS parked.")
+    if handle and embeddingsmodelpath != "" and not embeddings_parked:
+        handle.embeddings_unload_model()
+        embeddings_parked = True
+        print("Embeddings parked.")
+    if handle and (musicdiffusionmodelpath != "" or musicllmmodelpath != "") and not music_parked:
+        music_parked = True
+        print("Music parked (no GPU unload for Music).")
+    print("Park complete.")
+
+def perform_unpark():
+    global llm_parked, sd_parked, whisper_parked, tts_parked, embeddings_parked, music_parked
+    global friendlymodelname, fullsdmodelpath, fullwhispermodelpath, ttsmodelpath, embeddingsmodelpath, musicdiffusionmodelpath, musicllmmodelpath
+    global has_audio_support, has_vision_support, cached_chat_template
+    print("Unparking models (reloading into GPU)...")
+    if llm_parked and friendlymodelname != "inactive":
+        modelname = args.model_param
+        if modelname and os.path.exists(modelname):
+            loadok = load_model(modelname)
+            if loadok:
+                if args.mmproj and args.mmproj != "":
+                    has_audio_support = handle.has_audio_support()
+                    has_vision_support = handle.has_vision_support()
+                llm_parked = False
+                print("LLM unparked.")
+            else:
+                print("LLM unpark failed!")
+        else:
+            print("LLM unpark skipped: model file missing.")
+    if sd_parked:
+        sd_parked = False
+        print("SD unparked.")
+    if whisper_parked:
+        if fullwhispermodelpath != "" and os.path.exists(fullwhispermodelpath):
+            loadok = whisper_load_model(fullwhispermodelpath)
+            if loadok:
+                whisper_parked = False
+                print("Whisper unparked.")
+            else:
+                print("Whisper unpark failed!")
+        else:
+            whisper_parked = False
+            print("Whisper unparked (no reload needed).")
+    if tts_parked:
+        wavtokpath = args.ttswavtokenizer if args.ttswavtokenizer else None
+        if wavtokpath:
+            wavtokpath = os.path.abspath(wavtokpath)
+        loadok = tts_load_model(ttsmodelpath, wavtokpath)
+        if loadok:
+            tts_parked = False
+            print("TTS unparked.")
+        else:
+            print("TTS unpark failed!")
+    if embeddings_parked:
+        loadok = embeddings_load_model(embeddingsmodelpath)
+        if loadok:
+            embeddings_parked = False
+            print("Embeddings unparked.")
+        else:
+            print("Embeddings unpark failed!")
+    if music_parked:
+        music_parked = False
+        print("Music unparked.")
+    print("Unpark complete.")
+
+def perform_in_process_reload(restart_target, restart_model, defaultargs):
+    """Reload model/config in-process without spawning a new child process."""
+    global llm_parked, sd_parked, whisper_parked, tts_parked, embeddings_parked, music_parked
+    global friendlymodelname, friendlysdmodelname, fullsdmodelpath, fullwhispermodelpath, ttsmodelpath
+    global embeddingsmodelpath, musicdiffusionmodelpath, musicllmmodelpath, has_audio_support, has_vision_support
+    global cached_chat_template, friendlyembeddingsmodelname
+
+    print(f"In-process reload: target={restart_target}, model={restart_model}")
+    # First park all active models to free GPU memory
+    perform_park_to_ram()
+
+    if restart_target == "unload_model":
+        reload_from_new_args(defaultargs)
+        args.model_param = None
+        args.model = None
+        args.nomodel = True
+    elif restart_target.endswith(".gguf"):
+        dirpath = os.path.abspath(args.admindir)
+        targetfilepath = os.path.join(dirpath, restart_target)
+        reload_from_new_args(defaultargs)
+        args.model_param = targetfilepath
+    else:
+        dirpath = os.path.abspath(args.admindir)
+        targetfilepath = os.path.join(dirpath, restart_target)
+        reload_new_config(targetfilepath, defaultargs)
+
+    if restart_model != "" and args.admintextmodelsdir:
+        dirpath = os.path.abspath(args.admintextmodelsdir)
+        modelFilepath = os.path.join(dirpath, restart_model)
+        if os.path.exists(modelFilepath):
+            args.model_param = modelFilepath
+        elif args.adminallowhf and re.search(r'^https://huggingface\.co/.*?/resolve/main/.*\.gguf$', restart_model):
+            args.model_param = restart_model
+
+    # Reset park flags so the new load can proceed
+    llm_parked = False
+    sd_parked = False
+    whisper_parked = False
+    tts_parked = False
+    embeddings_parked = False
+    music_parked = False
+
+    # Reload text model
+    if args.model_param and os.path.exists(args.model_param):
+        modelname = os.path.abspath(args.model_param)
+        print(f"In-process reload: loading LLM {modelname}")
+        loadok = load_model(modelname)
+        print("In-process reload LLM OK: " + str(loadok))
+        if args.mmproj and args.mmproj != "":
+            has_audio_support = handle.has_audio_support()
+            has_vision_support = handle.has_vision_support()
+        else:
+            has_audio_support = False
+            has_vision_support = False
+        if loadok and args.model_param:
+            ctbytes = handle.get_chat_template()
+            cached_chat_template = ctypes.string_at(ctbytes).decode("UTF-8", "ignore")
+        friendlymodelname = "inactive"
+        if loadok:
+            newmdldisplayname = os.path.splitext(os.path.basename(args.model_param))[0]
+            if args.hordekey and args.hordekey != "":
+                friendlymodelname = args.hordemodelname if args.hordemodelname else "koboldcpp/" + sanitize_string(newmdldisplayname)
+            else:
+                friendlymodelname = "koboldcpp/" + sanitize_string(newmdldisplayname)
+            if args.debugmode >= 1:
+                friendlymodelname = "debug-" + friendlymodelname
+    else:
+        friendlymodelname = "inactive"
+
 def load_config_cli(filename):
     print("Loading .kcpps configuration file...")
     with open(filename, 'r', encoding='utf-8', errors='ignore') as f:
@@ -9366,54 +9590,17 @@ def main(launch_args, default_args):
                     restart_model = global_memory["restart_model"]
                     if restart_target!="":
                         if restart_model != "":
-                            global_memory["restart_model"] = ""
                             print(f"Reloading new config: {restart_target} with model {restart_model}")
                         else:
                             print(f"Reloading new model/config: {restart_target}")
-                        global_memory["restart_target"] = ""
-                        time.sleep(0.5) #sleep for 0.5s then restart
+                        # The worker process handles the in-process reload via its reload thread.
+                        # Update currentConfig so it is reflected in the manager state.
                         if args.admin and args.admindir:
                             dirpath = os.path.abspath(args.admindir)
                             targetfilepath = os.path.join(dirpath, restart_target)
-                            defaultargs = vars(default_args)
-                            if (os.path.exists(targetfilepath) or restart_target=="unload_model"):
-                                print("Terminating old process...")
-                                global_memory["load_complete"] = False
-                                kcpp_instance.terminate()
-                                kcpp_instance.join(timeout=10)  # Ensure process is stopped
-                                kcpp_instance = None
-                                print("Restarting KoboldCpp...")
-                                fault_recovery_mode = True
-                                if restart_target=="unload_model":
-                                    reload_from_new_args(defaultargs)
-                                    args.model_param = None
-                                    args.model = None
-                                    args.nomodel = True
-                                elif targetfilepath.endswith(".gguf"):
-                                    reload_from_new_args(defaultargs)
-                                    args.model_param = targetfilepath
-                                else:
-                                    reload_new_config(targetfilepath,defaultargs)
-
-                                args.currentConfig = targetfilepath
-                                global_memory["currentConfig"] = targetfilepath
-                                global_memory["modelOverride"] = None
-                                if (args.admin and args.admintextmodelsdir and restart_model != ""):
-                                    dirpath = os.path.abspath(args.admintextmodelsdir)
-                                    modelFilepath = os.path.join(dirpath, restart_model)
-                                    if os.path.exists(modelFilepath):
-                                        print(f"Setting model to {restart_model}")
-                                        global_memory["modelOverride"] = modelFilepath
-                                    elif args.adminallowhf and re.search(r'^https://huggingface\.co/.*?/resolve/main/.*\.gguf$', restart_model):
-                                        print(f"Setting model to {restart_model}")
-                                        global_memory["modelOverride"] = restart_model
-
-                                kcpp_instance = multiprocessing.Process(target=kcpp_main_process,kwargs={"launch_args": args, "g_memory": global_memory, "gui_launcher": False})
-                                kcpp_instance.daemon = True
-                                kcpp_instance.start()
-                                global_memory["restart_target"] = ""
-                                global_memory["restart_model"] = ""
-                                time.sleep(3)
+                            args.currentConfig = targetfilepath
+                            global_memory["currentConfig"] = targetfilepath
+                        # do NOT clear restart_target here — the worker's reload thread will do it
                     else:
                         time.sleep(0.2)
                 except (KeyboardInterrupt,SystemExit):
@@ -10324,6 +10511,30 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
         else:
             # Flush stdout for previous win32 issue so the client can see output.
             print(f"======\nPlease connect to custom endpoint at {endpoint_url}", flush=True)
+
+        # In-process reload thread: when running as admin worker, handle config swaps inside this process
+        if global_memory is not None and args.admin and args.admindir:
+            def _inprocess_reload_thread():
+                while True:
+                    try:
+                        time.sleep(0.3)
+                        rt = global_memory.get("restart_target", "")
+                        if rt != "":
+                            rm = global_memory.get("restart_model", "")
+                            global_memory["restart_target"] = ""
+                            global_memory["restart_model"] = ""
+                            global_memory["load_complete"] = False
+                            defaultargs = vars(default_args)
+                            try:
+                                perform_in_process_reload(rt, rm, defaultargs)
+                            except Exception as ex:
+                                print(f"In-process reload error: {ex}")
+                            global_memory["load_complete"] = True
+                    except Exception:
+                        pass
+            reload_watcher = threading.Thread(target=_inprocess_reload_thread, daemon=True)
+            reload_watcher.start()
+
         asyncio.run(RunServerMultiThreaded(args.host, args.port, KcppServerRequestHandler))
     else:
         # Flush stdout for previous win32 issue so the client can see output.
