@@ -9068,8 +9068,15 @@ def perform_in_process_reload(restart_target, restart_model, defaultargs):
     elif restart_target.endswith(".gguf"):
         dirpath = os.path.abspath(args.admindir)
         targetfilepath = os.path.join(dirpath, restart_target)
+        # Save non-LLM model paths before resetting args so they survive the reload
+        _non_llm_attrs = ["sdmodel","whispermodel","ttsmodel","ttswavtokenizer",
+                          "embeddingsmodel","musicllm","musicembeddings","musicdiffusion","musicvae"]
+        _saved_non_llm = {attr: getattr(args, attr, "") for attr in _non_llm_attrs}
         reload_from_new_args(defaultargs)
         args.model_param = targetfilepath
+        # Restore non-LLM model paths so those subsystems can be reloaded
+        for attr, val in _saved_non_llm.items():
+            setattr(args, attr, val)
     else:
         dirpath = os.path.abspath(args.admindir)
         targetfilepath = os.path.join(dirpath, restart_target)
@@ -10665,7 +10672,7 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
                             global_memory["restart_target"] = ""
                             global_memory["restart_model"] = ""
                             global_memory["load_complete"] = False
-                            defaultargs = vars(default_args)
+                            defaultargs = dict(vars(args))
                             try:
                                 perform_in_process_reload(rt, rm, defaultargs)
                             except Exception as ex:
