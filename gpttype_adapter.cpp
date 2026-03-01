@@ -125,6 +125,31 @@ static int max_context_limit_at_load = 0;
 static int n_past = 0;
 static int debugmode = 0; //-1 = hide all, 0 = normal, 1 = showall
 static bool is_quiet = false;
+
+// Statics required for in-process unload / reload (GGUF path only)
+static llama_model * llamamodel_main = nullptr;
+static llama_model * llamamodel_draft = nullptr;
+static struct ggml_threadpool * threadpool_main1 = nullptr;
+static struct ggml_threadpool * threadpool_main2 = nullptr;
+static bool llama_backend_was_init = false;
+
+void gpttype_unload_model() {
+    if (llama_ctx_v4 != nullptr) {
+        llama_detach_threadpool(llama_ctx_v4);
+    }
+    if (threadpool_main1 != nullptr) { ggml_threadpool_free(threadpool_main1); threadpool_main1 = nullptr; }
+    if (threadpool_main2 != nullptr) { ggml_threadpool_free(threadpool_main2); threadpool_main2 = nullptr; }
+    if (guidance_ctx != nullptr) { llama_free(guidance_ctx); guidance_ctx = nullptr; }
+    if (draft_ctx != nullptr) { llama_free(draft_ctx); draft_ctx = nullptr; }
+    if (llama_ctx_v4 != nullptr) { llama_free(llama_ctx_v4); llama_ctx_v4 = nullptr; }
+    if (clp_ctx_v != nullptr) { clip_free(clp_ctx_v); clp_ctx_v = nullptr; }
+    if (clp_ctx_a != nullptr) { clip_free(clp_ctx_a); clp_ctx_a = nullptr; }
+    if (llamamodel_draft != nullptr) { llama_model_free(llamamodel_draft); llamamodel_draft = nullptr; }
+    if (llamamodel_main != nullptr) { llama_model_free(llamamodel_main); llamamodel_main = nullptr; }
+    if (kcpp_data != nullptr) { delete kcpp_data; kcpp_data = nullptr; }
+    vision_multimodal_supported = false;
+    audio_multimodal_supported = false;
+}
 static std::vector<gpt_vocab::id> last_n_tokens;
 static std::vector<gpt_vocab::id> current_context_tokens;
 static size_t mem_per_token = 0;
@@ -682,6 +707,7 @@ static void speculative_decoding_setup(std::string spec_model_filename, const ll
     draft_ctx_params.swa_full = base_ctx_params.swa_full;
 
     llama_model * draftmodel = llama_model_load_from_file(spec_model_filename.c_str(), draft_model_params);
+    llamamodel_draft = draftmodel; // store so gpttype_unload_model() can free it
     draft_ctx = llama_init_from_model(draftmodel, draft_ctx_params);
     if(draft_ctx == NULL)
     {
@@ -2139,7 +2165,8 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
 {
     is_quiet = inputs.quiet;
     ggml_time_init();
-    kcpp_data = new kcpp_params(); //allocate on heap to avoid linux segfault. yes this leaks memory.
+    gpttype_unload_model(); // free any previously loaded GGUF model resources
+    kcpp_data = new kcpp_params(); //allocate on heap to avoid linux segfault.
 
     file_format = in_file_format;
     file_format_meta = in_file_format_meta;
@@ -2371,7 +2398,10 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
     }
     else if(file_format==FileFormat::GGUF_GENERIC)
     {
-        llama_backend_init();
+        if (!llama_backend_was_init) {
+            llama_backend_init();
+            llama_backend_was_init = true;
+        }
 
         llama_model_params model_params = llama_model_default_params();
         llama_context_params llama_ctx_params = llama_context_default_params();
@@ -2598,8 +2628,8 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
             }
         }
 
-        llama_model * llamamodel = llama_model_load_from_file(kcpp_data->model_filename.c_str(), model_params);
-        if(file_format_meta.model_architecture == GGUFArch::ARCH_QWEN2VL || llama_model_rope_type(llamamodel)==LLAMA_ROPE_TYPE_MROPE || llama_model_rope_type(llamamodel)==LLAMA_ROPE_TYPE_IMROPE)
+        llamamodel_main = llama_model_load_from_file(kcpp_data->model_filename.c_str(), model_params);
+        if(file_format_meta.model_architecture == GGUFArch::ARCH_QWEN2VL || llama_model_rope_type(llamamodel_main)==LLAMA_ROPE_TYPE_MROPE || llama_model_rope_type(llamamodel_main)==LLAMA_ROPE_TYPE_IMROPE)
         {
             printf("\nMRope is used, context shift will be disabled!\n");
             kcpp_data->use_contextshift = false;
@@ -2618,21 +2648,21 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
             if(inputs.overridenativecontext > 0)
             {
                 printf("Automatic RoPE Scaling: Adjust based on override train context of %d.\n",inputs.overridenativecontext);
-                rope_freq_base = CalcGradientAIRopeFreqBase(llamamodel->hparams.rope_freq_base_train, inputs.overridenativecontext, kcpp_data->n_ctx, file_format_meta.model_architecture);
+                rope_freq_base = CalcGradientAIRopeFreqBase(llamamodel_main->hparams.rope_freq_base_train, inputs.overridenativecontext, kcpp_data->n_ctx, file_format_meta.model_architecture);
                 llama_ctx_params.rope_freq_base = rope_freq_base;
                 llama_ctx_params.rope_freq_scale = rope_freq_scale;
                 printf("Automatic RoPE Scaling: Using (scale:%.3f, base:%.1f).\n", rope_freq_scale, rope_freq_base);
             }
-            else if((llamamodel->hparams.rope_freq_base_train!=10000.0f && llamamodel->hparams.rope_freq_base_train!=500000.0f) ||
-            llamamodel->hparams.rope_freq_scale_train!=1.0f ||
-            llamamodel->hparams.rope_scaling_type_train==2)
+            else if((llamamodel_main->hparams.rope_freq_base_train!=10000.0f && llamamodel_main->hparams.rope_freq_base_train!=500000.0f) ||
+            llamamodel_main->hparams.rope_freq_scale_train!=1.0f ||
+            llamamodel_main->hparams.rope_scaling_type_train==2)
             {
                 printf("Automatic RoPE Scaling: Using model internal value.\n");
             }
             else
             {
 				//Calculate rope_freq_base using the gradientAI formula, solar requires ctx *8 for correct scaling
-                rope_freq_base = CalcGradientAIRopeFreqBase(llamamodel->hparams.rope_freq_base_train, file_format_meta.n_ctx_train, kcpp_data->n_ctx, file_format_meta.model_architecture);
+                rope_freq_base = CalcGradientAIRopeFreqBase(llamamodel_main->hparams.rope_freq_base_train, file_format_meta.n_ctx_train, kcpp_data->n_ctx, file_format_meta.model_architecture);
                 llama_ctx_params.rope_freq_base = rope_freq_base;
                 llama_ctx_params.rope_freq_scale = rope_freq_scale;
                 printf("Automatic RoPE Scaling: Using (scale:%.3f, base:%.1f).\n", rope_freq_scale, rope_freq_base);
@@ -2642,7 +2672,7 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
         if(file_format_meta.model_architecture==GGUFArch::ARCH_RWKV)
         {
             printf("\nRWKV6 Overriding EOS and BOS IDs to 0\n");
-            llamamodel->vocab.set_eos_bos(0,0);
+            llamamodel_main->vocab.set_eos_bos(0,0);
         }
 
         llama_ctx_params.flash_attn_type = (kcpp_data->flash_attn?LLAMA_FLASH_ATTN_TYPE_ENABLED:LLAMA_FLASH_ATTN_TYPE_DISABLED);
@@ -2650,10 +2680,10 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
         llama_ctx_params.type_k = (inputs.quant_k>1?GGML_TYPE_Q4_0:(inputs.quant_k==1?GGML_TYPE_Q8_0:GGML_TYPE_F16));
         llama_ctx_params.type_v = (inputs.quant_v>1?GGML_TYPE_Q4_0:(inputs.quant_v==1?GGML_TYPE_Q8_0:GGML_TYPE_F16));
 
-        llama_ctx_v4 = llama_init_from_model(llamamodel, llama_ctx_params);
+        llama_ctx_v4 = llama_init_from_model(llamamodel_main, llama_ctx_params);
         if(load_guidance)
         {
-            guidance_ctx = llama_init_from_model(llamamodel, llama_ctx_params);
+            guidance_ctx = llama_init_from_model(llamamodel_main, llama_ctx_params);
         }
 
         if (llama_ctx_v4 == NULL)
@@ -2673,20 +2703,20 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
         }
 
         printf("Threadpool set to %d threads and %d blasthreads...\n", kcpp_data->n_threads,kcpp_data->n_blasthreads);
-        struct ggml_threadpool * threadpool1 = ggml_threadpool_new(&threadpool1_params);
-        struct ggml_threadpool * threadpool2 = ggml_threadpool_new(&threadpool2_params);
-        if (!threadpool1 || !threadpool2) {
+        threadpool_main1 = ggml_threadpool_new(&threadpool1_params);
+        threadpool_main2 = ggml_threadpool_new(&threadpool2_params);
+        if (!threadpool_main1 || !threadpool_main2) {
             fprintf(stderr, "%s: error: failed to create threadpool.\n", __func__);
             return ModelLoadResult::FAIL;
         }
-        llama_attach_threadpool(llama_ctx_v4, threadpool1, threadpool2);
+        llama_attach_threadpool(llama_ctx_v4, threadpool_main1, threadpool_main2);
 
         std::vector<llama_adapter_lora *> loras;
         std::vector<float> lorascales;
         if (lora_filename != "")
         {
             printf("\nAttempting to apply LORA adapter: %s\n", lora_filename.c_str());
-            auto adapter = llama_adapter_lora_init(llamamodel, lora_filename.c_str());
+            auto adapter = llama_adapter_lora_init(llamamodel_main, lora_filename.c_str());
             if (adapter == nullptr) {
                 fprintf(stderr, "%s: error: failed to apply lora adapter\n", __func__);
                 return ModelLoadResult::FAIL;
@@ -2730,7 +2760,7 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
                 fprintf(stderr, "%s: error: failed to load mmproj model!\n", __func__);
                 return ModelLoadResult::FAIL;
             }
-            const int n_embd_llm  = llama_model_n_embd_inp(llamamodel);
+            const int n_embd_llm  = llama_model_n_embd_inp(llamamodel_main);
             int n_embd_clip_a = -1;
             int n_embd_clip_v = -1;
             if (clp_ctx_v)
@@ -2766,12 +2796,12 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
             }
         }
 
-        const llama_vocab * tmpvocab = llama_model_get_vocab(llamamodel);
+        const llama_vocab * tmpvocab = llama_model_get_vocab(llamamodel_main);
         n_vocab = llama_vocab_n_tokens(tmpvocab);
 
         if(draftmodel_filename !="" && file_format==FileFormat::GGUF_GENERIC)
         {
-            if(llama_model_is_recurrent(llamamodel) || llama_model_is_hybrid(llamamodel))
+            if(llama_model_is_recurrent(llamamodel_main) || llama_model_is_hybrid(llamamodel_main))
             {
                 printf("Error: Speculative decoding cannot be used with Recurrent models!\n");
             }
@@ -2789,7 +2819,7 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
 
         //we cannot really trust the add bos in vocab. old models don't set it.
         // instead, we EXPLICITY need to find the add_bos_token key==false to automatically set it off.
-        if(!llamamodel->vocab.get_add_bos() && add_bos_token && file_format_meta.explicitly_no_bos)
+        if(!llamamodel_main->vocab.get_add_bos() && add_bos_token && file_format_meta.explicitly_no_bos)
         {
             printf("\nThis architecture has explicitly disabled the BOS token - if you need it, you must add it manually.\n");
             add_bos_token = false;

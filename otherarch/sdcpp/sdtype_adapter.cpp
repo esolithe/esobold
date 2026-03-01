@@ -111,6 +111,12 @@ static bool photomaker_enabled = false;
 static bool is_vid_model = false;
 static bool remove_limits = false;
 
+void sdtype_unload_model() {
+    if (sd_ctx != nullptr) { free_sd_ctx(sd_ctx); sd_ctx = nullptr; }
+    if (upscaler_ctx != nullptr) { free_upscaler_ctx(upscaler_ctx); upscaler_ctx = nullptr; }
+    if (sd_params != nullptr) { delete sd_params; sd_params = nullptr; }
+}
+
 static int get_loaded_sd_version(sd_ctx_t* ctx)
 {
     return ctx->sd->version;
@@ -308,6 +314,20 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
     {
         sdvulkandeviceenv = "GGML_VK_VISIBLE_DEVICES="+vulkan_info_str;
         putenv((char*)sdvulkandeviceenv.c_str());
+    }
+
+    // Free any previously loaded contexts before loading a new one
+    if (sd_ctx != nullptr) {
+        free_sd_ctx(sd_ctx);
+        sd_ctx = nullptr;
+    }
+    if (upscaler_ctx != nullptr) {
+        free_upscaler_ctx(upscaler_ctx);
+        upscaler_ctx = nullptr;
+    }
+    if (sd_params != nullptr) {
+        delete sd_params;
+        sd_params = nullptr;
     }
 
     sd_params = new SDParams();

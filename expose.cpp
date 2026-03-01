@@ -198,9 +198,18 @@ extern "C"
         return gpttype_generate(inputs);
     }
 
+    void unload_model()
+    {
+        gpttype_unload_model();
+    }
+
     bool sd_load_model(const sd_load_model_inputs inputs)
     {
         return sdtype_load_model(inputs);
+    }
+    void sd_unload_model()
+    {
+        sdtype_unload_model();
     }
     sd_generation_outputs sd_generate(const sd_generation_inputs inputs)
     {
@@ -219,6 +228,10 @@ extern "C"
     {
         return whispertype_load_model(inputs);
     }
+    void whisper_unload_model()
+    {
+        whispertype_unload_model();
+    }
     whisper_generation_outputs whisper_generate(const whisper_generation_inputs inputs)
     {
         return whispertype_generate(inputs);
@@ -228,6 +241,10 @@ extern "C"
     {
         return ttstype_load_model(inputs);
     }
+    void tts_unload_model()
+    {
+        ttstype_unload_model();
+    }
     tts_generation_outputs tts_generate(const tts_generation_inputs inputs)
     {
         return ttstype_generate(inputs);
@@ -236,6 +253,10 @@ extern "C"
     bool embeddings_load_model(const embeddings_load_model_inputs inputs)
     {
         return embeddingstype_load_model(inputs);
+    }
+    void embeddings_unload_model()
+    {
+        embeddingstype_unload_model();
     }
     embeddings_generation_outputs embeddings_generate(const embeddings_generation_inputs inputs)
     {

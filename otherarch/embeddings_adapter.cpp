@@ -22,7 +22,14 @@
 #endif
 
 static llama_context * embeddings_ctx = nullptr; //text to codes ctx
+static llama_model * embeddings_model = nullptr;
 static std::string ttsvulkandeviceenv;
+static bool embeddings_backend_was_init = false;
+
+void embeddingstype_unload_model() {
+    if (embeddings_ctx != nullptr) { llama_free(embeddings_ctx); embeddings_ctx = nullptr; }
+    if (embeddings_model != nullptr) { llama_model_free(embeddings_model); embeddings_model = nullptr; }
+}
 bool embeddings_debug = false;
 static int max_batchsize = 512;
 static std::string last_output = "";
@@ -104,7 +111,12 @@ bool embeddingstype_load_model(const embeddings_load_model_inputs inputs)
         putenv((char*)ttsvulkandeviceenv.c_str());
     }
 
-    llama_backend_init();
+    embeddingstype_unload_model(); // free any previously loaded model
+
+    if (!embeddings_backend_was_init) {
+        llama_backend_init();
+        embeddings_backend_was_init = true;
+    }
 
     std::string modelfile = inputs.model_filename;
     printf("\nLoading Embeddings Model: %s \n",modelfile.c_str());
@@ -127,8 +139,8 @@ bool embeddingstype_load_model(const embeddings_load_model_inputs inputs)
         model_params.devices = devices_override.data();
     }
 
-    llama_model * embeddingsmodel = llama_model_load_from_file(modelfile.c_str(), model_params);
-    const int n_ctx_train = llama_model_n_ctx_train(embeddingsmodel);
+    embeddings_model = llama_model_load_from_file(modelfile.c_str(), model_params);
+    const int n_ctx_train = llama_model_n_ctx_train(embeddings_model);
 
     max_batchsize = (inputs.embeddingsmaxctx>0?inputs.embeddingsmaxctx:n_ctx_train);
     max_batchsize = (max_batchsize>n_ctx_train?n_ctx_train:max_batchsize);
@@ -142,7 +154,7 @@ bool embeddingstype_load_model(const embeddings_load_model_inputs inputs)
     ctx_params.flash_attn_type = (inputs.flash_attention?LLAMA_FLASH_ATTN_TYPE_ENABLED:LLAMA_FLASH_ATTN_TYPE_DISABLED);
     ctx_params.kv_unified = true;
 
-    embeddings_ctx = llama_init_from_model(embeddingsmodel, ctx_params);
+    embeddings_ctx = llama_init_from_model(embeddings_model, ctx_params);
 
     if (embeddings_ctx == nullptr) {
         printf("\nEmbeddings Model Load Error: Failed to initialize context!\n");
@@ -158,11 +170,11 @@ bool embeddingstype_load_model(const embeddings_load_model_inputs inputs)
         return false;
     }
 
-    const llama_vocab * vocab = llama_model_get_vocab(embeddingsmodel);
+    const llama_vocab * vocab = llama_model_get_vocab(embeddings_model);
 
     const int n_ctx = llama_n_ctx(embeddings_ctx);
 
-    if (llama_model_has_encoder(embeddingsmodel) && llama_model_has_decoder(embeddingsmodel)) {
+    if (llama_model_has_encoder(embeddings_model) && llama_model_has_decoder(embeddings_model)) {
         printf("\n%s: computing embeddings in encoder-decoder models is not supported\n", __func__);
         return false;
     }

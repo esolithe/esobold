@@ -27,6 +27,10 @@ static std::string whisper_output_text = "";
 
 int total_transcribe_gens = 0;
 
+void whispertype_unload_model() {
+    if (whisper_ctx != nullptr) { whisper_free(whisper_ctx); whisper_ctx = nullptr; }
+}
+
 
 static bool read_audio(const std::string & b64data, std::vector<float>& pcmf32)
 {
@@ -87,6 +91,12 @@ bool whispertype_load_model(const whisper_load_model_inputs inputs)
     whisperdebugmode = inputs.debugmode;
     if (whisperdebugmode!=1) {
         whisper_log_set(cb_log_disable, NULL);
+    }
+
+    // Free any previously loaded context before loading a new one
+    if (whisper_ctx != nullptr) {
+        whisper_free(whisper_ctx);
+        whisper_ctx = nullptr;
     }
 
     // whisper init
