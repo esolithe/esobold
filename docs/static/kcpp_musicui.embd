@@ -151,6 +151,14 @@ audio{width:100%;margin-top:6px;}
   max-width:300px;
   font-size:13px;
 }
+
+input[type="checkbox"] {
+  height: 16px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+
 </style>
 
 </head>
@@ -190,6 +198,13 @@ audio{width:100%;margin-top:6px;}
       <div><label>CFG</label><input id="lm_cfg_scale" type="number" step="0.1"></div>
       <div><label>Top P</label><input id="lm_top_p" type="number" step="0.01"></div>
       <div><label>Steps</label><input id="inference_steps" type="number"></div>
+      <div><label>Guidance</label><input id="guidance_scale" type="number"></div>
+      <div><label>Shift</label><input id="shift" type="number"></div>
+      <div><label>HD Stereo</label><input id="stereo" type="checkbox"></div>
+      <div><label>Gen Codes</label><input id="gen_codes" type="checkbox"></div>
+    </div>
+    <div>
+      <div><label>AudioCodes</label><textarea id="audio_codes"></textarea></div>
     </div>
   </div>
 
@@ -287,14 +302,17 @@ function toggleAdvanced(){
 
 function getFormData(){
   const ids=["caption","lyrics","bpm","duration","keyscale","timesignature",
-  "vocal_language","seed","lm_temperature","lm_cfg_scale","lm_top_p","inference_steps"];
+  "vocal_language","seed","lm_temperature","lm_cfg_scale","lm_top_p","inference_steps",
+  "guidance_scale","shift","audio_codes"];
   const data={};
   ids.forEach(id=>{
     const el=document.getElementById(id);
     if(!el) return;
     const v=el.value;
-    if(v!=="") data[id]=isNaN(v)?v:Number(v);
+    if(v!=="") {data[id]=isNaN(v)?v:Number(v);}
   });
+  data["stereo"] = (document.getElementById("stereo").checked ? true : false);
+  data["gen_codes"] = (document.getElementById("gen_codes").checked ? true : false);
   return data;
 }
 
@@ -385,7 +403,7 @@ async function generateSong(){
   }
 }
 
-function downloadTrackJSON(id){
+function loadTrackJSON(id){
   const tx = db.transaction(STORE, "readonly");
   const store = tx.objectStore(STORE);
   const req = store.get(id);
@@ -397,17 +415,9 @@ function downloadTrackJSON(id){
       return;
     }
 
-    const blob = new Blob(
-      [JSON.stringify(item.params, null, 2)],
-      { type: "application/json" }
-    );
+    const data=(item.params);
+    updateForm(data);
 
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${item.title}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
   };
 
   req.onerror = function(){
@@ -444,8 +454,8 @@ function loadLibrary(){
             <a href="${url}" download="${item.title}.wav">
                 <button class="secondary">Download</button>
             </a>
-            <button class="secondary" onclick="downloadTrackJSON(${item.id})">
-                Get JSON
+            <button class="secondary" onclick="loadTrackJSON(${item.id})">
+                Load Params
             </button>
 
             <button class="danger" onclick="deleteTrack(${item.id})">Delete</button>
@@ -475,6 +485,7 @@ function clearFields()
     });
     document.getElementById("caption").value = "";
     document.getElementById("lyrics").value = "";
+    document.getElementById("audio_codes").value = "";
 }
 function exportPlan(){
   const data=getFormData();
