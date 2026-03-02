@@ -69,6 +69,7 @@ struct SDParams {
     int sample_steps              = 20;
     float distilled_guidance      = -1.0f;
     float shifted_timestep        = 0;
+    float flow_shift              = -1.0f;
     float strength                = 0.75f;
     int64_t seed                  = 42;
     bool clip_on_cpu              = false;
@@ -370,7 +371,6 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
     params.keep_vae_on_cpu = inputs.vae_cpu;
     params.keep_clip_on_cpu = inputs.clip_cpu;
     params.lora_apply_mode = (lora_apply_mode_t)lora_apply_mode;
-    // params.flow_shift = 5.0f;
 
     // also switches flash attn for the vae and conditioner
     params.flash_attn = params.diffusion_flash_attn;
@@ -492,6 +492,8 @@ static std::string get_image_params(const sd_img_gen_params_t & params) {
         << get_scheduler_name(params.sample_params.scheduler, true);
     if (params.sample_params.shifted_timestep != 0)
         ss << "| Timestep Shift: " << params.sample_params.shifted_timestep;
+    if (params.sample_params.flow_shift > 0.f && params.sample_params.flow_shift != INFINITY)
+        ss << "| Flow Shift: " << params.sample_params.flow_shift;
     ss  << " | Clip skip: " << params.clip_skip
         << " | Model: " << sdmodelfilename
         << " | Version: KoboldCpp";
@@ -785,6 +787,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
     sd_params->distilled_guidance = inputs.distilled_guidance;
     sd_params->sample_steps = inputs.sample_steps;
     sd_params->shifted_timestep = inputs.shifted_timestep;
+    sd_params->flow_shift = inputs.flow_shift;
     sd_params->seed = inputs.seed;
     sd_params->width = inputs.width;
     sd_params->height = inputs.height;
@@ -938,9 +941,10 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
                 {
                     //kcpp fix: qwen image can stack overflow and crash when ref images exceed
                     // a total res of 512x512 = 262144, so we downscale if that's the case
+                    // kcpp edit 2mar2026: this seems to be better now, so limit to 1024x1024 instead
                     int tgtx = nx2;
                     int tgty = ny2;
-                    int res_lim_crash = 512 * 512;
+                    int res_lim_crash = 1024 * 1024;
                     if (nx2 * ny2 > res_lim_crash)
                     {
                         float factor = sqrtf((float)res_lim_crash / ((float)nx2 * (float)ny2));
@@ -1022,6 +1026,9 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
     params.sample_params.scheduler = sd_params->scheduler;
     params.sample_params.sample_steps = sd_params->sample_steps;
     params.sample_params.shifted_timestep = sd_params->shifted_timestep;
+    if (sd_params->flow_shift > 0.f && sd_params->flow_shift != INFINITY) {
+        params.sample_params.flow_shift = sd_params->flow_shift;
+    }
     params.seed = sd_params->seed;
     params.strength = sd_params->strength;
     params.vae_tiling_params.enabled = dotile;
@@ -1286,6 +1293,11 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
     output.animated = (wasanim?1:0);
     output.status = 1;
     total_img_gens += 1;
+    if(!sd_is_quiet)
+    {
+        std::string ts = get_timestamp_str();
+        printf("[%s] Generating Media Complete\n",ts.c_str());
+    }
     return output;
 }
 

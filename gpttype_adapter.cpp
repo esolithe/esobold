@@ -551,7 +551,7 @@ void ContextRewind(std::vector<int> &embd, std::vector<int> &current_context_tok
     }
     if(file_format == FileFormat::RWKV_1 || file_format==FileFormat::RWKV_2 || is_recurrent)
     {
-        if(!showed_rnn_warning)
+        if(!showed_rnn_warning && debugmode==1 && !is_quiet)
         {
             showed_rnn_warning = true;
             printf("\nWARNING: RNN models do not support context rewind!\n");
@@ -2154,19 +2154,8 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
     kcpp_data->use_contextshift = inputs.use_contextshift;
     kcpp_data->use_fastforward = inputs.use_fastforward;
     kcpp_data->smartcache = inputs.smartcache;
-    //prepare savestate slots
-    savestate_limit = inputs.smartcacheslots;
-    savestates.resize(savestate_limit);
-    if(kcpp_data->smartcache)
-    {
-        printf("SmartCache: Prepared %d KV slots\n",savestate_limit);
-    }
+
     kcpp_pipeline_parallelism = inputs.pipelineparallel;
-    if(!kcpp_data->use_fastforward && kcpp_data->smartcache)
-    {
-        kcpp_data->smartcache = false;
-        printf("\nSmartCache IS DISABLED!\nSmartCache requires Fast Forwarding!\n");
-    }
     kcpp_data->swa_full = !inputs.swa_support;
     if (!kcpp_data->swa_full) {
         if (inputs.use_contextshift) {
@@ -2599,6 +2588,28 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
         }
 
         llama_model * llamamodel = llama_model_load_from_file(kcpp_data->model_filename.c_str(), model_params);
+
+              //prepare savestate slots
+        savestate_limit = inputs.smartcacheslots;
+
+        //if RNN model AND shifting and fastforward is on, enable smartcache
+        if((llama_model_is_recurrent(llamamodel) || llama_model_is_hybrid(llamamodel)) && kcpp_data->use_fastforward && kcpp_data->use_contextshift)
+        {
+            printf("RNN or Hyrbid model with FF and shifting flags enabled - SmartCache will be enabled with extra slots. Disable CtxShift if you do not want this.\n",savestate_limit);
+            kcpp_data->smartcache = true;
+            savestate_limit += 3;
+        }
+        savestates.resize(savestate_limit);
+        if(kcpp_data->smartcache)
+        {
+            printf("SmartCache: Prepared %d KV slots\n",savestate_limit);
+        }
+        if(!kcpp_data->use_fastforward && kcpp_data->smartcache)
+        {
+            kcpp_data->smartcache = false;
+            printf("\nSmartCache IS DISABLED!\nSmartCache requires Fast Forwarding!\n");
+        }
+
         if(file_format_meta.model_architecture == GGUFArch::ARCH_QWEN2VL || llama_model_rope_type(llamamodel)==LLAMA_ROPE_TYPE_MROPE || llama_model_rope_type(llamamodel)==LLAMA_ROPE_TYPE_IMROPE)
         {
             printf("\nMRope is used, context shift will be disabled!\n");
@@ -3422,6 +3433,20 @@ static void PrepareMediaEmbds(const int nctx, const std::vector<int> & media_int
     }
 }
 
+void smartcache_quick_snapshot()
+{
+    int identical_slot = get_identical_existing_slot();
+    if(identical_slot==-1)
+    {
+        int oldest_slot = get_oldest_slot(-1);
+        gpttype_save_state_kv(oldest_slot);
+    }
+    else
+    {
+        touch_slot(identical_slot);
+    }
+}
+
 generation_outputs gpttype_generate(const generation_inputs inputs)
 {
     generation_outputs output;
@@ -4060,9 +4085,19 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                 int bestslot = -1;
                 int bestlen = 0;
                 int identical_slot = get_identical_existing_slot(); //see if the slot already exists
+                // printf("\n\nEMBD_INPUT: %d\n",embd_inp.size());
+                // for(int x=0;x<embd_inp.size();++x)
+                // {
+                //     printf("%d, ",embd_inp[x]);
+                // }
                 for(int i=0;i<savestate_limit;++i)
                 {
                     bool target_usable = FullyContainedPrefix(savestates[i].savestate_context_tokens,embd_inp);
+                    // printf("\nSlot %d has %d. Usable: %d = ",i,savestates[i].savestate_context_tokens.size(),target_usable);
+                    // for(int x=0;x<savestates[i].savestate_context_tokens.size();++x)
+                    // {
+                    //     printf("%d, ",savestates[i].savestate_context_tokens[x]);
+                    // }
                     if(savestates[i].media_signature!=media_composite_image_signature)
                     {
                         target_usable = false;
@@ -4204,38 +4239,37 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                     llama_memory_clear(llama_get_memory(draft_ctx),true);
                 }
             }
-            else if(embd_inp.size()==0)
+            else
             {
-                embd_inp.push_back(current_context_tokens[current_context_tokens.size()-1]);
-                current_context_tokens.pop_back();
-                n_past -= 1;
-                //another dirty hack
-                int maxedpos = llama_memory_seq_pos_max(llama_get_memory(llama_ctx_v4),0);
-                if(maxedpos==n_past)
+                if(current_context_tokens.size()>0 && last_n_tokens.size()>0)
                 {
-                    n_past += 1;
+                    int maxedpos = llama_memory_seq_pos_max(llama_get_memory(llama_ctx_v4),0);
+                    if(maxedpos+2==n_past)
+                    {
+                        //kcpp: a very dirty hack for rnn models. this happens because the very last token of the last turn
+                        //does not actually get processed but is still added to current_context_tokens. if the instruct start tag starts with that same token
+                        //it might get wrongly fast forwarded and we will get an off by 1 error.
+                        //todo: figure out a better way to solve this rubbish
+                        int tail = last_n_tokens[last_n_tokens.size()-1];
+                        last_n_tokens.pop_back();
+                        current_context_tokens.pop_back();
+                        n_past -=1;
+                        embd_inp.insert(embd_inp.begin(), 1, tail);
+                    }
+                    else if(maxedpos==n_past)
+                    {
+                        n_past += 1;
+                    }
+                    //it is generally preferable to not have the embd_inp array empty unless doing so would cause an error
+                    // if(embd_inp.size()==0 && current_context_tokens.size()>0)
+                    // {
+                    //     embd_inp.push_back(current_context_tokens[current_context_tokens.size()-1]);
+                    //     current_context_tokens.pop_back();
+                    //     n_past -= 1;
+                    // }
                 }
             }
-            else if(embd_inp.size()>0 && current_context_tokens.size()>0 && last_n_tokens.size()>0)
-            {
-                int maxedpos = llama_memory_seq_pos_max(llama_get_memory(llama_ctx_v4),0);
-                if(maxedpos+2==n_past)
-                {
-                    //kcpp: a very dirty hack for rnn models. this happens because the very last token of the last turn
-                    //does not actually get processed but is still added to current_context_tokens. if the instruct start tag starts with that same token
-                    //it might get wrongly fast forwarded and we will get an off by 1 error.
-                    //todo: figure out a better way to solve this rubbish
-                    int tail = last_n_tokens[last_n_tokens.size()-1];
-                    last_n_tokens.pop_back();
-                    current_context_tokens.pop_back();
-                    n_past -=1;
-                    embd_inp.insert(embd_inp.begin(), 1, tail);
-                }
-                else if(maxedpos==n_past)
-                {
-                     n_past += 1;
-                }
-            }
+
         }
     }
     else
@@ -4272,7 +4306,10 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
 
     bool blasmode = (embd_inp.size() >= 32 && kcpp_cpu_has_blas() && kcpp_data->n_batch>=32);
 
-    current_context_tokens.resize(n_past);
+    if(current_context_tokens.size()>n_past)
+    {
+        current_context_tokens.resize(n_past);
+    }
 
     remaining_tokens = kcpp_data->n_predict;
     int input_consumed = 0;
@@ -4304,6 +4341,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
     }
 
     bool startedsampling = false;
+    bool firstdecodedone = false; //we CANNOT use logits if the first decode has not been executed yet.
     bool v3_use_scratch = true; //for normal inference always use scratch
 
     speculative_draft_result draft_results; //only use if drafting was used
@@ -4362,8 +4400,10 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
         std::string outstr = "";
         // printf("\n[Debug: Dump Forwarded Input Tokens]\n");
         // outstr += get_tok_vec_str(embd_inp);
-        outstr += "[Debug: n_past="+std::to_string(n_past)+" Context Size = " + std::to_string(current_context_tokens.size()) + "]";
-        //outstr += get_tok_vec_str(current_context_tokens);
+        // outstr += "\n";
+        outstr += "[Debug: embd_inp="+std::to_string(embd_inp.size())+" n_past="+std::to_string(n_past)+" Context Size = " + std::to_string(current_context_tokens.size()) + "]";
+        // outstr += "\n";
+        // outstr += get_tok_vec_str(current_context_tokens);
         printf("%s\n\n", RemoveBell(outstr).c_str());
     }
 
@@ -4407,29 +4447,69 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                 {
                     draft_used = false;
                     kcpp_embd_batch batch = kcpp_embd_batch(embd, n_past, use_mrope, false);
-                    int32_t decode_status = llama_decode(llama_ctx_v4, batch.batch);
-                    if(decode_status==1 && embd.size()>128)
+                    int32_t decode_status = -1;
+                    bool skipdecodelater = false;
+
+                    //if running rnn model in smartcache mode, save progress a little bit before the final PP is done
+                    //this helps solve token boundary mutation issues
+                    if(draft_ctx==nullptr && embd.size()>1 && !startedsampling && input_consumed==embd_inp.size() && input_consumed>128)
                     {
-                        printf("Couldn't find a big KV slot. Retry with smaller batch size of 128...\n");
-                        std::vector<std::vector<gpt_vocab::id>> parts = split_big_vector(embd,128);
-                        int temp_past = n_past;
-                        evalres = true;
-                        for(int p=0;p<parts.size();++p)
+                        if(kcpp_data->smartcache && is_recurrent && file_format==FileFormat::GGUF_GENERIC && current_context_tokens.size() > 32)
                         {
-                            std::vector<gpt_vocab::id> chunk = parts[p];
-                            kcpp_embd_batch smallbatch = kcpp_embd_batch(chunk, temp_past, use_mrope, false);
-                            int32_t decode_status2 = llama_decode(llama_ctx_v4, smallbatch.batch);
-                            if(debugmode==1 && !is_quiet)
+                            if(embd.size()<=64)
                             {
-                                printf("Retry chunk: %zu at %d... status: %s\n",chunk.size(),temp_past,(decode_status2==0?"ok":"fail"));
+                                //directly snapshot for a small batch
+                                smartcache_quick_snapshot();
                             }
-                            evalres = (evalres && (decode_status2==0));
-                            temp_past += chunk.size();
+                            else
+                            {
+                                skipdecodelater = true;
+                                //decode until nearly done, then snapshot and decode the last 64
+                                std::vector<std::vector<gpt_vocab::id>> parts = split_big_vector(embd,64);
+                                int temp_past = n_past;
+                                evalres = true;
+                                for(int p=0;p<parts.size();++p)
+                                {
+                                    if(p==parts.size()-1)
+                                    {
+                                        smartcache_quick_snapshot();
+                                    }
+                                    std::vector<gpt_vocab::id> chunk = parts[p];
+                                    kcpp_embd_batch smallbatch = kcpp_embd_batch(chunk, temp_past, use_mrope, false);
+                                    decode_status = llama_decode(llama_ctx_v4, smallbatch.batch);
+                                    evalres = (evalres && (decode_status==0));
+                                    temp_past += chunk.size();
+                                }
+                            }
                         }
                     }
-                    else
+
+                    if(!skipdecodelater)
                     {
-                        evalres = (decode_status==0);
+                        decode_status = llama_decode(llama_ctx_v4, batch.batch);
+                        if(decode_status==1 && embd.size()>128)
+                        {
+                            printf("Couldn't find a big KV slot. Retry with smaller batch size of 128...\n");
+                            std::vector<std::vector<gpt_vocab::id>> parts = split_big_vector(embd,128);
+                            int temp_past = n_past;
+                            evalres = true;
+                            for(int p=0;p<parts.size();++p)
+                            {
+                                std::vector<gpt_vocab::id> chunk = parts[p];
+                                kcpp_embd_batch smallbatch = kcpp_embd_batch(chunk, temp_past, use_mrope, false);
+                                int32_t decode_status2 = llama_decode(llama_ctx_v4, smallbatch.batch);
+                                if(debugmode==1 && !is_quiet)
+                                {
+                                    printf("Retry chunk: %zu at %d... status: %s\n",chunk.size(),temp_past,(decode_status2==0?"ok":"fail"));
+                                }
+                                evalres = (evalres && (decode_status2==0));
+                                temp_past += chunk.size();
+                            }
+                        }
+                        else
+                        {
+                            evalres = (decode_status==0);
+                        }
                     }
 
                     if(draft_ctx)
@@ -4524,6 +4604,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                 generation_finished = true;
                 return output;
             }
+            firstdecodedone = true;
         }
 
         n_past += embd.size();
@@ -4562,16 +4643,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                  //if running rnn model in smartcache mode, save progress before each gen
                 if(kcpp_data->smartcache && is_recurrent && file_format==FileFormat::GGUF_GENERIC && current_context_tokens.size() > 32)
                 {
-                    int identical_slot = get_identical_existing_slot();
-                    if(identical_slot==-1)
-                    {
-                        int oldest_slot = get_oldest_slot(-1);
-                        gpttype_save_state_kv(oldest_slot);
-                    }
-                    else
-                    {
-                        touch_slot(identical_slot);
-                    }
+                    smartcache_quick_snapshot();
                 }
             }
 
@@ -4591,6 +4663,12 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
             }
             while(logits_sampled<logits_to_sample && remaining_tokens>0 && !abort_draft && !early_abort)
             {
+                if(!firstdecodedone && current_context_tokens.size()>0)
+                {
+                    embd.clear();
+                    embd.push_back(current_context_tokens[current_context_tokens.size()-1]);
+                    break;
+                }
                 if(logits_sampled>0)
                 {
                     //this is not the first loop, so we need to increment some things
@@ -5053,16 +5131,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
     //if running rnn model in smartcache mode, save progress after each gen
     if(kcpp_data->smartcache && is_recurrent && file_format==FileFormat::GGUF_GENERIC && current_context_tokens.size() > 32)
     {
-        int identical_slot = get_identical_existing_slot();
-        if(identical_slot==-1)
-        {
-            int oldest_slot = get_oldest_slot(-1);
-            gpttype_save_state_kv(oldest_slot);
-        }
-        else
-        {
-            touch_slot(identical_slot);
-        }
+        smartcache_quick_snapshot();
     }
 
     if(debugmode==1 && !is_quiet && file_format == FileFormat::GGUF_GENERIC)
@@ -5185,16 +5254,21 @@ size_t gpttype_save_state_kv(int slot)
             savestates[slot].savestate_context_tokens = current_context_tokens;
             savestates[slot].media_signature = media_composite_image_signature;
             int maxedpos = llama_memory_seq_pos_max(llama_get_memory(llama_ctx_v4),0);
-            if(maxedpos > 0 && savestates[slot].savestate_context_tokens.size() > maxedpos && savestates[slot].savestate_context_tokens.size()-maxedpos<=2)
+            //kcpp: so maxedpos appears to always be equal to ctx tokens - 2, if savestate_ctx_tokens > maxedpos + 2 then trim excess
+            if(maxedpos > 0 && savestates[slot].savestate_context_tokens.size() > maxedpos + 2)
             {
-                //dirty hack for the memory actually being off by 1 or 2, correct the state
-                while(savestates[slot].savestate_context_tokens.size() > maxedpos)
+                //dirty hack for the memory actually being off, correct the state
+                if(debugmode==1 && !is_quiet)
+                {
+                    printf("\nSaveState inconsistency fix, trimming from %d to %d\n",savestates[slot].savestate_context_tokens.size(),maxedpos+2);
+                }
+                while(savestates[slot].savestate_context_tokens.size() > maxedpos+2)
                 {
                     savestates[slot].savestate_context_tokens.pop_back();
                 }
             }
             touch_slot(slot);
-            printf("\nKV Save State %d: Created SaveState of %zu tokens, costing %zu MB.\n",slot,current_context_tokens.size(),savestates[slot].current_savestate_size/(1024*1024));
+            printf("\nKV Save State %d: Created SaveState of %zu tokens, costing %zu MB.\n",slot,savestates[slot].savestate_context_tokens.size(),savestates[slot].current_savestate_size/(1024*1024));
         }
 
         if(draft_ctx)
@@ -5232,6 +5306,7 @@ bool gpttype_load_state_kv(int slot)
         if (savestates[slot].current_savestate_buffer.empty()) {
             return false;
         }
+        llama_memory_clear(llama_get_memory(llama_ctx_v4),true);
         auto res = llama_state_set_data(llama_ctx_v4, savestates[slot].current_savestate_buffer.data(), savestates[slot].current_savestate_size);
         if(res > 0)
         {
