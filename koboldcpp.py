@@ -69,7 +69,7 @@ lora_filenames_max = 4
 
 # abuse prevention
 stop_token_max = 256
-ban_token_max = 768
+ban_token_max = 5000 # 768
 logit_bias_max = 512
 dry_seq_break_max = 128
 extra_images_max = 4 # for kontext/qwen img
