@@ -4465,7 +4465,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                             {
                                 skipdecodelater = true;
                                 //decode until nearly done, then snapshot and decode the last 64
-                                std::vector<std::vector<gpt_vocab::id>> parts = split_big_vector_in_two(embd,64);
+                                std::vector<std::vector<gpt_vocab::id>> parts = split_big_vector(embd,64);
                                 int temp_past = n_past;
                                 evalres = true;
                                 for(int p=0;p<parts.size();++p)
@@ -4477,11 +4477,6 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                                     std::vector<gpt_vocab::id> chunk = parts[p];
                                     kcpp_embd_batch smallbatch = kcpp_embd_batch(chunk, temp_past, use_mrope, false);
                                     decode_status = llama_decode(llama_ctx_v4, smallbatch.batch);
-                                    if(p==0 && decode_status==1)
-                                    {
-                                        skipdecodelater = false;
-                                        break; //big pp failed
-                                    }
                                     evalres = (evalres && (decode_status==0));
                                     temp_past += chunk.size();
                                 }
