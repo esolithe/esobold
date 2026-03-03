@@ -75,7 +75,7 @@ dry_seq_break_max = 128
 extra_images_max = 4 # for kontext/qwen img
 
 # global vars
-KcppVersion = "1.109"
+KcppVersion = "1.109.1"
 showdebug = True
 kcpp_instance = None #global running instance
 global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None}
@@ -4512,6 +4512,8 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                     event_str = json.dumps({"token": tokenStr, "finish_reason":None})
                                     await self.send_kai_sse_event(event_str)
                                 tokenStr = "" # now the final finish reason can be sent alone
+                                if delta and 'role' in delta:
+                                    delta = {'role':delta["role"],'content':''}
                             if api_format == 4:  # if oai chat, set format to expected openai streaming response
                                 if streamDone and ("logprobs" in genparams and genparams["logprobs"]): # this is a hack that sends an extra message containing ALL the logprobs
                                     lastlogprobs = handle.last_logprobs()
@@ -9746,7 +9748,7 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
                     print(f"Auto Recommended GPU Layers: {layeramt}")
                     args.gpulayers = layeramt
                     # enable autofit also if permissible
-                    if not args.autofit and not args.tensor_split and not args.overridetensors:
+                    if not args.autofit and not args.tensor_split and not args.overridetensors and not args.moecpu:
                         args.autofit = True
                         args.autofitpadding = default_autofit_padding
                         print("GPU layers is default: Will enable AutoFit for increased estimation accuracy.")
