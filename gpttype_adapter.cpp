@@ -4478,6 +4478,11 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                                     std::vector<gpt_vocab::id> chunk = parts[p];
                                     kcpp_embd_batch smallbatch = kcpp_embd_batch(chunk, temp_past, use_mrope, false);
                                     decode_status = llama_decode(llama_ctx_v4, smallbatch.batch);
+                                    if(p==0 && decode_status==1)
+                                    {
+                                        skipdecodelater = false;
+                                        break; //big pp failed
+                                    }
                                     evalres = (evalres && (decode_status==0));
                                     temp_past += chunk.size();
                                 }
