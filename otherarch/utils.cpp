@@ -366,6 +366,23 @@ std::vector<std::vector<int>> split_big_vector(const std::vector<int>& big_arr, 
     return small_arrs;
 }
 
+std::vector<std::vector<int>> split_big_vector_in_two(const std::vector<int>& big_arr, size_t chunk_size)
+{
+    std::vector<std::vector<int>> result;
+    if (chunk_size == 0 || big_arr.empty())
+        return result;
+
+    if (big_arr.size() <= chunk_size) {
+        // Only one chunk (all elements)
+        result.emplace_back(big_arr);
+        return result;
+    }
+    size_t split_point = big_arr.size() - chunk_size;
+    result.emplace_back(big_arr.begin(), big_arr.begin() + split_point);  // First big chunk
+    result.emplace_back(big_arr.begin() + split_point, big_arr.end()); // Last chunk (size <= chunk_size)
+    return result;
+}
+
 std::vector<float> resample_wav(const std::vector<float> & input, uint32_t input_rate, uint32_t output_rate) {
     if (input.empty() || input_rate == 0 || output_rate == 0)
         return {};

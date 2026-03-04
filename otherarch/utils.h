@@ -62,6 +62,8 @@ std::string kcpp_base64_encode(const std::string &data);
 
 std::string get_timestamp_str();
 std::vector<std::vector<int>> split_big_vector(const std::vector<int>& big_arr, size_t chunk_size);
+std::vector<std::vector<int>> split_big_vector_in_two(const std::vector<int>& big_arr, size_t chunk_size);
+
 std::vector<float> resample_wav(const std::vector<float>& input, uint32_t input_rate, uint32_t output_rate);
 std::vector<float> mix_planar_stereo_to_mono(const float* audio, int T_audio);
 
