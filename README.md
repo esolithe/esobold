@@ -137,9 +137,13 @@ KoboldCpp is an easy-to-use AI text-generation software for GGML and GGUF models
 - Single file executable, with no installation required and no external dependencies
 - Runs on CPU or GPU, supports full or partial offloaded
 - LLM text generation (Supports all GGML and GGUF models, backwards compatibility with ALL past models)
-- Image Generation (Stable Diffusion 1.5, SDXL, SD3, Flux)
+- Image Generation and Image Editing (Stable Diffusion 1.5, SDXL, SD3, Flux, Qwen Image, Z-Image, Klein)
+- Video Generation (WAN 2.2)
 - Speech-To-Text (Voice Recognition) via Whisper
-- Text-To-Speech (Voice Generation) via OuteTTS, Kokoro, Parler and Dia
+- Text-To-Speech (Voice Generation) via Qwen3TTS, Kokoro, OuteTTS, Parler and Dia
+- Music Generation (Ace Step 1.5)
+- Image Recognition (Multimodal Vision)
+- MCP Server support and tool calling
 - Provides many compatible APIs endpoints for many popular webservices (KoboldCppApi OpenAiApi OllamaApi A1111ForgeApi ComfyUiApi WhisperTranscribeApi XttsApi OpenAiSpeechApi)
 - Bundled KoboldAI Lite UI with editing tools, save formats, memory, world info, author's note, characters, scenarios.
 - Includes multiple modes (chat, adventure, instruct, storywriter) and UI Themes (aesthetic roleplay, classic writer, corporate assistant, messsenger)

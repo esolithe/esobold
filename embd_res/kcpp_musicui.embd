@@ -23,7 +23,7 @@ body{
   color:var(--text);
 }
 header{
-  padding:16px 20px;
+  padding:16px 12px;
   font-size:20px;
   font-weight:600;
   background:rgba(0,0,0,0.3);
@@ -32,8 +32,8 @@ header{
 .wrapper{
   display:grid;
   grid-template-columns:minmax(340px,500px) 1fr;
-  gap:20px;
-  padding:20px;
+  gap:14px;
+  padding:10px;
 }
 @media(max-width:1100px){
   .wrapper{grid-template-columns:1fr;}
@@ -45,7 +45,7 @@ header{
   box-shadow:0 10px 40px rgba(0,0,0,.4);
 }
 h2{
-  margin:0 0 14px 0;
+  margin:0 0 10px 0;
   font-size:16px;
   color:var(--accent2);
 }
@@ -112,7 +112,7 @@ button{
 audio{width:100%;margin-top:6px;}
 .advanced-toggle{
   margin-top:8px;
-  font-size:12px;
+  font-size:14px;
   cursor:pointer;
   color:var(--accent2);
 }
@@ -174,11 +174,11 @@ input[type="checkbox"] {
   <h2>Song Setup</h2>
 
   <label>Caption</label>
-  <input id="caption">
+  <input id="caption" placeholder="Describe the song">
 
   <div style="margin-top:10px">
     <label>Lyrics</label>
-    <textarea id="lyrics"></textarea>
+    <textarea id="lyrics" placeholder="Enter song lyrics, or press 'Plan' to generate them."></textarea>
   </div>
 
   <div class="form-grid" style="margin-top:12px">
@@ -217,7 +217,7 @@ input[type="checkbox"] {
 
   <div class="actions" id="actionContainer">
     <div id="normalActions" style="display:flex; gap:10px; flex-wrap:wrap;">
-      <button class="secondary" onclick="planSong()">Plan</button>
+      <button class="primary" onclick="planSong()">Plan</button>
       <button class="primary" onclick="generateSong()">Generate</button>
       <button class="danger" onclick="clearFields()">Clear</button>
       <button onclick="exportPlan()">Export JSON</button>
@@ -228,6 +228,10 @@ input[type="checkbox"] {
     <div id="inlineSpinner" class="inline-spinner hidden"></div>
 
     <input type="file" id="importFile" hidden accept="application/json" onchange="importPlan(event)">
+  </div>
+  <div>
+  <p style="font-size:14px">Click 'Plan' first to generate lyrics, BPM and duration. Edit as needed.
+  <br>When satisfied, click 'Generate' to make the music</p>
   </div>
 
 </div>
