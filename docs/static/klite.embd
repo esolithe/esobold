@@ -17143,6 +17143,7 @@ Current version indicated by LITEVER below.
 
 			on_searchsummary_done = onDoneFn;
 
+			submit_payload = finalize_submit_payload(submit_payload, false);
 			dispatch_submit_generation(submit_payload, false);
 			render_gametext();
 		}
@@ -17216,7 +17217,8 @@ Current version indicated by LITEVER below.
 
 		//v2 api specific fields
 		submit_payload.workers = selected_workers.map((m) => { return m.id });
-
+		
+		submit_payload = finalize_submit_payload(submit_payload, false);
 		dispatch_submit_generation(submit_payload,false);
 		render_gametext();
 		document.getElementById("memorytext").value = "[<|Generating summary, do not close window...|>]"
@@ -20259,6 +20261,14 @@ Current version indicated by LITEVER below.
 
 			if (!doNotGenerate)
 			{
+				submit_payload = finalize_submit_payload(submit_payload, user_input_empty);
+				if(localsettings.second_ep_qty>0 && localsettings.second_ep_url!="")
+				{
+					let decensored_prefix = yield FetchDecensoredPrefix(submit_payload, localsettings.second_ep_url, localsettings.second_ep_model, localsettings.second_ep_qty);
+					console.log(`Obtained Prefix: ${decensored_prefix}`);
+					pending_context_preinjection += decensored_prefix;
+					submit_payload.prompt += decensored_prefix;
+				}
 				dispatch_submit_generation(submit_payload, user_input_empty);
 			}
 			else
@@ -20270,7 +20280,7 @@ Current version indicated by LITEVER below.
 			{
 				let txt = "I'll try and create that image.";
 				gametext_arr.push(txt);
-				var sentence = img_gen_trigger_prompt.trim().substring(0, 380);
+				var sentence = img_gen_trigger_prompt.trim().substring(0, 540);
 				do_manual_gen_image(sentence);
 			}
 
