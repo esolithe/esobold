@@ -20445,7 +20445,7 @@ Current version indicated by LITEVER below.
 		return resp;
 	}
 
-		function finalize_submit_payload(submit_payload, input_was_empty)
+	function finalize_submit_payload(submit_payload, input_was_empty)
 	{
 		//preprocess to add extra fields
 		if(custom_kobold_endpoint != "" && is_using_kcpp_with_mirostat())
