@@ -20445,6 +20445,87 @@ Current version indicated by LITEVER below.
 		return resp;
 	}
 
+		function finalize_submit_payload(submit_payload, input_was_empty)
+	{
+		//preprocess to add extra fields
+		if(custom_kobold_endpoint != "" && is_using_kcpp_with_mirostat())
+		{
+			if(localsettings.miro_type>0)
+			{
+				submit_payload.params.mirostat = localsettings.miro_type;
+				submit_payload.params.mirostat_tau = localsettings.miro_tau;
+				submit_payload.params.mirostat_eta = localsettings.miro_eta;
+			}
+
+			//also supports min_p, in that it wont crash, so add it on. it will be ignored if not found
+			submit_payload.params.min_p = localsettings.min_p;
+			submit_payload.params.dynatemp_range = localsettings.dynatemp_range;
+			submit_payload.params.dynatemp_exponent = localsettings.dynatemp_exponent;
+			submit_payload.params.smoothing_factor = localsettings.smoothing_factor;
+			submit_payload.params.smoothing_curve = localsettings.smoothing_curve;
+			submit_payload.params.nsigma = localsettings.nsigma;
+			submit_payload.params.banned_tokens = get_token_bans();
+			submit_payload.params.render_special = localsettings.render_special_tags;
+			submit_payload.params.logprobs = localsettings.request_logprobs;
+			let st = get_instruct_starttag(true);
+			let et = get_instruct_endtag(true);
+			if(st=="{{[INPUT]}}" || et=="{{[OUTPUT]}}")
+			{
+				submit_payload.params.replace_instruct_placeholders = true;
+			}
+		}
+		if(custom_kobold_endpoint != "" && is_using_kcpp_with_dry() && localsettings.dry_multiplier > 0)
+		{
+			submit_payload.params.dry_multiplier = localsettings.dry_multiplier;
+			submit_payload.params.dry_base = localsettings.dry_base;
+			submit_payload.params.dry_allowed_length = localsettings.dry_allowed_length;
+			submit_payload.params.dry_penalty_last_n = localsettings.dry_penalty_last_n;
+			submit_payload.params.dry_sequence_breakers = JSON.parse(JSON.stringify(localsettings.dry_sequence_breakers));
+		}
+
+		if(custom_kobold_endpoint != "" && is_using_kcpp_with_xtc() && localsettings.xtc_probability > 0)
+		{
+			submit_payload.params.xtc_threshold = localsettings.xtc_threshold;
+			submit_payload.params.xtc_probability = localsettings.xtc_probability;
+		}
+
+		//presence pen and logit bias for OAI and newer kcpp
+		if((custom_kobold_endpoint != "" && is_using_kcpp_with_mirostat()) || custom_oai_endpoint!="")
+		{
+			submit_payload.params.presence_penalty = localsettings.presence_penalty;
+			submit_payload.params.logit_bias = JSON.parse(JSON.stringify(localsettings.logitbiasdict));
+		}
+
+		if((custom_kobold_endpoint != "" && is_using_kcpp_with_adaptp()))
+		{
+			submit_payload.params.adaptive_target = localsettings.adaptivep_target;
+			submit_payload.params.adaptive_decay = localsettings.adaptivep_decay;
+		}
+
+		if(custom_kobold_endpoint != "" && is_using_kcpp_with_guidance() && localsettings.guidance_scale != 1 && localsettings.guidance_prompt!="")
+		{
+			submit_payload.params.guidance_scale = localsettings.guidance_scale;
+			submit_payload.params.negative_prompt = localsettings.guidance_prompt;
+		}
+
+		//for vesion 1.2.2 and later, send stopper tokens for chat and instruct
+		if (custom_kobold_endpoint != "" && kobold_endpoint_version && kobold_endpoint_version != "" && compare_version_str(kobold_endpoint_version, "1.2.2") >= 0) {
+			submit_payload.params.stop_sequence = get_stop_sequences();
+		}
+
+		//version 1.2.4 and later supports unban tokens
+		if (custom_kobold_endpoint != "" && kobold_endpoint_version && kobold_endpoint_version != "" && compare_version_str(kobold_endpoint_version, "1.2.4") >= 0)
+		{
+			submit_payload.params.use_default_badwordsids = determine_if_ban_eos(input_was_empty);
+			if(is_using_kcpp_with_added_memory())
+			{
+				submit_payload.params.bypass_eos = (localsettings.eos_ban_mode == 3?true:false);
+			}
+		}
+
+		return submit_payload;
+	}
+
 	function oai_append_media(mainoaibody)
 	{
 		for(let i=0;i<insertAIVisionImages.length;++i)
