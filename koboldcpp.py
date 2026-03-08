@@ -2655,6 +2655,9 @@ def format_jinja(messages, tools):
             return datetime.now().strftime(format)
         def tojson(x, ensure_ascii=False, indent=None, separators=None, sort_keys=False):
             return json.dumps(x, ensure_ascii=ensure_ascii, indent=indent, separators=separators, sort_keys=sort_keys)
+        def raise_exception(msg):
+            print(f"Warning: Jinja template raised an exception: {msg}")
+            return ""
         global cached_chat_template
         from jinja2.sandbox import ImmutableSandboxedEnvironment
         jinja_env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True)
@@ -2663,6 +2666,7 @@ def format_jinja(messages, tools):
             if m.get("content") is None:
                 del m["content"]
         jinja_env.globals['strftime_now'] = strftime_now
+        jinja_env.globals['raise_exception'] = raise_exception
         jinja_env.filters["tojson"] = tojson
         jinja_compiled_template = jinja_env.from_string(cached_chat_template)
         text = None
