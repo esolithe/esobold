@@ -244,7 +244,7 @@ tts_result Qwen3TTS::synthesize_with_voice(const std::string & text,
 
     if(speaker_embedding.size()==0)
     {
-        printf("Creating Voice Embedding ID=%u... (Warning, lengthy sample audio will be very slow. Use short clips!)\n",reuse_hash_val);
+        printf("Creating Voice Embedding ID=%u... (Warning, lengthy sample audio will take longer to load. Short clips recommended!)\n",reuse_hash_val);
         if (!audio_encoder_.encode(ref_samples, n_ref_samples, speaker_embedding)) {
             result.error_msg = "Failed to extract speaker embedding: " + audio_encoder_.get_error();
             return result;

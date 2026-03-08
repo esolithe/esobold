@@ -113,7 +113,7 @@ music_generation_outputs musictype_generate(const music_generation_inputs inputs
 
     if (inputs.is_planner_mode && musicgen_llm_loaded) {
         if (!music_is_quiet) {
-            printf("\nMusic Gen Generating Codes...");
+            printf("\nMusic Gen Generating Codes...\n");
         }
         music_output_json_str = acestep_prepare_request(inputs);
         if(music_output_json_str=="")
