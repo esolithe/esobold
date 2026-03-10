@@ -2004,7 +2004,7 @@ def sd_load_model(model_filename,vae_filename,lora_filenames,t5xxl_filename,clip
     inputs.photomaker_filename = photomaker_filename.encode("UTF-8")
     inputs.upscaler_filename = upscaler_filename.encode("UTF-8")
 
-    lora_filenames = [l.encode("UTF-8") for l in lora_filenames[:lora_filenames_max] if l]
+    lora_filenames = [lf.encode("UTF-8") for lf in lora_filenames[:lora_filenames_max] if lf]
     lora_len = len(lora_filenames)
     lora_multipliers = args.sdloramult[:lora_len]
     if len(lora_multipliers) < lora_len:
