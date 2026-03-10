@@ -1058,7 +1058,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
             spec.path = sd_params->lora_paths[i].c_str();
             spec.multiplier = multiplier;
             lora_specs.push_back(spec);
-            std::string lora_name = std::filesystem::path(sd_params->lora_paths[i]).stem();
+            std::string lora_name = std::filesystem::path(sd_params->lora_paths[i]).stem().string();
             lora_meta << "<lora:" << lora_name << ":" << multiplier << ">";
         }
     }
