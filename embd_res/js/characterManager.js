@@ -864,8 +864,6 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
         "Server options": "Options for syncing and controlling the remote KCPP server data store."
     }
 
-    let scenarios = await getScenariosAndLegacyServerSaves()
-
     // Open file upload dialog, mark a change, then return to the Library
     let openUploadDialog = () => {
         popupUtils.reset()
@@ -979,23 +977,57 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
             }).button("Close", () => popupUtils.reset()).show();
     }
 
-    // Pre-create all standard type containers so "+" tiles always appear even when empty
-    const STANDARD_TYPES = ["Character", "World Info", "Save", "Document", "Autosave"]
-    STANDARD_TYPES.forEach(type => getContainerForType(type, TYPE_TOOLTIPS[type]))
+    // Helper strings for lorebook / WI entries (used by tile click handlers)
+    let lorebookEntryToString = (entry) => {
+        return `Primary: ${[...entry?.keys].join(", ")}\nSecondary: ${[...entry?.secondary_keys].join(",")}`;
+    }
+    let wiEntryToString = (entry) => {
+        return `Primary: ${entry?.key}\nSecondary: ${entry?.keysecondary}`;
+    }
 
-    if (allCharacterNames.length > 0) {
-        let lorebookEntryToString = (entry) => {
-            return `Primary: ${[...entry?.keys].join(", ")}\nSecondary: ${[...entry?.secondary_keys].join(",")}`;
+    // Pre-create all section container shells (header icon only — content is lazy-loaded)
+    const ALL_SECTION_TYPES = ["Character", "World Info", "Save", "Document", "Autosave", "Scenarios"]
+    ALL_SECTION_TYPES.forEach(type => getContainerForType(type, TYPE_TOOLTIPS[type]))
+
+    // Track which sections have already had their tiles built
+    let loadedSections = new Set()
+
+    // Helper: add plus tile(s) to a container (Autosave and Scenarios get none)
+    const NO_PLUS_TYPES = new Set(["Autosave", "Scenarios"])
+    let addPlusTilesToContainer = (container, typeName) => {
+        if (NO_PLUS_TYPES.has(typeName)) return
+        let headerIcon = container.firstChild
+        if (typeName === "Character") {
+            let uploadTile = createPlusTile("Add new character item", openUploadDialog, "Add Item")
+            let createTile = createPlusTile("Create new character", () => { popupUtils.reset(); showCharacterCreator(); }, "Create New")
+            if (headerIcon) {
+                container.insertBefore(uploadTile, headerIcon.nextSibling)
+                container.insertBefore(createTile, uploadTile.nextSibling)
+            } else {
+                container.appendChild(uploadTile)
+                container.appendChild(createTile)
+            }
+        } else {
+            let plusTile = createPlusTile(`Add new ${typeName.toLowerCase()} item`, openUploadDialog)
+            if (headerIcon) {
+                container.insertBefore(plusTile, headerIcon.nextSibling)
+            } else {
+                container.appendChild(plusTile)
+            }
         }
-        let wiEntryToString = (entry) => {
-            return `Primary: ${entry?.key}\nSecondary: ${entry?.keysecondary}`;
-        }
+    }
+
+    // Build tiles for a standard allCharacterNames type (Character / World Info / Save / Document / Autosave)
+    let buildSectionContent = (type) => {
+        let container = getContainerForType(type, TYPE_TOOLTIPS[type])
+        addPlusTilesToContainer(container, type)
         for (let i = 0; i < allCharacterNames.length; i++) {
-            let { name, thumbnail } = allCharacterNames[i], type = getTypeFromAllCharacterData(allCharacterNames[i]);
+            let { name, thumbnail } = allCharacterNames[i], itemType = getTypeFromAllCharacterData(allCharacterNames[i]);
+            if (itemType !== type) continue
             let charIcon = createIcon(name, !!thumbnail ? `url(${thumbnail})` : undefined)
             charIcon.onclick = async () => {
                 popupUtils.reset()
-                if (type === "Character") {
+                if (itemType === "Character") {
                     let contents = document.createElement("span");
                     try {
                         let data = await getCharacterData(name), { image } = data;
@@ -1061,7 +1093,7 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
                         })
                     }).button("Close", () => popupUtils.reset()).show();
                 }
-                else if (type === "World Info") {
+                else if (itemType === "World Info") {
                     let contents = document.createElement("span");
                     try {
                         let data = await getCharacterData(name);
@@ -1109,7 +1141,7 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
                         })
                     }).button("Close", () => popupUtils.reset()).show();
                 }
-                else if (type === "Save") {
+                else if (itemType === "Save") {
                     let contents = document.createElement("span");
                     try {
                         let data = await getCharacterData(name), { AI_portrait } = data;
@@ -1174,7 +1206,7 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
                         })
                     }).button("Close", () => popupUtils.reset()).show();
                 }
-                else if (type === "Document") {
+                else if (itemType === "Document") {
                     let contents = document.createElement("span");
                     contents = createDetailsContent(name);
                     let charData = await getCharacterData(name), { extractedText } = charData;
@@ -1222,89 +1254,76 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
                         })
                     }).button("Close", () => popupUtils.reset()).show();
                 }
-                else if ("Autosave") {
+                else if (itemType === "Autosave") {
                     autosaveFromClick(name)
                 }
                 else {
                     popupUtils.reset()
                 }
             }
-            getContainerForType(type, TYPE_TOOLTIPS[type]).appendChild(charIcon)
+            container.appendChild(charIcon)
         }
     }
 
-    if (is_using_kcpp_with_server_saving()) {
-        try {
-            let autoSaves = await getServerSaves({ typeName: "Autosave" })
-            let localAutosaveNames = allCharacterNames.filter(data => data?.type === "Autosave").map(data => data.name)
-            Object.keys(autoSaves).filter(saveName => !localAutosaveNames.includes(saveName)).forEach(name => {
-                let charIcon = createIcon(name, undefined)
-                charIcon.onclick = () => autosaveFromClick(name)
-                getContainerForType("Autosave", TYPE_TOOLTIPS["Autosave"]).appendChild(charIcon)
-            })
-        }
-        catch (e) {
-            console.error("Could not get server autosaves", e)
-        }
-    }
-
-    // Add icons for scenarios and legacy server data
-    let scenariosContainer = getContainerForType("Scenarios", TYPE_TOOLTIPS["Scenarios"])
-    // scenarios[0..scenario_sources.length-1] are from local scenario_sources files
-    for (let i = 0; i < scenario_sources.length && i < scenarios.length; i++) {
-        let scenario = scenarios[i]
-        if (!scenario) continue
-        let icon = createIcon(scenario.name, undefined)
-        icon.addEventListener("click", scenario.handler)
-        scenariosContainer.appendChild(icon)
-    }
-    // scenarios[scenario_sources.length..] are from scenario_db (built-in + server)
-    for (let i = scenario_sources.length; i < scenarios.length; i++) {
-        let scenario = scenarios[i]
-        if (!scenario) continue
-        if (scenario_db[i - scenario_sources.length]?.serverSaveTypeName === "Autosave") {
-            continue
-        }
-        let image = undefined
-        if (scenario?.thumbnail !== undefined) {
-            image = `url('${scenario.thumbnail}')`
-        }
-        let icon = createIcon(scenario.name, image)
-        icon.addEventListener("click", scenario.handler)
-        scenariosContainer.appendChild(icon);
-    }
-
-    // Prepend "+" plus tile(s) to each type container (after its header icon)
-    // Autosave and Scenarios are read-only and do not get a plus tile
-    const NO_PLUS_TYPES = new Set(["Autosave", "Scenarios"])
-    for (let container of containers) {
-        let containerType = [...container.classList].find(cls => !["autoGrid"].includes(cls))
-        if (!!containerType) {
-            let typeName = containerType.replaceAll("_", " ")
-            if (NO_PLUS_TYPES.has(typeName)) continue
-            let headerIcon = container.firstChild
-            if (typeName === "Character") {
-                // Two tiles: upload an existing character file, or create a brand-new one
-                let uploadTile = createPlusTile("Add new character item", openUploadDialog, "Add Item")
-                let createTile = createPlusTile("Create new character", () => { popupUtils.reset(); showCharacterCreator(); }, "Create New")
-                if (headerIcon) {
-                    container.insertBefore(uploadTile, headerIcon.nextSibling)
-                    container.insertBefore(createTile, uploadTile.nextSibling)
-                } else {
-                    container.appendChild(uploadTile)
-                    container.appendChild(createTile)
-                }
-            } else {
-                let plusTile = createPlusTile(`Add new ${typeName.toLowerCase()} item`, openUploadDialog)
-                if (headerIcon) {
-                    container.insertBefore(plusTile, headerIcon.nextSibling)
-                } else {
-                    container.appendChild(plusTile)
-                }
+    // Builder: Autosave section (local tiles + optional server autosaves)
+    let buildAutosaveTiles = async () => {
+        buildSectionContent("Autosave")
+        if (is_using_kcpp_with_server_saving()) {
+            try {
+                let autoSaves = await getServerSaves({ typeName: "Autosave" })
+                let localAutosaveNames = allCharacterNames.filter(data => data?.type === "Autosave").map(data => data.name)
+                Object.keys(autoSaves).filter(saveName => !localAutosaveNames.includes(saveName)).forEach(name => {
+                    let charIcon = createIcon(name, undefined)
+                    charIcon.onclick = () => autosaveFromClick(name)
+                    getContainerForType("Autosave", TYPE_TOOLTIPS["Autosave"]).appendChild(charIcon)
+                })
+            }
+            catch (e) {
+                console.error("Could not get server autosaves", e)
             }
         }
     }
 
+    // Builder: Scenarios section (fetches data on first view)
+    let buildScenariosTiles = async () => {
+        let scenarios = await getScenariosAndLegacyServerSaves()
+        let scenariosContainer = getContainerForType("Scenarios", TYPE_TOOLTIPS["Scenarios"])
+        // scenarios[0..scenario_sources.length-1] are from local scenario_sources files
+        for (let i = 0; i < scenario_sources.length && i < scenarios.length; i++) {
+            let scenario = scenarios[i]
+            if (!scenario) continue
+            let icon = createIcon(scenario.name, undefined)
+            icon.addEventListener("click", scenario.handler)
+            scenariosContainer.appendChild(icon)
+        }
+        // scenarios[scenario_sources.length..] are from scenario_db (built-in + server)
+        for (let i = scenario_sources.length; i < scenarios.length; i++) {
+            let scenario = scenarios[i]
+            if (!scenario) continue
+            if (scenario_db[i - scenario_sources.length]?.serverSaveTypeName === "Autosave") {
+                continue
+            }
+            let image = undefined
+            if (scenario?.thumbnail !== undefined) {
+                image = `url('${scenario.thumbnail}')`
+            }
+            let icon = createIcon(scenario.name, image)
+            icon.addEventListener("click", scenario.handler)
+            scenariosContainer.appendChild(icon);
+        }
+    }
+
+    // Load a section's content if it has not been built yet
+    let loadSectionIfNeeded = async (label) => {
+        if (loadedSections.has(label)) return
+        loadedSections.add(label)
+        if (label === "Autosaves")       { await buildAutosaveTiles() }
+        else if (label === "Scenarios")  { await buildScenariosTiles() }
+        else if (label === "Characters") { buildSectionContent("Character") }
+        else if (label === "World Info") { buildSectionContent("World Info") }
+        else if (label === "Saves")      { buildSectionContent("Save") }
+        else if (label === "Documents")  { buildSectionContent("Document") }
+    }
     // Build the Bulk container (tiles instead of buttons)
     let bulkContainer = document.createElement("div")
     bulkContainer.classList.add("autoGrid", "library_bulk")
@@ -1443,11 +1462,22 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
     searchInput.addEventListener("input", () => searchData(searchInput.value.toLowerCase()))
     toolbarRow.appendChild(searchInput)
 
-    // updateView shows/hides containers based on the selected dropdown option
-    let updateView = (selectedType) => {
+    // updateView lazily loads section content on first view, then shows/hides containers
+    let updateView = async (selectedType) => {
         let isBulk   = selectedType === "Bulk"
         let isServer = selectedType === "Server options"
         let isAll    = selectedType === "All"
+
+        // Load content for the section(s) being shown, if not already built
+        if (isAll) {
+            await Promise.all(
+                DROPDOWN_OPTIONS
+                    .filter(o => !["All", "Bulk", "Server options"].includes(o.label))
+                    .map(o => loadSectionIfNeeded(o.label))
+            )
+        } else if (!isBulk && !isServer) {
+            await loadSectionIfNeeded(selectedType)
+        }
 
         let opt = DROPDOWN_OPTIONS.find(o => o.label === selectedType)
 
