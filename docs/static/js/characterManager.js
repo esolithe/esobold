@@ -847,7 +847,7 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
         containers.push(container)
 
         let charIcon = createIcon(containerName, "url('/static/img/folder.svg')")
-        charIcon.classList.add("searchExclude")
+        charIcon.classList.add("searchExclude", "library_section_header")
         container.appendChild(charIcon);
         return container
     }
