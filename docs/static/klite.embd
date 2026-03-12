@@ -12,7 +12,7 @@ Current version indicated by LITEVER below.
 -->
 <head>
 	<script id="init-config">
-	const LITEVER = 317;
+	const LITEVER = 318;
 	const urlParams = new URLSearchParams(window.location.search);
 	var localflag = urlParams.get('local'); //this will be replaced automatically in embedded kcpp
 	const STORAGE_PREFIX = (localflag?"e_":"")+"kaihordewebui_";
@@ -3165,7 +3165,7 @@ Current version indicated by LITEVER below.
 	const favivon_normal =rootStyles.getPropertyValue('--img_favicon_normal').match(/url\("(.*)"\)/)[1];
 
 	// whitelisted auto selected horde model names
-	const defaultmodels = ["gpt4all","supercot","pygmalion-6","pygmalion-v8","pygmalion-2","hermes","airoboros","chrono","wizard","mantis","vicuna","manticore","alpaca","myth","xwin","spicyboros","mlewd","mxlewd","westlake","anubis","skyfall","llama2","llama3","llama-2","llama-3-","llama-3.","mistral","maid","mixtral","estopia","fighter","fimbul","euryale","nemo","gemma","lunaris","stheno","magnum","cydonia","qwen2.5-32b","behemoth","exaone","glm4","glm-4","tutu","deepseek","tlacuilo","rocinante"];
+	const defaultmodels = ["gpt4all","supercot","pygmalion-6","pygmalion-v8","pygmalion-2","hermes","airoboros","chrono","wizard","mantis","vicuna","manticore","alpaca","myth","xwin","spicyboros","mlewd","mxlewd","westlake","anubis","skyfall","llama2","llama3","llama-2","llama-3-","llama-3.","mistral","maid","mixtral","estopia","fighter","fimbul","euryale","nemo","gemma","lunaris","stheno","magnum","cydonia","qwen2.5-32b","behemoth","exaone","glm4","glm-4","tutu","deepseek","tlacuilo","rocinante","-14B","-32B","-27B","-35B"];
 	const ignoredmodels = ["tinyllama","debug-","-1b","-270m"]; //blacklisted model names
 
 	const instructstartplaceholder = "\n{{[INPUT]}}\n";
@@ -3756,7 +3756,6 @@ Current version indicated by LITEVER below.
 	const alltalk_voices_endpoint = "/api/voices";
 	const alltalk_rvc_voices_endpoint = "/api/rvcvoices";
 
-	const pollinations_img_endpoint = "https://image.pollinations.ai/prompt";
 	const pollinations_text_endpoint = "https://text.pollinations.ai/openai";
 	const dummy_api_key = "kobo";
 
@@ -3787,7 +3786,6 @@ Current version indicated by LITEVER below.
 	const XTTS_ID = 3;
 	const ALLTALK_ID = 4;
 	const OAI_TTS_ID = 5;
-	const POLLINATIONS_TTS_ID = 6;
 
 	const HD_RES_PX = 768;
 	const VHD_RES_PX = 960;
@@ -3979,13 +3977,14 @@ Current version indicated by LITEVER below.
 		saved_oai_role: 3, //0=user,1=assistant,2=system, 3=auto
 		saved_a1111_url: default_a1111_base,
 		saved_comfy_url: default_comfy_base,
+		saved_comfy_bearer_token: "",
 		saved_xtts_url: default_xtts_base,
 		saved_alltalk_url: default_alltalk_base,
 		saved_mcp_urls: "",
 		prev_custom_endpoint_type: 0, //show a reconnect box to custom endpoint if needed. 0 is horde, otherwise its dropdown value+1
 		prev_custom_endpoint_model: "", //we may not be able to match, but set it if we do
 		prev_custom_endpoint_ischatcmpl: true,
-		generate_images_mode: (localflag?0:1), //0=off, 1=horde, 2=a1111, 3=dalle, 4=comfy, 5=pollinations
+		generate_images_mode: (localflag?0:1), //0=off, 1=horde, 2=a1111, 3=dalle, 4=comfy
 
 		autoscroll: true, //automatically scroll to bottom on render
 		printer_view: false, //automatically scroll to bottom on render
@@ -8228,6 +8227,17 @@ Current version indicated by LITEVER below.
 
 		toolscontainer.innerHTML = finalHtml;
 	}
+	function toggle_enabletools()
+	{
+		if(document.getElementById("enable_tool_use").checked)
+		{
+			let numtools = Object.keys(pending_cached_mcp_tools).length;
+			if(numtools==0)
+			{
+				Fetch_MCP_Tools();
+			}
+		}
+	}
 
 	//read any parameters passed in from the URL, and load content if found
 	function read_url_params_data()
@@ -8483,8 +8493,23 @@ Current version indicated by LITEVER below.
 	{
 		console.log("Attempt ComfyUI Connection...");
 		//establish initial connection to a1111 api
-		fetch(localsettings.saved_comfy_url + comfy_models_endpoint)
-		.then(x => x.json())
+		let headers = {};
+		if (localsettings.saved_comfy_bearer_token != "") {
+			headers['Authorization'] = 'Bearer '+localsettings.saved_comfy_bearer_token
+		}
+		fetch(localsettings.saved_comfy_url + comfy_models_endpoint, {
+			headers: headers
+		})
+		.then(x => {
+			if (!silent && !x.ok) {
+				msg = "Connection returned "+x.status
+				if (x.status == 401) {
+					msg +=". Check Bearer Token."
+				}
+				msgbox(msg)
+			}
+			return x.json()
+		})
 		.then(modelsdata => {
 
 			if (modelsdata == null || modelsdata.length == 0) {
@@ -8503,12 +8528,12 @@ Current version indicated by LITEVER below.
 		}).catch((error) => {
 			if(!silent)
 			{
-				msgbox("ComfyUI Connect Error: " + error+"\nPlease make sure ComfyUI is running at "+localsettings.saved_comfy_url+" and properly configured!\n\nIt must be launched with the flags --listen --enable-cors-header '*' to enable API access\n");
+				msgbox("ComfyUI Connect Error: " + error+"\nPlease make sure ComfyUI is running at "+localsettings.saved_comfy_url+" and properly configured!\n\nIt must be launched with the flags --listen --enable-cors-header '*' to enable API access. If using ComfyUI-Login, the Bearer Token must match.\n");
 			}
 			comfyui_is_connected = false;
 		});
 
-		fetch(localsettings.saved_comfy_url + comfy_loras_endpoint)
+		fetch(localsettings.saved_comfy_url + comfy_loras_endpoint, {headers:headers})
         .then(x => x.json())
         .then(lorasdata => {
             //repopulate our lora list
@@ -8548,9 +8573,14 @@ Current version indicated by LITEVER below.
 		const formData = new FormData();
 		formData.append('image', blob, filename);
 		formData.append('overwrite',1);
+		let headers = {};
+		if (localsettings.saved_comfy_bearer_token != "") {
+			headers['Authorization'] = 'Bearer '+localsettings.saved_comfy_bearer_token
+		}
 		return fetch(`${upload_endpoint}`, {
 			method: 'POST',
 			body: formData,
+			headers: headers,
 		}).then(response => {
 			if (!response.ok) {
 				throw new Error(`Upload failed with status ${response.status}`);
@@ -8687,11 +8717,13 @@ Current version indicated by LITEVER below.
 		image_db[imgid].type = 0; //0=image, 1=audio
 
 		uploadBase64ImgToComfy(req_payload["source_image"],comfyimg2imgname).then(() => {
+		headers = {'Content-Type': 'application/json'}
+		if (localsettings.saved_comfy_bearer_token != "") {
+			headers['Authorization'] = 'Bearer '+localsettings.saved_comfy_bearer_token
+		}
 		fetch(gen_endpoint, {
 			method: 'POST',
-			headers: {
-				'Content-Type': 'application/json',
-			},
+			headers: headers,
 			body: JSON.stringify(genimg_payload),
 		})
 		.then(x => x.json())
@@ -8846,69 +8878,13 @@ Current version indicated by LITEVER below.
 		},false);
 	}
 
-	function generate_pollinations_image(req_payload, autoappend)
+	function set_comfy_key()
 	{
-		let splits = req_payload.prompt.split("###");
-		let prompt = splits[0].trim();
-		let negprompt = (splits.length > 1 ? splits[1] : "");
-
-		const pollinations_params = new URLSearchParams({
-			model:req_payload.models[0],
-			seed:Math.floor(Math.random() * 99999999),
-			width: req_payload.params.width,
-			height: req_payload.params.height,
-			nologo: true,
-			private: true,
-			referrer: "koboldai"
-		});
-
-		let gen_endpoint = `${pollinations_img_endpoint}/${encodeURIComponent(prompt)}?${pollinations_params.toString()}`;
-
-		console.log(gen_endpoint);
-		let imgid = "PollAIimg"+(Math.floor(10000 + Math.random() * 90000)).toString();
-		let nimgtag = "[<|p|" + imgid + "|p|>]";
-		if (localsettings.img_newturn) {
-			if(localsettings.opmode == 4)
-			{
-				nimgtag = wrap_newgen_instruct_format(nimgtag,false);
-			}
-			else if(localsettings.opmode == 3)
-			{
-				nimgtag = wrap_newgen_chat_format(nimgtag);
-			}
-		}
-		if(autoappend)
-		{
-			gametext_arr.push(nimgtag);
-		}
-		image_db[imgid] = { done: false, queue: "Generating", result: "", prompt:prompt, poll_category:0 };
-		image_db[imgid].aspect = (req_payload.params.width>=req_payload.params.height*2?5:(req_payload.params.height>=req_payload.params.width*2?4:(req_payload.params.width>req_payload.params.height?2:(req_payload.params.width<req_payload.params.height?1:0))));
-		image_db[imgid].imsource = 0; //0=generated,1=uploaded
-		image_db[imgid].imrefid = "";
-		image_db[imgid].type = 0; //0=image, 1=audio
-
-		fetch(gen_endpoint, {
-			method: 'GET',
-		})
-		.then((response) => {
-			return response.blob(); // Convert the response into a Blob
-		})
-		.then((finalimg) => {
-			const reader = new FileReader();
-			reader.onloadend = () => {
-				let origImg = reader.result;
-				let imgres = localsettings.img_allowhd?VHD_RES_PX:NO_HD_RES_PX;
-				compressImage(origImg, (newDataUri) => {
-					image_db[imgid].done = true;
-					image_db[imgid].result = newDataUri;
-				}, false, imgres);
-			};
-			reader.readAsDataURL(finalimg);
-		}).catch((error) => {
-			console.log("Generation Error: " + error);
-			msgbox("Image Generation Failed!\n\nCould not generate image with Pollinations.ai, maybe you are rate limited. Try again later.\n");
-		});
-		return imgid;
+		inputBox("Enter ComfyUI API Auth Bearer Token","ComfyUI API Key",localsettings.saved_comfy_bearer_token,"Input ComfyUI API Key", ()=>{
+			let userinput = getInputBoxValue();
+			userinput = userinput.trim();
+			localsettings.saved_comfy_bearer_token = userinput.trim();
+		},true);
 	}
 
 	function set_horde_key()
@@ -8924,7 +8900,7 @@ Current version indicated by LITEVER below.
 
 	function set_dalle_key()
 	{
-		inputBox("Enter DALL-E API Key.\n\nNote: DALL-E is known to rephrase and rewrite submitted image prompts before generating, for censorship purposes. There is nothing KoboldAI Lite can do about that. ","DALL-E API Key",localsettings.saved_dalle_key,"Input DALL-E API Key", ()=>{
+		inputBox("Enter OpenAI Compatible Image API Key.\n\nNote: DALL-E is known to rephrase and rewrite submitted image prompts before generating, for censorship purposes. There is nothing KoboldAI Lite can do about that. ","OpenAI Compatible Image API Key",localsettings.saved_dalle_key,"Input OpenAI Compatible Image API Key", ()=>{
 			let userinput = getInputBoxValue();
 			userinput = userinput.trim();
 			if (userinput != null && userinput!="") {
@@ -8934,7 +8910,7 @@ Current version indicated by LITEVER below.
 	}
 	function set_dalle_url()
 	{
-		inputBox("Enter DALL-E API URL.\n\nNote: DALL-E is known to rephrase and rewrite submitted image prompts before generating, for censorship purposes. There is nothing KoboldAI Lite can do about that. ","DALL-E API URL",localsettings.saved_dalle_url,"Input DALL-E API URL", ()=>{
+		inputBox("Enter OpenAI Compatible Image API URL.\n\nNote: DALL-E is known to rephrase and rewrite submitted image prompts before generating, for censorship purposes. There is nothing KoboldAI Lite can do about that. ","OpenAI Compatible Image API URL",localsettings.saved_dalle_url,"Input OpenAI Compatible Image API URL", ()=>{
 			let userinput = getInputBoxValue();
 			userinput = userinput.trim();
 			if (userinput != null && userinput!="") {
@@ -8946,7 +8922,7 @@ Current version indicated by LITEVER below.
 	}
 	function set_dalle_model()
 	{
-		inputBox("Enter DALL-E API Model Identifier.","DALL-E API Model Identifier",localsettings.saved_dalle_model,"Input DALL-E Model Identifier", ()=>{
+		inputBox("Enter OpenAI Compatible Image API Model Identifier.","OpenAI Compatible Image API Model Identifier",localsettings.saved_dalle_model,"Input OpenAI Compatible Image Model Identifier", ()=>{
 			let userinput = getInputBoxValue();
 			userinput = userinput.trim();
 			if (userinput != null && userinput!="") {
@@ -9683,6 +9659,7 @@ Current version indicated by LITEVER below.
 			new_save_storyobj.savedsettings.saved_kai_key = "";
 			new_save_storyobj.savedsettings.saved_a1111_url = "";
 			new_save_storyobj.savedsettings.saved_comfy_url = "";
+			new_save_storyobj.savedsettings.saved_comfy_bearer_token = "";
 			new_save_storyobj.savedsettings.saved_xtts_url = "";
 			new_save_storyobj.savedsettings.saved_mcp_urls = "";
 
@@ -9821,6 +9798,22 @@ Current version indicated by LITEVER below.
 						}
 					} catch (error) {
 						console.log("Unzip failed: " + error);
+					}
+
+					//try JSONL
+					try
+					{
+						const lines = text.split('\n');
+						let temparrs = lines.filter(line => line.trim()).map(line => JSON.parse(line));
+						if(temparrs && temparrs.length>1 && temparrs[temparrs.length-1].mes && temparrs[temparrs.length-1].name)
+						{
+							load_tavern_jsonl(temparrs);
+							return;
+						}
+					}
+					catch(error)
+					{
+						console.log("JSONL import failed: " + error);
 					}
 
 					// 5. Fallback to plaintext if .txt
@@ -10148,6 +10141,7 @@ Current version indicated by LITEVER below.
 					let tmp_kai2 = localsettings.saved_kai_key;
 					let tmp_a1111 = localsettings.saved_a1111_url;
 					let tmp_comfy = localsettings.saved_comfy_url;
+					let tmp_comfy_bearer_token = localsettings.saved_comfy_bearer_token;
 					let tmp_xtts = localsettings.saved_xtts_url;
 					let tmp_imggen = localsettings.generate_images_mode;
 					let tmp_mcp = localsettings.saved_mcp_urls;
@@ -10205,6 +10199,7 @@ Current version indicated by LITEVER below.
 					localsettings.saved_kai_key = tmp_kai2;
 					localsettings.saved_a1111_url = tmp_a1111;
 					localsettings.saved_comfy_url = tmp_comfy;
+					localsettings.saved_comfy_bearer_token = tmp_comfy_bearer_token;
 					localsettings.saved_xtts_url = tmp_xtts;
 					localsettings.generate_images_mode = tmp_imggen;
 					localsettings.saved_mcp_urls = tmp_mcp;
@@ -10558,6 +10553,68 @@ Current version indicated by LITEVER below.
 		return false;
 	}
 
+	function load_tavern_jsonl(obj)
+	{
+		if(localsettings.opmode!=3 && localsettings.opmode!=4)
+		{
+			//force into instruct
+			localsettings.opmode = 4;
+		}
+		gametext_arr = [];
+		if(localsettings.opmode==3) //import as chat
+		{
+			if(localsettings.gui_type_chat!=3)
+			{
+				localsettings.gui_type_chat = 2;
+			}
+			for(let i=0;i<obj.length;++i)
+			{
+				let curr = obj[i];
+				if(curr.mes)
+				{
+					if(curr.name)
+					{
+						if(curr.is_user)
+						{
+							localsettings.chatname = curr.name;
+						}else{
+							localsettings.chatopponent = curr.name;
+						}
+					}
+					gametext_arr.push("\n"+curr.name+": "+curr.mes);
+				}
+			}
+		}
+		else //import as instruct
+		{
+			localsettings.gui_type_instruct = 2;
+			localsettings.inject_chatnames_instruct = true;
+			for(let i=0;i<obj.length;++i)
+			{
+				let curr = obj[i];
+				if(curr.mes)
+				{
+					if(curr.is_user)
+					{
+						if(curr.name)
+						{
+							localsettings.chatname = curr.name;
+						}
+						gametext_arr.push(get_instructstartplaceholder()+curr.name+": "+curr.mes);
+					}else{
+						if(curr.name)
+						{
+							localsettings.chatopponent = curr.name;
+						}
+						gametext_arr.push(get_instructendplaceholder()+curr.name+": "+curr.mes);
+					}
+				}
+			}
+		}
+		update_for_sidepanel();
+		render_gametext(true);
+		sync_multiplayer(true);
+	}
 	function load_tavern_obj(obj)
 	{
 		let selectedgreeting = "";
@@ -15444,6 +15501,10 @@ Current version indicated by LITEVER below.
 		mainmenu_untab(true);
 		document.getElementById("settingscontainer").classList.remove("hidden");
 		display_settings_tab(current_settings_tab_idx);
+
+		if(localsettings.generate_images_mode>=5){localsettings.generate_images_mode=0;} //todo: temp hack to remove pollinations images
+		if(localsettings.tts_mode>=6){localsettings.tts_mode=0;} //todo: temp hack to remove pollinations tts
+
 		document.getElementById("max_context_length").value = document.getElementById("max_context_length_slide").value = localsettings.max_context_length;
 		document.getElementById("max_length").value = document.getElementById("max_length_slide").value = localsettings.max_length;
 		document.getElementById("temperature").value = document.getElementById("temperature_slide").value = localsettings.temperature;
@@ -16796,7 +16857,6 @@ Current version indicated by LITEVER below.
 		document.getElementById("generate_images_dalle_container").classList.add("hidden");
 		document.getElementById("generate_images_local_model_container").classList.add("hidden");
 		document.getElementById("generate_images_comfy_container").classList.add("hidden");
-		document.getElementById("generate_images_pollinations_container").classList.add("hidden");
 		if(document.getElementById("generate_images_mode").value==1){
 			document.getElementById("generate_images_model_container").classList.remove("hidden");
 			if(!image_models_fetched)
@@ -16815,9 +16875,6 @@ Current version indicated by LITEVER below.
 		}else if(document.getElementById("generate_images_mode").value==4){
 			document.getElementById("generate_images_comfy_container").classList.remove("hidden");
 			connect_to_comfyui(silent);
-		}else if(document.getElementById("generate_images_mode").value==5)
-		{
-			document.getElementById("generate_images_pollinations_container").classList.remove("hidden");
 		}
 	}
 
@@ -18573,7 +18630,7 @@ Current version indicated by LITEVER below.
 		}
 		let speakprompt = "Enter phrase to speak. Currently selected TTS will be used.";
 
-		if(ssval==XTTS_ID || ssval==ALLTALK_ID || ssval==OAI_TTS_ID || ssval==KCPP_TTS_ID || ssval==POLLINATIONS_TTS_ID)
+		if(ssval==XTTS_ID || ssval==ALLTALK_ID || ssval==OAI_TTS_ID || ssval==KCPP_TTS_ID)
 		{
 			speakprompt = `Enter phrase to speak. Currently selected TTS will be used.<br>
 			<div style="display: inline-flex;">
@@ -18609,7 +18666,6 @@ Current version indicated by LITEVER below.
 	{
 		document.getElementById("xtts_container").classList.add("hidden");
 		document.getElementById("oai_tts_container").classList.add("hidden");
-		document.getElementById("pollinations_tts_container").classList.add("hidden");
 		document.getElementById("alltalk_specific_controls").classList.add("hidden");
 		document.getElementById("kcpp_tts_container").classList.add("hidden");
 		document.getElementById("webbrowser_tts_container").classList.add("hidden");
@@ -18640,11 +18696,6 @@ Current version indicated by LITEVER below.
 		}
 		else if(selectedTTS == OAI_TTS_ID) {
 			document.getElementById("oai_tts_container").classList.remove("hidden");
-			document.getElementById("savenarrationsdiv").classList.remove("hidden");
-			document.getElementById("narratestreamingdiv").classList.remove("hidden");
-		}else if(selectedTTS == POLLINATIONS_TTS_ID)
-		{
-			document.getElementById("pollinations_tts_container").classList.remove("hidden");
 			document.getElementById("savenarrationsdiv").classList.remove("hidden");
 			document.getElementById("narratestreamingdiv").classList.remove("hidden");
 		}
@@ -18780,12 +18831,13 @@ Current version indicated by LITEVER below.
 	function tts_speak(text, do_download=false, do_embed_tts=false, is_test=false)
 	{
 		let ssval = localsettings.tts_mode;
-		let streamallowed = (ssval==XTTS_ID || ssval==ALLTALK_ID || ssval==OAI_TTS_ID || ssval==KCPP_TTS_ID || ssval==POLLINATIONS_TTS_ID);
+		let streamallowed = (ssval==XTTS_ID || ssval==ALLTALK_ID || ssval==OAI_TTS_ID || ssval==KCPP_TTS_ID);
 		if(streamallowed && localsettings.tts_stream && !is_test)
 		{
 			//split into chunks by newline
 			tts_speak_output_queue = [];
-			tts_speak_input_queue = text.split("\n").map(chunk => chunk.trim()).filter(chunk => chunk.length > 0);
+			let text2 = text.replaceAll(". ", ".\n").replaceAll("! ", "!\n").replaceAll("? ", "?\n");
+			tts_speak_input_queue = text2.split("\n").map(chunk => chunk.trim()).filter(chunk => chunk.length > 0);
 			tts_queue_embed = do_embed_tts;
 			tts_queue_download = do_download;
 		}
@@ -18870,12 +18922,11 @@ Current version indicated by LITEVER below.
 		}
 
 
-		if(ssval==XTTS_ID || ssval==ALLTALK_ID || ssval==OAI_TTS_ID || ssval==KCPP_TTS_ID || ssval==POLLINATIONS_TTS_ID) //xtts api server
+		if(ssval==XTTS_ID || ssval==ALLTALK_ID || ssval==OAI_TTS_ID || ssval==KCPP_TTS_ID) //xtts api server
 		{
 			let is_xtts = (ssval==XTTS_ID);
 			let is_oai_tts = (ssval==OAI_TTS_ID);
 			let is_kcpp_tts = (ssval==KCPP_TTS_ID);
-			let is_pollinations_tts = (ssval==POLLINATIONS_TTS_ID);
 			const audioContext = new (window.AudioContext || window.webkitAudioContext)();
 			let audiofile_ref = null;
 
@@ -18960,64 +19011,6 @@ Current version indicated by LITEVER below.
 					tts_is_playing = false;
 					tts_is_processing = false;
 					console.log("XTTS Speak Error: " + error);
-					ttsIsBeingGenerated = false
-				});
-			}
-			else if(is_pollinations_tts)
-			{
-				const pollinations_params = new URLSearchParams({
-					model:"openai-audio",
-					voice:document.getElementById("pollinations_voices").value,
-					private: true,
-					referrer: "koboldai"
-				});
-				const speechprompt = `Please narrate the following text:\n\n${text}`;
-
-				let gen_endpoint = `${pollinations_text_endpoint}/${encodeURIComponent(speechprompt)}?${pollinations_params.toString()}`;
-
-				fetch(gen_endpoint, {
-					method: 'GET',
-				})
-				.then(response => response.arrayBuffer())
-				.then(data => {
-					audiofile_ref = data.slice(0);
-					return audioContext.decodeAudioData(data);
-				})
-				.then(decodedData => {
-					if(do_download)
-					{
-						tts_download(audiofile_ref);
-					}
-					if(do_embed_tts)
-					{
-						tts_embed_audio(audiofile_ref);
-					}
-					ttsIsBeingGenerated = false
-					tts_is_processing = false;
-					if(append_to_outqueue)
-					{
-						tts_speak_output_queue.push(decodedData);
-					}
-					else
-					{
-						const playSound = audioContext.createBufferSource();
-						playSound.buffer = decodedData;
-						playSound.connect(audioContext.destination);
-						tts_is_playing = true;
-						update_submit_button(false);
-						playSound.start(audioContext.currentTime);
-						playSound.onended = function() {
-							setTimeout(() => {
-								tts_is_playing = false;
-								update_submit_button(false);
-								console.log("Audio finished playing");
-							},300);
-						};
-					}
-				}).catch((error) => {
-					tts_is_playing = false;
-					tts_is_processing = false;
-					console.log("Pollinations Speak Error: " + error);
 					ttsIsBeingGenerated = false
 				});
 			}
@@ -21670,7 +21663,7 @@ Current version indicated by LITEVER below.
 		{
 			if(localsettings.saved_dalle_key=="" || localsettings.saved_dalle_url=="")
 			{
-				msgbox("Error: A valid DALL-E URL and Key is required to generate images with DALL-E.\nThis is usually the same as your OpenAI API key, but can be customized in settings.","Invalid DALL-E Key");
+				msgbox("Error: A valid OpenAI Compatible Image URL and Key is required to generate images with DALL-E.\nThis is usually the same as your OpenAI API key, but can be customized in settings.","Invalid OpenAI Compatible Image Key");
 			}
 			else
 			{
@@ -21727,12 +21720,6 @@ Current version indicated by LITEVER below.
 			let desired_model = document.getElementById("generate_images_comfy_model").value;
 			genimg_payload.models = [desired_model];
 			imgid = generate_comfy_image(genimg_payload, autoappend);
-		}
-		else if(localsettings.generate_images_mode==5) //pollinations
-		{
-			let desired_model = document.getElementById("generate_images_pollinations_model").value;
-			genimg_payload.models = [desired_model];
-			imgid = generate_pollinations_image(genimg_payload, autoappend);
 		}
 
 		return imgid;
@@ -22766,11 +22753,15 @@ Current version indicated by LITEVER below.
 				if(comfyid && comfyid!="")
 				{
 					//comfyui polling
+					let json_headers = {'Content-Type': 'application/json'};
+					let headers={};
+					if (localsettings.saved_comfy_bearer_token != "") {
+						headers['Authorization'] = 'Bearer '+localsettings.saved_comfy_bearer_token;
+						json_headers['Authorization'] = 'Bearer '+localsettings.saved_comfy_bearer_token;
+					}
 					fetch(localsettings.saved_comfy_url + comfy_history_endpoint + "/" + comfyid, {
 						method: 'GET',
-						headers: {
-							'Content-Type': 'application/json',
-						}
+						headers: json_headers,
 					})
 					.then(x => x.json())
 					.then(resp2 => {
@@ -22780,7 +22771,7 @@ Current version indicated by LITEVER below.
 							img.done = true;
 							let finalfilename = resp2[comfyid].outputs["9"].images[0].filename;
 							//fetch final image
-							fetch(localsettings.saved_comfy_url + comfy_results_endpoint + finalfilename)
+							fetch(localsettings.saved_comfy_url + comfy_results_endpoint + finalfilename, {headers: headers})
 							.then((response) => {
 								return response.blob(); // Convert the response into a Blob
 							})
@@ -22830,9 +22821,10 @@ Current version indicated by LITEVER below.
 							console.log("Replacing with Image: " + matchstr);
 							gametext_arr[i] = gametext_arr[i].replace(matchstr, newstr);
 							//default to llava if supported, and image is self uploaded
+							let isoaichat = (document.getElementById("useoaichatcompl").checked && custom_oai_key!="");
 							// Exclude images if agent mode is enabled as the agent should pick - it can still be enabled manually, but shouldn't be the default
 							let isAgentModeEnabled = typeof isAgentModeEnabledAndSetCorrectly === "function" && isAgentModeEnabledAndSetCorrectly()
-							let desiredvismode = ((image_db[key].imsource==1 && ((is_using_kcpp_with_vision() && image_db[key].type==0 && !isAgentModeEnabled) || (is_using_kcpp_with_audio() && image_db[key].type==1)))?3:0);
+							let desiredvismode = ((image_db[key].imsource==1 && (((is_using_kcpp_with_vision() || isoaichat) && image_db[key].type==0 && !isAgentModeEnabled) || ((is_using_kcpp_with_audio() || isoaichat) && image_db[key].type==1)))?3:0);
 							completed_imgs_meta[metaid] = JSON.parse(JSON.stringify(default_imgs_meta));
 							completed_imgs_meta[metaid].prompt = image_db[key].prompt;
 							completed_imgs_meta[metaid].visionmode = desiredvismode;
@@ -23592,6 +23584,12 @@ Current version indicated by LITEVER below.
 						//still waiting, do nothing until next poll
 						console.log("sync request: still awaiting reply");
 						let polledstreaming = (waiting_for_summarycall==0 && localsettings.tokenstreammode==1 && is_using_kcpp_with_streaming());
+						//polled streaming cannot be used with tool calls
+						if(localsettings.opmode==4 && (is_using_kcpp_with_jinja() || determine_if_mcp_active()))
+						{
+							polledstreaming = false;
+						}
+
 						//only check once every 2 ticks if remote
 						if (polledstreaming && (localflag?true:(poll_ticks_passed%2==0)))
 						{
@@ -29463,7 +29461,7 @@ Current version indicated by LITEVER below.
 						<h3>Responses</h3>
 						<div class="settinglabel">
 							<div class="justifyleft" id="tokenstreaminglabel">Token streaming <span class="helpicon">?<span
-								class="helptext">Use token streaming for partial responses. SSE is smoother but less well-supported. Poll is chunkier but more reliable. Not available on Horde.</span></span></div>
+								class="helptext">Use token streaming for partial responses. SSE is recommended.</span></span></div>
 							<div class="push-right">
 								<select title="Token Streaming" class="form-control" id="tokenstreammode">
 								<option value="0">Off</option>
@@ -30022,9 +30020,8 @@ Current version indicated by LITEVER below.
 									<option value="0">[Disabled]</option>
 									<option value="1">AI Horde</option>
 									<option value="2">KCPP / Forge / A1111</option>
-									<option value="3">OpenAI DALL-E</option>
+									<option value="3">OpenAI Compatible Img</option>
 									<option value="4">ComfyUI</option>
-									<option value="5">Pollinations.ai</option>
 								</select>
 							</div>
 						</div>
@@ -30061,10 +30058,11 @@ Current version indicated by LITEVER below.
 						<div id="generate_images_comfy_container" class="settinglabel hidden settingsbox">
 							<div class="settinglabel" style="display: flex; width: 100%">
 							<div class="justifyleft">Model</div>
-							<select title="Select Image Model" class="form-control push-right" id="generate_images_comfy_model" style="width:calc(100% - 58px)">
+							<select title="Select Image Model" class="form-control push-right" id="generate_images_comfy_model" style="width:calc(100% - 170px)">
 								<option value="">[None]</option>
 							</select>
 							<button type="button" class="btn btn-primary" onclick="set_comfy_endpoint()" style="width:52px; padding: 2px 2px; margin-left: 3px; font-size: var(--theme_font_size_medium);">Set URL</button>
+							<button type="button" class="btn btn-primary" onclick="set_comfy_key()" style="width:52px; padding: 2px 2px; margin-left: 3px; font-size: var(--theme_font_size_medium);">Set Key</button>
 							</div>
 							<div class="settinglabel" style="display: flex; width: 100%">
 							<div class="justifyleft">LoRA</div>
@@ -30080,16 +30078,6 @@ Current version indicated by LITEVER below.
 							<td><button type="button" class="btn btn-primary" style="width:100%; padding:2px 3px;margin-top:2px;font-size: var(--theme_font_size_medium);" onclick="set_dalle_key()">Set Key</button></td>
 							<td><button type="button" class="btn btn-primary" style="width:100%; padding:2px 3px;margin-top:2px;font-size: var(--theme_font_size_medium);" onclick="set_dalle_model()">Model</button></td>
 							</tr></table>
-						</div>
-
-						<div id="generate_images_pollinations_container" class="settinglabel hidden settingsbox">
-							<div class="settinglabel" style="display: flex; width: 100%">
-							<div class="justifyleft">Model</div>
-							<select title="Select Image Model" class="form-control push-right" id="generate_images_pollinations_model">
-								<option value="flux" selected>flux</option>
-								<option value="turbo">turbo</option>
-							</select>
-							</div>
 						</div>
 
 						<div>
@@ -30211,7 +30199,6 @@ Current version indicated by LITEVER below.
 								<option value="3">XTTS API Server</option>
 								<option value="4">AllTalk API Server</option>
 								<option value="5">OpenAI-Compat. API Server</option>
-								<option value="6">PollinationsAI TTS API</option>
 							</select>
 							</div>
 							<button id="manual_tts" type="button" class="bg_green btn btn-primary" style="margin-left: 2px;" onclick="test_tts()">Test</button>
@@ -30279,25 +30266,6 @@ Current version indicated by LITEVER below.
 								<div class="justifyleft">TTS voice </div>
 								<div class="push-right">
 									<input type="text" value="alloy" id="oai_tts_voice">
-								</div>
-							</div>
-						</div>
-						<div id="pollinations_tts_container" class="hidden">
-							<div class="settinglabel">
-								<div class="justifyleft">Voice </div>
-								<div class="push-right">
-									<select class="form-control" id="pollinations_voices" style="margin:0px 0 0;">
-									<option value="alloy">alloy</option>
-									<option value="ash">ash</option>
-									<option value="ballad">ballad</option>
-									<option value="coral">coral</option>
-									<option value="echo">echo</option>
-									<option value="fable">fable</option>
-									<option value="nova" selected>nova</option>
-									<option value="onyx">onyx</option>
-									<option value="sage">sage</option>
-									<option value="shimmer">shimmer</option>
-									</select>
 								</div>
 							</div>
 						</div>
@@ -30606,7 +30574,7 @@ Current version indicated by LITEVER below.
 						<div class="settinglabel">
 							<div class="justifyleft">Enable Toolcalling <span class="helpicon">?<span
 								class="helptext">Allow tool calling and MCP server usage. Require Chat Completions endpoint (KoboldCpp will auto switch).</span></span></div>
-							<input title="Enable MCP Tools" type="checkbox" id="enable_tool_use" class="push-right">
+							<input title="Enable MCP Tools" type="checkbox" id="enable_tool_use" class="push-right" onchange="toggle_enabletools()">
 						</div>
 						<div class="settinglabel">
 							<div class="justifyleft">Automatically Execute Tools <span class="helpicon">?<span
@@ -31294,13 +31262,7 @@ Current version indicated by LITEVER below.
 					<option style="display:none;" class="custom_model_option" value="custom">[Custom]</option>
 				</select>
 				<select title="Pollinations AI Model Selection" style="padding:4px;display:inline;width:calc(100% - 200px)" class="form-control hidden" id="custom_pollinations_model" onchange="oai_model_change(true)">
-					<option value="bidara">bidara</option>
-					<option value="chickytutor">chickytutor</option>
-					<option value="gemini">gemini</option>
-					<option value="midijourney">midijourney</option>
-					<option value="mistral">mistral</option>
-					<option value="openai">openai</option>
-					<option value="openai-fast">openai-fast</option>
+					<option value="openai-fast" selected>openai-fast</option>
 					<option style="display:none;" class="custom_model_option" value="custom">[Custom]</option>
 				</select>
 				<select title="Nvidia NIM AI Model Selection" style="padding:4px;display:inline;width:calc(100% - 200px)" class="form-control hidden" id="custom_nvidianim_model" onchange="oai_model_change(true)">
