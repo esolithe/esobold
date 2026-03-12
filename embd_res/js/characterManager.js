@@ -1404,10 +1404,10 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
     typeSelect.style.height = "100%"
 
     const DROPDOWN_OPTIONS = [
+        { label: "Saves", containerClass: "Save", tooltip: TYPE_TOOLTIPS["Save"] },
         { label: "Scenarios",     containerClass: "Scenarios",  tooltip: TYPE_TOOLTIPS["Scenarios"] },
         { label: "Characters",    containerClass: "Character",   tooltip: TYPE_TOOLTIPS["Character"] },
         { label: "World Info",    containerClass: "World_Info",  tooltip: TYPE_TOOLTIPS["World Info"] },
-        { label: "Saves",         containerClass: "Save",        tooltip: TYPE_TOOLTIPS["Save"] },
         { label: "Documents",     containerClass: "Document",    tooltip: TYPE_TOOLTIPS["Document"] },
         { label: "Autosaves",     containerClass: "Autosave",    tooltip: TYPE_TOOLTIPS["Autosave"] },
         { label: "All",           containerClass: null,          tooltip: TYPE_TOOLTIPS["All"] },
