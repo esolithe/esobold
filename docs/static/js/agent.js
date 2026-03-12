@@ -1145,11 +1145,11 @@ prepare_submit_generation = async () => {
     }
 }
 
-restart_new_game = () => {
+restart_new_game = (save = true, keep_memory = false) => {
     loadingNewGame = true
     stopAgentThinking()
     clearSuggestions()
-    originalRestartNewGame()
+    originalRestartNewGame(save, keep_memory)
 }
 
 let toggleAgent = () => {
