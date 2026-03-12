@@ -847,7 +847,7 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
         containers.push(container)
 
         let charIcon = createIcon(containerName, "url('/static/img/folder.svg')")
-        charIcon.classList.add("searchExclude")
+        charIcon.classList.add("searchExclude", "library_section_header")
         container.appendChild(charIcon);
         return container
     }
@@ -882,19 +882,29 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
     }
 
     // Create a "+" add tile to prepend to each type container
-    let createPlusTile = (tooltip, handler) => {
+    let createPlusTile = (tooltip, handler, label) => {
         let plusIcon = document.createElement("span")
-        let plusText = document.createElement("b")
         plusIcon.classList.add("containAndScaleImage", "tile", "searchExclude")
         plusIcon.style.backgroundImage = "none"
         plusIcon.style.display = "flex"
+        plusIcon.style.flexDirection = "column"
         plusIcon.style.alignItems = "center"
         plusIcon.style.justifyContent = "center"
         plusIcon.title = tooltip || "Add item"
+        let plusText = document.createElement("b")
         plusText.innerText = "+"
         plusText.style.fontSize = "2.5em"
         plusText.style.lineHeight = "1"
         plusIcon.appendChild(plusText)
+        if (label) {
+            let labelEl = document.createElement("b")
+            labelEl.innerText = label
+            labelEl.style.fontSize = "0.7em"
+            labelEl.style.marginTop = "6px"
+            labelEl.style.textAlign = "center"
+            labelEl.style.wordBreak = "break-word"
+            plusIcon.appendChild(labelEl)
+        }
         plusIcon.addEventListener("click", handler)
         return plusIcon
     }
@@ -1264,22 +1274,33 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
         scenariosContainer.appendChild(icon);
     }
 
-    // Prepend a "+" plus tile to each type container (after its header icon)
-    const plusHandlerByType = {
-        "Character": () => { popupUtils.reset(); showCharacterCreator(); },
-    }
+    // Prepend "+" plus tile(s) to each type container (after its header icon)
+    // Autosave and Scenarios are read-only and do not get a plus tile
+    const NO_PLUS_TYPES = new Set(["Autosave", "Scenarios"])
     for (let container of containers) {
         let containerType = [...container.classList].find(cls => !["autoGrid"].includes(cls))
         if (!!containerType) {
             let typeName = containerType.replaceAll("_", " ")
-            let handler = plusHandlerByType[typeName] || openUploadDialog
-            let plusTile = createPlusTile(`Add new ${typeName.toLowerCase()} item`, handler)
-            // Insert after the header icon (first child)
+            if (NO_PLUS_TYPES.has(typeName)) continue
             let headerIcon = container.firstChild
-            if (headerIcon) {
-                container.insertBefore(plusTile, headerIcon.nextSibling)
+            if (typeName === "Character") {
+                // Two tiles: upload an existing character file, or create a brand-new one
+                let uploadTile = createPlusTile("Add new character item", openUploadDialog, "Add Item")
+                let createTile = createPlusTile("Create new character", () => { popupUtils.reset(); showCharacterCreator(); }, "Create New")
+                if (headerIcon) {
+                    container.insertBefore(uploadTile, headerIcon.nextSibling)
+                    container.insertBefore(createTile, uploadTile.nextSibling)
+                } else {
+                    container.appendChild(uploadTile)
+                    container.appendChild(createTile)
+                }
             } else {
-                container.appendChild(plusTile)
+                let plusTile = createPlusTile(`Add new ${typeName.toLowerCase()} item`, openUploadDialog)
+                if (headerIcon) {
+                    container.insertBefore(plusTile, headerIcon.nextSibling)
+                } else {
+                    container.appendChild(plusTile)
+                }
             }
         }
     }
@@ -1383,10 +1404,10 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
     typeSelect.style.height = "100%"
 
     const DROPDOWN_OPTIONS = [
+        { label: "Saves", containerClass: "Save", tooltip: TYPE_TOOLTIPS["Save"] },
         { label: "Scenarios",     containerClass: "Scenarios",  tooltip: TYPE_TOOLTIPS["Scenarios"] },
         { label: "Characters",    containerClass: "Character",   tooltip: TYPE_TOOLTIPS["Character"] },
         { label: "World Info",    containerClass: "World_Info",  tooltip: TYPE_TOOLTIPS["World Info"] },
-        { label: "Saves",         containerClass: "Save",        tooltip: TYPE_TOOLTIPS["Save"] },
         { label: "Documents",     containerClass: "Document",    tooltip: TYPE_TOOLTIPS["Document"] },
         { label: "Autosaves",     containerClass: "Autosave",    tooltip: TYPE_TOOLTIPS["Autosave"] },
         { label: "All",           containerClass: null,          tooltip: TYPE_TOOLTIPS["All"] },

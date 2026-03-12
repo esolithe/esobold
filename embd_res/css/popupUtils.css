@@ -46,18 +46,45 @@
 	.containAndScaleImage.tile {
 		height: 128px;
 		width: 128px;
-		border-radius: 25px;
+		border-radius: 18px;
 		text-align: center;
 		word-wrap: break-word;
+		cursor: pointer;
+		transition: filter 0.15s ease, transform 0.1s ease;
+		box-shadow: 0 2px 6px rgba(0,0,0,0.35);
+	}
+
+	.containAndScaleImage.tile:hover {
+		filter: brightness(1.18);
+		transform: scale(1.05);
 	}
 
 	.containAndScaleImage.tile>b {
-	    /* text-shadow: 2px 2px 5px #ffffff; */
 	    color: white;
-	    background-color: black;
+	    background-color: rgba(0,0,0,0.65);
 	    border-radius: 4px;
 	    font-weight: bold;
-	    padding: 2px;
+	    padding: 2px 4px;
+	}
+
+	/* Section header tiles: not interactive, show label in accent colour */
+	.containAndScaleImage.tile.library_section_header {
+		cursor: default;
+		pointer-events: none;
+		background-size: 55%;
+		background-position: 50% 70%;
+		box-shadow: none;
+	}
+
+	.containAndScaleImage.tile.library_section_header:hover {
+		filter: none;
+		transform: none;
+	}
+
+	.containAndScaleImage.tile.library_section_header > b {
+		/* color: var(--theme_color_topbtn, #4a90d9); */ /* Cannot use due to the filter on the tile itself */
+		background-color: transparent;
+		font-size: 0.85em;
 	}
 
 	.fillContainer {
@@ -67,10 +94,11 @@
 
 	.autoGrid {
 	    display: grid;
-		border: dashed var(--theme_color_border);
-	    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+		border: 1px dashed var(--theme_color_border);
+		border-radius: 10px;
+	    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
 	    padding: 12px;
-	    gap: 12px;
+	    gap: 14px;
 	}
 
 	.autoGrid>* {
