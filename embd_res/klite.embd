@@ -5133,7 +5133,7 @@ Current version indicated by LITEVER below.
 				let pending_eptype = localsettings.prev_custom_endpoint_type;
 				let pending_custmodel = localsettings.prev_custom_endpoint_model;
 				let pending_ischatcmpl = localsettings.prev_custom_endpoint_ischatcmpl;
-				if((!localflag && pending_eptype>0) || (localflag && pending_eptype==2))
+				if((window.eso.allowHordeEvenWithLocalAccess() && pending_eptype>0) || (localflag && pending_eptype==2))
 				{
 					msgboxYesNo("Reconnect to previous custom endpoint?","Custom Endpoint Reconnect",()=>{
 						document.getElementById("customapidropdown").value = (pending_eptype).toString();
@@ -5241,7 +5241,7 @@ Current version indicated by LITEVER below.
 		loadok = false;
 	}
 
-	if(!loadok && !localflag && selected_models.length==0 && !is_using_custom_ep()) //nothing was loaded. this is a brand new state, in web lite
+	if(!loadok && window.eso.allowHordeEvenWithLocalAccess() && selected_models.length==0 && !is_using_custom_ep()) //nothing was loaded. this is a brand new state, in web lite
 	{
 		console.log("Autopick some good default models...");
 		//attempt to autopick some good default models
@@ -6380,11 +6380,11 @@ Current version indicated by LITEVER below.
 			{
 				fetch_horde_models((mdls) => {
 					//can we find the model that's used? if yes load it, otherwise load the first one
-					if (mdls.length == 0 && !localflag) {
+					if (mdls.length == 0 && window.eso.allowHordeEvenWithLocalAccess()) {
 						msgbox("No models available. Unable to load.");
 					}
 					else {
-						if (!localflag) {
+						if (window.eso.allowHordeEvenWithLocalAccess()) {
 							selected_models = [];
 
 							//if ALL of the previously selected models still exist, use them
@@ -8389,12 +8389,12 @@ Current version indicated by LITEVER below.
 	{
 		fetch_horde_models((mdls) => {
 			//can we find the model that's used? if yes load it, otherwise load the first one
-			if (mdls.length == 0 && !localflag) {
+			if (mdls.length == 0 && window.eso.allowHordeEvenWithLocalAccess()) {
 				msgbox("No models available. Unable to load.");
 			}
 			else
 			{
-				if (!localflag) {
+				if (window.eso.allowHordeEvenWithLocalAccess()) {
 					selected_models = [];
 
 					for (var i = 0; i < mdls.length; ++i) {
@@ -11351,7 +11351,7 @@ Current version indicated by LITEVER below.
 			{
 				scenarioautopickai = true; //no selected model, pick a good one
 			}
-			if (scenarioautopickai && !localflag && !is_using_custom_ep())
+			if (scenarioautopickai && window.eso.allowHordeEvenWithLocalAccess() && !is_using_custom_ep())
 			{
 				fetch_horde_models((mdls) =>
 				{
@@ -12123,7 +12123,7 @@ Current version indicated by LITEVER below.
 		}
 	}
 	function get_and_show_workers() {
-		if (localflag) {
+		if (!window.eso.allowHordeEvenWithLocalAccess()) {
 			return;
 		}
 		get_workers((wdata) => {
@@ -12149,7 +12149,7 @@ Current version indicated by LITEVER below.
 		});
 	}
 	function get_workers(onDoneCallback) {
-		if(localflag)
+		if(!window.eso.allowHordeEvenWithLocalAccess())
 		{
 			onDoneCallback([]);
 			return;
@@ -15013,7 +15013,7 @@ Current version indicated by LITEVER below.
 	var stale_cached_worker_time = performance.now();
 	function fetch_horde_models(onDoneCallback)
 	{
-		if(localflag)
+		if(!window.eso.allowHordeEvenWithLocalAccess())
 		{
 			onDoneCallback(selected_models);
 			return;
@@ -32112,5 +32112,6 @@ Current version indicated by LITEVER below.
 <script src="static/js/esoSampler.js"></script>
 <script src="static/js/MCPUtils.js"></script>
 <script src="static/js/esoWelcome.js"></script>
+<script src="static/js/enableAllEndpointsLocally.js"></script>
 <!-- EsoLite modifications end -->
 </html>
