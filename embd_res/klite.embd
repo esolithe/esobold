@@ -32075,6 +32075,7 @@ Current version indicated by LITEVER below.
 <link rel="stylesheet" type="text/css" href="static/css/ext/pickr.css" />
 <script src="static/js/ext/pickr.js"></script>
 <script src="static/js/ext/zip-fs.min.js"></script>
+<script src="static/js/ext/colourToCSSFilters.js"></script>
 <!-- Third party libs end -->
 <!-- EsoLite modifications -->
 <script src="static/js/encryptUtils.js"></script>

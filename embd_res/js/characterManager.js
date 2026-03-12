@@ -820,6 +820,10 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
         let charText = document.createElement("b");
         charIcon.classList.add("containAndScaleImage", "tile")
         charIcon.style.backgroundImage = !!image ? image : "var(--img_esobold)"
+        if (!!image && image.startsWith("url(") && image.indexOf("/static/") !== -1) {
+            let filterToUse = colourToCSSFilters(getThemeVars()["--theme_color_accent_bg"]).filter;
+            charIcon.style.filter = filterToUse;
+        }
         charIcon.title = name
         charText.innerText = name
         charIcon.appendChild(charText)
