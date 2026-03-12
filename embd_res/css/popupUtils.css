@@ -52,7 +52,7 @@
 	}
 
 	.containAndScaleImage.tile>b {
-	    text-shadow: 2px 2px 5px #ffffff;
+	    /* text-shadow: 2px 2px 5px #ffffff; */
 	    color: white;
 	    background-color: black;
 	    border-radius: 4px;

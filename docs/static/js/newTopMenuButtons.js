@@ -6,11 +6,13 @@ window.addEventListener('load', () => {
 			<a class="nav-link mainnav" href="#" onclick="closeTopNav(); showServerSavesPopup();" tabindex="0">Server saves</a>
 		</li>`
     topButton += `<li class="nav-item" id="topbtn_data_manager">
-			<a class="nav-link mainnav" href="#" onclick="closeTopNav(); showCharacterList(undefined, true);" tabindex="0">Data</a>
+			<a class="nav-link mainnav" href="#" onclick="closeTopNav(); showCharacterList(undefined, true);" tabindex="0">Library</a>
             <span id="additionalSameOptions" class="hidden" style="position: absolute;">
                 <a id="topbtn_save_current" class="nav-link mainnav" href="#" tabindex="0">Q.Save</a>
                 <a id="topbtn_download_current" class="nav-link mainnav" href="#" tabindex="0">Download</a>
                 <a id="topbtn_load_new" class="nav-link mainnav" href="#" tabindex="0">Load</a>
+                <a id="topbtn_new_character" class="nav-link mainnav" href="#" tabindex="0">New Character</a>
+                <a id="topbtn_share" class="nav-link mainnav" href="#" tabindex="0">Share</a>
             </span>
 		</li>`
 
@@ -44,5 +46,13 @@ window.addEventListener('load', () => {
 
     document.querySelector("#topbtn_load_new").addEventListener("click", () => {
         load_file_button()
+    })
+
+    document.querySelector("#topbtn_new_character").addEventListener("click", () => {
+        try { showCharacterCreator(); } catch (e) { console.error(e); }
+    })
+
+    document.querySelector("#topbtn_share").addEventListener("click", () => {
+        share_story_button()
     })
 })
