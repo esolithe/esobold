@@ -1204,14 +1204,18 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
 
     // Add icons for scenarios and legacy server data
     let scenariosContainer = getContainerForType("Scenarios", TYPE_TOOLTIPS["Scenarios"])
-    for (let i = 0; i < scenario_sources.length; i++) {
+    // scenarios[0..scenario_sources.length-1] are from local scenario_sources files
+    for (let i = 0; i < scenario_sources.length && i < scenarios.length; i++) {
         let scenario = scenarios[i]
+        if (!scenario) continue
         let icon = createIcon(scenario.name, undefined)
         icon.addEventListener("click", scenario.handler)
         scenariosContainer.appendChild(icon)
     }
+    // scenarios[scenario_sources.length..] are from scenario_db (built-in + server)
     for (let i = scenario_sources.length; i < scenarios.length; i++) {
         let scenario = scenarios[i]
+        if (!scenario) continue
         if (scenario_db[i - scenario_sources.length]?.serverSaveTypeName === "Autosave") {
             continue
         }
