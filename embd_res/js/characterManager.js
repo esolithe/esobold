@@ -780,6 +780,20 @@ let managerUploadHandler = function (result) {
 
 let maxLengthForSection = 500, halfMaxLengthForSection = Math.floor(maxLengthForSection / 2);
 let libraryChangesOccurred = false;
+
+// Navigate back to the Library, waiting for any pending background processing to finish first
+let waitForLibraryAndShow = () => {
+    if (!window?.debounce_pending_updateCharacterListFromAll && !window?.pending_encrypt) {
+        showCharacterList(undefined, false, true)
+        return
+    }
+    let interval = setInterval(() => {
+        if (!window?.debounce_pending_updateCharacterListFromAll && !window?.pending_encrypt) {
+            clearInterval(interval)
+            showCharacterList(undefined, false, true)
+        }
+    }, 100)
+}
 let showCharacterList = async (event = undefined, serverLoad = false, isReturn = false) => {
     // Still processing characters
     if (!!window?.debounce_pending_updateCharacterListFromAll || !!window?.pending_encrypt)
@@ -828,7 +842,7 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
         }
         containers.push(container)
 
-        let charIcon = createIcon(containerName, "var(--img_load)")
+        let charIcon = createIcon(containerName, "url('/static/img/folder.svg')")
         charIcon.classList.add("searchExclude")
         container.appendChild(charIcon);
         return container
@@ -857,8 +871,8 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
             managerUploadHandler(result)
             if (!returnScheduled) {
                 returnScheduled = true
-                // Use a short delay to allow multiple selected files to process before reopening
-                setTimeout(() => showCharacterList(undefined, false, true), 200)
+                // Wait for any pending processing to complete before reopening
+                waitForLibraryAndShow()
             }
         }, [".png", ".webp", ".json", ".txt", ".pdf"], true)
     }
@@ -939,15 +953,16 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
         createButtonInputSection
 
         popupUtils.reset().title("Save Options").content(contents).css("min-height", "50%").css("min-width", "50%")
+            .button("Back", () => waitForLibraryAndShow())
             .button("Delete autosave", async () => {
                 popupUtils.reset()
                 msgboxYesNo("Are you sure you wish to delete?", "Autosave manager", async () => {
                     libraryChangesOccurred = true
                     allCharacterNames = allCharacterNames.filter(c => c.name !== name)
                     removeAutosave(name)
-                    showCharacterList(undefined, false, true)
+                    waitForLibraryAndShow()
                 })
-            }).button("Back", () => showCharacterList(undefined, false, true)).button("Close", () => popupUtils.reset()).show();
+            }).button("Close", () => popupUtils.reset()).show();
     }
 
     // Pre-create all standard type containers so "+" tiles always appear even when empty
@@ -1272,7 +1287,7 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
     bulkContainer.style.marginBottom = "10px"
     bulkContainer.title = TYPE_TOOLTIPS["Bulk"]
 
-    let bulkHeader = createIcon("Bulk operations", "var(--img_load)")
+    let bulkHeader = createIcon("Bulk operations", "url('/static/img/folder.svg')")
     bulkHeader.classList.add("searchExclude")
     bulkContainer.appendChild(bulkHeader)
 
@@ -1283,7 +1298,7 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
         bulkContainer.appendChild(tile)
     }
 
-    addBulkTile("Migrate old data", "var(--img_load)", "Migrate data from legacy save slots to the Library", async () => {
+    addBulkTile("Migrate old data", "url('/static/img/upload.svg')", "Migrate data from legacy save slots to the Library", async () => {
         popupUtils.reset()
         waitingToast.setText(`Migrating old data`)
         waitingToast.show()
@@ -1291,7 +1306,7 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
         waitingToast.setText(`Migration complete`)
         setTimeout(() => { waitingToast.hide() }, 5000)
     })
-    addBulkTile("Delete all", "var(--img_delete)", "Delete all local library data (cannot be undone)", async () => {
+    addBulkTile("Delete all", "url('/static/img/bin.svg')", "Delete all local library data (cannot be undone)", async () => {
         popupUtils.reset()
         msgboxYesNo("Are you sure you wish to delete all local data?", "Library", async () => {
             libraryChangesOccurred = true
@@ -1303,7 +1318,7 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
             waitingToast.hide()
         })
     })
-    addBulkTile("Download all", "var(--img_download)", "Download all library data as a zip archive", async () => {
+    addBulkTile("Download all", "url('/static/img/download.svg')", "Download all library data as a zip archive", async () => {
         popupUtils.reset()
         msgboxYesNo("Are you sure you wish to download all data?", "Library", async () => {
             waitingToast.setText(`Downloading all data`)
@@ -1312,7 +1327,7 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
             waitingToast.hide()
         })
     })
-    addBulkTile("Upload all", "var(--img_load)", "Upload all library data from a zip archive", async () => {
+    addBulkTile("Upload all", "url('/static/img/upload.svg')", "Upload all library data from a zip archive", async () => {
         popupUtils.reset()
         msgboxYesNo("Are you sure you wish to upload all data from a zip archive?", "Library", async () => {
             libraryChangesOccurred = true
@@ -1331,17 +1346,17 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
     serverContainer.style.marginBottom = "10px"
     serverContainer.title = TYPE_TOOLTIPS["Server options"]
 
-    let serverHeader = createIcon("Server options", "var(--img_save)")
+    let serverHeader = createIcon("Server options", "url('/static/img/folder.svg')")
     serverHeader.classList.add("searchExclude")
     serverContainer.appendChild(serverHeader)
 
-    let controlTile = createIcon("Control", "var(--img_save)")
+    let controlTile = createIcon("Control", "url('/static/img/folder.svg')")
     controlTile.title = "Configure the remote KCPP server data store settings"
     controlTile.addEventListener("click", () => controlRemoteDataStore())
     serverContainer.appendChild(controlTile)
 
     if (is_using_kcpp_with_server_saving()) {
-        let syncTile = createIcon("Sync", "var(--img_save)")
+        let syncTile = createIcon("Sync", "url('/static/img/sync.svg')")
         syncTile.title = "Sync all library data to the server now"
         syncTile.addEventListener("click", () => putAllCharacterManagerData())
         serverContainer.appendChild(syncTile)
@@ -1373,12 +1388,16 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
         { label: "Server options",containerClass: "_server",     tooltip: TYPE_TOOLTIPS["Server options"] },
     ]
 
+    const LIBRARY_SECTION_KEY = "esobold_library_section"
+    let savedSection = localStorage.getItem(LIBRARY_SECTION_KEY)
+    let initialSection = DROPDOWN_OPTIONS.some(o => o.label === savedSection) ? savedSection : DROPDOWN_OPTIONS[0].label
+
     for (let opt of DROPDOWN_OPTIONS) {
         let optElem = document.createElement("option")
         optElem.value = opt.label
         optElem.textContent = opt.label
         optElem.title = opt.tooltip
-        if (DROPDOWN_OPTIONS.indexOf(opt) === 0) {
+        if (opt.label === initialSection) {
             optElem.selected = true
         }
         typeSelect.appendChild(optElem)
@@ -1431,7 +1450,10 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
         }
     }
 
-    typeSelect.addEventListener("change", () => updateView(typeSelect.value))
+    typeSelect.addEventListener("change", () => {
+        localStorage.setItem(LIBRARY_SECTION_KEY, typeSelect.value)
+        updateView(typeSelect.value)
+    })
 
     // Assemble the popup
     popupUtils.reset().title(`Library (${allCharacterNames.length})`).css("height", "80%").css("width", "80%").setMobileMenu(true)
@@ -1450,8 +1472,8 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
         }
     }).show()
 
-    // Apply initial view (first option in dropdown)
-    updateView(DROPDOWN_OPTIONS[0].label)
+    // Apply initial view (from localStorage if available, otherwise first option)
+    updateView(initialSection)
 
     // Attach drop zone to the entire popup content area (active for all views except Bulk / Server options)
     let dropZoneActive = () => typeSelect.value !== "Bulk" && typeSelect.value !== "Server options"
@@ -1478,7 +1500,7 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
                     managerUploadHandler(result)
                     remaining--
                     if (remaining === 0) {
-                        showCharacterList(undefined, false, true)
+                        waitForLibraryAndShow()
                     }
                 })
             }
