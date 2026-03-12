@@ -346,7 +346,8 @@ struct music_load_model_inputs
 struct music_generation_inputs
 {
     const bool is_planner_mode = false; //if true, generate codes, else, generate diffusion music
-    const bool stereo = false;
+    const bool stereo = false; //only for wav
+    const bool use_mp3 = false;
     const bool gen_codes = false;
     const bool rewrite_caption = true;
     const char * input_json = nullptr;

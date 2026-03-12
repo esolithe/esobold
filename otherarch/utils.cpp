@@ -23,6 +23,8 @@
 // #define MA_API static
 #include "miniaudio/miniaudio.h"
 
+#include "acestep/mp3/mp3enc.h"
+
 void utreplace(std::string & str, const std::string & needle, const std::string & replacement) {
     size_t pos = 0;
     while ((pos = str.find(needle, pos)) != std::string::npos) {
@@ -603,6 +605,54 @@ std::string save_stereo_wav16_base64(const std::vector<float> & raw_audio, int T
     }
     std::string wav_data = oss.str();
     return kcpp_base64_encode(wav_data);
+}
+
+std::string save_stereo_mp3_base64(const std::vector<float> & raw_audio,int T_audio,int sample_rate) {
+    const float * enc_audio = raw_audio.data();
+    int enc_T  = T_audio;
+    int enc_sr = sample_rate;
+    std::vector<float> resampled;
+
+    // resample to 44100 if sr is not a valid MPEG1 rate
+    if (sample_rate != 32000 && sample_rate != 44100 && sample_rate != 48000) {
+        resampled = resample_wav(2,raw_audio,sample_rate,44100);
+        enc_audio = resampled.data();
+        enc_sr    = 44100;
+    }
+
+    const int kbps = 128;
+    mp3enc_t * enc = mp3enc_init(enc_sr, 2, kbps);
+    if (!enc) {
+        fprintf(stderr, "[Audio] mp3enc_init failed\n");
+        return "";
+    }
+
+    std::string mp3_data;
+    mp3_data.reserve(enc_T); // rough preallocation
+
+    int chunk = enc_sr;
+
+    // reusable buffer (replaces malloc inside loop)
+    std::vector<float> buf((size_t)chunk * 2);
+
+    for (int pos = 0; pos < enc_T; pos += chunk) {
+        int n = (pos + chunk <= enc_T) ? chunk : (enc_T - pos);
+        // build planar chunk
+        memcpy(buf.data(),     enc_audio + pos,          (size_t)n * sizeof(float));
+        memcpy(buf.data() + n, enc_audio + enc_T + pos,  (size_t)n * sizeof(float));
+        int out_size = 0;
+        const uint8_t * mp3 = mp3enc_encode(enc, buf.data(), n, &out_size);
+        if (out_size > 0) {
+            mp3_data.append((const char *) mp3, out_size);
+        }
+    }
+    int flush_size = 0;
+    const uint8_t * flush_data = mp3enc_flush(enc, &flush_size);
+    if (flush_size > 0) {
+        mp3_data.append((const char *) flush_data, flush_size);
+    }
+    mp3enc_free(enc);
+    return kcpp_base64_encode(mp3_data);
 }
 
 //a very rudimentary all in one sampling function which has no dependencies

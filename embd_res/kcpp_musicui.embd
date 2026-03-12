@@ -195,18 +195,19 @@ input[type="checkbox"] {
 
   <div id="advanced" class="hidden">
     <div class="compact-row" style="margin-top:10px">
-      <div><label>Temp</label><input id="lm_temperature" type="number" step="0.01"></div>
-      <div><label>CFG</label><input id="lm_cfg_scale" type="number" step="0.1"></div>
-      <div><label>Top-P</label><input id="lm_top_p" type="number" step="0.01"></div>
-      <div><label>Top-K</label><input id="lm_top_k" type="number"></div>
-      <div><label>RepPen</label><input id="lm_rep_pen" type="number"></div>
-      <div><label>Codes Top-P</label><input id="codes_top_p" type="number"></div>
-      <div><label>Codes Top-K</label><input id="codes_top_k" type="number"></div>
-      <div><label>Codes Temp</label><input id="codes_temperature" type="number"></div>
-      <div><label>Steps</label><input id="inference_steps" type="number"></div>
-      <div><label>Guidance</label><input id="guidance_scale" type="number"></div>
-      <div><label>Shift</label><input id="shift" type="number"></div>
-      <div><label>HD Stereo</label><input id="stereo" type="checkbox" checked></div>
+      <div><label>Temp</label><input id="lm_temperature" type="number" step="0.01" value="0.9"></div>
+      <div><label>CFG</label><input id="lm_cfg_scale" type="number" step="0.1" value="3.0"></div>
+      <div><label>Top-P</label><input id="lm_top_p" type="number" step="0.01" value="0.9"></div>
+      <div><label>Top-K</label><input id="lm_top_k" type="number" value="50"></div>
+      <div><label>RepPen</label><input id="lm_rep_pen" type="number" value="1.03"></div>
+      <div><label>Codes Top-P</label><input id="codes_top_p" type="number" value="0.99"></div>
+      <div><label>Codes Top-K</label><input id="codes_top_k" type="number" value="1000"></div>
+      <div><label>Codes Temp</label><input id="codes_temperature" type="number" value="1.0"></div>
+      <div><label>Steps</label><input id="inference_steps" type="number" value="8"></div>
+      <div><label>Guidance</label><input id="guidance_scale" type="number" value="1"></div>
+      <div><label>Shift</label><input id="shift" type="number" value="3"></div>
+      <div><label>Save as MP3</label><input id="use_mp3" type="checkbox" checked></div>
+      <div><label>Stereo</label><input id="stereo" type="checkbox" checked></div>
       <div><label>Gen Codes</label><input id="gen_codes" type="checkbox"></div>
     </div>
     <div>
@@ -323,6 +324,7 @@ function getFormData(){
     if(v!=="") {data[id]=isNaN(v)?v:Number(v);}
   });
   data["stereo"] = (document.getElementById("stereo").checked ? true : false);
+  data["use_mp3"] = (document.getElementById("use_mp3").checked ? true : false);
   data["gen_codes"] = (document.getElementById("gen_codes").checked ? true : false);
   data["rewrite_caption"] = (document.getElementById("rewrite_caption").checked ? true : false);
   return data;

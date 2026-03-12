@@ -976,24 +976,20 @@ std::string acestep_generate_audio(const music_generation_inputs inputs)
         }
     }
 
-    // std::string opath = "egghenlo.wav";
-    // if (write_wav(opath.c_str(), audio.data(), T_audio, 48000)) {
-    //     fprintf(stderr, "[VAE Batch%d] Wrote %s: %d samples (%.2fs @ 48kHz stereo)\n",
-    //             b, opath.c_str(), T_audio, (float)T_audio / 48000.0f);
-    // } else {
-    //     fprintf(stderr, "[VAE Batch%d] FATAL: failed to write %s\n", b, opath.c_str());
-    // }
-
     // output wav
     float muslen = (float)T_audio / 48000.0f;
     std::string finalb64;
-    if(inputs.stereo)
-    {
-        finalb64 = save_stereo_wav16_base64(audio,T_audio,48000);
+    if (inputs.use_mp3) {
+        fprintf(stderr, "[Save Audio] Converting to Mp3...\n",muslen);
+        finalb64 = save_stereo_mp3_base64(audio, T_audio, 48000);
+    } else if (inputs.stereo) {
+         fprintf(stderr, "[Save Audio] Save as Stereo WAV...\n",muslen);
+        finalb64 = save_stereo_wav16_base64(audio, T_audio, 48000);
     } else {
-        std::vector<float> mono = mix_planar_stereo_to_mono(audio.data(), T_audio);
-        std::vector<float> resampled_buf = resample_wav(1,mono,48000,32000);
-        finalb64 = save_wav16_base64(resampled_buf, 32000);
+         fprintf(stderr, "[Save Audio] Save as Mono WAV...\n",muslen);
+        std::vector<float> mono          = mix_planar_stereo_to_mono(audio.data(), T_audio);
+        std::vector<float> resampled_buf = resample_wav(1, mono, 48000, 32000);
+        finalb64                         = save_wav16_base64(resampled_buf, 32000);
     }
 
     if(acestep_dit_lowvram)

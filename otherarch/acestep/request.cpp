@@ -23,7 +23,7 @@ void request_init(AceRequest * r) {
     r->task_type          = "text2music";
     r->seed               = -1;
     r->thinking           = false;
-    r->lm_temperature     = 0.85f;
+    r->lm_temperature     = 0.9f;
     r->lm_cfg_scale       = 3.0f;
     r->lm_top_p           = 0.9f;
     r->lm_top_k           = 50;
