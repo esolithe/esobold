@@ -56,8 +56,8 @@ let updateRunningMemory = async () => {
 setInterval(updateRunningMemory, autosummaryInterval)
 
 let previousRestartNewGame = restart_new_game, previousLoadSelectedFile = load_selected_file
-restart_new_game = () => {
-    previousRestartNewGame()
+restart_new_game = (save = true, keep_memory = false) => {
+    previousRestartNewGame(save, keep_memory)
     lastContextLength = concat_gametext(true, "").length
 }
 
