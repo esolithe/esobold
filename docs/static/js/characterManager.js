@@ -889,22 +889,35 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
             let results = allTiles.filter(elem => !elem.title || elem.title.toLowerCase().indexOf(searchTerm) !== -1)
             if (results.length > 0) {
                 hidableSections.forEach(elem => elem.style.display = "grid")
+
                 allTiles.forEach(elem => {
                     if (!elem.classList.contains("searchExclude")) {
                         elem.style.display = "none"
                     }
                 })
-                results.forEach(elem => elem.style.display = "unset")
+                results.forEach(elem => {
+                    if (!elem.classList.contains("searchExclude")) {
+                        elem.style.display = "unset"
+                    }
+                })
                 hidableSections.filter(elem => [...elem.querySelectorAll(".tile")].filter(child => child.checkVisibility()).length == 1).forEach(elem => elem.style.display = "none")
             }
             else {
                 hidableSections.forEach(elem => elem.style.display = "grid")
-                allTiles.forEach(elem => elem.style.display = "unset")
+                allTiles.forEach(elem => {
+                    if (!elem.classList.contains("searchExclude")) {
+                        elem.style.display = "unset"
+                    }
+                })
             }
         }
         catch {
             hidableSections.forEach(elem => elem.style.display = "grid")
-            allTiles.forEach(elem => elem.style.display = "unset")
+            allTiles.forEach(elem => {
+                if (!elem.classList.contains("searchExclude")) {
+                    elem.style.display = "unset"
+                }
+            })
         }
     }
 
@@ -936,6 +949,10 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
                 })
             }).button("Back", () => showCharacterList(undefined, false, true)).button("Close", () => popupUtils.reset()).show();
     }
+
+    // Pre-create all standard type containers so "+" tiles always appear even when empty
+    const STANDARD_TYPES = ["Character", "World Info", "Save", "Document", "Autosave"]
+    STANDARD_TYPES.forEach(type => getContainerForType(type, TYPE_TOOLTIPS[type]))
 
     if (allCharacterNames.length > 0) {
         let lorebookEntryToString = (entry) => {
@@ -1361,9 +1378,11 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
         optElem.value = opt.label
         optElem.textContent = opt.label
         optElem.title = opt.tooltip
+        if (DROPDOWN_OPTIONS.indexOf(opt) === 0) {
+            optElem.selected = true
+        }
         typeSelect.appendChild(optElem)
     }
-    typeSelect.value = "All"
     toolbarRow.appendChild(typeSelect)
 
     // Search input (hidden for Bulk / Server options views)
@@ -1421,19 +1440,18 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
     popupUtils.content(bulkContainer)
     popupUtils.content(serverContainer)
 
-    // Close button — prompt to sync if changes occurred and server saving is configured
+    // Close button — close popup first, then prompt to sync if changes occurred
     popupUtils.resetButtonGroup().button("Close", () => {
+        popupUtils.reset()
         if (libraryChangesOccurred && is_using_kcpp_with_server_saving()) {
             msgboxYesNo("Changes were made to the library. Would you like to sync to the server now?", "Library",
                 () => { putAllCharacterManagerData() },
-                () => { popupUtils.reset() })
-        } else {
-            popupUtils.reset()
+                null)
         }
     }).show()
 
-    // Apply initial view
-    updateView("All")
+    // Apply initial view (first option in dropdown)
+    updateView(DROPDOWN_OPTIONS[0].label)
 
     // Attach drop zone to the entire popup content area (active for all views except Bulk / Server options)
     let dropZoneActive = () => typeSelect.value !== "Bulk" && typeSelect.value !== "Server options"
@@ -1721,7 +1739,6 @@ function showCharacterCreator() {
     popupUtils.reset()
         .title('New Character')
         .content(form)
-        .button('Back', () => showCharacterList(undefined, false, true))
         .button('Save', doSave)
         .button('Close', () => popupUtils.reset())
         .show();
