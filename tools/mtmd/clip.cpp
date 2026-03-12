@@ -2491,7 +2491,7 @@ static void normalize_image_u8_to_f32(const clip_image_u8 & src, clip_image_f32 
     }
 }
 
-// set of tools to manupulate images
+// set of tools to manipulate images
 // in the future, we can have HW acceleration by allowing this struct to access 3rd party lib like imagick or opencv
 struct img_tool {
     enum resize_algo {
@@ -4320,7 +4320,7 @@ bool clip_model_quantize(const char * fname_inp, const char * fname_out, const i
                 const int64_t blck_size = ggml_blck_size(type);
                 if(d==0 && cur->ne[d] % blck_size != 0)
                 {
-                    printf("\nSkipping %s because %" PRId64 " is not divisible by %ld\n",name.c_str(),cur->ne[d],blck_size);
+                    printf("\nSkipping %s because %zu is not divisible by %zu\n",name.c_str(),(size_t)cur->ne[d],(size_t)blck_size);
                     quantize = false;
                     break;
                 }

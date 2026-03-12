@@ -75,7 +75,7 @@ dry_seq_break_max = 128
 extra_images_max = 4 # for kontext/qwen img
 
 # global vars
-KcppVersion = "1.109.1"
+KcppVersion = "1.110"
 showdebug = True
 kcpp_instance = None #global running instance
 global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None}
@@ -94,6 +94,7 @@ ttsmodelpath = "" #if empty, not initialized
 embeddingsmodelpath = "" #if empty, not initialized
 musicllmmodelpath = "" #if empty, not initialized
 musicdiffusionmodelpath = "" #if empty, not initialized
+imglorainfo = []
 maxctx = 8192
 maxhordectx = 0 #set to whatever maxctx is if 0
 maxhordelen = 1024
@@ -327,8 +328,9 @@ class sd_load_model_inputs(ctypes.Structure):
                 ("clip1_filename", ctypes.c_char_p),
                 ("clip2_filename", ctypes.c_char_p),
                 ("vae_filename", ctypes.c_char_p),
-                ("lora_filenames", ctypes.c_char_p * lora_filenames_max),
-                ("lora_multiplier", ctypes.c_float),
+                ("lora_len", ctypes.c_int),
+                ("lora_filenames", ctypes.POINTER(ctypes.c_char_p)),
+                ("lora_multipliers", ctypes.POINTER(ctypes.c_float)),
                 ("lora_apply_mode", ctypes.c_int),
                 ("photomaker_filename", ctypes.c_char_p),
                 ("upscaler_filename", ctypes.c_char_p),
@@ -363,7 +365,9 @@ class sd_generation_inputs(ctypes.Structure):
                 ("remove_limits", ctypes.c_bool),
                 ("circular_x", ctypes.c_bool),
                 ("circular_y", ctypes.c_bool),
-                ("upscale", ctypes.c_bool)]
+                ("upscale", ctypes.c_bool),
+                ("lora_len", ctypes.c_int),
+                ("lora_multipliers", ctypes.POINTER(ctypes.c_float))]
 
 class sd_generation_outputs(ctypes.Structure):
     _fields_ = [("status", ctypes.c_int),
@@ -464,8 +468,11 @@ class music_load_model_inputs(ctypes.Structure):
 class music_generation_inputs(ctypes.Structure):
     _fields_ = [("is_planner_mode", ctypes.c_bool),
                 ("stereo", ctypes.c_bool),
+                ("use_mp3", ctypes.c_bool),
                 ("gen_codes", ctypes.c_bool),
-                ("input_json", ctypes.c_char_p)]
+                ("rewrite_caption", ctypes.c_bool),
+                ("input_json", ctypes.c_char_p),
+                ("music_reference_audio_data", ctypes.c_char_p)]
 
 class music_generation_outputs(ctypes.Structure):
     _fields_ = [("status", ctypes.c_int),
@@ -1340,7 +1347,7 @@ def read_gguf_metadata(file_path):
     except Exception:
         return None
 
-def extract_modelfile_params(filepath,sdfilepath,whisperfilepath,mmprojfilepath,draftmodelpath,ttsmodelpath,embdmodelpath):
+def extract_modelfile_params(filepath,sdfilepath,whisperfilepath,mmprojfilepath,draftmodelpath,ttsmodelpath,embdmodelpath,musicllmpath,musicditpath):
     global modelfile_extracted_meta
     modelfile_extracted_meta = None
     sdfsize = 0
@@ -1349,6 +1356,8 @@ def extract_modelfile_params(filepath,sdfilepath,whisperfilepath,mmprojfilepath,
     draftmodelsize = 0
     ttsmodelsize = 0
     embdmodelsize = 0
+    musicllmsize = 0
+    musicditsize = 0
     if sdfilepath and os.path.exists(sdfilepath):
         sdfsize = os.path.getsize(sdfilepath)
     if whisperfilepath and os.path.exists(whisperfilepath):
@@ -1361,16 +1370,20 @@ def extract_modelfile_params(filepath,sdfilepath,whisperfilepath,mmprojfilepath,
         ttsmodelsize = os.path.getsize(ttsmodelpath)
     if embdmodelpath and os.path.exists(embdmodelpath):
         embdmodelsize = os.path.getsize(embdmodelpath)
+    if musicllmpath and os.path.exists(musicllmpath):
+        musicllmsize = os.path.getsize(musicllmpath)
+    if musicditpath and os.path.exists(musicditpath):
+        musicditsize = os.path.getsize(musicditpath)
     if filepath and os.path.exists(filepath):
         try:
             fsize = os.path.getsize(filepath)
             if fsize>10000000: #dont bother with models < 10mb as they are probably bad
                 ggufmeta = read_gguf_metadata(filepath)
-                modelfile_extracted_meta = [filepath,ggufmeta,fsize,sdfsize,whisperfsize,mmprojsize,draftmodelsize,ttsmodelsize,embdmodelsize] #extract done. note that meta may be null
+                modelfile_extracted_meta = [filepath,ggufmeta,fsize,sdfsize,whisperfsize,mmprojsize,draftmodelsize,ttsmodelsize,embdmodelsize,musicllmsize,musicditsize] #extract done. note that meta may be null
         except Exception:
             modelfile_extracted_meta = None
 
-def autoset_gpu_layers(ctxsize, sdquanted, bbs, qkv_level): #shitty algo to determine how many layers to use
+def autoset_gpu_layers(ctxsize, sdquanted, bbs, qkv_level, musiclowvram): #shitty algo to determine how many layers to use
     global showusedmemwarning, showmultigpuwarning, modelfile_extracted_meta, calulated_gpu_overhead # reference cached values instead
     gpumem = MaxMemory[0]
     usedmem = 0
@@ -1400,6 +1413,8 @@ def autoset_gpu_layers(ctxsize, sdquanted, bbs, qkv_level): #shitty algo to dete
                         fsize *= total_parts
 
             calulated_gpu_overhead = 0
+            musicoh1 = 0
+            musicoh2 = 0
             if modelfile_extracted_meta[3] > 1024*1024*1024*5: #sdxl tax
                 calulated_gpu_overhead += 1024*1024*1024*(9 - sdquanted * 1.5) # 9, 7.5, 6
             elif modelfile_extracted_meta[3] > 1024*1024*512: #normal sd tax
@@ -1414,6 +1429,14 @@ def autoset_gpu_layers(ctxsize, sdquanted, bbs, qkv_level): #shitty algo to dete
                 calulated_gpu_overhead += max(600*1024*1024, modelfile_extracted_meta[7] * 3)
             if modelfile_extracted_meta[8] > 1024*1024*10: #embeddings model tax
                 calulated_gpu_overhead += max(350*1024*1024, modelfile_extracted_meta[8] * 1.5)
+            if modelfile_extracted_meta[9] > 1024*1024*10: #music llm tax
+                musicoh1 = modelfile_extracted_meta[9] * 1.05
+            if modelfile_extracted_meta[10] > 1024*1024*10: #music dit tax
+                musicoh2 = modelfile_extracted_meta[10] * 1.05 + (600*1024*1024)
+            if musiclowvram:
+                calulated_gpu_overhead += max(musicoh1,musicoh2)
+            else:
+                calulated_gpu_overhead += musicoh1 + musicoh2
 
             mem -= calulated_gpu_overhead
             mem = 0 if mem < 0 else mem
@@ -1586,7 +1609,7 @@ def fetch_gpu_properties(testCU,testVK,testmemory=False):
 
     # Check VRAM detection after all backends have been tested
     if MaxMemory[0] < (1024*1024*256):
-        print("Unable to detect VRAM, please set layers manually.")
+        print("Unable to detect VRAM.")
 
     return
 
@@ -2009,30 +2032,31 @@ def sd_load_model(model_filename,vae_filename,lora_filenames,t5xxl_filename,clip
     inputs.taesd = True if args.sdvaeauto else False
     inputs.tiled_vae_threshold = args.sdtiledvae
     inputs.vae_filename = vae_filename.encode("UTF-8")
-    for n in range(lora_filenames_max):
-        if n >= len(lora_filenames):
-            inputs.lora_filenames[n] = "".encode("UTF-8")
-        else:
-            inputs.lora_filenames[n] = lora_filenames[n].encode("UTF-8")
-
-    inputs.lora_multiplier = args.sdloramult
     inputs.t5xxl_filename = t5xxl_filename.encode("UTF-8")
     inputs.clip1_filename = clip1_filename.encode("UTF-8")
     inputs.clip2_filename = clip2_filename.encode("UTF-8")
     inputs.photomaker_filename = photomaker_filename.encode("UTF-8")
     inputs.upscaler_filename = upscaler_filename.encode("UTF-8")
+
+    lora_filenames = [lf.encode("UTF-8") for lf in lora_filenames[:lora_filenames_max] if lf]
+    lora_len = len(lora_filenames)
+    lora_multipliers = prepare_lora_multipliers([])
+    inputs.lora_len = lora_len
+    inputs.lora_filenames = (ctypes.c_char_p * lora_len)(*lora_filenames)
+    inputs.lora_multipliers = (ctypes.c_float * lora_len)(*lora_multipliers)
+    # auto if no zero-weight lora, dynamic otherwise
+    inputs.lora_apply_mode = 3 if 0. in lora_multipliers else 0
+
     inputs.img_hard_limit = args.sdclamped
     inputs.img_soft_limit = args.sdclampedsoft
-    inputs.lora_apply_mode = 0 #auto for now
     inputs = set_backend_props(inputs)
     ret = handle.sd_load_model(inputs)
     return ret
 
-def sd_oai_tranform_params(genparams):
-    size = genparams.get('size', "512x512")
-    if size and size!="":
-        pattern = r'^\D*(\d+)x(\d+)$'
-        match = re.fullmatch(pattern, size)
+def sd_oai_transform_params(genparams):
+    size = genparams.get('size') or ''
+    pattern = r'^\D*(\d+)x(\d+)$'
+    match = re.fullmatch(pattern, size)
     if match:
         width = int(match.group(1))
         height = int(match.group(2))
@@ -2125,6 +2149,69 @@ def sd_upscale(genparams):
     if ret.status==1:
         data_main = ret.data.decode("UTF-8","ignore")
     return data_main
+
+def sanitize_lora_multipliers(sdloramult):
+    if sdloramult is None:
+        sdloramult = [1.0]
+    elif not isinstance(sdloramult, list):
+        sdloramult = [sdloramult]
+    sdloramult = [tryparsefloat(m, 0.) for m in sdloramult]
+    return sdloramult
+
+def prepare_lora_multipliers(request_list):
+    orig_multipliers = [lora[3] for lora in imglorainfo]
+    req_by_path = {}
+    for r in request_list:
+        if not isinstance(r, dict):
+            continue
+        multiplier = tryparsefloat(r.get('multiplier'), 0.)
+        path = r.get('path')
+        if path and isinstance(path, str):
+            req_by_path[path] = req_by_path.get(path, 0.) + multiplier
+    result = []
+    for i, (fullpath, name, path, origmul) in enumerate(imglorainfo):
+        multiplier = orig_multipliers[i]
+        if multiplier == 0. and path in req_by_path:
+            multiplier = req_by_path[path]
+        result.append(multiplier)
+    return result
+
+def extract_loras_from_prompt(prompt):
+    pattern = r'<lora:([^:>]+):([^>]+)>'
+    lora_data = []
+    matches = list(re.finditer(pattern, prompt))
+    for match in matches:
+        raw_path = match.group(1)
+        raw_mul = match.group(2)
+        try:
+            mul = float(raw_mul)
+        except ValueError:
+            continue
+        is_high_noise = False
+        prefix = "|high_noise|"
+        if raw_path.startswith(prefix):
+            raw_path = raw_path[len(prefix):]
+            is_high_noise = True
+        item = {'name': raw_path, 'multiplier': mul}
+        if is_high_noise:
+            item["is_high_noise"] = is_high_noise
+        lora_data.append(item)
+        prompt = prompt.replace(match.group(0), "", 1)
+    return prompt, lora_data
+
+def lora_map_name_to_path(request_list):
+    name2path = {}
+    for _, name, path, _ in imglorainfo:
+        name2path[name] = path
+    result = []
+    for req in request_list:
+        out = dict(req)
+        name = out.pop('name')
+        path = name2path.get(name)
+        if path:
+            out['path'] = path
+            result.append(out)
+    return result
 
 def sd_generate(genparams):
     global maxctx, args, currentusergenkey, totalgens, pendingabortkey, chatcompl_adapter
@@ -2224,6 +2311,11 @@ def sd_generate(genparams):
     inputs.circular_x = tryparseint(adapter_obj.get("circular_x", genparams.get("circular_x",0)),0)
     inputs.circular_y = tryparseint(adapter_obj.get("circular_y", genparams.get("circular_y",0)),0)
     inputs.upscale = (True if tryparseint(genparams.get("enable_hr", 0),0) else False)
+
+    lora_multipliers = prepare_lora_multipliers(genparams.get("lora", []))
+    inputs.lora_len = len(lora_multipliers)
+    inputs.lora_multipliers = (ctypes.c_float * inputs.lora_len)(*lora_multipliers)
+
     ret = handle.sd_generate(inputs)
     data_main = ""
     data_extra = ""
@@ -2977,9 +3069,12 @@ def music_generate_codes(genparams):
     input_json = json.dumps(genparams)
     inputs = music_generation_inputs()
     inputs.is_planner_mode = True
-    inputs.stereo = genparams.get('stereo', False)
+    inputs.stereo = genparams.get('stereo', True)
+    inputs.use_mp3 = genparams.get('use_mp3', False)
     inputs.gen_codes =  genparams.get('gen_codes', False)
+    inputs.rewrite_caption =  genparams.get('rewrite_caption', True)
     inputs.input_json = input_json.encode("UTF-8")
+    inputs.music_reference_audio_data = "".encode("UTF-8")
     ret = handle.music_generate(inputs)
     outstr = ""
     if ret.status==1:
@@ -2992,9 +3087,13 @@ def music_generate_audio(genparams):
     input_json = json.dumps(genparams)
     inputs = music_generation_inputs()
     inputs.is_planner_mode = False
-    inputs.stereo = genparams.get('stereo', False)
+    inputs.stereo = genparams.get('stereo', True)
+    inputs.use_mp3 = genparams.get('use_mp3', False)
     inputs.gen_codes =  genparams.get('gen_codes', False)
+    inputs.rewrite_caption =  genparams.get('rewrite_caption', True)
     inputs.input_json = input_json.encode("UTF-8")
+    refaudio = genparams.get('music_reference_audio_data', None)
+    inputs.music_reference_audio_data = (refaudio.encode("UTF-8") if (refaudio and refaudio!="") else "".encode("UTF-8"))
     ret = handle.music_generate(inputs)
     outstr = ""
     if ret.status==1:
@@ -3220,16 +3319,36 @@ def is_ipv6_supported():
     except Exception:
         return False
 
+def detect_toolcall_tags(text: str): #for use with jinja tool responses, detect the tool call tag if present, we'll use that to split.
+    if text is None:
+        return None
+    text = text.strip()
+    m = re.match(r'<\s*([A-Za-z_][\w\-]*)\b[^>]*>', text, re.DOTALL)   # match first opening tag
+    if not m:
+        return None
+    tag = m.group(1)
+    if re.search(rf'</\s*{re.escape(tag)}\s*>\s*$', text, re.DOTALL): # ensure the string ends with the matching closing tag
+        return tag
+    return None
+
 def format_jinja(messages, tools):
     try:
         def strftime_now(format='%Y-%m-%d %H:%M:%S'):
             return datetime.now().strftime(format)
         def tojson(x, ensure_ascii=False, indent=None, separators=None, sort_keys=False):
             return json.dumps(x, ensure_ascii=ensure_ascii, indent=indent, separators=separators, sort_keys=sort_keys)
+        def raise_exception(msg):
+            print(f"Warning: Jinja template raised an exception: {msg}")
+            return ""
         global cached_chat_template
         from jinja2.sandbox import ImmutableSandboxedEnvironment
         jinja_env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True)
+        # sanitize messages to remove none types
+        for m in messages:
+            if m.get("content") is None:
+                del m["content"]
         jinja_env.globals['strftime_now'] = strftime_now
+        jinja_env.globals['raise_exception'] = raise_exception
         jinja_env.filters["tojson"] = tojson
         jinja_compiled_template = jinja_env.from_string(cached_chat_template)
         text = None
@@ -4317,6 +4436,9 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
     async def generate_text(self, genparams, api_format, stream_flag):
         global friendlymodelname, chatcompl_adapter, currfinishreason
         currfinishreason = None
+        req_id_suffix = genparams.get('oai_uniqueid',1)
+        chatcmpl_id = f"chatcmpl-A{req_id_suffix}"
+        cmpl_id = f"cmpl-A{req_id_suffix}"
 
         def run_blocking():  # api format 1=basic,2=kai,3=oai,4=oai-chat
             # flag instance as non-idle for a while
@@ -4336,8 +4458,8 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             genout = run_blocking()
 
         recvtxt = genout['text']
-        prompttokens = genout['prompt_tokens']
-        comptokens = genout['completion_tokens']
+        prompttokens = genout['prompt_tokens'] if genout['prompt_tokens'] > 0 else 0
+        comptokens = genout['completion_tokens'] if genout['completion_tokens'] > 0 else 0
         currfinishreason = "error" if (genout['stopreason'] == -2) else ("length" if (genout['stopreason'] != 1) else "stop")
 
         # grab logprobs if not streaming
@@ -4359,7 +4481,17 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         if api_format == 4 or api_format == 2:
             using_openai_tools = genparams.get('using_openai_tools', False)
             if using_openai_tools:
-                tool_calls = extract_json_from_string(recvtxt)
+                # first, check and potentially segment multiple tags for multi-tool calls
+                toolcalltagfound = detect_toolcall_tags(recvtxt)
+                if not toolcalltagfound:
+                    tool_calls = extract_json_from_string(recvtxt)
+                else: # we found tool call tags, split to extract all internal stuff
+                    splitting_str = recvtxt.replace(f"<{toolcalltagfound}>", "<TO_SPLIT>").replace(f"</{toolcalltagfound}>", "<TO_SPLIT>")
+                    chunks = [x.strip() for x in splitting_str.split("<TO_SPLIT>") if x]
+                    chunks = [x for x in chunks if x]
+                    for chunk in chunks: #for each potential toolcall, add it to the pile
+                        sub_tool_calls = extract_json_from_string(chunk)
+                        tool_calls.extend(sub_tool_calls)
                 if tool_calls and len(tool_calls)>0:
                     tool_calls = [normalize_tool_call(obj) for obj in tool_calls]
                     for tc in tool_calls:
@@ -4373,11 +4505,11 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         if api_format == 1:
             res = {"data": {"seqs": [recvtxt]}}
         elif api_format == 3:
-            res = {"id": "cmpl-A1", "object": "text_completion", "created": int(time.time()), "model": friendlymodelname,
+            res = {"id": cmpl_id, "object": "text_completion", "created": int(time.time()), "model": friendlymodelname,
                    "usage": {"prompt_tokens": prompttokens, "completion_tokens": comptokens, "total_tokens": (prompttokens+comptokens)},
                    "choices": [{"text": recvtxt, "index": 0, "finish_reason": currfinishreason, "logprobs":logprobsdict}]}
         elif api_format == 4:
-            res = {"id": "chatcmpl-A1", "object": "chat.completion", "created": int(time.time()), "model": friendlymodelname,
+            res = {"id": chatcmpl_id, "object": "chat.completion", "created": int(time.time()), "model": friendlymodelname,
                    "usage": {"prompt_tokens": prompttokens, "completion_tokens": comptokens, "total_tokens": (prompttokens+comptokens)},
                    "choices": [{"index": 0, "message": {"role": "assistant", "content": recvtxt, "tool_calls": tool_calls}, "finish_reason": currfinishreason, "logprobs":logprobsdict}]}
         elif api_format == 5:
@@ -4411,6 +4543,9 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
     async def handle_sse_stream(self, genparams, api_format):
         global friendlymodelname, currfinishreason
         using_openai_tools = genparams.get('using_openai_tools', False)
+        req_id_suffix = genparams.get('oai_uniqueid',1)
+        chatcmpl_id = f"chatcmpl-A{req_id_suffix}"
+        cmpl_id = f"cmpl-A{req_id_suffix}"
         self.send_response(200)
         self.send_header("X-Accel-Buffering", "no")
         self.send_header("cache-control", "no-cache")
@@ -4424,6 +4559,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         thinkpairs = [{"start":"<|channel|>analysis<|message|>","end":"<|start|>assistant<|channel|>final<|message|>"},
                       {"start":"<think>","end":"</think>"}]
         current_token = 0
+        prompttokens = 0
         incomplete_token_buffer = bytearray()
         async_sleep_short = 0.02
         await asyncio.sleep(0.35) #anti race condition, prevent check from overtaking generate
@@ -4435,6 +4571,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                 if streamDone:
                     sr = handle.get_last_stop_reason()
                     currfinishreason = "error" if sr==-2 else ("length" if (sr!=1) else "stop")
+                    prompttokens = handle.get_last_input_count()
                 tokenStr = ""
                 streamcount = handle.get_stream_count()
                 while current_token < streamcount:
@@ -4503,10 +4640,10 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
 
                             if need_split_final_msg: #we need to send one message without the finish reason, then send a finish reason with no msg to follow standards
                                 if api_format == 4:  # if oai chat, set format to expected openai streaming response
-                                    event_str = json.dumps({"id":"koboldcpp","object":"chat.completion.chunk","created":int(time.time()),"model":friendlymodelname,"choices":[{"index":0,"finish_reason":None,"delta":delta}]})
+                                    event_str = json.dumps({"id":chatcmpl_id,"object":"chat.completion.chunk","created":int(time.time()),"model":friendlymodelname,"choices":[{"index":0,"finish_reason":None,"delta":delta}]})
                                     await self.send_oai_sse_event(event_str)
                                 elif api_format == 3:  # non chat completions
-                                    event_str = json.dumps({"id":"koboldcpp","object":"text_completion","created":int(time.time()),"model":friendlymodelname,"choices":[{"index":0,"finish_reason":None,"text":tokenStr}]})
+                                    event_str = json.dumps({"id":cmpl_id,"object":"text_completion","created":int(time.time()),"model":friendlymodelname,"choices":[{"index":0,"finish_reason":None,"text":tokenStr}]})
                                     await self.send_oai_sse_event(event_str)
                                 else:
                                     event_str = json.dumps({"token": tokenStr, "finish_reason":None})
@@ -4518,17 +4655,17 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                 if streamDone and ("logprobs" in genparams and genparams["logprobs"]): # this is a hack that sends an extra message containing ALL the logprobs
                                     lastlogprobs = handle.last_logprobs()
                                     logprobsdict = parse_last_logprobs(lastlogprobs)
-                                    addonstr = json.dumps({"id":"koboldcpp","object":"chat.completion.chunk","created":int(time.time()),"model":friendlymodelname,"choices":[{"index":0,"finish_reason":None,"delta":{'role':'assistant','content':''},"logprobs":logprobsdict}]})
+                                    addonstr = json.dumps({"id":chatcmpl_id,"object":"chat.completion.chunk","created":int(time.time()),"model":friendlymodelname,"choices":[{"index":0,"finish_reason":None,"delta":{'role':'assistant','content':''},"logprobs":logprobsdict}]})
                                     await self.send_oai_sse_event(addonstr)
-                                event_str = json.dumps({"id":"koboldcpp","object":"chat.completion.chunk","created":int(time.time()),"model":friendlymodelname,"choices":[{"index":0,"finish_reason":currfinishreason,"delta":delta}]})
+                                event_str = json.dumps({"id":chatcmpl_id,"object":"chat.completion.chunk","created":int(time.time()),"model":friendlymodelname,"choices":[{"index":0,"finish_reason":currfinishreason,"delta":delta}]})
                                 await self.send_oai_sse_event(event_str)
                             elif api_format == 3:  # non chat completions
                                 if streamDone and ("logprobs" in genparams and genparams["logprobs"]): # this is a hack that sends an extra message containing ALL the logprobs
                                     lastlogprobs = handle.last_logprobs()
                                     logprobsdict = parse_last_logprobs(lastlogprobs)
-                                    addonstr = json.dumps({"id":"koboldcpp","object":"text_completion","created":int(time.time()),"model":friendlymodelname,"choices":[{"index":0,"finish_reason":None,"text":"","logprobs":logprobsdict}]})
+                                    addonstr = json.dumps({"id":cmpl_id,"object":"text_completion","created":int(time.time()),"model":friendlymodelname,"choices":[{"index":0,"finish_reason":None,"text":"","logprobs":logprobsdict}]})
                                     await self.send_oai_sse_event(addonstr)
-                                event_str = json.dumps({"id":"koboldcpp","object":"text_completion","created":int(time.time()),"model":friendlymodelname,"choices":[{"index":0,"finish_reason":currfinishreason,"text":tokenStr}]})
+                                event_str = json.dumps({"id":cmpl_id,"object":"text_completion","created":int(time.time()),"model":friendlymodelname,"choices":[{"index":0,"finish_reason":currfinishreason,"text":tokenStr}]})
                                 await self.send_oai_sse_event(event_str)
                             else:
                                 event_str = json.dumps({"token": tokenStr, "finish_reason":currfinishreason})
@@ -4541,6 +4678,14 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
 
                 if streamDone:
                     if api_format == 4 or api_format == 3:  # if oai chat, send last [DONE] message consistent with openai format
+                        strop = genparams.get("stream_options",None)
+                        if (strop and strop.get("include_usage",False)):  # Send a final chunk with usage info, only if requested
+                            usage_obj = {"prompt_tokens": prompttokens, "completion_tokens": current_token, "total_tokens": (prompttokens + current_token)}
+                            if api_format == 4:
+                                usage_str = json.dumps({"id":chatcmpl_id,"object":"chat.completion.chunk","created":int(time.time()),"model":friendlymodelname,"choices":[],"usage":usage_obj})
+                            else:
+                                usage_str = json.dumps({"id":cmpl_id,"object":"text_completion","created":int(time.time()),"model":friendlymodelname,"choices":[],"usage":usage_obj})
+                            await self.send_oai_sse_event(usage_str)
                         await self.send_oai_sse_event('[DONE]')
                         await asyncio.sleep(async_sleep_short)
                     break
@@ -4559,7 +4704,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
 
     async def handle_request(self, genparams, api_format, stream_flag):
         tasks = []
-
+        genparams["oai_uniqueid"] = random.randint(100000, 999999)
         try:
             if stream_flag:
                 tasks.append(self.handle_sse_stream(genparams, api_format))
@@ -4988,6 +5133,9 @@ Change Mode<br>
 
         elif clean_path.endswith('/v1/models') or clean_path=='/models':
             response_body = (json.dumps({"object":"list","data":[{"id":friendlymodelname,"object":"model","created":int(time.time()),"owned_by":"koboldcpp","permission":[],"root":"koboldcpp"}]}).encode())
+
+        elif clean_path.endswith('/sdapi/v1/loras'):
+            response_body = (json.dumps([{'name': name, 'path': path} for _, name, path, multiplier in imglorainfo if multiplier == 0.])).encode()
 
         elif clean_path.endswith('/sdapi/v1/upscalers'):
             if args.sdupscaler:
@@ -6166,7 +6314,13 @@ Change Mode<br>
                             lastgeneratedcomfyimg = b''
                             genparams = sd_comfyui_tranform_params(genparams)
                         elif is_oai_imggen:
-                            genparams = sd_oai_tranform_params(genparams)
+                            genparams = sd_oai_transform_params(genparams)
+                        if not genparams.get('lora'):
+                            # process <lora:name:multiplier> syntax
+                            prompt, loras = extract_loras_from_prompt(genparams['prompt'])
+                            if loras:
+                                genparams['prompt'] = prompt
+                                genparams['lora'] = lora_map_name_to_path(loras)
                         gen = sd_generate(genparams)
                         gendat = gen["data"]
                         genanim = gen["animated"]
@@ -7243,7 +7397,9 @@ def show_gui():
             draftmodelpath = draftmodel_var.get()
             ttsmodelpath = tts_model_var.get() if ttsgpu_var.get()==1 else ""
             embdmodelpath = embeddings_model_var.get() if embeddings_gpu_var.get()==1 else ""
-            extract_modelfile_params(filepath,sdfilepath,whisperfilepath,mmprojfilepath,draftmodelpath,ttsmodelpath,embdmodelpath)
+            musicllmpath = musicllm_var.get()
+            musicditpath = musicdiffusion_var.get()
+            extract_modelfile_params(filepath,sdfilepath,whisperfilepath,mmprojfilepath,draftmodelpath,ttsmodelpath,embdmodelpath,musicllmpath,musicditpath)
             changed_gpulayers_estimate()
         pass
 
@@ -7255,7 +7411,7 @@ def show_gui():
         changed_gpulayers_estimate()
 
     def changed_gpulayers_estimate(*args):
-        autoset_gpu_layers(int(contextsize_text[context_var.get()]),sd_quant_option(sd_quant_var.get()),int(batchsize_values[int(blas_size_var.get())]),(quantkv_var.get() if flashattention_var.get()==1 else 0))
+        autoset_gpu_layers(int(contextsize_text[context_var.get()]),sd_quant_option(sd_quant_var.get()),int(batchsize_values[int(blas_size_var.get())]),(quantkv_var.get() if flashattention_var.get()==1 else 0),musiclowvram_var.get()==1)
         max_gpu_layers = (f"{modelfile_extracted_meta[1][0]+1}" if (modelfile_extracted_meta and modelfile_extracted_meta[1] and modelfile_extracted_meta[1][0]!=0) else "")
         index = runopts_var.get()
         gpu_be = (index == "Use Vulkan" or index == "Use Vulkan (Old CPU)" or index == "Use Vulkan (Older CPU)" or index == "Use CUDA" or index == "Use hipBLAS (ROCm)")
@@ -7601,7 +7757,7 @@ def show_gui():
     embeddings_gpu_var.trace_add("write", gui_changed_modelfile)
     makefileentry(model_tab, "Preload Story:", "Select Preloaded Story File", preloadstory_var, 17,width=280,singlerow=True,tooltiptxt="Select an optional KoboldAI JSON savefile \nto be served on launch to any client.")
     makefileentry(model_tab, "SaveData File:", "Select or Create New SaveData Database File", savedatafile_var, 19,width=280,filetypes=[("KoboldCpp SaveDB", "*.jsondb")],singlerow=True,dialog_type=1,tooltiptxt="Selecting a file will allow data to be loaded and saved persistently to this KoboldCpp server remotely. File is created if it does not exist.")
-    makefileentry(model_tab, "MCP JSON:", "Select a mcp.json configuration file", mcpfile_var, 21,width=280,filetypes=[("MCP JSON", "*.json")],singlerow=True,tooltiptxt="Specify path to mcp.json which contains the Cladue Desktop compatible MCP server config.")
+    makefileentry(model_tab, "MCP JSON:", "Select a mcp.json configuration file", mcpfile_var, 21,width=280,filetypes=[("MCP JSON", "*.json")],singlerow=True,tooltiptxt="Specify path to mcp.json which contains the Claude Desktop compatible MCP server config.")
     makefileentry(model_tab, "Chat Adapter:", "Select ChatCompletions Adapter File", chatcompletionsadapter_var, 24, width=184, filetypes=[("JSON Adapter", "*.json")], singlerow=True, tooltiptxt="Select an optional ChatCompletions Adapter JSON file to force custom instruct tags.")
     def pickpremadetemplate():
         initialDir = os.path.join(os.path.abspath(os.path.dirname(__file__)), 'kcpp_adapters')
@@ -8015,9 +8171,10 @@ def show_gui():
         args.sdquant = sd_quant_option(sd_quant_var.get())
         if sd_lora_var.get() != "":
             args.sdlora = [item.strip() for item in sd_lora_var.get().split("|") if item]
-            args.sdloramult = float(sd_loramult_var.get())
         else:
             args.sdlora = None
+        # XXX the user may have used '|' since it's used for the LoRAs
+        args.sdloramult = sanitize_lora_multipliers(re.split(r"[ |]+", sd_loramult_var.get()))
 
         if gen_defaults_var.get() != "":
             args.gendefaults = gen_defaults_var.get()
@@ -8279,7 +8436,7 @@ def show_gui():
                 sd_lora_var.set(dict["sdlora"] if ("sdlora" in dict and dict["sdlora"]) else "")
         else:
             sd_lora_var.set("")
-        sd_loramult_var.set(str(dict["sdloramult"]) if ("sdloramult" in dict and dict["sdloramult"]) else "1.0")
+        sd_loramult_var.set(" ".join(f"{n:.3f}".rstrip('0').rstrip('.') for n in dict.get("sdloramult", [])))
         gen_defaults_var.set(dict["gendefaults"] if ("gendefaults" in dict and dict["gendefaults"]) else "")
         gen_defaults_overwrite_var.set(1 if "gendefaultsoverwrite" in dict and dict["gendefaultsoverwrite"] else 0)
 
@@ -8726,6 +8883,8 @@ def convert_invalid_args(args):
         dict["noflashattention"] = not dict["flashattention"]
     if "sdlora" in dict and isinstance(dict["sdlora"], str):
         dict["sdlora"] = ([dict["sdlora"]] if dict["sdlora"] else None)
+    if "sdloramult" in dict:
+        dict["sdloramult"] = sanitize_lora_multipliers(dict["sdloramult"])
     return args
 
 def setuptunnel(global_memory, has_sd):
@@ -9435,6 +9594,29 @@ def main(launch_args, default_args):
                 print("Press ENTER key to exit.", flush=True)
                 input()
 
+
+def mk_lora_info(imgloras, multipliers):
+    # (full path, name, name+extension, can change multiplier)
+    # XXX for each LoRA, sdapi needs a name and a path; we could use
+    # the full filename as a path, but we don't know if we can expose it
+    used_lora_names = set()
+    result = []
+    first_multiplier = multipliers[0] if len(multipliers) > 0 else 1.
+    for i, lora_path in enumerate(imgloras):
+        multiplier = multipliers[i] if i < len(multipliers) else first_multiplier
+        lora_file = os.path.basename(lora_path)
+        lora_name, lora_ext = os.path.splitext(lora_file)
+        # ensure unique names
+        i = 1
+        mapped_name = lora_name
+        while mapped_name in used_lora_names:
+            i += 1
+            mapped_name = lora_name + '_' + str(i)
+        used_lora_names.add(mapped_name)
+        result.append((lora_path, mapped_name, mapped_name + lora_ext, multiplier))
+    return result
+
+
 def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
     global embedded_kailite, embedded_kcpp_docs, embedded_kcpp_sdui, embedded_kailite_gz, embedded_kcpp_docs_gz, embedded_kcpp_sdui_gz, embedded_lcpp_ui_gz, embedded_musicui, embedded_musicui_gz, start_time, exitcounter, global_memory, using_gui_launcher
     global libname, args, friendlymodelname, friendlysdmodelname, fullsdmodelpath, password, fullwhispermodelpath, ttsmodelpath, embeddingsmodelpath, musicdiffusionmodelpath, musicllmmodelpath, friendlyembeddingsmodelname, has_audio_support, has_vision_support, cached_chat_template
@@ -9742,18 +9924,22 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
                 fetch_gpu_properties(True,True)
                 pass
             if args.gpulayers==-1:
-                if MaxMemory[0] > 0 and (not args.usecpu) and ((args.usecuda is not None) or (args.usevulkan is not None) or sys.platform=="darwin"):
-                    extract_modelfile_params(args.model_param,args.sdmodel,args.whispermodel,args.mmproj,args.draftmodel,args.ttsmodel if args.ttsgpu else "",args.embeddingsmodel if args.embeddingsgpu else "")
-                    layeramt = autoset_gpu_layers(args.contextsize,args.sdquant,args.batchsize,(0 if args.noflashattention else args.quantkv))
-                    print(f"Auto Recommended GPU Layers: {layeramt}")
-                    args.gpulayers = layeramt
-                    # enable autofit also if permissible
+                if (not args.usecpu) and ((args.usecuda is not None) or (args.usevulkan is not None) or sys.platform=="darwin"):
+                    if MaxMemory[0] > 0:
+                        extract_modelfile_params(args.model_param,args.sdmodel,args.whispermodel,args.mmproj,args.draftmodel,args.ttsmodel if args.ttsgpu else "",args.embeddingsmodel if args.embeddingsgpu else "", args.musicllm, args.musicdiffusion)
+                        layeramt = autoset_gpu_layers(args.contextsize,args.sdquant,args.batchsize,(0 if args.noflashattention else args.quantkv),args.musiclowvram)
+                        print(f"Auto Recommended GPU Layers: {layeramt}")
+                        args.gpulayers = layeramt
+                    else:
+                        print("Unable to detect VRAM, but autofit may still be used if applicable.")
+                        args.gpulayers = 0
+                    # also enable autofit also if permissible
                     if not args.autofit and not args.tensor_split and not args.overridetensors and not args.moecpu:
                         args.autofit = True
                         args.autofitpadding = default_autofit_padding
                         print("GPU layers is default: Will enable AutoFit for increased estimation accuracy.")
                 else:
-                    print("No GPU backend found, or could not automatically determine GPU layers. Please set it manually.")
+                    print("No GPU backend found, or could not automatically determine GPU layers. You may prefer to set layers manually.")
                     args.gpulayers = 0
 
     if args.threads <= 0:
@@ -9887,6 +10073,9 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
                         imgloras.append(os.path.abspath(curr))
                     else:
                         print(f"Missing SD LORA model file {curr}...")
+            global imglorainfo
+            args.sdloramult = sanitize_lora_multipliers(args.sdloramult)
+            imglorainfo = mk_lora_info(imgloras, args.sdloramult)
             if args.sdvae:
                 if os.path.exists(args.sdvae):
                     imgvae = os.path.abspath(args.sdvae)
@@ -10483,7 +10672,7 @@ if __name__ == '__main__':
     sdparsergrouplora = sdparsergroup.add_mutually_exclusive_group()
     sdparsergrouplora.add_argument("--sdquant",  metavar=('[quantization level 0/1/2]'), help="If specified, loads the model quantized to save memory. 0=off, 1=q8, 2=q4", type=int, choices=[0,1,2], nargs="?", const=2, default=0)
     sdparsergrouplora.add_argument("--sdlora", metavar=('[filename]'), help="Specify image generation LoRAs safetensors models to be applied. Multiple LoRAs are accepted.", nargs='+')
-    sdparsergroup.add_argument("--sdloramult", metavar=('[amount]'), help="Multiplier for the image LoRA model to be applied.", type=float, default=1.0)
+    sdparsergroup.add_argument("--sdloramult", metavar=('[amounts]'), help="Multipliers for the image LoRA model to be applied.", type=float, nargs='+', default=[1.0])
     sdparsergroup.add_argument("--sdtiledvae", metavar=('[maxres]'), help="Adjust the automatic VAE tiling trigger for images above this size. 0 disables vae tiling.", type=int, default=default_vae_tile_threshold)
     whisperparsergroup = parser.add_argument_group('Whisper Transcription Commands')
     whisperparsergroup.add_argument("--whispermodel", metavar=('[filename]'), help="Specify a Whisper .bin model to enable Speech-To-Text transcription.", default="")

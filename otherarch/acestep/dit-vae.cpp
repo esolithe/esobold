@@ -21,6 +21,8 @@
 #include "./bpe.h"
 #include "./debug.h"
 #include "./request.h"
+#include "./vae-enc.h"
+#include "otherarch/utils.h"
 
 // Minimal WAV writer (16-bit PCM stereo)
 static bool write_wav(const char * path, const float * audio, int T_audio, int sr) {
@@ -580,6 +582,7 @@ static DiTGGMLConfig music_dit_cfg;
 static Timer music_dit_timer;
 static bool is_turbo = false;
 static VAEGGML vae = {};
+static VAEEncoder vae_enc = {};
 static BPETokenizer music_tok;
 static Qwen3GGML music_text_enc = {};
 static GGUFModel gf_te = {};
@@ -606,6 +609,7 @@ void unload_acestep_dit_others()
     if(acestep_dit_others_loaded)
     {
         acestep_dit_others_loaded = false;
+        vae_enc_free(&vae_enc);
         vae_ggml_free(&vae);
         gf_close(&gf_te);
         cond_ggml_free(&music_cond);
@@ -673,6 +677,10 @@ bool load_acestep_dit(std::string music_embd_path, std::string music_dit_path, s
     fprintf(stderr, "[Load] VAE weights: %.1f ms\n", music_dit_timer.ms());
 
     music_dit_timer.reset();
+    vae_enc_load(&vae_enc, vae_gguf);
+    fprintf(stderr, "[Load] VAE Enc weights: %.1f ms\n", music_dit_timer.ms());
+
+    music_dit_timer.reset();
     if (!load_bpe_from_gguf(&music_tok, text_enc_gguf)) {
         fprintf(stderr, "FATAL: failed to load music tokenizer from %s\n", text_enc_gguf);
         return false;
@@ -733,6 +741,50 @@ std::string acestep_generate_audio(const music_generation_inputs inputs)
         }
     }
 
+    const int FRAMES_PER_SECOND = 25;
+    int Oc = music_dit_cfg.out_channels;          // 64
+    int ctx_ch = music_dit_cfg.in_channels - Oc;  // 128
+    int batch_n                = 1;
+    int vae_chunk              = 256;
+    int vae_overlap            = 64;
+
+    // Cover mode: load VAE encoder and encode source audio
+    bool have_cover = false;
+    std::vector<float> cover_latents;  // [T_cover, 64] time-major
+    int T_cover = 0;
+    std::string custom_reference_audio_str = inputs.music_reference_audio_data;
+    if (custom_reference_audio_str!="") {
+        music_dit_timer.reset();
+        int T_audio = 0, wav_sr = 0;
+
+        std::vector<uint8_t> media_data_buffer = kcpp_base64_decode(custom_reference_audio_str);
+        std::vector<float> custom_reference_audio_pcmf32;
+        bool ok = kcpp_decode_audio_from_buf(media_data_buffer.data(), media_data_buffer.size(), 48000, custom_reference_audio_pcmf32);
+        if (!ok) {
+            printf("\nError: Cannot read input audio file.\n");
+            return "";
+        }
+
+        wav_sr = 48000;
+        T_audio = custom_reference_audio_pcmf32.size();
+        float * wav_data = custom_reference_audio_pcmf32.data();
+
+        fprintf(stderr, "[Cover] Source audio: %.2fs\n", (float)T_audio / (float)(wav_sr > 0 ? wav_sr : 48000));
+        int max_T_lat = (T_audio / 1920) + 64;
+        cover_latents.resize(max_T_lat * 64);
+        T_cover = vae_enc_encode_tiled(&vae_enc, wav_data, T_audio,
+                                        cover_latents.data(), max_T_lat,
+                                        vae_chunk, vae_overlap);
+        if (T_cover < 0) {
+            fprintf(stderr, "FATAL: VAE encode of src_audio failed\n");
+            return "";
+        }
+        cover_latents.resize(T_cover * 64);
+        fprintf(stderr, "[Cover] Encoded: T_cover=%d (%.2fs), %.1f ms\n",
+                T_cover, (float)T_cover * 1920.0f / 48000.0f, music_dit_timer.ms());
+        have_cover = true;
+    }
+
     // Parse request JSON
     AceRequest req;
     std::string injson =  inputs.input_json;
@@ -747,13 +799,6 @@ std::string acestep_generate_audio(const music_generation_inputs inputs)
     req.thinking = false;
     req.inference_steps = (req.inference_steps>100?100:req.inference_steps); //clamp to 100
     req.duration = (req.duration>420?420:req.duration); //clamp to 7 min
-
-    const int FRAMES_PER_SECOND = 25;
-    int Oc = music_dit_cfg.out_channels;          // 64
-    int ctx_ch = music_dit_cfg.in_channels - Oc;  // 128
-    int batch_n                = 1;
-    int vae_chunk              = 256;
-    int vae_overlap            = 64;
 
     // Extract params
     const char * caption  = req.caption.c_str();
@@ -780,8 +825,6 @@ std::string acestep_generate_audio(const music_generation_inputs inputs)
     {
         seed = (((uint32_t)time(NULL)) % 1000000u);
     }
-    fprintf(stderr, "[Pipeline] seed=%lld, steps=%d, guidance=%.1f, shift=%.1f, duration=%.1fs\n",
-            seed, num_steps, guidance_scale, shift, duration);
 
     // Parse audio codes from request
     std::vector<int> codes_vec = parse_codes_string(req.audio_codes);
@@ -797,16 +840,24 @@ std::string acestep_generate_audio(const music_generation_inputs inputs)
     }
 
     // T = number of 25Hz latent frames for DiT
-    // When audio codes are present, T is determined by the codes.
-    // Otherwise, T is derived from the requested duration.
-    int T = codes_vec.empty()
-        ? (int)(duration * FRAMES_PER_SECOND)
-        : (int)codes_vec.size() * 5;
+    // Cover: from source audio. Codes: from code count. Else: from duration.
+    int T;
+    if (have_cover) {
+        T = T_cover;
+        // duration in metas must match actual source length, not JSON default
+        duration = (float)T_cover / (float)FRAMES_PER_SECOND;
+    } else if (!codes_vec.empty()) {
+        T = (int)codes_vec.size() * 5;
+    } else {
+        T = (int)(duration * FRAMES_PER_SECOND);
+    }
     T = ((T + music_dit_cfg.patch_size - 1) / music_dit_cfg.patch_size) * music_dit_cfg.patch_size;
     int S = T / music_dit_cfg.patch_size;
     int enc_S = 0;
 
     fprintf(stderr, "[Pipeline] T=%d, S=%d\n", T, S);
+    fprintf(stderr, "[Pipeline] seed=%lld, steps=%d, guidance=%.1f, shift=%.1f, duration=%.1fs\n",
+                seed, num_steps, guidance_scale, shift, duration);
 
     if (T > 15000) {
         fprintf(stderr, "ERROR: T=%d exceeds silence_latent max 15000, skipping\n", T);
@@ -818,7 +869,8 @@ std::string acestep_generate_audio(const music_generation_inputs inputs)
     music_dit_timer.reset();
 
     // 2. Build formatted prompts
-    const char * instruction = "Generate audio semantic tokens based on the given conditions:";
+    // Same instruction for all modes. Cover differs only by context content (audio vs silence).
+    const char * instruction = "Fill the audio semantic mask based on the given conditions:";
     char metas[512];
     snprintf(metas, sizeof(metas),
                 "- bpm: %s\n- timesignature: %s\n- keyscale: %s\n- duration: %d seconds\n",
@@ -873,10 +925,10 @@ std::string acestep_generate_audio(const music_generation_inputs inputs)
     // std::vector<float> silence(Oc * T);
     // memcpy(silence.data(), silence_full.data(), (size_t)(Oc * T) * sizeof(float));
 
-    // Decode audio codes if provided
+    // Decode audio codes if provided (passthrough mode only, NOT cover)
     int decoded_T = 0;
     std::vector<float> decoded_latents;
-    if (!codes_vec.empty()) {
+    if (!have_cover && !codes_vec.empty()) {
         int T_5Hz = (int)codes_vec.size();
         int T_25Hz_codes = T_5Hz * 5;
         decoded_latents.resize(T_25Hz_codes * Oc);
@@ -892,16 +944,31 @@ std::string acestep_generate_audio(const music_generation_inputs inputs)
         decoded_T = T_25Hz_codes < T ? T_25Hz_codes : T;
     }
 
-    // Build single context: [T, ctx_ch] = src_latents[64] + mask_ones[64]
+    // Build context: [T, ctx_ch] = src_latents[64] + mask_ones[64]
+    // Cover: VAE latents directly (matching Python: is_covers=False, raw latents as context)
+    // Passthrough: detokenized FSQ codes + silence padding
+    // Text2music: silence only
     std::vector<float> context_single(T * ctx_ch);
-    for (int t = 0; t < T; t++) {
-        const float * src = (t < decoded_T)
-            ? decoded_latents.data() + t * Oc
-            : silence_full.data() + (t - decoded_T) * Oc;
-        for (int c = 0; c < Oc; c++)
-            context_single[t * ctx_ch + c] = src[c];
-        for (int c = 0; c < Oc; c++)
-            context_single[t * ctx_ch + Oc + c] = 1.0f;
+    if (have_cover) {
+        for (int t = 0; t < T; t++) {
+            const float * src = (t < T_cover)
+                ? cover_latents.data() + t * Oc
+                : silence_full.data() + t * Oc;
+            for (int c = 0; c < Oc; c++)
+                context_single[t * ctx_ch + c] = src[c];
+            for (int c = 0; c < Oc; c++)
+                context_single[t * ctx_ch + Oc + c] = 1.0f;
+        }
+    } else {
+        for (int t = 0; t < T; t++) {
+            const float * src = (t < decoded_T)
+                ? decoded_latents.data() + t * Oc
+                : silence_full.data() + (t - decoded_T) * Oc;
+            for (int c = 0; c < Oc; c++)
+                context_single[t * ctx_ch + c] = src[c];
+            for (int c = 0; c < Oc; c++)
+                context_single[t * ctx_ch + Oc + c] = 1.0f;
+        }
     }
 
     // Replicate context for N batch samples (all identical)
@@ -909,6 +976,32 @@ std::string acestep_generate_audio(const music_generation_inputs inputs)
     for (int b = 0; b < batch_n; b++)
     {
         memcpy(context.data() + b * T * ctx_ch, context_single.data(), T * ctx_ch * sizeof(float));
+    }
+
+    // Cover mode: build silence context for audio_cover_strength switching
+    // When step >= cover_steps, DiT switches from cover context to silence context
+    std::vector<float> context_silence;
+    int cover_steps = -1;
+    if (have_cover) {
+        float cover_strength = req.audio_cover_strength;
+        if (cover_strength < 1.0f) {
+            // Build silence context: all frames use silence_latent
+            std::vector<float> silence_single(T * ctx_ch);
+            for (int t = 0; t < T; t++) {
+                const float * src = silence_full.data() + t * Oc;
+                for (int c = 0; c < Oc; c++)
+                    silence_single[t * ctx_ch + c] = src[c];
+                for (int c = 0; c < Oc; c++)
+                    silence_single[t * ctx_ch + Oc + c] = 1.0f;
+            }
+            context_silence.resize(batch_n * T * ctx_ch);
+            for (int b = 0; b < batch_n; b++)
+                memcpy(context_silence.data() + b * T * ctx_ch,
+                        silence_single.data(), T * ctx_ch * sizeof(float));
+            cover_steps = (int)((float)num_steps * cover_strength);
+            fprintf(stderr, "[Cover] audio_cover_strength=%.2f -> switch at step %d/%d\n",
+                    cover_strength, cover_steps, num_steps);
+        }
     }
 
     // Generate N noise samples
@@ -929,13 +1022,16 @@ std::string acestep_generate_audio(const music_generation_inputs inputs)
     // DiT Generate
     std::vector<float> output(batch_n * Oc * T);
 
-    fprintf(stderr, "[DiT] Starting: T=%d, S=%d, enc_S=%d, steps=%d, batch=%d\n",
-            T, S, enc_S, num_steps, batch_n);
+    fprintf(stderr, "[DiT] Starting: T=%d, S=%d, enc_S=%d, steps=%d, batch=%d%s\n",
+            T, S, enc_S, num_steps, batch_n,
+            have_cover ? " (cover)" : "");
 
     music_dit_timer.reset();
     dit_ggml_generate(&acestep_dit, noise.data(), context.data(), enc_hidden.data(),
                         enc_S, T, batch_n, num_steps, schedule.data(), output.data(),
-                        guidance_scale);
+                        guidance_scale, nullptr,
+                        context_silence.empty() ? nullptr : context_silence.data(),
+                        cover_steps);
     fprintf(stderr, "[DiT] Total generation: %.1f ms (%.1f ms/sample)\n",
             music_dit_timer.ms(), music_dit_timer.ms() / batch_n);
 
@@ -976,24 +1072,20 @@ std::string acestep_generate_audio(const music_generation_inputs inputs)
         }
     }
 
-    // std::string opath = "egghenlo.wav";
-    // if (write_wav(opath.c_str(), audio.data(), T_audio, 48000)) {
-    //     fprintf(stderr, "[VAE Batch%d] Wrote %s: %d samples (%.2fs @ 48kHz stereo)\n",
-    //             b, opath.c_str(), T_audio, (float)T_audio / 48000.0f);
-    // } else {
-    //     fprintf(stderr, "[VAE Batch%d] FATAL: failed to write %s\n", b, opath.c_str());
-    // }
-
     // output wav
     float muslen = (float)T_audio / 48000.0f;
     std::string finalb64;
-    if(inputs.stereo)
-    {
-        finalb64 = save_stereo_wav16_base64(audio,T_audio,48000);
+    if (inputs.use_mp3) {
+        fprintf(stderr, "[Save Audio] Converting to Mp3 (CPU based, may be slow, use .wav if too slow)...\n",muslen);
+        finalb64 = save_stereo_mp3_base64(audio, T_audio, 48000);
+    } else if (inputs.stereo) {
+         fprintf(stderr, "[Save Audio] Save as Stereo WAV...\n",muslen);
+        finalb64 = save_stereo_wav16_base64(audio, T_audio, 48000);
     } else {
-        std::vector<float> mono = mix_planar_stereo_to_mono(audio.data(), T_audio);
-        std::vector<float> resampled_buf = resample_wav(mono,48000,32000);
-        finalb64 = save_wav16_base64(resampled_buf, 32000);
+         fprintf(stderr, "[Save Audio] Save as Mono WAV...\n",muslen);
+        std::vector<float> mono          = mix_planar_stereo_to_mono(audio.data(), T_audio);
+        std::vector<float> resampled_buf = resample_wav(1, mono, 48000, 32000);
+        finalb64                         = save_wav16_base64(resampled_buf, 32000);
     }
 
     if(acestep_dit_lowvram)

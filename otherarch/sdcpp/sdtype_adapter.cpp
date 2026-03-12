@@ -80,8 +80,8 @@ struct SDParams {
     bool chroma_use_dit_mask     = true;
 
     std::vector<std::string> lora_paths;
-    std::vector<sd_lora_t> lora_specs;
-    uint32_t lora_count;
+    std::vector<float> lora_multipliers;
+    bool lora_dynamic = false;
 };
 
 //shared
@@ -208,14 +208,12 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
     set_sd_quiet(sd_is_quiet);
     executable_path = inputs.executable_path;
     std::string taesdpath = "";
-    std::vector<std::string> lorafilenames;
-    for(int i=0;i<lora_filenames_max;++i)
+    std::vector<std::string> lora_paths;
+    std::vector<float> lora_multipliers;
+    for(int i=0;i<inputs.lora_len;++i)
     {
-        std::string temp = inputs.lora_filenames[i];
-        if(temp!="")
-        {
-            lorafilenames.push_back(temp);
-        }
+        lora_paths.push_back(inputs.lora_filenames[i]);
+        lora_multipliers.push_back(inputs.lora_multipliers[i]);
     }
     std::string vaefilename = inputs.vae_filename;
     std::string t5xxl_filename = inputs.t5xxl_filename;
@@ -230,19 +228,28 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
     cfg_square_limit = inputs.img_soft_limit;
     printf("\nImageGen Init - Load Model: %s\n",inputs.model_filename);
 
-    int lora_apply_mode = std::max(0, std::min(2, inputs.lora_apply_mode));
+    int lora_apply_mode = LORA_APPLY_AT_RUNTIME;
+    bool lora_dynamic = false;
+    if(inputs.lora_apply_mode >= 0 && inputs.lora_apply_mode <= 2) {
+        lora_apply_mode = inputs.lora_apply_mode;
+    }
+    else if(inputs.lora_apply_mode == 3) {
+        lora_dynamic = true;
+    }
 
-    if(lorafilenames.size()>0)
+    if(lora_paths.size() > 0)
     {
-        for(int i=0;i<lorafilenames.size();++i)
+        const char* lora_apply_mode_name = lora_apply_mode == 1 ? "immediately"
+                                         : lora_apply_mode == 2 ? "at runtime"
+                                         : "auto";
+        const char * lora_dynamic_name = lora_dynamic ? " (dynamic)" : "";
+        printf("With LoRAs in apply mode %s%s:\n", lora_apply_mode_name, lora_dynamic_name);
+        for(int i=0;i<lora_paths.size();++i)
         {
-            const char* lora_apply_mode_name = lora_apply_mode == 1 ? "immediately"
-                                            : lora_apply_mode == 2 ? "at runtime"
-                                            : "auto";
-            printf("With LoRA: %s at %f power, apply mode: %s\n",
-                lorafilenames[i].c_str(),inputs.lora_multiplier,lora_apply_mode_name);
+            printf("  %s at %f power\n", lora_paths[i].c_str(),lora_multipliers[i]);
         }
     }
+
     if(inputs.taesd)
     {
         taesdpath = executable_path + "embd_res/taesd.embd";
@@ -327,7 +334,9 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
     sd_params->clip_l_path = clip1_filename;
     sd_params->clip_g_path = clip2_filename;
     sd_params->stacked_id_embeddings_path = photomaker_filename;
-    sd_params->lora_paths = lorafilenames;
+    sd_params->lora_paths = lora_paths;
+    sd_params->lora_multipliers = lora_multipliers;
+    sd_params->lora_dynamic = lora_dynamic;
     //if t5 is set, and model is a gguf, load it as a diffusion model path
     bool endswithgguf = (sd_params->model_path.rfind(".gguf") == sd_params->model_path.size() - 5);
     if((sd_params->t5xxl_path!="" || sd_params->clip_l_path!="" || sd_params->clip_g_path!="") && endswithgguf)
@@ -416,21 +425,22 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
     std::filesystem::path mpath(inputs.model_filename);
     sdmodelfilename = mpath.filename().string();
 
-    sd_params->lora_specs.clear();
-    sd_params->lora_specs.reserve(lora_filenames_max*2);
+    // preload the LoRAs with the initial multipliers
+    std::vector<sd_lora_t> lora_specs;
     for(int i=0;i<sd_params->lora_paths.size();++i)
     {
+        if (!lora_dynamic && sd_params->lora_multipliers[i] == 0.)
+            continue;
         sd_lora_t spec = {};
         spec.path = sd_params->lora_paths[i].c_str();
-        spec.multiplier = inputs.lora_multiplier;
-        sd_params->lora_specs.push_back(spec);
+        spec.multiplier = sd_params->lora_multipliers[i];
+        lora_specs.push_back(spec);
     }
 
-    if(sd_params->lora_specs.size()>0 && inputs.lora_multiplier>0)
+    if(lora_specs.size()>0)
     {
-        printf("\nApply %d LoRAs...\n",sd_params->lora_specs.size());
-        sd_params->lora_count = sd_params->lora_specs.size();
-        sd_ctx->sd->apply_loras(sd_params->lora_specs.data(), sd_params->lora_count);
+        printf("  applying %zu LoRAs...\n", lora_specs.size());
+        sd_ctx->sd->apply_loras(lora_specs.data(), lora_specs.size());
     }
 
     input_extraimage_buffers.reserve(max_extra_images);
@@ -478,10 +488,10 @@ static std::string get_scheduler_name(scheduler_t scheduler, bool as_sampler_suf
     }
 }
 
-static std::string get_image_params(const sd_img_gen_params_t & params) {
+static std::string get_image_params(const sd_img_gen_params_t & params, const std::string& lora_meta) {
     std::stringstream ss;
     ss << std::setprecision(3)
-        <<    "Prompt: " << params.prompt
+        <<    "Prompt: " << params.prompt << lora_meta
         << " | NegativePrompt: " << params.negative_prompt
         << " | Steps: " << params.sample_params.sample_steps
         << " | CFGScale: " << params.sample_params.guidance.txt_cfg
@@ -1034,10 +1044,38 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
     params.vae_tiling_params.enabled = dotile;
     params.batch_count = 1;
 
-    // needs to be "reapplied" because sdcpp tracks previously applied LoRAs
-    // and weights, and apply/unapply the differences at each gen
-    params.loras = sd_params->lora_specs.data();
-    params.lora_count = sd_params->lora_count;
+    std::vector<sd_lora_t> lora_specs;
+    std::stringstream lora_meta;
+    lora_meta << std::setprecision(6);
+    for(size_t i=0;i<sd_params->lora_paths.size();++i)
+    {
+        float multiplier = sd_params->lora_multipliers[i];
+        if (sd_params->lora_dynamic) {
+            multiplier = i < inputs.lora_len ? inputs.lora_multipliers[i] : 0.;
+        }
+        if (multiplier != 0.f) {
+            sd_lora_t spec = {};
+            spec.path = sd_params->lora_paths[i].c_str();
+            spec.multiplier = multiplier;
+            lora_specs.push_back(spec);
+            std::string lora_name = std::filesystem::path(sd_params->lora_paths[i]).stem().string();
+            lora_meta << "<lora:" << lora_name << ":" << multiplier << ">";
+        }
+    }
+    if(!sd_is_quiet && sddebugmode==1) {
+        if (lora_specs.size() > 0) {
+            printf("Applying LoRAs:\n");
+            for(size_t i=0;i<lora_specs.size();++i)
+            {
+                printf("  %s @ %.3f\n", lora_specs[i].path, lora_specs[i].multiplier);
+            }
+        }
+    }
+
+    // note sdcpp tracks previously applied LoRAs and weights,
+    // and apply/unapply the differences at each gen
+    params.loras = lora_specs.data();
+    params.lora_count = lora_specs.size();
 
     params.ref_images = reference_imgs.data();
     params.ref_images_count = reference_imgs.size();
@@ -1264,9 +1302,9 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
             {
                 printf("Upscaling output image...\n");
                 upscaled_image = upscale(upscaler_ctx, results[i], 2);
-                png = stbi_write_png_to_mem(upscaled_image.data, 0, upscaled_image.width, upscaled_image.height, upscaled_image.channel, &out_data_len, get_image_params(params).c_str());
+                png = stbi_write_png_to_mem(upscaled_image.data, 0, upscaled_image.width, upscaled_image.height, upscaled_image.channel, &out_data_len, get_image_params(params, lora_meta.str()).c_str());
             } else {
-                png = stbi_write_png_to_mem(results[i].data, 0, results[i].width, results[i].height, results[i].channel, &out_data_len, get_image_params(params).c_str());
+                png = stbi_write_png_to_mem(results[i].data, 0, results[i].width, results[i].height, results[i].channel, &out_data_len, get_image_params(params, lora_meta.str()).c_str());
             }
 
             if (png != NULL)

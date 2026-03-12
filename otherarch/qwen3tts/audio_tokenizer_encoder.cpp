@@ -249,11 +249,11 @@ bool AudioTokenizerEncoder::load_model(const std::string & model_path) {
     }
 
     if (!load_tensor_data_from_file(model_path, gguf_ctx, model_.ctx,
-                                     model_.tensors, model_.buffer, error_msg_, GGML_BACKEND_DEVICE_TYPE_GPU)) {
+                                     model_.tensors, model_.buffer, error_msg_, qwen3tts_allowgpu)) {
         return false;
     }
 
-    state_.backend = init_preferred_backend("AudioTokenizerEncoder", &error_msg_, true);
+    state_.backend = init_preferred_backend("AudioTokenizerEncoder", &error_msg_, qwen3tts_allowgpu);
     if (!state_.backend) {
         return false;
     }

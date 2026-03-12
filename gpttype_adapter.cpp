@@ -530,16 +530,16 @@ static std::string toLowerCase(const std::string& str) {
 }
 
 
-void ContextRewind(std::vector<int> &embd, std::vector<int> &current_context_tokens, int &n_past, std::vector<int> &last_n_tokens, const int amount_rewind)
+bool ContextRewind(std::vector<int> &embd, std::vector<int> &current_context_tokens, int &n_past, std::vector<int> &last_n_tokens, const int amount_rewind)
 {
     if(amount_rewind<=0 || current_context_tokens.size()==0)
     {
-        return; //do nothing
+        return true; //do nothing
     }
     if(embd.size()>1)
     {
         printf("\nWARNING: Don't use context rewind when in batch processing phase!\n");
-        return;
+        return false;
     }
     bool is_recurrent = false;
     if(file_format==FileFormat::GGUF_GENERIC)
@@ -552,12 +552,12 @@ void ContextRewind(std::vector<int> &embd, std::vector<int> &current_context_tok
     }
     if(file_format == FileFormat::RWKV_1 || file_format==FileFormat::RWKV_2 || is_recurrent)
     {
-        if(!showed_rnn_warning && debugmode==1 && !is_quiet)
+        if(!showed_rnn_warning)
         {
             showed_rnn_warning = true;
-            printf("\nWARNING: RNN models do not support context rewind!\n");
+            printf("\n!!!\nWARNING: RNN models do not support context rewind! Anti-Slop sampler will not work!\n!!!\n");
         }
-        return;
+        return false;
     }
 
     if (amount_rewind >= last_n_tokens.size())
@@ -610,6 +610,7 @@ void ContextRewind(std::vector<int> &embd, std::vector<int> &current_context_tok
     {
         embd.push_back(current_context_tokens[current_context_tokens.size()-1]);
     }
+    return true;
 }
 
 const char * kcpp_print_system_info(void) {
@@ -2383,7 +2384,7 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
             devices_override = kcpp_parse_device_list(dev_override_str);
             if(devices_override.size()>0)
             {
-                printf("\nOverriding with %d devices...\n",devices_override.size()-1);
+                printf("\nOverriding with %zu devices...\n",devices_override.size()-1);
                 model_params.devices = devices_override.data();
             }
         }
@@ -2561,7 +2562,7 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
             model_params.tensor_buft_overrides = tenos.data();
             model_params.tensor_split = tensor_split_temp;
             model_params.n_gpu_layers = -1; //must be this value to be considered default
-            printf("Autofit Reserve Space: %d MB\n",taxmb);
+            printf("Autofit Reserve Space: %zu MB\n",taxmb);
             //disable log spam
             bool dospam = (debugmode==1 && !is_quiet);
             ggml_log_callback currlogger;
@@ -2596,9 +2597,12 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
         //if RNN model AND shifting and fastforward is on, enable smartcache
         if((llama_model_is_recurrent(llamamodel) || llama_model_is_hybrid(llamamodel)) && kcpp_data->use_fastforward && kcpp_data->use_contextshift)
         {
-            printf("RNN or Hyrbid model with FF and shifting flags enabled - SmartCache will be enabled with extra slots. Disable CtxShift if you do not want this.\n",savestate_limit);
-            kcpp_data->smartcache = true;
-            savestate_limit += 3;
+            if(savestate_limit>0)
+            {
+                printf("RNN or Hyrbid model with FF and shifting flags enabled - SmartCache will be enabled with extra slots. Disable CtxShift if you do not want this.\n",savestate_limit);
+                kcpp_data->smartcache = true;
+                savestate_limit += 3;
+            }
         }
         savestates.resize(savestate_limit);
         if(kcpp_data->smartcache)
@@ -3534,7 +3538,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
             {
                 continue;
             }
-            if(tokcount==1 && word.length()<2) //only use banned tokens for single characters
+            if(tokcount==1 && word.length()<12) //only use banned tokens for single characters, we can assume that means less than 12 chars usually
             {
                 banned_tokens.push_back(word);
             }
@@ -4900,27 +4904,32 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                             if (rewind_amt > 0 && (current_context_tokens.size() - rewind_amt) > 0)
                             {
                                 int last_tok = current_context_tokens[current_context_tokens.size() - rewind_amt];
-                                delayed_generated_tokens.resize(delayed_generated_tokens.size() - rewind_amt);
-                                ContextRewind(embd, current_context_tokens, n_past, last_n_tokens, rewind_amt);
+
+                                bool rwok = ContextRewind(embd, current_context_tokens, n_past, last_n_tokens, rewind_amt);
 
                                 //immediately terminate drafting if used
                                 abort_draft = true;
 
-                                // Check if the key exists
-                                int banindex = n_past+1;
-                                if (antislop_banned_token_ids.find(banindex) == antislop_banned_token_ids.end()) {
-                                    antislop_banned_token_ids[banindex] = std::vector<int>();
-                                }
-                                std::vector<int>& current_ids = antislop_banned_token_ids[banindex];
-                                current_ids.push_back(last_tok);
-
-                                if (allow_regular_prints && debugmode == 1)
+                                if(rwok)
                                 {
-                                    auto match_clean = matched;
-                                    replace_all(match_clean, "\n", "\\n");
-                                    printf("\n(Banned Phrase Detected: %s - Add ID %d to banlist at index %d, and rewinding %d tokens)\n", match_clean.c_str(), last_tok, banindex, rewind_amt);
-                                }
+                                    delayed_generated_tokens.resize(delayed_generated_tokens.size() - rewind_amt);
 
+                                    // Check if the key exists
+                                    int banindex = n_past+1;
+                                    if (antislop_banned_token_ids.find(banindex) == antislop_banned_token_ids.end()) {
+                                        antislop_banned_token_ids[banindex] = std::vector<int>();
+                                    }
+                                    std::vector<int>& current_ids = antislop_banned_token_ids[banindex];
+                                    current_ids.push_back(last_tok);
+
+                                    if (allow_regular_prints && debugmode == 1)
+                                    {
+                                        auto match_clean = matched;
+                                        replace_all(match_clean, "\n", "\\n");
+                                        printf("\n(Banned Phrase Detected: %s - Add ID %d to banlist at index %d, and rewinding %d tokens)\n", match_clean.c_str(), last_tok, banindex, rewind_amt);
+                                    }
+
+                                }
                                 break;
                             }
                         }

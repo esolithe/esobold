@@ -97,7 +97,7 @@ bool TTSTransformer::load_model(const std::string & model_path) {
     gguf_free(ctx);
     if (meta_ctx) ggml_free(meta_ctx);
 
-    state_.backend = init_preferred_backend("TTSTransformer", &error_msg_, true);
+    state_.backend = init_preferred_backend("TTSTransformer", &error_msg_, qwen3tts_allowgpu);
     if (!state_.backend) {
         return false;
     }
@@ -553,7 +553,7 @@ bool TTSTransformer::create_tensors(struct gguf_context * ctx) {
  }
 
 bool TTSTransformer::load_tensor_data(const std::string & path, struct gguf_context * ctx) {
-    ggml_backend_t backend = init_preferred_backend("TTSTransformer", &error_msg_, true);
+    ggml_backend_t backend = init_preferred_backend("TTSTransformer", &error_msg_, qwen3tts_allowgpu);
     if (!backend) {
         return false;
     }

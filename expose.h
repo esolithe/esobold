@@ -6,7 +6,6 @@ const int images_max = 8;
 const int audio_max = 4;
 const int logprobs_max = 10;
 const int overridekv_max = 16;
-const int lora_filenames_max = 4;
 
 // match kobold's sampler list and order
 enum samplers
@@ -189,8 +188,9 @@ struct sd_load_model_inputs
     const char * clip1_filename = nullptr;
     const char * clip2_filename = nullptr;
     const char * vae_filename = nullptr;
-    const char * lora_filenames[lora_filenames_max] = {};
-    const float lora_multiplier = 1.0f;
+    const int lora_len = 0;
+    const char ** lora_filenames = nullptr;
+    const float * lora_multipliers = nullptr;
     const int lora_apply_mode = 0;
     const char * photomaker_filename = nullptr;
     const char * upscaler_filename = nullptr;
@@ -227,6 +227,8 @@ struct sd_generation_inputs
     const bool circular_x = false;
     const bool circular_y = false;
     const bool upscale = false;
+    const int lora_len = 0;
+    const float * lora_multipliers = nullptr;
 };
 struct sd_generation_outputs
 {
@@ -344,9 +346,12 @@ struct music_load_model_inputs
 struct music_generation_inputs
 {
     const bool is_planner_mode = false; //if true, generate codes, else, generate diffusion music
-    const bool stereo = false;
+    const bool stereo = false; //only for wav
+    const bool use_mp3 = false;
     const bool gen_codes = false;
+    const bool rewrite_caption = true;
     const char * input_json = nullptr;
+    const char * music_reference_audio_data = nullptr;
 };
 struct music_generation_outputs
 {

@@ -9,6 +9,8 @@
 #include <vector>
 #include <memory>
 
+extern bool qwen3tts_allowgpu;
+
 namespace qwen3_tts {
 
 // Generic GGUF model loader class
@@ -70,7 +72,7 @@ bool load_tensor_data_from_file(
     const std::map<std::string, struct ggml_tensor *> & tensors,
     ggml_backend_buffer_t & buffer,
     std::string & error_msg,
-    enum ggml_backend_dev_type preferred_backend_type = GGML_BACKEND_DEVICE_TYPE_GPU
+    bool allowgpu
 );
 
 // Helper to initialize backend with GPU preference and CPU fallback

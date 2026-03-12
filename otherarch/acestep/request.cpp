@@ -23,15 +23,20 @@ void request_init(AceRequest * r) {
     r->task_type          = "text2music";
     r->seed               = -1;
     r->thinking           = false;
-    r->lm_temperature     = 0.85f;
-    r->lm_cfg_scale       = 2.0f;
+    r->lm_temperature     = 0.9f;
+    r->lm_cfg_scale       = 3.0f;
     r->lm_top_p           = 0.9f;
-    r->lm_top_k           = 0;
+    r->lm_top_k           = 50;
+    r->codes_temperature  = 1.0f;
+    r->codes_top_p        = 0.99f;
+    r->codes_top_k        = 1000;
+    r->lm_rep_pen         = 1.03f;
     r->lm_negative_prompt = "";
     r->audio_codes        = "";
     r->inference_steps    = 8;
     r->guidance_scale     = 1.0f;
     r->shift              = 3.0f;
+    r->audio_cover_strength = 0.5f;
 }
 
 // JSON string escape / unescape
@@ -241,10 +246,16 @@ bool request_parse_from_str(AceRequest * r, std::string json) {
         else if (k == "lm_temperature")     r->lm_temperature     = (float)atof(v.c_str());
         else if (k == "lm_cfg_scale")       r->lm_cfg_scale       = (float)atof(v.c_str());
         else if (k == "lm_top_p")           r->lm_top_p           = (float)atof(v.c_str());
+        else if (k == "lm_rep_pen")         r->lm_rep_pen         = (float)atof(v.c_str());
         else if (k == "lm_top_k")           r->lm_top_k           = atoi(v.c_str());
         else if (k == "inference_steps")    r->inference_steps    = atoi(v.c_str());
         else if (k == "guidance_scale")     r->guidance_scale     = (float)atof(v.c_str());
         else if (k == "shift")              r->shift              = (float)atof(v.c_str());
+        else if (k == "audio_cover_strength") r->audio_cover_strength = (float)atof(v.c_str());
+
+        else if (k == "codes_temperature")     r->codes_temperature     = (float)atof(v.c_str());
+        else if (k == "codes_top_p")           r->codes_top_p           = (float)atof(v.c_str());
+        else if (k == "codes_top_k")           r->codes_top_k           = atoi(v.c_str());
 
         // bools
         else if (k == "thinking")           r->thinking           = (v == "true");
@@ -279,11 +290,16 @@ bool request_write(const AceRequest * r, const char * path) {
     fprintf(f, "  \"lm_temperature\": %.2f,\n",       r->lm_temperature);
     fprintf(f, "  \"lm_cfg_scale\": %.1f,\n",         r->lm_cfg_scale);
     fprintf(f, "  \"lm_top_p\": %.2f,\n",             r->lm_top_p);
+    fprintf(f, "  \"lm_rep_pen\": %.2f,\n",           r->lm_rep_pen);
     fprintf(f, "  \"lm_top_k\": %d,\n",               r->lm_top_k);
+    fprintf(f, "  \"codes_temperature\": %.2f,\n",    r->codes_temperature);
+    fprintf(f, "  \"codes_top_p\": %.2f,\n",          r->codes_top_p);
+    fprintf(f, "  \"codes_top_k\": %d,\n",            r->codes_top_k);
     fprintf(f, "  \"lm_negative_prompt\": \"%s\",\n", json_escape(r->lm_negative_prompt).c_str());
     fprintf(f, "  \"inference_steps\": %d,\n",        r->inference_steps);
     fprintf(f, "  \"guidance_scale\": %.1f,\n",       r->guidance_scale);
     fprintf(f, "  \"shift\": %.1f,\n",                r->shift);
+    fprintf(f, "  \"audio_cover_strength\": %.2f,\n", r->audio_cover_strength);
     // audio_codes last (no trailing comma)
     fprintf(f, "  \"audio_codes\": \"%s\"\n",         json_escape(r->audio_codes).c_str());
     fprintf(f, "}\n");
@@ -302,10 +318,14 @@ void request_dump(const AceRequest * r, FILE * f) {
     fprintf(f, "  bpm=%d dur=%.0f key=%s ts=%s lang=%s\n",
             r->bpm, r->duration, r->keyscale.c_str(),
             r->timesignature.c_str(), r->vocal_language.c_str());
-    fprintf(f, "  lm: temp=%.2f cfg=%.1f top_p=%.2f top_k=%d\n",
-            r->lm_temperature, r->lm_cfg_scale, r->lm_top_p, r->lm_top_k);
+    fprintf(f, "  lm: temp=%.2f cfg=%.1f top_p=%.2f top_k=%d rep_pen=%d\n",
+            r->lm_temperature, r->lm_cfg_scale, r->lm_top_p, r->lm_top_k, r->lm_rep_pen);
+    fprintf(f, "  codes: temp=%.2f top_p=%.2f top_k=%d \n",
+            r->lm_temperature, r->lm_top_p, r->lm_top_k);
     fprintf(f, "  dit: steps=%d guidance=%.1f shift=%.1f\n",
             r->inference_steps, r->guidance_scale, r->shift);
+    if (r->audio_cover_strength != 0.5f)
+        fprintf(f, "  cover: strength=%.2f\n", r->audio_cover_strength);
     fprintf(f, "  audio_codes: %s\n",
             r->audio_codes.empty() ? "(none)" : "(present)");
 }

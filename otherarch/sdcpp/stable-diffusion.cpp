@@ -50,6 +50,7 @@ const char* model_version_to_str[] = {
     "Wan 2.2 I2V",
     "Wan 2.2 TI2V",
     "Qwen Image",
+    "Anima",
     "Flux.2",
     "Flux.2 klein",
     "Z-Image",
@@ -133,6 +134,7 @@ public:
     std::vector<std::shared_ptr<LoraModel>> diffusion_lora_models;
     std::vector<std::shared_ptr<LoraModel>> first_stage_lora_models;
     bool apply_lora_immediately = false;
+    std::map<std::string, std::shared_ptr<LoraModel>> kcpp_lora_cache;
 
     std::string taesd_path;
     bool use_tiny_autoencoder            = false;
@@ -310,15 +312,30 @@ public:
             }
         }
 
+        if (tempver == VERSION_ANIMA &&
+            strlen(SAFE_STR(sd_ctx_params->model_path)) > 0 &&
+            strlen(SAFE_STR(sd_ctx_params->diffusion_model_path)) == 0 &&
+            !model_loader.has_diffusion_model_tensors()
+            )
+        {
+            LOG_INFO("Anima: SD Diffusion Model tensors missing! Fallback trying alternative tensor names...\n");
+            if (!model_loader.init_from_file(sd_ctx_params->model_path, "model.diffusion_model.")) {
+                LOG_WARN("loading diffusion model from '%s' failed", sd_ctx_params->model_path);
+            }
+            tempver = model_loader.get_sd_version();
+        }
+
         bool iswan = (tempver==VERSION_WAN2 || tempver==VERSION_WAN2_2_I2V || tempver==VERSION_WAN2_2_TI2V);
         bool isqwenimg = (tempver==VERSION_QWEN_IMAGE);
         bool iszimg = (tempver==VERSION_Z_IMAGE);
         bool isflux2 = (tempver==VERSION_FLUX2);
         bool isflux2k = (tempver==VERSION_FLUX2_KLEIN);
         bool is_ovis =  (tempver==VERSION_OVIS_IMAGE);
+        bool is_anima = (tempver==VERSION_ANIMA);
+        bool conditioner_is_llm = (isqwenimg||iszimg||isflux2||isflux2k||is_ovis||is_anima);
 
         //kcpp qol fallback: if qwen image, and they loaded the qwen2vl llm as t5 by mistake
-        if((isqwenimg||iszimg||isflux2||isflux2k||is_ovis) && t5_path_fixed!="")
+        if(conditioner_is_llm && t5_path_fixed!="")
         {
             if(clipl_path_fixed=="" && clipg_path_fixed=="")
             {
@@ -350,7 +367,7 @@ public:
                 prefix = "cond_stage_model.transformer.";
                 LOG_INFO("swap clip_vision from '%s'", clipl_path_fixed.c_str());
             }
-            if(isqwenimg||iszimg||isflux2||isflux2k||is_ovis)
+            if(conditioner_is_llm)
             {
                 prefix = "text_encoders.llm.";
                 LOG_INFO("swap llm from '%s'", clipl_path_fixed.c_str());
@@ -452,7 +469,7 @@ public:
             {
                 to_replace = "taesd_f2.embd";
             }
-            else if((sd_version_is_wan(version) && version != VERSION_WAN2_2_TI2V)||sd_version_is_qwen_image(version))
+            else if((sd_version_is_wan(version) && version != VERSION_WAN2_2_TI2V)||sd_version_is_qwen_image(version)||sd_version_is_anima(version))
             {
                 to_replace = "taesd_w21.embd";
             }
@@ -545,6 +562,7 @@ public:
             shift_factor = 0.1159f;
         } else if (sd_version_is_wan(version) ||
                    sd_version_is_qwen_image(version) ||
+                   sd_version_is_anima(version) ||
                    sd_version_is_flux2(version)) {
             scale_factor = 1.0f;
             shift_factor = 0.f;
@@ -675,6 +693,14 @@ public:
                                                                    "model.diffusion_model",
                                                                    version,
                                                                    sd_ctx_params->qwen_image_zero_cond_t);
+            } else if (sd_version_is_anima(version)) {
+                cond_stage_model = std::make_shared<AnimaConditioner>(clip_backend,
+                                                                      offload_params_to_cpu,
+                                                                      tensor_storage_map);
+                diffusion_model  = std::make_shared<AnimaModel>(backend,
+                                                               offload_params_to_cpu,
+                                                               tensor_storage_map,
+                                                               "model.diffusion_model");
             } else if (sd_version_is_z_image(version)) {
                 cond_stage_model = std::make_shared<LLMEmbedder>(clip_backend,
                                                                  offload_params_to_cpu,
@@ -737,7 +763,7 @@ public:
             }
 
             if (!(use_tiny_autoencoder || version == VERSION_SDXS) || tae_preview_only) {
-                if (sd_version_is_wan(version) || sd_version_is_qwen_image(version)) {
+                if (sd_version_is_wan(version) || sd_version_is_qwen_image(version) || sd_version_is_anima(version)) {
                     first_stage_model = std::make_shared<WAN::WanVAERunner>(vae_backend,
                                                                             offload_params_to_cpu,
                                                                             tensor_storage_map,
@@ -775,7 +801,7 @@ public:
                 }
             }
             if (use_tiny_autoencoder || version == VERSION_SDXS) {
-                if (sd_version_is_wan(version) || sd_version_is_qwen_image(version)) {
+                if (sd_version_is_wan(version) || sd_version_is_qwen_image(version) || sd_version_is_anima(version)) {
                     tae_first_stage = std::make_shared<TinyVideoAutoEncoder>(vae_backend,
                                                                              offload_params_to_cpu,
                                                                              tensor_storage_map,
@@ -1051,6 +1077,7 @@ public:
                 } else if (sd_version_is_sd3(version) ||
                            sd_version_is_wan(version) ||
                            sd_version_is_qwen_image(version) ||
+                           sd_version_is_anima(version) ||
                            sd_version_is_z_image(version)) {
                     pred_type = FLOW_PRED;
                     if (sd_version_is_wan(version)) {
@@ -1167,7 +1194,23 @@ public:
     std::shared_ptr<LoraModel> load_lora_model_from_file(const std::string& lora_id,
                                                          float multiplier,
                                                          ggml_backend_t backend,
+                                                         std::string stage = "",
                                                          LoraModel::filter_t lora_tensor_filter = nullptr) {
+        // kcpp
+        // first check the cache
+        bool kcpp_at_runtime = (stage != "");
+        std::string lora_key = "|" + stage + "|" + lora_id;
+        if (kcpp_at_runtime) {
+            auto it = kcpp_lora_cache.find(lora_key);
+            if (it != kcpp_lora_cache.end()) {
+                if (it->second) {
+                    it->second->multiplier = multiplier;
+                }
+                return it->second;
+            }
+        }
+        // by construction, kcpp will always find the preloaded LoRAs on the cache
+
         std::string lora_path             = lora_id;
         static std::string high_noise_tag = "|high_noise|";
         bool is_high_noise                = false;
@@ -1179,10 +1222,16 @@ public:
         auto lora = std::make_shared<LoraModel>(lora_id, backend, lora_path, is_high_noise ? "model.high_noise_" : "", version);
         if (!lora->load_from_file(n_threads, lora_tensor_filter)) {
             LOG_WARN("load lora tensors from %s failed", lora_path.c_str());
-            return nullptr;
+            // also cache negatives to avoid I/O at runtime
+            lora = nullptr;
+            if (kcpp_at_runtime)
+                kcpp_lora_cache[lora_key] = lora;
+            return lora;
         }
 
         lora->multiplier = multiplier;
+        if (kcpp_at_runtime)
+            kcpp_lora_cache[lora_key] = lora;
         return lora;
     }
 
@@ -1234,6 +1283,18 @@ public:
         cond_stage_lora_models.clear();
         diffusion_lora_models.clear();
         first_stage_lora_models.clear();
+        if (cond_stage_model) {
+            cond_stage_model->set_weight_adapter(nullptr);
+        }
+        if (diffusion_model) {
+            diffusion_model->set_weight_adapter(nullptr);
+        }
+        if (high_noise_diffusion_model) {
+            high_noise_diffusion_model->set_weight_adapter(nullptr);
+        }
+        if (first_stage_model) {
+            first_stage_model->set_weight_adapter(nullptr);
+        }
         if (lora_state.empty()) {
             return;
         }
@@ -1261,7 +1322,7 @@ public:
                 const std::string& lora_id = kv.first;
                 float multiplier           = kv.second;
 
-                auto lora = load_lora_model_from_file(lora_id, multiplier, clip_backend, lora_tensor_filter);
+                auto lora = load_lora_model_from_file(lora_id, multiplier, clip_backend, "cond_stage", lora_tensor_filter);
                 if (lora && !lora->lora_tensors.empty()) {
                     lora->preprocess_lora_tensors(tensors);
                     cond_stage_lora_models.push_back(lora);
@@ -1293,7 +1354,7 @@ public:
                 const std::string& lora_name = kv.first;
                 float multiplier             = kv.second;
 
-                auto lora = load_lora_model_from_file(lora_name, multiplier, backend, lora_tensor_filter);
+                auto lora = load_lora_model_from_file(lora_name, multiplier, backend, "diffusion", lora_tensor_filter);
                 if (lora && !lora->lora_tensors.empty()) {
                     lora->preprocess_lora_tensors(tensors);
                     diffusion_lora_models.push_back(lora);
@@ -1329,7 +1390,7 @@ public:
                 const std::string& lora_name = kv.first;
                 float multiplier             = kv.second;
 
-                auto lora = load_lora_model_from_file(lora_name, multiplier, vae_backend, lora_tensor_filter);
+                auto lora = load_lora_model_from_file(lora_name, multiplier, vae_backend, "first_stage", lora_tensor_filter);
                 if (lora && !lora->lora_tensors.empty()) {
                     lora->preprocess_lora_tensors(tensors);
                     first_stage_lora_models.push_back(lora);
@@ -1650,7 +1711,7 @@ public:
                 } else if (sd_version_is_flux(version) || sd_version_is_z_image(version)) {
                     latent_rgb_proj = flux_latent_rgb_proj;
                     latent_rgb_bias = flux_latent_rgb_bias;
-                } else if (sd_version_is_wan(version) || sd_version_is_qwen_image(version)) {
+                } else if (sd_version_is_wan(version) || sd_version_is_qwen_image(version) || sd_version_is_anima(version)) {
                     latent_rgb_proj = wan_21_latent_rgb_proj;
                     latent_rgb_bias = wan_21_latent_rgb_bias;
                 } else {
@@ -2131,6 +2192,9 @@ public:
                 shifted_t             = std::max((int64_t)0, std::min((int64_t)(TIMESTEPS - 1), shifted_t));
                 LOG_DEBUG("shifting timestep from %.2f to %" PRId64 " (sigma: %.4f)", t, shifted_t, sigma);
                 timesteps_vec.assign(1, (float)shifted_t);
+            } else if (sd_version_is_anima(version)) {
+                // Anima uses normalized flow timesteps.
+                timesteps_vec.assign(1, t / static_cast<float>(TIMESTEPS));
             } else if (sd_version_is_z_image(version)) {
                 timesteps_vec.assign(1, 1000.f - t);
             } else {
@@ -2542,7 +2606,7 @@ public:
     }
 
     void process_latent_in(ggml_tensor* latent) {
-        if (sd_version_is_wan(version) || sd_version_is_qwen_image(version) || sd_version_is_flux2(version)) {
+        if (sd_version_is_wan(version) || sd_version_is_qwen_image(version) || sd_version_is_anima(version) || sd_version_is_flux2(version)) {
             int channel_dim = sd_version_is_flux2(version) ? 2 : 3;
             std::vector<float> latents_mean_vec;
             std::vector<float> latents_std_vec;
@@ -2581,7 +2645,7 @@ public:
     }
 
     void process_latent_out(ggml_tensor* latent) {
-        if (sd_version_is_wan(version) || sd_version_is_qwen_image(version) || sd_version_is_flux2(version)) {
+        if (sd_version_is_wan(version) || sd_version_is_qwen_image(version) || sd_version_is_anima(version) || sd_version_is_flux2(version)) {
             int channel_dim = sd_version_is_flux2(version) ? 2 : 3;
             std::vector<float> latents_mean_vec;
             std::vector<float> latents_std_vec;
@@ -2659,7 +2723,7 @@ public:
             // TODO wan2.2 vae support?
             int64_t ne2;
             int64_t ne3;
-            if (sd_version_is_qwen_image(version)) {
+            if (sd_version_is_qwen_image(version) || sd_version_is_anima(version)) {
                 ne2 = 1;
                 ne3 = C * x->ne[3];
             } else {
@@ -2677,7 +2741,7 @@ public:
             result = ggml_new_tensor_4d(work_ctx, GGML_TYPE_F32, W, H, ne2, ne3);
         }
 
-        if (sd_version_is_qwen_image(version)) {
+        if (sd_version_is_qwen_image(version) || sd_version_is_anima(version)) {
             x = ggml_reshape_4d(work_ctx, x, x->ne[0], x->ne[1], 1, x->ne[2] * x->ne[3]);
         }
 
@@ -2750,6 +2814,7 @@ public:
         ggml_tensor* latent;
         if (use_tiny_autoencoder ||
             sd_version_is_qwen_image(version) ||
+            sd_version_is_anima(version) ||
             sd_version_is_wan(version) ||
             sd_version_is_flux2(version) ||
             version == VERSION_CHROMA_RADIANCE) {
@@ -2769,7 +2834,7 @@ public:
         if (!use_tiny_autoencoder) {
             process_latent_in(latent);
         }
-        if (sd_version_is_qwen_image(version)) {
+        if (sd_version_is_qwen_image(version) || sd_version_is_anima(version)) {
             latent = ggml_reshape_4d(work_ctx, latent, latent->ne[0], latent->ne[1], latent->ne[3], 1);
         }
         return latent;
@@ -2807,7 +2872,7 @@ public:
         }
         int64_t t0 = ggml_time_ms();
         if (!use_tiny_autoencoder) {
-            if (sd_version_is_qwen_image(version)) {
+            if (sd_version_is_qwen_image(version) || sd_version_is_anima(version)) {
                 x = ggml_reshape_4d(work_ctx, x, x->ne[0], x->ne[1], 1, x->ne[2] * x->ne[3]);
             }
             process_latent_out(x);
