@@ -1379,6 +1379,8 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
     typeSelect.classList.add("settinglabel")
     typeSelect.style.flexGrow = "0"
     typeSelect.style.minWidth = "150px"
+    typeSelect.style.fontSize = "var(--main_font_size)"
+    typeSelect.style.height = "100%"
 
     const DROPDOWN_OPTIONS = [
         { label: "Scenarios",     containerClass: "Scenarios",  tooltip: TYPE_TOOLTIPS["Scenarios"] },
