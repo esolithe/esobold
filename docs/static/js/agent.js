@@ -734,8 +734,8 @@ let runAgentCycle = async (agentRunState = {}) => {
         if (!!initialPrompt) {
             // When using a macro, the user must see the text with the macro prefix but the AI must not
             let macroFreePrompt = initialPrompt.indexOf(`${macroUsed}::`) === 0 ? initialPrompt.substring(macroUsed.length + 2) : initialPrompt;
-            addThought(currentChainOfThought, createInstructPrompt, (!!agentRunState?.inputUser ? `${agentRunState.initialUser}: ${macroFreePrompt}` : macroFreePrompt), false, true)
-            addThought(currentChainOfThought, createInstructPrompt, (!!agentRunState?.inputUser ? `${agentRunState.initialUser}: ${initialPrompt}` : initialPrompt), true, false)
+            addThought(currentChainOfThought, createInstructPrompt, (!!agentRunState?.initialUser ? `${agentRunState.initialUser}: ${macroFreePrompt}` : macroFreePrompt), false, true)
+            addThought(currentChainOfThought, createInstructPrompt, (!!agentRunState?.initialUser ? `${agentRunState.initialUser}: ${initialPrompt}` : initialPrompt), true, false)
             initialPrompt = macroFreePrompt;
         }
         else if (!!lastActions && lastActions.length > 0) {
