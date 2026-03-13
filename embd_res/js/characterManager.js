@@ -593,6 +593,14 @@ let controlRemoteDataStore = async () => {
     }).show()
 }
 
+// Helper strings for lorebook / WI entries (used by tile click handlers)
+let lorebookEntryToString = (entry) => {
+    return `Primary: ${[...entry?.keys].join(", ")}\nSecondary: ${[...entry?.secondary_keys].join(",")}`;
+}
+let wiEntryToString = (entry) => {
+    return `Primary: ${entry?.key}\nSecondary: ${entry?.keysecondary}`;
+}
+
 let getScenariosAndLegacyServerSaves = async () => {
     preview_temp_scenario = () => {
 
@@ -997,14 +1005,6 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
             }).button("Close", () => popupUtils.reset()).show();
     }
 
-    // Helper strings for lorebook / WI entries (used by tile click handlers)
-    let lorebookEntryToString = (entry) => {
-        return `Primary: ${[...entry?.keys].join(", ")}\nSecondary: ${[...entry?.secondary_keys].join(",")}`;
-    }
-    let wiEntryToString = (entry) => {
-        return `Primary: ${entry?.key}\nSecondary: ${entry?.keysecondary}`;
-    }
-
     // Pre-create all section container shells (header icon only — content is lazy-loaded)
     const ALL_SECTION_TYPES = ["Character", "World Info", "Save", "Document", "Autosave", "Scenarios"]
     ALL_SECTION_TYPES.forEach(type => getContainerForType(type, TYPE_TOOLTIPS[type]))
@@ -1018,7 +1018,7 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
         if (NO_PLUS_TYPES.has(typeName)) return
         let headerIcon = container.firstChild
         if (typeName === "Character") {
-            let uploadTile = createPlusTile("Add new character item", openUploadDialog, "Add Character")
+            let uploadTile = createPlusTile("Import character from file", openUploadDialog, "Import")
             let createTile = createPlusTile("Create new character", () => { popupUtils.reset(); showCharacterCreator(); }, "Create New")
             if (headerIcon) {
                 container.insertBefore(uploadTile, headerIcon.nextSibling)
@@ -1028,8 +1028,9 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
                 container.appendChild(createTile)
             }
         } else if (typeName === "Scenarios") {
-            let importTile = createPlusTile("Import scenario from file", openScenarioUploadDialog, "Import Scenario")
+            let importTile = createPlusTile("Import scenario from file", openScenarioUploadDialog, "Import")
             let saveTile = createPlusTile("Save current story as a custom scenario", () => {
+                popupUtils.reset()
                 inputBox("Enter a name for this custom scenario", "Save as Scenario", "", "Scenario name", () => {
                     let name = getInputBoxValue().trim()
                     if (!name) return
@@ -1038,7 +1039,7 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
                     saveKLiteScenarioToIndexDB(name, data)
                     waitForLibraryAndShow()
                 })
-            }, "Save as Scenario")
+            }, "Save current")
             if (headerIcon) {
                 container.insertBefore(importTile, headerIcon.nextSibling)
                 container.insertBefore(saveTile, importTile.nextSibling)
@@ -1046,8 +1047,31 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
                 container.appendChild(importTile)
                 container.appendChild(saveTile)
             }
+        } else if (typeName === "Save") {
+            let importTile = createPlusTile("Import save from file", openUploadDialog, "Import")
+            let saveTile = createPlusTile("Save current story to Library", () => {
+                popupUtils.reset()
+                inputBox("Enter a name for this save", "Save current", "", "Save name", () => {
+                    let name = getInputBoxValue().trim()
+                    if (!name) return
+                    libraryChangesOccurred = true
+                    let data = generate_savefile(true, true, true)
+                    saveKLiteSaveToIndexDB(name, data)
+                    waitForLibraryAndShow()
+                })
+            }, "Save current")
+            let downloadTile = createPlusTile("Download current story as a file", () => { save_file_button() }, "Download current")
+            if (headerIcon) {
+                container.insertBefore(importTile, headerIcon.nextSibling)
+                container.insertBefore(saveTile, importTile.nextSibling)
+                container.insertBefore(downloadTile, saveTile.nextSibling)
+            } else {
+                container.appendChild(importTile)
+                container.appendChild(saveTile)
+                container.appendChild(downloadTile)
+            }
         } else {
-            let plusTile = createPlusTile(`Add new ${typeName.toLowerCase()} item`, openUploadDialog, `Add ${typeName}`)
+            let plusTile = createPlusTile(`Import ${typeName.toLowerCase()} from file`, openUploadDialog, "Import")
             if (headerIcon) {
                 container.insertBefore(plusTile, headerIcon.nextSibling)
             } else {
