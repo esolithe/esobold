@@ -5957,6 +5957,19 @@ Current version indicated by LITEVER below.
 		})
 	}
 
+	function saveKLiteScenarioToIndexDB(filename, data)
+	{
+		let charName = filename.replaceAll(/[^\w()_\-'",!\[\].]/g, " ").replaceAll(/\s+/g, " ").trim();
+		let dataToSave = {
+			name: charName,
+			data: data
+		}
+		indexeddb_save(`character_${charName}`, JSON.stringify(dataToSave)).then(() => {
+			allCharacterNames.push({name: charName, type: "Scenario"})
+			updateCharacterListFromAllDe();
+		})
+	}
+
 	function getTypeFromAllCharacterData(data)
 	{
 		return !!data?.type ? data.type : "Character"
