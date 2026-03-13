@@ -95,9 +95,22 @@ let getDownloadDataFromManager = async (charName) => {
     return null
 }
 
+function uuidv4() {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+        var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+    });
+}
+
+let myUUID = uuidv4();
+
 let generateZipExport = async () => {
     const zipWriter = new zip.ZipWriter(new zip.Data64URIWriter("application/zip"));
-    await Promise.all(allCharacterNames.map(c => getDownloadDataFromManager(c.name)).map(promise => promise.then(data => zipWriter.add(data.fileName, new zip.Data64URIReader(data.b64Url))).catch(handleError)))
+    await Promise.all(allCharacterNames.map(c => getDownloadDataFromManager(c.name)).map(promise => promise.then(data => {
+        if (!!data) {
+            zipWriter.add(data.fileName || uuidv4(), new zip.Data64URIReader(data.b64Url))
+        }
+    }))).catch(handleError);
     return zipWriter.close();
 }
 

@@ -1513,7 +1513,7 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
     })
 
     // Assemble the popup
-    popupUtils.reset().title(`Library (${allCharacterNames.length})`).css("height", "80%").css("width", "80%").setMobileMenu(true)
+    popupUtils.reset().title(`Library (${allCharacterNames.length})`).css("height", "80%").css("width", "80%")
     popupUtils.content(toolbarRow)
     containers.forEach(container => popupUtils.content(container))
     popupUtils.content(bulkContainer)

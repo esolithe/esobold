@@ -82,7 +82,7 @@
 	}
 
 	.containAndScaleImage.tile.library_section_header > b {
-		color: var(--theme_color_topbtn, #4a90d9);
+		/* color: var(--theme_color_topbtn, #4a90d9); */ /* Cannot use due to the filter on the tile itself */
 		background-color: transparent;
 		font-size: 0.85em;
 	}
