@@ -578,6 +578,8 @@ int main(int argc, char ** argv) {
 static DiTGGML acestep_dit = {};
 static bool acestep_dit_others_loaded = false;
 static bool acestep_dit_core_loaded = false;
+static bool acestep_vae_enc_loaded = false;
+static bool acestep_vae_dec_loaded = false;
 static DiTGGMLConfig music_dit_cfg;
 static Timer music_dit_timer;
 static bool is_turbo = false;
@@ -609,17 +611,68 @@ void unload_acestep_dit_others()
     if(acestep_dit_others_loaded)
     {
         acestep_dit_others_loaded = false;
-        vae_enc_free(&vae_enc);
-        vae_ggml_free(&vae);
         gf_close(&gf_te);
         cond_ggml_free(&music_cond);
         detok_ggml_free(&detok);
         qwen3_free(&music_text_enc);
     }
 }
+void unload_acestep_vae_enc()
+{
+    if(acestep_vae_enc_loaded)
+    {
+        acestep_vae_enc_loaded = false;
+        vae_enc_free(&vae_enc);
+    }
+}
+void unload_acestep_vae_dec()
+{
+    if(acestep_vae_dec_loaded)
+    {
+        acestep_vae_dec_loaded = false;
+        vae_ggml_free(&vae);
+    }
+}
 
+bool load_acestep_vae_dec(std::string music_vae_path, bool lowvram)
+{
+    if(acestep_vae_dec_loaded)
+    {
+        unload_acestep_vae_dec();
+    }
 
-bool load_acestep_dit(std::string music_embd_path, std::string music_dit_path, std::string music_vae_path, bool lowvram)
+    const char * vae_gguf       = music_vae_path.c_str();
+    acestep_dit_lowvram = lowvram;
+    acestep_music_vae_path = music_vae_path;
+
+     // Load VAE model (once for all requests)
+    music_dit_timer.reset();
+    vae_ggml_load(&vae, vae_gguf);
+    fprintf(stderr, "[Load] VAE weights: %.1f ms\n", music_dit_timer.ms());
+
+    acestep_vae_dec_loaded = true;
+    return true;
+}
+bool load_acestep_vae_enc(std::string music_vae_path, bool lowvram)
+{
+    if(acestep_vae_enc_loaded)
+    {
+        unload_acestep_vae_enc();
+    }
+
+    const char * vae_gguf       = music_vae_path.c_str();
+    acestep_dit_lowvram = lowvram;
+    acestep_music_vae_path = music_vae_path;
+
+    music_dit_timer.reset();
+    vae_enc_load(&vae_enc, vae_gguf);
+    fprintf(stderr, "[Load] VAE Enc weights: %.1f ms\n", music_dit_timer.ms());
+
+    acestep_vae_enc_loaded = true;
+    return true;
+}
+
+bool load_acestep_dit(std::string music_embd_path, std::string music_dit_path, bool lowvram)
 {
     if(acestep_dit_others_loaded || acestep_dit_core_loaded)
     {
@@ -631,12 +684,10 @@ bool load_acestep_dit(std::string music_embd_path, std::string music_dit_path, s
     acestep_dit_core_loaded = false;
     const char * text_enc_gguf = music_embd_path.c_str();
     const char * dit_gguf      = music_dit_path.c_str();
-    const char * vae_gguf       = music_vae_path.c_str();
 
     acestep_dit_lowvram = lowvram;
     acestep_music_embd_path = music_embd_path;
     acestep_music_dit_path = music_dit_path;
-    acestep_music_vae_path = music_vae_path;
 
     // Load DiT model (once for all requests)
     dit_ggml_init_backend(&acestep_dit);
@@ -670,15 +721,6 @@ bool load_acestep_dit(std::string music_embd_path, std::string music_dit_path, s
             return false;
         }
     }
-
-    // Load VAE model (once for all requests)
-    music_dit_timer.reset();
-    vae_ggml_load(&vae, vae_gguf);
-    fprintf(stderr, "[Load] VAE weights: %.1f ms\n", music_dit_timer.ms());
-
-    music_dit_timer.reset();
-    vae_enc_load(&vae_enc, vae_gguf);
-    fprintf(stderr, "[Load] VAE Enc weights: %.1f ms\n", music_dit_timer.ms());
 
     music_dit_timer.reset();
     if (!load_bpe_from_gguf(&music_tok, text_enc_gguf)) {
@@ -730,15 +772,10 @@ bool load_acestep_dit(std::string music_embd_path, std::string music_dit_path, s
 
 std::string acestep_generate_audio(const music_generation_inputs inputs)
 {
-    if(!acestep_dit_others_loaded && !acestep_dit_core_loaded && acestep_music_dit_path!="")
+    if(acestep_music_dit_path=="" || acestep_music_vae_path=="" || acestep_music_embd_path=="")
     {
-        printf("\nRuntime reload Music DiT model...\n");
-        bool ok = load_acestep_dit(acestep_music_embd_path, acestep_music_dit_path, acestep_music_vae_path, acestep_dit_lowvram);
-        if(!ok)
-        {
-            printf("\nERROR: Acestep DiT load fail\n");
-            return "";
-        }
+        printf("\nERROR: Acestep DiT, VAE or Embd path is empty!\n");
+        return "";
     }
 
     const int FRAMES_PER_SECOND = 25;
@@ -753,7 +790,14 @@ std::string acestep_generate_audio(const music_generation_inputs inputs)
     std::vector<float> cover_latents;  // [T_cover, 64] time-major
     int T_cover = 0;
     std::string custom_reference_audio_str = inputs.music_reference_audio_data;
-    if (custom_reference_audio_str!="") {
+    if (custom_reference_audio_str!="")
+    {
+        if(!acestep_vae_enc_loaded)
+        {
+            printf("\nRuntime reload Music VAE enc model...\n");
+            load_acestep_vae_enc(acestep_music_vae_path,acestep_dit_lowvram);
+        }
+
         music_dit_timer.reset();
         int T_audio = 0, wav_sr = 0;
 
@@ -783,6 +827,23 @@ std::string acestep_generate_audio(const music_generation_inputs inputs)
         fprintf(stderr, "[Cover] Encoded: T_cover=%d (%.2fs), %.1f ms\n",
                 T_cover, (float)T_cover * 1920.0f / 48000.0f, music_dit_timer.ms());
         have_cover = true;
+
+        if(acestep_dit_lowvram)
+        {
+            unload_acestep_vae_enc();
+        }
+    }
+
+
+    if(!acestep_dit_others_loaded && !acestep_dit_core_loaded)
+    {
+        printf("\nRuntime reload Music DiT model...\n");
+        bool ok = load_acestep_dit(acestep_music_embd_path, acestep_music_dit_path, acestep_dit_lowvram);
+        if(!ok)
+        {
+            printf("\nERROR: Acestep DiT load fail\n");
+            return "";
+        }
     }
 
     // Parse request JSON
@@ -1048,6 +1109,12 @@ std::string acestep_generate_audio(const music_generation_inputs inputs)
         unload_acestep_dit_core();
     }
 
+    if(!acestep_vae_dec_loaded)
+    {
+        printf("\nRuntime reload Music VAE dec model...\n");
+        load_acestep_vae_dec(acestep_music_vae_path,acestep_dit_lowvram);
+    }
+
     music_dit_timer.reset();
     int T_audio = vae_ggml_decode_tiled(&vae, dit_out, T_latent, audio.data(), T_audio_max, vae_chunk, vae_overlap);
     if (T_audio < 0) {
@@ -1091,6 +1158,7 @@ std::string acestep_generate_audio(const music_generation_inputs inputs)
     if(acestep_dit_lowvram)
     {
         unload_acestep_dit_others();
+        unload_acestep_vae_dec();
     }
 
     fprintf(stderr, "[Request Done: Music Length %.2fs]\n",muslen);
