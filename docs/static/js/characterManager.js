@@ -881,28 +881,9 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
 
     // Create a "+" add tile to prepend to each type container
     let createPlusTile = (tooltip, handler, label) => {
-        let plusIcon = document.createElement("span")
-        plusIcon.classList.add("containAndScaleImage", "tile", "searchExclude")
-        plusIcon.style.backgroundImage = "none"
-        plusIcon.style.display = "flex"
-        plusIcon.style.flexDirection = "column"
-        plusIcon.style.alignItems = "center"
-        plusIcon.style.justifyContent = "center"
+        let plusIcon = createIcon(label || "", "url('/static/img/plus.svg')")
+        plusIcon.classList.add("searchExclude")
         plusIcon.title = tooltip || "Add item"
-        let plusText = document.createElement("b")
-        plusText.innerText = "+"
-        plusText.style.fontSize = "2.5em"
-        plusText.style.lineHeight = "1"
-        plusIcon.appendChild(plusText)
-        if (label) {
-            let labelEl = document.createElement("b")
-            labelEl.innerText = label
-            labelEl.style.fontSize = "0.7em"
-            labelEl.style.marginTop = "6px"
-            labelEl.style.textAlign = "center"
-            labelEl.style.wordBreak = "break-word"
-            plusIcon.appendChild(labelEl)
-        }
         plusIcon.addEventListener("click", handler)
         return plusIcon
     }
@@ -998,7 +979,7 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
         if (NO_PLUS_TYPES.has(typeName)) return
         let headerIcon = container.firstChild
         if (typeName === "Character") {
-            let uploadTile = createPlusTile("Add new character item", openUploadDialog, "Add Item")
+            let uploadTile = createPlusTile("Add new character item", openUploadDialog, "Add Character")
             let createTile = createPlusTile("Create new character", () => { popupUtils.reset(); showCharacterCreator(); }, "Create New")
             if (headerIcon) {
                 container.insertBefore(uploadTile, headerIcon.nextSibling)
@@ -1008,7 +989,7 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
                 container.appendChild(createTile)
             }
         } else {
-            let plusTile = createPlusTile(`Add new ${typeName.toLowerCase()} item`, openUploadDialog)
+            let plusTile = createPlusTile(`Add new ${typeName.toLowerCase()} item`, openUploadDialog, `Add ${typeName}`)
             if (headerIcon) {
                 container.insertBefore(plusTile, headerIcon.nextSibling)
             } else {
