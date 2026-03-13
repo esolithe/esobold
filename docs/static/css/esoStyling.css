@@ -138,6 +138,8 @@
 
 	#additionalSameOptions {
 		padding: 25px 10px 15px 10px;
+		display: flex;
+		flex-direction: column;
 	}
 
 	#additionalSameOptions > a {
