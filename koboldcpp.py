@@ -1411,7 +1411,10 @@ def autoset_gpu_layers(ctxsize, sdquanted, bbs, qkv_level, musiclowvram): #shitt
             if modelfile_extracted_meta[6] > 1024*1024*10: #draft model tax
                 calulated_gpu_overhead += (modelfile_extracted_meta[6] * 1.5)
             if modelfile_extracted_meta[7] > 1024*1024*10: #tts model tax
-                calulated_gpu_overhead += max(600*1024*1024, modelfile_extracted_meta[7] * 3)
+                if modelfile_extracted_meta[7] < 1024*1024*1024: #less than 1gb probably means outetts, which needs more vram
+                    calulated_gpu_overhead += max(600*1024*1024, modelfile_extracted_meta[7] * 3)
+                else:
+                    calulated_gpu_overhead += max(600*1024*1024, (150*1024*1024 + modelfile_extracted_meta[7] * 1.3))
             if modelfile_extracted_meta[8] > 1024*1024*10: #embeddings model tax
                 calulated_gpu_overhead += max(350*1024*1024, modelfile_extracted_meta[8] * 1.5)
             if modelfile_extracted_meta[9] > 1024*1024*10: #music llm tax
