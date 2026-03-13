@@ -81,10 +81,6 @@
 		transform: none;
 	}
 
-	.containAndScaleImage.tile.library_section_header > b {
-		background-color: transparent;
-	}
-
 	.fillContainer {
 	    height: 100%;
 	    width: 100%;
