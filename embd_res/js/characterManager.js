@@ -361,6 +361,12 @@ let migrateOldData = async () => {
             saveKLiteSaveToIndexDB(name, data)
         }
     }
+    let saveKLiteScenarioToIndexDBIfNew = (name, data) => {
+        let nameToCheck = name.replaceAll(/[^\w()_\-'",!\[\].]/g, " ").replaceAll(/\s+/g, " ").trim();
+        if (allCharacterNames.find(meta => nameToCheck === meta.name) === undefined) {
+            saveKLiteScenarioToIndexDB(name, data)
+        }
+    }
 
     // Handle saves from IndexDB slots
     let slotpromises = [];
@@ -374,6 +380,19 @@ let migrateOldData = async () => {
             data: data
         }
     }).filter(res => !!res.name && !!res.data).map(res => saveKLiteSaveToIndexDBIfNew(res.name, JSON.parse(res.data))))
+
+    // Handle scenario slots from IndexDB
+    let scenariopromises = [];
+    for (let i = 0; i < SCENARIO_SLOTS; ++i) {
+        scenariopromises.push(Promise.all([indexeddb_load("scenario_" + i + "_meta", ""), indexeddb_load("scenario_" + i + "_data", "")]));
+    }
+    await Promise.all((await Promise.all(scenariopromises)).map(res => {
+        let [sname, sdata] = res
+        if (!sname || !sdata) return null
+        let story = decompress_story(sdata)
+        if (!story) return null
+        return { name: sname, data: story }
+    }).filter(res => !!res).map(res => saveKLiteScenarioToIndexDBIfNew(res.name, res.data)))
 
     // Handle saves from server slots
     let fetchDataForSlot = (slot) => {
@@ -879,6 +898,26 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
         }, [".png", ".webp", ".json", ".txt", ".pdf"], true)
     }
 
+    // Open file upload dialog restricted to JSON scenario files
+    let openScenarioUploadDialog = () => {
+        popupUtils.reset()
+        promptUserForLocalFile(async (result) => {
+            let { fileName, plaintext } = result
+            try {
+                let data = JSON.parse(plaintext)
+                if (is_kai_json(data)) {
+                    libraryChangesOccurred = true
+                    saveKLiteScenarioToIndexDB(fileName, data)
+                    waitForLibraryAndShow()
+                } else {
+                    handleError(`${fileName}: File is not a valid scenario save`)
+                }
+            } catch (e) {
+                handleError(`${fileName}: Failed to parse JSON`)
+            }
+        }, [".json"], false)
+    }
+
     // Create a "+" add tile to prepend to each type container
     let createPlusTile = (tooltip, handler, label) => {
         let plusIcon = createIcon(label || "", "url('/static/img/plus.svg')")
@@ -973,8 +1012,8 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
     // Track which sections have already had their tiles built
     let loadedSections = new Set()
 
-    // Helper: add plus tile(s) to a container (Autosave and Scenarios get none)
-    const NO_PLUS_TYPES = new Set(["Autosave", "Scenarios"])
+    // Helper: add plus tile(s) to a container (Autosave gets none)
+    const NO_PLUS_TYPES = new Set(["Autosave"])
     let addPlusTilesToContainer = (container, typeName) => {
         if (NO_PLUS_TYPES.has(typeName)) return
         let headerIcon = container.firstChild
@@ -987,6 +1026,25 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
             } else {
                 container.appendChild(uploadTile)
                 container.appendChild(createTile)
+            }
+        } else if (typeName === "Scenarios") {
+            let importTile = createPlusTile("Import scenario from file", openScenarioUploadDialog, "Import Scenario")
+            let saveTile = createPlusTile("Save current story as a custom scenario", () => {
+                inputBox("Enter a name for this custom scenario", "Save as Scenario", "", "Scenario name", () => {
+                    let name = getInputBoxValue().trim()
+                    if (!name) return
+                    libraryChangesOccurred = true
+                    let data = generate_savefile(true, true, true)
+                    saveKLiteScenarioToIndexDB(name, data)
+                    waitForLibraryAndShow()
+                })
+            }, "Save as Scenario")
+            if (headerIcon) {
+                container.insertBefore(importTile, headerIcon.nextSibling)
+                container.insertBefore(saveTile, importTile.nextSibling)
+            } else {
+                container.appendChild(importTile)
+                container.appendChild(saveTile)
             }
         } else {
             let plusTile = createPlusTile(`Add new ${typeName.toLowerCase()} item`, openUploadDialog, `Add ${typeName}`)
@@ -1267,6 +1325,9 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
 
     // Builder: Scenarios section (fetches data on first view)
     let buildScenariosTiles = async () => {
+        // Add plus tiles first
+        addPlusTilesToContainer(getContainerForType("Scenarios", TYPE_TOOLTIPS["Scenarios"]), "Scenarios")
+
         let scenarios = await getScenariosAndLegacyServerSaves()
         let scenariosContainer = getContainerForType("Scenarios", TYPE_TOOLTIPS["Scenarios"])
         // scenarios[0..scenario_sources.length-1] are from local scenario_sources files
@@ -1291,6 +1352,73 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
             let icon = createIcon(scenario.name, image)
             icon.addEventListener("click", scenario.handler)
             scenariosContainer.appendChild(icon);
+        }
+        // Custom (user-defined) scenarios stored in the Library
+        for (let i = 0; i < allCharacterNames.length; i++) {
+            let charMeta = allCharacterNames[i]
+            if (charMeta.type !== "Scenario") continue
+            let { name, thumbnail } = charMeta
+            let icon = createIcon(name, !!thumbnail ? `url(${thumbnail})` : undefined)
+            icon.onclick = async () => {
+                popupUtils.reset()
+                let contents = document.createElement("span")
+                try {
+                    let charData = await getCharacterData(name)
+                    let { AI_portrait } = charData
+                    let { memory, prompt, tempmemory, worldinfo } = charData?.data || {}
+                    let savedSettings = charData?.data?.savedsettings || {}
+                    let { chatname, chatopponent } = savedSettings
+                    contents = createDetailsContent(name)
+                    if (!!AI_portrait) {
+                        let imageContainer = document.createElement("span"), imageElem = document.createElement("img")
+                        imageElem.src = AI_portrait
+                        imageElem.style = "height: 30%; width: 30%; border-radius: 10px;"
+                        imageContainer.style = "width: 100%; display: flex; justify-content: space-around; padding: 10px;"
+                        imageContainer.appendChild(imageElem)
+                        contents.appendChild(imageContainer)
+                    }
+                    if (!!chatname) createSection(contents, "User", chatname)
+                    if (!!chatopponent) createSection(contents, "Characters", chatopponent.split("||$||"))
+                    createSection(contents, "Memory", memory)
+                    createSection(contents, "Temporary memory", tempmemory)
+                    createSection(contents, "First message", prompt)
+                    createSection(contents, "World info", worldinfo?.map(entry => wiEntryToString(entry)))
+                } catch (e) {
+                    console.error(e)
+                }
+                popupUtils.reset().title("Scenario Options").content(contents).css("min-height", "50%").css("min-width", "50%")
+                    .button("Back", () => showCharacterList(undefined, false, true))
+                    .button("Load scenario", async () => {
+                        popupUtils.reset()
+                        let charData = await getCharacterData(name)
+                        kai_scenario_load(charData.data)
+                    })
+                    .button("Download scenario", async () => {
+                        popupUtils.reset()
+                        let data = await getDownloadDataFromManager(name)
+                        if (data !== null) {
+                            let { fileName, b64Url } = data
+                            downloadB64URL(fileName, b64Url)
+                        }
+                    })
+                    .button("Delete scenario", async () => {
+                        popupUtils.reset()
+                        msgboxYesNo("Are you sure you wish to delete? This will remove the server data if it is stored there as well.", "Library", async () => {
+                            if (is_using_kcpp_with_server_saving()) {
+                                await new Promise(resolve => promptForAdminPassword(resolve))
+                                let remoteEndpoint = await getRemoteDataEndpoint()
+                                await removeFileFromServer(remoteEndpoint, name)
+                            }
+                            libraryChangesOccurred = true
+                            allCharacterNames = allCharacterNames.filter(c => c.name !== name)
+                            await indexeddb_save(`character_${name}`)
+                            updateCharacterListFromAll()
+                            showCharacterList(undefined, false, true)
+                        })
+                    })
+                    .button("Close", () => popupUtils.reset()).show()
+            }
+            scenariosContainer.appendChild(icon)
         }
     }
 

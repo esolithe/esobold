@@ -52,6 +52,7 @@ let getDownloadDataFromManager = async (charName) => {
                     }
                     break;
                 case "Save":
+                case "Scenario":
                     if (!!charData?.data) {
                         try {
                             fileName = `${charName}.json`
