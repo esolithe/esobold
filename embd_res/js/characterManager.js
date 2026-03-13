@@ -146,6 +146,8 @@ let putAllCharacterManagerData = () => {
 
     msgboxYesNo("Are you sure you wish to add / update server data?", "Character manager", () => {
         promptForAdminPassword(() => {
+            // Force a prompt for a new password
+            window.lastUsedSavePassword = undefined
             promptForSavePassword(async (passwordData) => {
                 let { password, isEncrypted } = passwordData
                 await updateMetadata()
@@ -231,22 +233,29 @@ let putAllCharacterManagerData = () => {
 }
 
 let promptForSavePassword = (callback) => {
-    inputBox("Save password", "Please input save password (or leave blank for no password):", (window.lastUsedSavePassword || ""), "(Input Save Password)", async () => {
-        let userinput = getInputBoxValue(), password = "";
-        userinput = userinput.trim();
-        if (userinput != null && userinput != "") {
-            password = userinput
-        }
+    if (window?.lastUsedSavePassword === undefined)
+    {
+        inputBox("Save password", "Please input save password (or leave blank for no password):", (window.lastUsedSavePassword || ""), "(Input Save Password)", async () => {
+            let userinput = getInputBoxValue(), password = "";
+            userinput = userinput.trim();
+            if (userinput != null && userinput != "") {
+                password = userinput
+            }
 
-        let isEncrypted = false;
-        if (password.trim() !== "") {
-            password = password.trim()
-            isEncrypted = true
-        }
-        window.lastUsedSavePassword = password
-        callback({ password, isEncrypted })
-    }, false, false, true);
-    document.getElementById("inputboxcontainerinput").focus()
+            let isEncrypted = false;
+            if (password.trim() !== "") {
+                password = password.trim()
+                isEncrypted = true
+            }
+            window.lastUsedSavePassword = password
+            callback({ password, isEncrypted })
+        }, false, false, true);
+        document.getElementById("inputboxcontainerinput").focus()
+    }
+    else
+    {
+        callback({ password: window.lastUsedSavePassword, isEncrypted: window.lastUsedSavePassword !== "" })
+    }
 }
 
 let loadAllCharacterManagerData = () => {
