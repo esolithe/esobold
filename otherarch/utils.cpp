@@ -977,6 +977,51 @@ bool kcpp_decode_audio_from_buf(const unsigned char * buf_in, size_t len, int ta
     return true;
 }
 
+//this version is specifically required for ace-step
+bool kcpp_decode_audio_to_f32_stereo_48k(const uint8_t * data, size_t data_size, std::vector<float> & pcm, int & T_audio) {
+    ma_result result;
+
+    // Force the exact format expected by the VAE
+    ma_decoder_config config =
+        ma_decoder_config_init(ma_format_f32, 2, 48000);
+
+    ma_decoder decoder;
+
+    result = ma_decoder_init_memory(data, data_size, &config, &decoder);
+    if (result != MA_SUCCESS)
+        return false;
+
+    ma_uint64 frame_count = 0;
+
+    result = ma_decoder_get_length_in_pcm_frames(&decoder, &frame_count);
+    if (result != MA_SUCCESS) {
+        ma_decoder_uninit(&decoder);
+        return false;
+    }
+
+    // allocate stereo
+    pcm.resize(frame_count * 2);
+
+    ma_uint64 frames_read = 0;
+
+    result = ma_decoder_read_pcm_frames(
+        &decoder,
+        pcm.data(),
+        frame_count,
+        &frames_read
+    );
+
+    ma_decoder_uninit(&decoder);
+
+    if (result != MA_SUCCESS)
+        return false;
+
+    pcm.resize(frames_read * 2);
+    T_audio = (int)frames_read;
+
+    return true;
+}
+
 static std::vector<std::string> kcpp_string_split(const std::string & input, char separator)
 {
     std::vector<std::string> parts;

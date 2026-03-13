@@ -1210,6 +1210,10 @@ static tts_generation_outputs ttstype_generate_qwen3tts(const tts_generation_inp
         {
             printf("\nTTS Generating...");
         }
+        if(ttsdebugmode==1 && !tts_is_quiet)
+        {
+            qwen3tts_params.print_progress = true;
+        }
 
         if (custom_reference_audio_pcmf32.empty()) {
             result = qwen3tts_runner.synthesize(prompt, qwen3tts_params);

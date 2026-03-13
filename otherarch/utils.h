@@ -71,6 +71,7 @@ int32_t kcpp_quick_sample(float * logits, const int n_logits, const std::vector<
 
 std::vector<std::string> split_string(const std::string& input, const std::string& separator);
 bool kcpp_decode_audio_from_buf(const unsigned char * buf_in, size_t len, int target_sampler_rate, std::vector<float> & pcmf32_mono);
+bool kcpp_decode_audio_to_f32_stereo_48k(const uint8_t * data, size_t data_size, std::vector<float> & pcm, int & T_audio);
 
 std::vector<ggml_backend_dev_t> kcpp_parse_device_list(const std::string & value);
 

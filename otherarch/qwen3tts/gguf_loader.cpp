@@ -4,6 +4,12 @@
 #include <cstring>
 #include <fstream>
 
+#ifdef _WIN32
+#    define ttsfseek _fseeki64
+#else
+#    define ttsfseek fseeko
+#endif
+
 namespace qwen3_tts {
 
 namespace {
@@ -204,7 +210,7 @@ bool load_tensor_data_from_file(
 
         read_buf.resize(nbytes);
 
-        if (fseek(f, data_offset + offset, SEEK_SET) != 0) {
+        if (ttsfseek(f, data_offset + offset, SEEK_SET) != 0) {
             error_msg = "Failed to seek to tensor data: " + std::string(name);
             fclose(f);
             release_preferred_backend(backend);

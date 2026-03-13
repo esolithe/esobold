@@ -10,6 +10,7 @@
 #include <vector>
 #include <memory>
 #include <random>
+#include <functional>
 #ifdef QWEN3_TTS_TIMING
 #include <chrono>
 #endif
@@ -80,6 +81,11 @@ struct tts_transformer_config {
     // Code predictor
     int32_t code_pred_layers = 5;
     int32_t code_pred_vocab_size = 2048;  // Per-codebook vocab
+    int32_t code_pred_hidden_size = 1024;
+    int32_t code_pred_n_attention_heads = 16;
+    int32_t code_pred_n_key_value_heads = 8;
+    int32_t code_pred_intermediate_size = 3072;
+    int32_t code_pred_head_dim = 128;
 
     // Special codec tokens
     int32_t codec_pad_id = 2148;
@@ -143,7 +149,11 @@ struct tts_transformer_model {
      std::vector<transformer_layer> code_pred_layers;
 
      // Code predictor output norm (final RMS norm before lm_head)
-     struct ggml_tensor * code_pred_output_norm = nullptr;  // [hidden_size]
+     struct ggml_tensor * code_pred_output_norm = nullptr;  // [code_pred_hidden_size]
+
+     // Code predictor MTP projection (talker_hidden -> code_pred_hidden)
+     struct ggml_tensor * code_pred_mtp_proj_w = nullptr;  // [hidden_size, code_pred_hidden_size]
+     struct ggml_tensor * code_pred_mtp_proj_b = nullptr;  // [code_pred_hidden_size]
 
      // Code predictor per-codebook embeddings and heads (15 codebooks, 0 uses talker output)
      std::vector<struct ggml_tensor *> code_pred_embd;  // [hidden_size, code_pred_vocab_size] x 15
@@ -260,17 +270,28 @@ public:
     // speaker_embd: speaker embedding [hidden_size]
     // max_len: maximum number of frames to generate
     // output: generated speech codes [n_frames, n_codebooks]
+    // Progress callback: (current_frame, max_frames) called after each frame
+    using progress_callback_t = std::function<void(int, int)>;
+
     bool generate(const int32_t * text_tokens, int32_t n_tokens,
                   const float * speaker_embd, int32_t max_len,
                   std::vector<int32_t> & output,
                   int32_t language_id = 2050,
                   float repetition_penalty = 1.05f,
                   float temperature = 0.9f,
-                  int32_t top_k = 50);
+                  int32_t top_k = 50,
+                  int32_t speaker_token_id = -1,
+                  const int32_t * instruct_tokens = nullptr,
+                  int32_t n_instruct_tokens = 0,
+                  progress_callback_t progress_cb = nullptr);
 
     const tts_transformer_config & get_config() const { return model_.config; }
 
     const std::string & get_error() const { return error_msg_; }
+
+    void set_force_f32_acc(bool v) { force_f32_acc_ = v; }
+    void set_force_cpu(bool v) { force_cpu_ = v; }
+    void set_seed(uint32_t seed) { if (seed) rng_.seed(seed); }
 
     // Legacy interface for compatibility
     bool forward(const int32_t * tokens, int32_t n_tokens, int32_t n_past,
@@ -292,7 +313,10 @@ private:
                              const float * speaker_embd, int32_t language_id,
                              std::vector<float> & prefill_embd,
                              std::vector<float> & trailing_text_hidden,
-                             std::vector<float> & tts_pad_embed);
+                             std::vector<float> & tts_pad_embed,
+                             int32_t speaker_token_id = -1,
+                             const int32_t * instruct_tokens = nullptr,
+                             int32_t n_instruct_tokens = 0);
 
     struct ggml_cgraph * build_prefill_forward_graph(int32_t n_tokens, int32_t n_past);
 
@@ -328,9 +352,16 @@ private:
     // Load tensor data from file
     bool load_tensor_data(const std::string & path, struct gguf_context * ctx);
 
+    // Helper: ggml_mul_mat with optional f32 accumulation precision
+    struct ggml_tensor * mul_mat(struct ggml_context * ctx,
+                                 struct ggml_tensor * a,
+                                 struct ggml_tensor * b);
+
     tts_transformer_model model_;
     tts_transformer_state state_;
     std::string error_msg_;
+    bool force_f32_acc_ = false;
+    bool force_cpu_ = false;
 
     // Cached hidden states from last forward pass
     std::vector<float> last_hidden_;

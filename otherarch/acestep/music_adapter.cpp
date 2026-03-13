@@ -76,9 +76,9 @@ bool musictype_load_model(const music_load_model_inputs inputs)
         musicgen_llm_loaded = ok;
     }
 
-    if(musicdiffusion_filename!="")
+    if(musicdiffusion_filename!="" && musicembedding_filename!="" && musicvae_filename!="")
     {
-        ok = load_acestep_dit(musicembedding_filename,musicdiffusion_filename,musicvae_filename,lowvram);
+        ok = load_acestep_dit(musicembedding_filename,musicdiffusion_filename,lowvram);
         if (!ok) {
             printf("\nFailed to load Music Gen Diffusion, Embed or VAE Model!\n");
             return false;
@@ -87,6 +87,16 @@ bool musictype_load_model(const music_load_model_inputs inputs)
         {
             unload_acestep_dit_core();
             unload_acestep_dit_others();
+        }
+        load_acestep_vae_enc(musicvae_filename,lowvram);
+        if(lowvram)
+        {
+            unload_acestep_vae_enc();
+        }
+        load_acestep_vae_dec(musicvae_filename,lowvram);
+        if(lowvram)
+        {
+            unload_acestep_vae_dec();
         }
         musicgen_diffusion_loaded = ok;
     }
