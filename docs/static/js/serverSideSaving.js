@@ -203,6 +203,7 @@ promptForAdminPassword = (callback) => {
                 callback()
             }
         }, false, false, true);
+        document.getElementById("inputboxcontainerinput").focus()
     }
     else {
         lastUsedAdminPassword = ""

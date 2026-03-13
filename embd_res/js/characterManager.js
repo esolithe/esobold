@@ -246,6 +246,7 @@ let promptForSavePassword = (callback) => {
         window.lastUsedSavePassword = password
         callback({ password, isEncrypted })
     }, false, false, true);
+    document.getElementById("inputboxcontainerinput").focus()
 }
 
 let loadAllCharacterManagerData = () => {
