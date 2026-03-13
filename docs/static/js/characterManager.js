@@ -554,7 +554,7 @@ let controlRemoteDataStore = async () => {
     createCheckboxInputSection(contents, "autosaveRemoteSync", "Sync autosaves with server", remoteDataSettings?.autosaveRemoteSync)
     createSection(contents, "Note", "Autosaves on the server are not encrypted and will be overwritten. Be sure when you enable the remote sync setting.")
 
-    popupUtils.reset().title("Control Options").content(contents).css("min-height", "50%").css("min-width", "50%").button("Back", showCharacterList).button("Save", async () => {
+    popupUtils.reset().title("Control Options").content(contents).css("min-height", "50%").css("min-width", "50%").button("Back", () => showCharacterList(undefined, false, true)).button("Save", async () => {
         let data = {
             remoteDataStorageUrl: document.querySelector("#remoteDataStorageUrl").value,
             autosaveName: document.querySelector("#autosaveName").value,
@@ -604,7 +604,7 @@ let getScenariosAndLegacyServerSaves = async () => {
                 return wiEntryToString(entry);
             }));
 
-            popupUtils.reset().title("Scenario Options").content(contents).css("min-height", "50%").css("min-width", "50%").button("Back", showCharacterList).button("Load scenario", async () => {
+            popupUtils.reset().title("Scenario Options").content(contents).css("min-height", "50%").css("min-width", "50%").button("Back", () => showCharacterList(undefined, false, true)).button("Load scenario", async () => {
                 popupUtils.reset()
                 confirm_scenario_verify(() => {
                     hide_popups();
@@ -779,12 +779,32 @@ let managerUploadHandler = function (result) {
 }
 
 let maxLengthForSection = 500, halfMaxLengthForSection = Math.floor(maxLengthForSection / 2);
-let showCharacterList = async (event = undefined, serverLoad = false) => {
+let libraryChangesOccurred = false;
+
+// Navigate back to the Library, waiting for any pending background processing to finish first
+let waitForLibraryAndShow = () => {
+    if (!window?.debounce_pending_updateCharacterListFromAll && !window?.pending_encrypt) {
+        showCharacterList(undefined, false, true)
+        return
+    }
+    let interval = setInterval(() => {
+        if (!window?.debounce_pending_updateCharacterListFromAll && !window?.pending_encrypt) {
+            clearInterval(interval)
+            showCharacterList(undefined, false, true)
+        }
+    }, 100)
+}
+let showCharacterList = async (event = undefined, serverLoad = false, isReturn = false) => {
     // Still processing characters
     if (!!window?.debounce_pending_updateCharacterListFromAll || !!window?.pending_encrypt)
     {
         handleError("Please wait - data is still being loaded")
         return
+    }
+
+    // Only reset change-tracking when opening fresh (not navigating back from a detail view)
+    if (!isReturn) {
+        libraryChangesOccurred = false
     }
 
     if (!!serverLoad)
@@ -800,12 +820,16 @@ let showCharacterList = async (event = undefined, serverLoad = false) => {
         let charText = document.createElement("b");
         charIcon.classList.add("containAndScaleImage", "tile")
         charIcon.style.backgroundImage = !!image ? image : "var(--img_esobold)"
+        if (!!image && image.startsWith("url(") && image.indexOf("/static/") !== -1) {
+            let filterToUse = colourToCSSFilters(getThemeVars()["--theme_color_accent_bg"]).filter;
+            charIcon.style.filter = filterToUse;
+        }
         charIcon.title = name
         charText.innerText = name
         charIcon.appendChild(charText)
         return charIcon
     }
-    let getContainerForType = (containerName) => {
+    let getContainerForType = (containerName, tooltip) => {
         let containerNameAsClass = containerName.replaceAll(/\s/g, "_")
         let existingContainer = containers.find(container => container.classList.contains(containerNameAsClass));
         if (!!existingContainer) {
@@ -817,62 +841,78 @@ let showCharacterList = async (event = undefined, serverLoad = false) => {
         container.style.overflowX = "hidden"
         container.style.marginBottom = "10px"
         container.classList.add(containerNameAsClass)
+        if (!!tooltip) {
+            container.title = tooltip
+        }
         containers.push(container)
 
-        let charIcon = createIcon(containerName, "var(--img_load)")
-        charIcon.classList.add("searchExclude")
+        let charIcon = createIcon(containerName, "url('/static/img/folder.svg')")
+        charIcon.classList.add("searchExclude", "library_section_header")
         container.appendChild(charIcon);
         return container
     }
 
-    let scenarios = await getScenariosAndLegacyServerSaves()
+    const TYPE_TOOLTIPS = {
+        "Scenarios": "Scenarios are pre-built story setups you can load to start a new adventure. Drag and drop scenario files here.",
+        "Character": "Character cards define AI personas with description, personality, and world info. Drag and drop character PNG/JSON files here.",
+        "World Info": "World info and lorebooks contain lore entries that get injected into the context when triggered. Drag and drop JSON files here.",
+        "Save": "Saves store the current story state including chat history and settings. Drag and drop save files here.",
+        "Document": "Documents and PDFs are text files added to the knowledge base (TextDB). Drag and drop TXT/PDF files here.",
+        "Autosave": "Autosaves are automatic periodic saves of your current session.",
+        "All": "Shows all library items across every category. Drag and drop any supported files here.",
+        "Bulk": "Bulk operations for managing all library data at once.",
+        "Server options": "Options for syncing and controlling the remote KCPP server data store."
+    }
 
-    let dragIcon = createIcon("Click or drag characters, saves, lorebooks, world info or PDFs here to add")
-    dragIcon.classList.add("searchExclude")
-    dragIcon.addEventListener("click", () => {
+    // Open file upload dialog, mark a change, then return to the Library
+    let openUploadDialog = () => {
         popupUtils.reset()
+        let returnScheduled = false
         promptUserForLocalFile(async (result) => {
+            libraryChangesOccurred = true
             managerUploadHandler(result)
+            if (!returnScheduled) {
+                returnScheduled = true
+                // Wait for any pending processing to complete before reopening
+                waitForLibraryAndShow()
+            }
         }, [".png", ".webp", ".json", ".txt", ".pdf"], true)
-    })
-    getContainerForType("Drop zone").appendChild(dragIcon);
-    getContainerForType("Drop zone").addEventListener(
-        "dragover",
-        (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-        },
-        false
-    );
-    getContainerForType("Drop zone").addEventListener(
-        "drop",
-        (e) => {
-            let draggedData = e.dataTransfer;
-            let files = draggedData.files;
-            console.log(files);
-            if (files && files.length > 0) {
-                e.preventDefault();
-                e.stopPropagation();
-                let allowedTypes = ["image/png", "image/webp", "application/json", "text/plain", "application/pdf"]
-                let validFiles = [...files].filter(file => {
-                    return file != null && file.name && file.name != "" && (file.type)
-                })
-                if (validFiles.length > 0) {
-                    popupUtils.reset()
-                    fileInputToFiles(validFiles, managerUploadHandler)
-                }
-                else {
-                    handleError("No valid files selected")
-                }
-            };
-        },
-        false
-    );
+    }
+
+    // Create a "+" add tile to prepend to each type container
+    let createPlusTile = (tooltip, handler, label) => {
+        let plusIcon = document.createElement("span")
+        plusIcon.classList.add("containAndScaleImage", "tile", "searchExclude")
+        plusIcon.style.backgroundImage = "none"
+        plusIcon.style.display = "flex"
+        plusIcon.style.flexDirection = "column"
+        plusIcon.style.alignItems = "center"
+        plusIcon.style.justifyContent = "center"
+        plusIcon.title = tooltip || "Add item"
+        let plusText = document.createElement("b")
+        plusText.innerText = "+"
+        plusText.style.fontSize = "2.5em"
+        plusText.style.lineHeight = "1"
+        plusIcon.appendChild(plusText)
+        if (label) {
+            let labelEl = document.createElement("b")
+            labelEl.innerText = label
+            labelEl.style.fontSize = "0.7em"
+            labelEl.style.marginTop = "6px"
+            labelEl.style.textAlign = "center"
+            labelEl.style.wordBreak = "break-word"
+            plusIcon.appendChild(labelEl)
+        }
+        plusIcon.addEventListener("click", handler)
+        return plusIcon
+    }
 
     let searchData = (searchTerm) => {
-        let allTiles = [...document.querySelectorAll("#popupContainer .tile")], hidableSections = [...document.querySelectorAll("div.autoGrid:not(.Drop_zone)")];
+        let allTiles = [...document.querySelectorAll("#popupContainer .tile")]
+        let hidableSections = [...document.querySelectorAll("#popupContainer div.autoGrid:not(.library_toolbar_row)")]
+            .filter(elem => elem.dataset.hidden !== "true")
         try {
-            let results = [...document.querySelectorAll(`#popupContainer .tile`)].filter(elem => !elem.title || elem.title.toLowerCase().indexOf(searchTerm) !== -1);
+            let results = allTiles.filter(elem => !elem.title || elem.title.toLowerCase().indexOf(searchTerm) !== -1)
             if (results.length > 0) {
                 hidableSections.forEach(elem => elem.style.display = "grid")
 
@@ -881,41 +921,30 @@ let showCharacterList = async (event = undefined, serverLoad = false) => {
                         elem.style.display = "none"
                     }
                 })
-                results.forEach(elem => elem.style.display = "unset")
+                results.forEach(elem => {
+                    if (!elem.classList.contains("searchExclude")) {
+                        elem.style.display = "unset"
+                    }
+                })
                 hidableSections.filter(elem => [...elem.querySelectorAll(".tile")].filter(child => child.checkVisibility()).length == 1).forEach(elem => elem.style.display = "none")
             }
             else {
                 hidableSections.forEach(elem => elem.style.display = "grid")
-                allTiles.forEach(elem => elem.style.display = "unset")
+                allTiles.forEach(elem => {
+                    if (!elem.classList.contains("searchExclude")) {
+                        elem.style.display = "unset"
+                    }
+                })
             }
         }
         catch {
             hidableSections.forEach(elem => elem.style.display = "grid")
-            allTiles.forEach(elem => elem.style.display = "unset")
+            allTiles.forEach(elem => {
+                if (!elem.classList.contains("searchExclude")) {
+                    elem.style.display = "unset"
+                }
+            })
         }
-    }
-
-    let createSearchInput = () => {
-        let containerDiv = document.createElement("div"), label = document.createElement("div"), inputContainer = document.createElement("div"), input = document.createElement("input");
-        containerDiv.classList.add("settinglabel")
-        label.title = "Search data by name"
-        label.textContent = "Search"
-        label.classList.add("justifyleft", "settingsmall")
-        inputContainer.classList.add("justifyleft", "settingsmall")
-        input.classList.add("settinglabel", "fullScreenTextEditExclude")
-        input.title = "Search"
-        input.placeholder = "Search"
-        input.type = "text"
-        input.style.width = "100%"
-        input.addEventListener("change", () => {
-            searchData(input.value.toLowerCase())
-        })
-        input.addEventListener("input", () => {
-            searchData(input.value.toLowerCase())
-        })
-        inputContainer.appendChild(input)
-        containerDiv.append(label, inputContainer)
-        getContainerForType("Drop zone").appendChild(containerDiv);
     }
 
     let autosaveFromClick = async (name) => {
@@ -936,34 +965,69 @@ let showCharacterList = async (event = undefined, serverLoad = false) => {
         createButtonInputSection
 
         popupUtils.reset().title("Save Options").content(contents).css("min-height", "50%").css("min-width", "50%")
+            .button("Back", () => waitForLibraryAndShow())
             .button("Delete autosave", async () => {
                 popupUtils.reset()
                 msgboxYesNo("Are you sure you wish to delete?", "Autosave manager", async () => {
+                    libraryChangesOccurred = true
                     allCharacterNames = allCharacterNames.filter(c => c.name !== name)
                     removeAutosave(name)
+                    waitForLibraryAndShow()
                 })
             }).button("Close", () => popupUtils.reset()).show();
     }
 
-    if (allCharacterNames.length === 0) {
-        let charIcon = createIcon("No data added yet (please add some!)")
-        charIcon.classList.add("searchExclude")
-        getContainerForType("Data").appendChild(charIcon);
+    // Helper strings for lorebook / WI entries (used by tile click handlers)
+    let lorebookEntryToString = (entry) => {
+        return `Primary: ${[...entry?.keys].join(", ")}\nSecondary: ${[...entry?.secondary_keys].join(",")}`;
     }
-    else {
-        let lorebookEntryToString = (entry) => {
-            return `Primary: ${[...entry?.keys].join(", ")}\nSecondary: ${[...entry?.secondary_keys].join(",")}`;
+    let wiEntryToString = (entry) => {
+        return `Primary: ${entry?.key}\nSecondary: ${entry?.keysecondary}`;
+    }
+
+    // Pre-create all section container shells (header icon only — content is lazy-loaded)
+    const ALL_SECTION_TYPES = ["Character", "World Info", "Save", "Document", "Autosave", "Scenarios"]
+    ALL_SECTION_TYPES.forEach(type => getContainerForType(type, TYPE_TOOLTIPS[type]))
+
+    // Track which sections have already had their tiles built
+    let loadedSections = new Set()
+
+    // Helper: add plus tile(s) to a container (Autosave and Scenarios get none)
+    const NO_PLUS_TYPES = new Set(["Autosave", "Scenarios"])
+    let addPlusTilesToContainer = (container, typeName) => {
+        if (NO_PLUS_TYPES.has(typeName)) return
+        let headerIcon = container.firstChild
+        if (typeName === "Character") {
+            let uploadTile = createPlusTile("Add new character item", openUploadDialog, "Add Item")
+            let createTile = createPlusTile("Create new character", () => { popupUtils.reset(); showCharacterCreator(); }, "Create New")
+            if (headerIcon) {
+                container.insertBefore(uploadTile, headerIcon.nextSibling)
+                container.insertBefore(createTile, uploadTile.nextSibling)
+            } else {
+                container.appendChild(uploadTile)
+                container.appendChild(createTile)
+            }
+        } else {
+            let plusTile = createPlusTile(`Add new ${typeName.toLowerCase()} item`, openUploadDialog)
+            if (headerIcon) {
+                container.insertBefore(plusTile, headerIcon.nextSibling)
+            } else {
+                container.appendChild(plusTile)
+            }
         }
-        let wiEntryToString = (entry) => {
-            return `Primary: ${entry?.key}\nSecondary: ${entry?.keysecondary}`;
-        }
-        createSearchInput()
+    }
+
+    // Build tiles for a standard allCharacterNames type (Character / World Info / Save / Document / Autosave)
+    let buildSectionContent = (type) => {
+        let container = getContainerForType(type, TYPE_TOOLTIPS[type])
+        addPlusTilesToContainer(container, type)
         for (let i = 0; i < allCharacterNames.length; i++) {
-            let { name, thumbnail } = allCharacterNames[i], type = getTypeFromAllCharacterData(allCharacterNames[i]);
+            let { name, thumbnail } = allCharacterNames[i], itemType = getTypeFromAllCharacterData(allCharacterNames[i]);
+            if (itemType !== type) continue
             let charIcon = createIcon(name, !!thumbnail ? `url(${thumbnail})` : undefined)
             charIcon.onclick = async () => {
                 popupUtils.reset()
-                if (type === "Character") {
+                if (itemType === "Character") {
                     let contents = document.createElement("span");
                     try {
                         let data = await getCharacterData(name), { image } = data;
@@ -992,7 +1056,7 @@ let showCharacterList = async (event = undefined, serverLoad = false) => {
                         console.error(e)
                     }
 
-                    popupUtils.reset().title("Character Options").content(contents).css("min-height", "50%").css("min-width", "50%").button("Back", showCharacterList).button("Load character", async () => {
+                    popupUtils.reset().title("Character Options").content(contents).css("min-height", "50%").css("min-width", "50%").button("Back", () => showCharacterList(undefined, false, true)).button("Load character", async () => {
                         popupUtils.reset()
                         let charData = await getCharacterData(name)
                         load_tavern_obj(charData.data);
@@ -1015,19 +1079,21 @@ let showCharacterList = async (event = undefined, serverLoad = false) => {
                         }
                     }).button("Delete character", async () => {
                         popupUtils.reset()
-                        msgboxYesNo("Are you sure you wish to delete?  This will remove the server data if it is stored there as well.", "Character manager", async () => {
+                        msgboxYesNo("Are you sure you wish to delete?  This will remove the server data if it is stored there as well.", "Library", async () => {
                             if (is_using_kcpp_with_server_saving()) {
                                 await new Promise(resolve => promptForAdminPassword(resolve))
                                 let remoteEndpoint = await getRemoteDataEndpoint();
                                 await removeFileFromServer(remoteEndpoint, name)
                             }
+                            libraryChangesOccurred = true
                             allCharacterNames = allCharacterNames.filter(c => c.name !== name)
                             await indexeddb_save(`character_${name}`)
                             updateCharacterListFromAll()
+                            showCharacterList(undefined, false, true)
                         })
                     }).button("Close", () => popupUtils.reset()).show();
                 }
-                else if (type === "World Info") {
+                else if (itemType === "World Info") {
                     let contents = document.createElement("span");
                     try {
                         let data = await getCharacterData(name);
@@ -1040,7 +1106,7 @@ let showCharacterList = async (event = undefined, serverLoad = false) => {
                         console.error(e)
                     }
 
-                    popupUtils.reset().title("World Info Options").content(contents).css("min-height", "50%").css("min-width", "50%").button("Back", showCharacterList).button("Add to WI", async () => {
+                    popupUtils.reset().title("World Info Options").content(contents).css("min-height", "50%").css("min-width", "50%").button("Back", () => showCharacterList(undefined, false, true)).button("Add to WI", async () => {
                         popupUtils.reset()
                         let charData = await getCharacterData(name)
                         let wiToAdd = charData.data;
@@ -1061,19 +1127,21 @@ let showCharacterList = async (event = undefined, serverLoad = false) => {
                         }
                     }).button("Delete world info", async () => {
                         popupUtils.reset()
-                        msgboxYesNo("Are you sure you wish to delete?  This will remove the server data if it is stored there as well.", "Character manager", async () => {
+                        msgboxYesNo("Are you sure you wish to delete?  This will remove the server data if it is stored there as well.", "Library", async () => {
                             if (is_using_kcpp_with_server_saving()) {
                                 await new Promise(resolve => promptForAdminPassword(resolve))
                                 let remoteEndpoint = await getRemoteDataEndpoint();
                                 await removeFileFromServer(remoteEndpoint, name)
                             }
+                            libraryChangesOccurred = true
                             allCharacterNames = allCharacterNames.filter(c => c.name !== name)
                             await indexeddb_save(`character_${name}`)
                             updateCharacterListFromAll()
+                            showCharacterList(undefined, false, true)
                         })
                     }).button("Close", () => popupUtils.reset()).show();
                 }
-                else if (type === "Save") {
+                else if (itemType === "Save") {
                     let contents = document.createElement("span");
                     try {
                         let data = await getCharacterData(name), { AI_portrait } = data;
@@ -1105,7 +1173,7 @@ let showCharacterList = async (event = undefined, serverLoad = false) => {
                         console.error(e)
                     }
 
-                    popupUtils.reset().title("Save Options").content(contents).css("min-height", "50%").css("min-width", "50%").button("Back", showCharacterList).button("Load save", async () => {
+                    popupUtils.reset().title("Save Options").content(contents).css("min-height", "50%").css("min-width", "50%").button("Back", () => showCharacterList(undefined, false, true)).button("Load save", async () => {
                         popupUtils.reset()
                         let charData = await getCharacterData(name)
                         kai_json_load(charData.data, false);
@@ -1124,25 +1192,27 @@ let showCharacterList = async (event = undefined, serverLoad = false) => {
                         }
                     }).button("Delete save", async () => {
                         popupUtils.reset()
-                        msgboxYesNo("Are you sure you wish to delete?  This will remove the server data if it is stored there as well.", "Character manager", async () => {
+                        msgboxYesNo("Are you sure you wish to delete?  This will remove the server data if it is stored there as well.", "Library", async () => {
                             if (is_using_kcpp_with_server_saving()) {
                                 await new Promise(resolve => promptForAdminPassword(resolve))
                                 let remoteEndpoint = await getRemoteDataEndpoint();
                                 await removeFileFromServer(remoteEndpoint, name)
                             }
+                            libraryChangesOccurred = true
                             allCharacterNames = allCharacterNames.filter(c => c.name !== name)
                             await indexeddb_save(`character_${name}`)
                             updateCharacterListFromAll()
+                            showCharacterList(undefined, false, true)
                         })
                     }).button("Close", () => popupUtils.reset()).show();
                 }
-                else if (type === "Document") {
+                else if (itemType === "Document") {
                     let contents = document.createElement("span");
                     contents = createDetailsContent(name);
                     let charData = await getCharacterData(name), { extractedText } = charData;
                     createSection(contents, "Has text been extracted?", !!extractedText ? "True" : "False");
 
-                    popupUtils.reset().title("Document Options").content(contents).css("min-height", "50%").css("min-width", "50%").button("Back", showCharacterList).button("Add to TextDB", async () => {
+                    popupUtils.reset().title("Document Options").content(contents).css("min-height", "50%").css("min-width", "50%").button("Back", () => showCharacterList(undefined, false, true)).button("Add to TextDB", async () => {
                         popupUtils.reset()
                         waitingToast.setText(`Extracting text to add to TextDB`)
                         waitingToast.show()
@@ -1169,104 +1239,121 @@ let showCharacterList = async (event = undefined, serverLoad = false) => {
                         }
                     }).button("Delete document", async () => {
                         popupUtils.reset()
-                        msgboxYesNo("Are you sure you wish to delete?  This will remove the server data if it is stored there as well.", "Character manager", async () => {
+                        msgboxYesNo("Are you sure you wish to delete?  This will remove the server data if it is stored there as well.", "Library", async () => {
                             if (is_using_kcpp_with_server_saving())
                             {
                                 await new Promise(resolve => promptForAdminPassword(resolve))
                                 let remoteEndpoint = await getRemoteDataEndpoint();
                                 await removeFileFromServer(remoteEndpoint, name)
                             }
+                            libraryChangesOccurred = true
                             allCharacterNames = allCharacterNames.filter(c => c.name !== name)
                             await indexeddb_save(`character_${name}`)
                             updateCharacterListFromAll()
-
+                            showCharacterList(undefined, false, true)
                         })
                     }).button("Close", () => popupUtils.reset()).show();
                 }
-                else if ("Autosave") {
+                else if (itemType === "Autosave") {
                     autosaveFromClick(name)
                 }
                 else {
                     popupUtils.reset()
                 }
             }
-            getContainerForType(type).appendChild(charIcon)
+            container.appendChild(charIcon)
         }
     }
 
-    if (is_using_kcpp_with_server_saving()) {
-        try {
-            let autoSaves = await getServerSaves({ typeName: "Autosave" })
-            let localAutosaveNames = allCharacterNames.filter(data => data?.type === "Autosave").map(data => data.name)
-            Object.keys(autoSaves).filter(saveName => !localAutosaveNames.includes(saveName)).forEach(name => {
-                let charIcon = createIcon(name, undefined)
-                charIcon.onclick = () => autosaveFromClick(name)
-                getContainerForType("Autosave").appendChild(charIcon)
-            })
-        }
-        catch (e) {
-            console.error("Could not get server autosaves", e)
+    // Builder: Autosave section (local tiles + optional server autosaves)
+    let buildAutosaveTiles = async () => {
+        buildSectionContent("Autosave")
+        if (is_using_kcpp_with_server_saving()) {
+            try {
+                let autoSaves = await getServerSaves({ typeName: "Autosave" })
+                let localAutosaveNames = allCharacterNames.filter(data => data?.type === "Autosave").map(data => data.name)
+                Object.keys(autoSaves).filter(saveName => !localAutosaveNames.includes(saveName)).forEach(name => {
+                    let charIcon = createIcon(name, undefined)
+                    charIcon.onclick = () => autosaveFromClick(name)
+                    getContainerForType("Autosave", TYPE_TOOLTIPS["Autosave"]).appendChild(charIcon)
+                })
+            }
+            catch (e) {
+                console.error("Could not get server autosaves", e)
+            }
         }
     }
 
-    // Add icons for scenarios and legacy server data
-    for (let i = scenario_sources.length; i < scenarios.length; i++) {
-        let scenario = scenarios[i]
-        if (scenario_db[i - scenario_sources.length]?.serverSaveTypeName === "Autosave") {
-            continue
+    // Builder: Scenarios section (fetches data on first view)
+    let buildScenariosTiles = async () => {
+        let scenarios = await getScenariosAndLegacyServerSaves()
+        let scenariosContainer = getContainerForType("Scenarios", TYPE_TOOLTIPS["Scenarios"])
+        // scenarios[0..scenario_sources.length-1] are from local scenario_sources files
+        for (let i = 0; i < scenario_sources.length && i < scenarios.length; i++) {
+            let scenario = scenarios[i]
+            if (!scenario) continue
+            let icon = createIcon(scenario.name, undefined)
+            icon.addEventListener("click", scenario.handler)
+            scenariosContainer.appendChild(icon)
         }
-        let image = undefined
-        if (scenario?.thumbnail !== undefined) {
-            image = `url('${scenario.thumbnail}')`
+        // scenarios[scenario_sources.length..] are from scenario_db (built-in + server)
+        for (let i = scenario_sources.length; i < scenarios.length; i++) {
+            let scenario = scenarios[i]
+            if (!scenario) continue
+            if (scenario_db[i - scenario_sources.length]?.serverSaveTypeName === "Autosave") {
+                continue
+            }
+            let image = undefined
+            if (scenario?.thumbnail !== undefined) {
+                image = `url('${scenario.thumbnail}')`
+            }
+            let icon = createIcon(scenario.name, image)
+            icon.addEventListener("click", scenario.handler)
+            scenariosContainer.appendChild(icon);
         }
-        let icon = createIcon(scenario.name, image)
-        icon.addEventListener("click", scenario.handler)
-        getContainerForType("Scenarios").appendChild(icon);
     }
 
-    popupUtils.reset().title(`Data List (${allCharacterNames.length})`).css("height", "80%").css("width", "80%").setMobileMenu(true)
-    containers.forEach(container => popupUtils.content(container))
+    // Load a section's content if it has not been built yet
+    let loadSectionIfNeeded = async (label) => {
+        if (loadedSections.has(label)) return
+        loadedSections.add(label)
+        if (label === "Autosaves")       { await buildAutosaveTiles() }
+        else if (label === "Scenarios")  { await buildScenariosTiles() }
+        else if (label === "Characters") { buildSectionContent("Character") }
+        else if (label === "World Info") { buildSectionContent("World Info") }
+        else if (label === "Saves")      { buildSectionContent("Save") }
+        else if (label === "Documents")  { buildSectionContent("Document") }
+    }
+    // Build the Bulk container (tiles instead of buttons)
+    let bulkContainer = document.createElement("div")
+    bulkContainer.classList.add("autoGrid", "library_bulk")
+    bulkContainer.style.overflowX = "hidden"
+    bulkContainer.style.marginBottom = "10px"
+    bulkContainer.title = TYPE_TOOLTIPS["Bulk"]
 
-    popupUtils.buttonGroup("Add")
-        .button("New character", () => { try { showCharacterCreator(); } catch (e) { console.error(e); } })
-        .button("Save", () => {
-            popupUtils.reset()
-            inputBox("Enter a Filename", "Save File", "", "Input Filename", () => {
-                let userinput = getInputBoxValue();
-                if (userinput != null && userinput.trim() != "") {
-                    waitingToast.setText(`Saving data ${userinput}`)
-                    waitingToast.show()
-                    let data = generate_savefile(true, true, true);
-                    saveKLiteSaveToIndexDB(userinput, data);
-                }
-            }, false);
-        })
-        .button("Download", () => {
-            popupUtils.reset()
-            save_file_button()
-        })
-        .button("Share", () => {
-            popupUtils.reset()
-            share_story_button()
-        })
-        .button("Mods", () => {
-            popupUtils.reset()
-            modManager.showModListWarning()
-        })
+    let bulkHeader = createIcon("Bulk operations", "url('/static/img/folder.svg')")
+    bulkHeader.classList.add("searchExclude")
+    bulkContainer.appendChild(bulkHeader)
 
+    let addBulkTile = (name, image, tooltip, handler) => {
+        let tile = createIcon(name, image)
+        tile.title = tooltip
+        tile.addEventListener("click", handler)
+        bulkContainer.appendChild(tile)
+    }
 
-    popupUtils.buttonGroup("Bulk").button("Migrate old data", async () => {
+    addBulkTile("Migrate old data", "url('/static/img/upload.svg')", "Migrate data from legacy save slots to the Library", async () => {
         popupUtils.reset()
         waitingToast.setText(`Migrating old data`)
         waitingToast.show()
         await migrateOldData()
         waitingToast.setText(`Migration complete`)
-        setTimeout(() => {
-            waitingToast.hide()
-        }, 5000)
-    }).button("Delete all", async () => {
+        setTimeout(() => { waitingToast.hide() }, 5000)
+    })
+    addBulkTile("Delete all", "url('/static/img/bin.svg')", "Delete all local library data (cannot be undone)", async () => {
         popupUtils.reset()
-        msgboxYesNo("Are you sure you wish to delete all local data?", "Character manager", async () => {
+        msgboxYesNo("Are you sure you wish to delete all local data?", "Library", async () => {
+            libraryChangesOccurred = true
             waitingToast.setText(`Deleting all local data`)
             waitingToast.show()
             await Promise.all(allCharacterNames.map(elem => indexeddb_save(`character_${elem.name}`)))
@@ -1274,17 +1361,20 @@ let showCharacterList = async (event = undefined, serverLoad = false) => {
             await updateCharacterListFromAll()
             waitingToast.hide()
         })
-    }).button("Download all", async () => {
+    })
+    addBulkTile("Download all", "url('/static/img/download.svg')", "Download all library data as a zip archive", async () => {
         popupUtils.reset()
-        msgboxYesNo("Are you sure you wish to download all data?", "Character manager", async () => {
+        msgboxYesNo("Are you sure you wish to download all data?", "Library", async () => {
             waitingToast.setText(`Downloading all data`)
             waitingToast.show()
             await downloadZipExport()
             waitingToast.hide()
         })
-    }).button("Upload all", async () => {
+    })
+    addBulkTile("Upload all", "url('/static/img/upload.svg')", "Upload all library data from a zip archive", async () => {
         popupUtils.reset()
-        msgboxYesNo("Are you sure you wish to upload all data from a zip archive?", "Character manager", async () => {
+        msgboxYesNo("Are you sure you wish to upload all data from a zip archive?", "Library", async () => {
+            libraryChangesOccurred = true
             waitingToast.setText(`Uploading all data from archive`)
             waitingToast.show()
             await uploadZipImport()
@@ -1293,13 +1383,189 @@ let showCharacterList = async (event = undefined, serverLoad = false) => {
         })
     })
 
-    popupUtils.buttonGroup("Esobold Server")
-        .button("Control", () => controlRemoteDataStore())
+    // Build the Server options container (tiles instead of buttons)
+    let serverContainer = document.createElement("div")
+    serverContainer.classList.add("autoGrid", "library_server")
+    serverContainer.style.overflowX = "hidden"
+    serverContainer.style.marginBottom = "10px"
+    serverContainer.title = TYPE_TOOLTIPS["Server options"]
+
+    let serverHeader = createIcon("Server options", "url('/static/img/folder.svg')")
+    serverHeader.classList.add("searchExclude")
+    serverContainer.appendChild(serverHeader)
+
+    let controlTile = createIcon("Control", "url('/static/img/folder.svg')")
+    controlTile.title = "Configure the remote KCPP server data store settings"
+    controlTile.addEventListener("click", () => controlRemoteDataStore())
+    serverContainer.appendChild(controlTile)
+
     if (is_using_kcpp_with_server_saving()) {
-        popupUtils
-            .button("Sync", () => putAllCharacterManagerData())
+        let syncTile = createIcon("Sync", "url('/static/img/sync.svg')")
+        syncTile.title = "Sync all library data to the server now"
+        syncTile.addEventListener("click", () => putAllCharacterManagerData())
+        serverContainer.appendChild(syncTile)
     }
-    popupUtils.resetButtonGroup().button("Close", () => popupUtils.reset()).show();
+
+    // Build the dropdown type selector toolbar
+    let toolbarRow = document.createElement("div")
+    toolbarRow.classList.add("settinglabel", "library_toolbar_row")
+    toolbarRow.style.marginBottom = "10px"
+    toolbarRow.style.display = "flex"
+    toolbarRow.style.gap = "10px"
+    toolbarRow.style.flexWrap = "wrap"
+    toolbarRow.style.alignItems = "center"
+
+    let typeSelect = document.createElement("select")
+    typeSelect.classList.add("settinglabel")
+    typeSelect.style.flexGrow = "0"
+    typeSelect.style.minWidth = "150px"
+    typeSelect.style.fontSize = "var(--main_font_size)"
+    typeSelect.style.height = "100%"
+
+    const DROPDOWN_OPTIONS = [
+        { label: "Saves", containerClass: "Save", tooltip: TYPE_TOOLTIPS["Save"] },
+        { label: "Scenarios",     containerClass: "Scenarios",  tooltip: TYPE_TOOLTIPS["Scenarios"] },
+        { label: "Characters",    containerClass: "Character",   tooltip: TYPE_TOOLTIPS["Character"] },
+        { label: "World Info",    containerClass: "World_Info",  tooltip: TYPE_TOOLTIPS["World Info"] },
+        { label: "Documents",     containerClass: "Document",    tooltip: TYPE_TOOLTIPS["Document"] },
+        { label: "Autosaves",     containerClass: "Autosave",    tooltip: TYPE_TOOLTIPS["Autosave"] },
+        { label: "All",           containerClass: null,          tooltip: TYPE_TOOLTIPS["All"] },
+        { label: "Bulk",          containerClass: "_bulk",       tooltip: TYPE_TOOLTIPS["Bulk"] },
+        { label: "Server options",containerClass: "_server",     tooltip: TYPE_TOOLTIPS["Server options"] },
+    ]
+
+    const LIBRARY_SECTION_KEY = "esobold_library_section"
+    let savedSection = localStorage.getItem(LIBRARY_SECTION_KEY)
+    let initialSection = DROPDOWN_OPTIONS.some(o => o.label === savedSection) ? savedSection : DROPDOWN_OPTIONS[0].label
+
+    for (let opt of DROPDOWN_OPTIONS) {
+        let optElem = document.createElement("option")
+        optElem.value = opt.label
+        optElem.textContent = opt.label
+        optElem.title = opt.tooltip
+        if (opt.label === initialSection) {
+            optElem.selected = true
+        }
+        typeSelect.appendChild(optElem)
+    }
+    toolbarRow.appendChild(typeSelect)
+
+    // Search input (hidden for Bulk / Server options views)
+    let searchInput = document.createElement("input")
+    searchInput.classList.add("settinglabel", "fullScreenTextEditExclude")
+    searchInput.title = "Search library items by name"
+    searchInput.placeholder = "Search"
+    searchInput.type = "text"
+    searchInput.style.flexGrow = "1"
+    searchInput.style.minWidth = "100px"
+    searchInput.addEventListener("change", () => searchData(searchInput.value.toLowerCase()))
+    searchInput.addEventListener("input", () => searchData(searchInput.value.toLowerCase()))
+    toolbarRow.appendChild(searchInput)
+
+    // updateView lazily loads section content on first view, then shows/hides containers
+    let updateView = async (selectedType) => {
+        let isBulk   = selectedType === "Bulk"
+        let isServer = selectedType === "Server options"
+        let isAll    = selectedType === "All"
+
+        // Load content for the section(s) being shown, if not already built
+        if (isAll) {
+            await Promise.all(
+                DROPDOWN_OPTIONS
+                    .filter(o => !["All", "Bulk", "Server options"].includes(o.label))
+                    .map(o => loadSectionIfNeeded(o.label))
+            )
+        } else if (!isBulk && !isServer) {
+            await loadSectionIfNeeded(selectedType)
+        }
+
+        let opt = DROPDOWN_OPTIONS.find(o => o.label === selectedType)
+
+        containers.forEach(container => {
+            let show = false
+            if (isAll) {
+                show = true
+            } else if (!isBulk && !isServer && opt) {
+                show = container.classList.contains(opt.containerClass)
+            }
+            container.style.display = show ? "grid" : "none"
+            container.dataset.hidden = show ? "false" : "true"
+        })
+
+        bulkContainer.style.display   = isBulk   ? "grid" : "none"
+        bulkContainer.dataset.hidden   = isBulk   ? "false" : "true"
+        serverContainer.style.display = isServer  ? "grid" : "none"
+        serverContainer.dataset.hidden = isServer  ? "false" : "true"
+
+        // Hide search input for Bulk / Server options
+        searchInput.style.display = (isBulk || isServer) ? "none" : ""
+
+        // Clear search when switching views
+        if (searchInput.value) {
+            searchInput.value = ""
+            searchData("")
+        }
+    }
+
+    typeSelect.addEventListener("change", () => {
+        localStorage.setItem(LIBRARY_SECTION_KEY, typeSelect.value)
+        updateView(typeSelect.value)
+    })
+
+    // Assemble the popup
+    popupUtils.reset().title(`Library (${allCharacterNames.length})`).css("height", "80%").css("width", "80%").setMobileMenu(true)
+    popupUtils.content(toolbarRow)
+    containers.forEach(container => popupUtils.content(container))
+    popupUtils.content(bulkContainer)
+    popupUtils.content(serverContainer)
+
+    // Close button — close popup first, then prompt to sync if changes occurred
+    popupUtils.resetButtonGroup().button("Close", () => {
+        popupUtils.reset()
+        if (libraryChangesOccurred && is_using_kcpp_with_server_saving()) {
+            msgboxYesNo("Changes were made to the library. Would you like to sync to the server now?", "Library",
+                () => { putAllCharacterManagerData() },
+                null)
+        }
+    }).show()
+
+    // Apply initial view (from localStorage if available, otherwise first option)
+    updateView(initialSection)
+
+    // Attach drop zone to the entire popup content area (active for all views except Bulk / Server options)
+    let dropZoneActive = () => typeSelect.value !== "Bulk" && typeSelect.value !== "Server options"
+
+    popupUtils.contentElem.addEventListener("dragover", (e) => {
+        if (dropZoneActive()) {
+            e.preventDefault()
+            e.stopPropagation()
+        }
+    }, false)
+
+    popupUtils.contentElem.addEventListener("drop", (e) => {
+        if (!dropZoneActive()) return
+        let files = e.dataTransfer.files
+        if (files && files.length > 0) {
+            e.preventDefault()
+            e.stopPropagation()
+            let validFiles = [...files].filter(file => file != null && file.name && file.name !== "" && file.type)
+            if (validFiles.length > 0) {
+                popupUtils.reset()
+                libraryChangesOccurred = true
+                let remaining = validFiles.length
+                fileInputToFiles(validFiles, (result) => {
+                    managerUploadHandler(result)
+                    remaining--
+                    if (remaining === 0) {
+                        waitForLibraryAndShow()
+                    }
+                })
+            }
+            else {
+                handleError("No valid files selected")
+            }
+        }
+    }, false)
 
     // Fix colour of bottom border for popup
     popupUtils.buttonsElem.style["paddingBottom"] = "0px"
@@ -1540,7 +1806,8 @@ function showCharacterCreator() {
 
             waitingToast.hide();
             popupUtils.reset();
-            showCharacterList();
+            libraryChangesOccurred = true;
+            showCharacterList(undefined, false, true);
         }
         catch (e) {
             handleError(e);
@@ -1551,7 +1818,6 @@ function showCharacterCreator() {
     popupUtils.reset()
         .title('New Character')
         .content(form)
-        .button('Back', showCharacterList)
         .button('Save', doSave)
         .button('Close', () => popupUtils.reset())
         .show();

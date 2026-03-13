@@ -403,6 +403,9 @@ window.addEventListener('load', () => {
     settingLabelElem = createSettingElemBool("corpoHideLeftPanel", "Left panel in Corpo Theme starts minimised", "If this option is enabled, the left panel in Corpo gets minimised automatically.")
     settingsBox.append(settingLabelElem)
 
+    settingLabelElem = createSettingElemButton("libraryMods", "Mods", "Open the third-party mods manager to browse and apply community mods.", () => modManager.showModListWarning())
+    settingsBox.append(settingLabelElem)
+
     settingsBox = document.querySelector("#settingsmenuappearance > .settingitem")
     settingsBox.appendChild(createNewSubSection("Esobold theme settings"))
     settingLabelElem = createSettingElemButton("customThemeColours", "Modify theme colours", "Allows modification of the colours used in the default theme", showThemePopup)
