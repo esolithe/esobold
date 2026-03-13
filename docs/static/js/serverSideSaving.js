@@ -193,17 +193,24 @@ deleteFromDB.onclick = async () => {
 }
 
 promptForAdminPassword = (callback) => {
-    if (koboldcpp_admin_type == 2 && lastUsedAdminPassword == "") {
-        inputBox("Please input admin password:", "Admin Password Required", lastUsedAdminPassword, "(Input Admin Password - leave blank for public)", () => {
-            let userinput = getInputBoxValue();
-            userinput = userinput.trim();
-            // This does not need to be not blank (blank is for public save access)
-            if (userinput != null) {
-                lastUsedAdminPassword = userinput
-                callback()
-            }
-        }, false, false, true);
-        document.getElementById("inputboxcontainerinput").focus()
+    if (koboldcpp_admin_type == 2) {
+        if (lastUsedAdminPassword == "")
+        {
+            inputBox("Please input admin password:", "Admin Password Required", lastUsedAdminPassword, "(Input Admin Password - leave blank for public)", () => {
+                let userinput = getInputBoxValue();
+                userinput = userinput.trim();
+                // This does not need to be not blank (blank is for public save access)
+                if (userinput != null) {
+                    lastUsedAdminPassword = userinput
+                    callback()
+                }
+            }, false, false, true);
+            document.getElementById("inputboxcontainerinput").focus()
+        }
+        else
+        {
+            callback()
+        }
     }
     else {
         lastUsedAdminPassword = ""
