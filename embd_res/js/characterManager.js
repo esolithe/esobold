@@ -810,16 +810,18 @@ let libraryChangesOccurred = false;
 
 // Navigate back to the Library, waiting for any pending background processing to finish first
 let waitForLibraryAndShow = () => {
-    if (!window?.debounce_pending_updateCharacterListFromAll && !window?.pending_encrypt) {
-        showCharacterList(undefined, false, true)
-        return
-    }
-    let interval = setInterval(() => {
-        if (!window?.debounce_pending_updateCharacterListFromAll && !window?.pending_encrypt) {
-            clearInterval(interval)
+    setTimeout(() => {
+         if (!window?.debounce_pending_updateCharacterListFromAll && !window?.pending_encrypt) {
             showCharacterList(undefined, false, true)
+            return
         }
-    }, 100)
+        let interval = setInterval(() => {
+            if (!window?.debounce_pending_updateCharacterListFromAll && !window?.pending_encrypt) {
+                clearInterval(interval)
+                showCharacterList(undefined, false, true)
+            }
+        }, 100)
+    }, 300);
 }
 let showCharacterList = async (event = undefined, serverLoad = false, isReturn = false) => {
     // Still processing characters
