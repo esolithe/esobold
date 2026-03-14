@@ -3529,10 +3529,100 @@ def LaunchWebbrowser(target_url, failedmsg):
 def get_my_epurl():
     global sslvalid
     httpsaffix = ("https" if sslvalid else "http")
-    epurl = f"{httpsaffix}://localhost:{args.port}"
+    displayedport = (args.port if not args.proxy_port else args.proxy_port)
+    epurl = f"{httpsaffix}://localhost:{displayedport}"
     if args.host!="":
-        epurl = f"{httpsaffix}://{args.host}:{args.port}"
+        epurl = f"{httpsaffix}://{args.host}:{displayedport}"
     return epurl
+
+###########################################################
+###   A simple reverse proxy used in Kcpp Router mode   ###
+###########################################################
+class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
+    sys_version = "1"
+    server_version = "KoboldCppServer"
+    protocol_version = "HTTP/1.1"
+    HOP_BY_HOP = { "connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailers", "transfer-encoding", "upgrade" }
+    STREAM_CHUNK = 512
+
+    def log_message(self, fmt, *args):
+        global showdebug
+        if showdebug:
+            print(f"[proxy] {self.address_string()} {fmt % args}", flush=True)
+        pass
+
+    def _handle(self):
+        upstream_port = self.server.upstream_port
+        length = self.headers.get("Content-Length") #  read request body
+        body = None
+        if length:
+            body = self.rfile.read(int(length))
+        headers = {} # forward headers
+        for k, v in self.headers.items():
+            if k.lower() not in self.HOP_BY_HOP:
+                headers[k] = v
+        headers["Connection"] = "close"
+
+        # maybe_stall_for_model_swap(self.path, request_body)
+
+        try:  # connect upstream
+            conn = http.client.HTTPConnection('localhost', upstream_port, timeout=600)
+            conn.request( self.command, self.path, body=body, headers=headers)
+            resp = conn.getresponse()
+        except OSError as e:
+            self.send_error(502, f"KoboldCpp proxy connection failed: {e}")
+            return
+
+        self.send_response(resp.status, resp.reason) # forward response headers
+        for k, v in resp.getheaders():
+            lk = k.lower()
+            if lk in self.HOP_BY_HOP:
+                continue
+            self.send_header(k, v)
+        self.end_headers()
+        self.close_connection = True
+
+        try:  # stream response
+            while True:
+                chunk = resp.read(self.STREAM_CHUNK)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            conn.close()
+
+    # proxy all HTTP methods
+    do_GET = _handle
+    do_POST = _handle
+    do_PUT = _handle
+    do_DELETE = _handle
+    do_PATCH = _handle
+    do_OPTIONS = _handle
+    do_HEAD = _handle
+
+class KcppProxyHttpServer(http.server.HTTPServer):
+    def __init__(self, server_address, RequestHandlerClass, upstream_port):
+        self.upstream_port = upstream_port
+        super().__init__(server_address, RequestHandlerClass)
+    def process_request(self, request, client_address):
+        thread = threading.Thread(target=self._worker,args=(request, client_address),daemon=True)
+        thread.start()
+    def _worker(self, request, client_address):
+        try:
+            self.finish_request(request, client_address)
+        finally:
+            self.shutdown_request(request)
+
+def run_router_proxy(proxy_port, upstream_port):
+    server = KcppProxyHttpServer(("", proxy_port), KcppProxyHandler, upstream_port)
+    print(f"KoboldCpp Proxy starting on port {proxy_port}, forwarding to port {upstream_port}",flush=True)
+    proxy_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    proxy_thread.start()
+    return server  # Return the server object in case you need to shut it down later
+
 
 #################################################################
 ### A hacky simple HTTP server simulating a kobold api by Concedo
@@ -5778,6 +5868,7 @@ def show_gui():
         togglehorde(1,1,1)
         toggletaesd(1,1,1)
         togglejinja(1,1,1)
+        toggleadmin(1,1,1)
         tabbuttonaction(tabnames[curr_tab_idx])
         pass
     def on_resize(event):
@@ -6010,6 +6101,7 @@ def show_gui():
     admin_dir_var = ctk.StringVar()
     admin_password_var = ctk.StringVar()
     singleinstance_var = ctk.IntVar(value=0)
+    router_mode_var = ctk.IntVar(value=0)
 
     nozenity_var = ctk.IntVar(value=0)
 
@@ -6816,10 +6908,15 @@ def show_gui():
                 autopath = sys.executable
             autopath = os.path.dirname(autopath)
             admin_dir_var.set(autopath)
+        if admin_var.get()==1:
+            router_mode_box.grid()
+        else:
+            router_mode_box.grid_remove()
     makecheckbox(admin_tab, "Enable Model Administration", admin_var, 1, 0, command=toggleadmin,tooltiptxt="Enable a admin server, allowing you to remotely relaunch and swap models and configs.")
     makelabelentry(admin_tab, "Admin Password:" , admin_password_var, 3, 150,padx=(120),singleline=True,tooltip="Require a password to access admin functions. You are strongly advised to use one for publically accessible instances!")
     makefileentry(admin_tab, "Config Directory (Required):", "Select directory containing .gguf or .kcpps files to relaunch from", admin_dir_var, 5, width=280, dialog_type=2, tooltiptxt="Specify a directory to look for .kcpps configs in, which can be used to swap models.")
     makecheckbox(admin_tab, "SingleInstance Mode", singleinstance_var, 10, 0,tooltiptxt="Allows this server to be shut down by another KoboldCpp instance with singleinstance starting on the same port.")
+    router_mode_box = makecheckbox(admin_tab, "Router Mode", router_mode_var, 15, 0,tooltiptxt="Router mode uses a reverse proxy router, allowing you to easily hotswap models and configs within a single request. Requires admin mode.")
 
     def kcpp_export_template():
         nonlocal kcpp_exporting_template
@@ -6893,6 +6990,7 @@ def show_gui():
     togglectxshift(1,1,1)
     togglehorde(1,1,1)
     togglejinja(1,1,1)
+    toggleadmin(1,1,1)
 
     # launch
     def guilaunch():
@@ -7132,6 +7230,7 @@ def show_gui():
         args.admindir = admin_dir_var.get()
         args.adminpassword = admin_password_var.get()
         args.singleinstance = (singleinstance_var.get()==1)
+        args.routermode = router_mode_var.get()==1
         args.showgui = False #prevent showgui from leaking into configs, its cli only
 
     def import_vars(dict):
@@ -7381,6 +7480,7 @@ def show_gui():
         embeddings_gpu_var.set(dict["embeddingsgpu"] if ("embeddingsgpu" in dict) else 0)
 
         admin_var.set(dict["admin"] if ("admin" in dict) else 0)
+        router_mode_var.set(dict["routermode"] if ("routermode" in dict) else 0)
         admin_dir_var.set(dict["admindir"] if ("admindir" in dict and dict["admindir"]) else "")
         admin_password_var.set(dict["adminpassword"] if ("adminpassword" in dict and dict["adminpassword"]) else "")
         singleinstance_var.set(dict["singleinstance"] if ("singleinstance" in dict) else 0)
@@ -7785,6 +7885,8 @@ def convert_invalid_args(args):
             dict["model_param"] = model_value
         elif isinstance(model_value, list) and model_value:  # Non-empty list
             dict["model_param"] = model_value[0]  # Take the first file in the list
+    if ("port_param" in dict and dict["port_param"] and dict["port_param"]!=defaultport):
+        dict["port"] = dict["port_param"]
     if "sdnotile" in dict and "sdtiledvae" not in dict:
         dict["sdtiledvae"] = (0 if (dict["sdnotile"]) else default_vae_tile_threshold) # convert legacy option
     if 'sdquant' in dict and type(dict['sdquant']) is bool:
@@ -7832,13 +7934,14 @@ def setuptunnel(global_memory, has_sd):
                 tunnelbinary = "./cloudflared-linux-amd64"
 
             tunnelproc = None
+            displayedport = (args.port if not args.proxy_port else args.proxy_port)
             if sys.platform == "linux":
                 clean_env = os.environ.copy()
                 clean_env.pop("LD_LIBRARY_PATH", None)
                 clean_env["PATH"] = "/usr/bin:/bin"
-                tunnelproc = subprocess.Popen(f"{tunnelbinary} tunnel --url {httpsaffix}://localhost:{int(args.port)}{ssladd}", text=True, encoding='utf-8', shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=clean_env)
+                tunnelproc = subprocess.Popen(f"{tunnelbinary} tunnel --url {httpsaffix}://localhost:{int(displayedport)}{ssladd}", text=True, encoding='utf-8', shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=clean_env)
             else:
-                tunnelproc = subprocess.Popen(f"{tunnelbinary} tunnel --url {httpsaffix}://localhost:{int(args.port)}{ssladd}", text=True, encoding='utf-8', shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                tunnelproc = subprocess.Popen(f"{tunnelbinary} tunnel --url {httpsaffix}://localhost:{int(displayedport)}{ssladd}", text=True, encoding='utf-8', shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             time.sleep(10)
 
             def tunnel_reader():
@@ -8380,9 +8483,29 @@ def main(launch_args, default_args):
         if len(args.ssl)==2 and isinstance(args.ssl[0], str) and os.path.exists(args.ssl[0]) and isinstance(args.ssl[1], str) and os.path.exists(args.ssl[1]):
             sslvalid = True
 
+    args.proxy_port = None #normally unused
+    if args.routermode:
+        if not args.admin:
+            print("\nWARNING: Router mode requires admin, enabling admin...")
+            args.admin = True
+        # setup router mode, find a usable high port swap the port
+        newport = 15001
+        for prt in range(15001,15011):
+            if not is_port_in_use(prt):
+                newport = prt
+                break
+        args.proxy_port = args.port_param
+        args.port = args.port_param = newport
+        run_router_proxy(args.proxy_port,newport)
+
     if args.admin and not args.admindir:
-        args.admin = False
-        print("\nWARNING: Admin was set without selecting an admin directory. Admin cannot be used.\n")
+        print("\nWARNING: Admin was set without selecting an admin directory. Selecting current executable directory...")
+        autopath = os.path.realpath(__file__)
+        if getattr(sys, 'frozen', False):
+            autopath = sys.executable
+        autopath = os.path.dirname(autopath)
+        args.admindir = autopath
+        print(f"Admin Directory Set: {autopath}\n")
 
     if not args.admin: #run in single process mode
         if args.remotetunnel and not args.prompt and not args.benchmark and not args.cli:
@@ -8769,14 +8892,12 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
     args.defaultgenamt = max(64, min(args.defaultgenamt, 8192))
     args.defaultgenamt = min(args.defaultgenamt, maxctx / 2)
 
-    if args.port_param!=defaultport:
-        args.port = args.port_param
-
-    if start_server and args.singleinstance and is_port_in_use(args.port):
+    displayedport = (args.port if not args.proxy_port else args.proxy_port)
+    if start_server and args.singleinstance and is_port_in_use(displayedport):
         try:
-            print(f"Warning: Port {args.port} already appears to be in use by another program.")
-            print(f"Attempting to request shutdown of previous instance on port {args.port}...")
-            shutdownreq = make_url_request(f'http://localhost:{args.port}/api/extra/shutdown',{},timeout=5)
+            print(f"Warning: Port {displayedport} already appears to be in use by another program.")
+            print(f"Attempting to request shutdown of previous instance on port {displayedport}...")
+            shutdownreq = make_url_request(f'http://localhost:{displayedport}/api/extra/shutdown',{},timeout=5)
             shutdownok = (shutdownreq and "success" in shutdownreq and shutdownreq["success"] is True)
             time.sleep(2)
             print("Shutdown existing successful!" if shutdownok else "Shutdown existing failed!")
@@ -9250,15 +9371,16 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
     endpoint_url = ""
     remote_url = ""
     httpsaffix = ("https" if sslvalid else "http")
+    displayedport = (args.port if not args.proxy_port else args.proxy_port)
     if args.host=="":
-        endpoint_url = f"{httpsaffix}://localhost:{args.port}"
+        endpoint_url = f"{httpsaffix}://localhost:{displayedport}"
     else:
-        endpoint_url = f"{httpsaffix}://{args.host}:{args.port}"
+        endpoint_url = f"{httpsaffix}://{args.host}:{displayedport}"
 
     if start_server:
         if not args.remotetunnel:
-            print(f"Starting Kobold API on port {args.port} at {endpoint_url}/api/")
-            print(f"Starting OpenAI Compatible API on port {args.port} at {endpoint_url}/v1/")
+            print(f"Starting Kobold API on port {displayedport} at {endpoint_url}/api/")
+            print(f"Starting OpenAI Compatible API on port {displayedport} at {endpoint_url}/v1/")
             print(f"Starting llama.cpp secondary WebUI at {endpoint_url}/lcpp/")
             if args.sdmodel:
                 print(f"StableUI is available at {endpoint_url}/sdui/")
@@ -9586,6 +9708,7 @@ if __name__ == '__main__':
     admingroup.add_argument("--admin", help="Enables admin mode, allowing you to unload and reload different configurations or models.", action='store_true')
     admingroup.add_argument("--adminpassword", metavar=('[password]'), help="Require a password to access admin functions. You are strongly advised to use one for publically accessible instances!", default=None)
     admingroup.add_argument("--admindir", metavar=('[directory]'), help="Specify a directory to look for .kcpps configs in, which can be used to swap models.", default="")
+    admingroup.add_argument("--routermode", help="Router mode uses a reverse proxy router, allowing you to easily hotswap models and configs within a single request. Requires admin mode.", action='store_true')
 
     deprecatedgroup = parser.add_argument_group('Deprecated Commands, DO NOT USE!')
     deprecatedgroup.add_argument("--hordeconfig", help=argparse.SUPPRESS, nargs='+')
