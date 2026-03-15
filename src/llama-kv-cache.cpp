@@ -625,6 +625,7 @@ llama_kv_cache::slot_info_vec_t llama_kv_cache::prepare(const std::vector<llama_
     return res;
 }
 
+static bool kshift_warning_showed = false;
 bool llama_kv_cache::update(llama_context * lctx, bool do_shift, const stream_copy_info & sc_info) {
     bool updated = false;
 
@@ -662,7 +663,11 @@ bool llama_kv_cache::update(llama_context * lctx, bool do_shift, const stream_co
 
     if (do_shift) {
         if (!get_can_shift()) {
-            printf("\nWARNING: The current KV cache / model configuration does not support K-shift");
+            if(!kshift_warning_showed)
+            {
+                kshift_warning_showed = true;
+                printf("\nWARNING: The current KV cache / model configuration does not support K-shift");
+            }
         } else {
 
         //LLAMA_LOG_DEBUG("%s: applying K-shift\n", __func__);
