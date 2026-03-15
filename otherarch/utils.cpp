@@ -418,10 +418,29 @@ std::vector<float> resample_wav(int num_channels,const std::vector<float>& input
     std::vector<float> output((size_t)n_out * num_channels);
 
     const int half_len = 32;
+    const int taps = half_len * 2;
+
     const double beta = 9.0;
 
     const double inv_i0b = 1.0 / audio_resample_bessel_i0(beta);
     const double fc = 0.5 * ((ratio < 1.0) ? ratio : 1.0);
+
+    // PRECOMPUTE KAISER WINDOW
+    std::vector<double> window(taps + 1);
+
+    for (int k = -half_len; k <= half_len; k++)
+    {
+        double t = (double)k / (double)half_len;
+
+        double win;
+
+        if (t < -1.0 || t > 1.0)
+            win = 0.0;
+        else
+            win = audio_resample_bessel_i0(beta * std::sqrt(1.0 - t * t)) * inv_i0b;
+
+        window[k + half_len] = win;
+    }
 
     for (int ch = 0; ch < num_channels; ch++)
     {
@@ -432,8 +451,10 @@ std::vector<float> resample_wav(int num_channels,const std::vector<float>& input
         {
             double center = (double)i / ratio;
 
-            int start = (int)std::floor(center) - half_len + 1;
-            int end   = (int)std::floor(center) + half_len;
+            int base = (int)std::floor(center);
+
+            int start = base - half_len + 1;
+            int end   = base + half_len;
 
             double sum = 0.0;
             double wgt = 0.0;
@@ -443,22 +464,18 @@ std::vector<float> resample_wav(int num_channels,const std::vector<float>& input
                 double d = center - (double)j;
 
                 double sinc_val;
+
                 if (std::fabs(d) < 1e-9)
                     sinc_val = 2.0 * fc;
                 else
                     sinc_val = std::sin(2.0 * M_PI * fc * d) / (M_PI * d);
 
-                double t = d / (double)half_len;
-
-                double win;
-                if (t < -1.0 || t > 1.0)
-                    win = 0.0;
-                else
-                    win = audio_resample_bessel_i0(beta * std::sqrt(1.0 - t * t)) * inv_i0b;
+                double win = window[j - start];
 
                 double h = sinc_val * win;
 
                 int idx = j;
+
                 if (idx < 0) idx = 0;
                 if (idx >= n_in) idx = n_in - 1;
 

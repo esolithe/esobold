@@ -335,7 +335,7 @@ std::string acestep_generate_audio(const music_generation_inputs inputs)
     float duration        = req.duration > 0 ? req.duration : 120.0f;
     long long seed        = req.seed;
     int num_steps         = req.inference_steps > 0 ? req.inference_steps : 8;
-    float guidance_scale  = req.guidance_scale > 0 ? req.guidance_scale : 7.0f;
+    float guidance_scale  = req.guidance_scale > 0 ? req.guidance_scale : 1.0f;
     float shift           = req.shift > 0 ? req.shift : 1.0f;
 
     if (is_turbo && guidance_scale > 1.0f) {
