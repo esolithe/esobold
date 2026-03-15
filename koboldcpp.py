@@ -7173,6 +7173,7 @@ def show_gui():
         args.password = None if (password_var.get() == "") else (password_var.get())
 
         args.port_param = defaultport if port_var.get()=="" else int(port_var.get())
+        args.port = args.port_param
         args.host = host_var.get()
         args.multiuser = multiuser_var.get()
         args.multiplayer = (multiplayer_var.get()==1)
@@ -9414,6 +9415,10 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
 
     if start_server:
         if not args.remotetunnel:
+            if displayedport!=11434:
+                print("Note: For third party Ollama API Emulation, you should set the port to 11434.")
+            else:
+                print("Ollama Emulation is now available at port 11434.")
             print(f"Starting Kobold API on port {displayedport} at {endpoint_url}/api/")
             print(f"Starting OpenAI Compatible API on port {displayedport} at {endpoint_url}/v1/")
             print(f"Starting llama.cpp secondary WebUI at {endpoint_url}/lcpp/")
