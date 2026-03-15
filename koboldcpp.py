@@ -358,6 +358,8 @@ class sd_generation_inputs(ctypes.Structure):
                 ("remove_limits", ctypes.c_bool),
                 ("circular_x", ctypes.c_bool),
                 ("circular_y", ctypes.c_bool),
+                ("cache_mode", ctypes.c_char_p),
+                ("cache_options", ctypes.c_char_p),
                 ("upscale", ctypes.c_bool),
                 ("lora_len", ctypes.c_int),
                 ("lora_multipliers", ctypes.POINTER(ctypes.c_float))]
@@ -2112,7 +2114,26 @@ def sd_comfyui_tranform_params(genparams):
     return genparams
 
 # json with top-level dict
-def gendefaults_parse_meta_field(input_str):
+def parse_json_object(value, field):
+    broken = False
+    if isinstance(value, str):
+        try: # Try parsing as-is
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            # Try wrapping in braces for loose key/value strings
+            try:
+                value = json.loads(f"{{{value}}}")
+            except json.JSONDecodeError:
+                broken = True
+    if isinstance(value, dict):
+        return value
+    elif broken:
+        print(f"Warning: couldn't parse {field} field.")
+    else:
+        print(f"Warning: {field} field - not a JSON object.")
+    return None
+
+def gendefaults_parse_meta_field(value):
     alias_map = {
         'cfg-scale': 'cfg_scale',
         'guidance': 'distilled_guidance',
@@ -2120,22 +2141,13 @@ def gendefaults_parse_meta_field(input_str):
         'sampling-method': 'sampler_name',
         'timestep-shift': 'shifted_timestep',
         'flow-shift': 'flow_shift',
+        'cache-mode': 'cache_mode',
+        'cache-options': 'cache_options',
+        # match sd.cpp flag
+        'cache-option': 'cache_options',
+        'cache_option': 'cache_options',
     }
-    if not isinstance(input_str, str) or not input_str.strip():
-        return {}
-    parsed = None
-    try: # Try parsing as-is
-        parsed = json.loads(input_str)
-    except json.JSONDecodeError:
-        # Try wrapping in braces for loose key/value strings
-        try:
-            parsed = json.loads(f"{{{input_str}}}")
-        except json.JSONDecodeError:
-            print("Warning: couldn't parse gendefaults_parse_meta_field.")
-            return {}
-    if not isinstance(parsed, dict):
-        print("Warning: gendefaults_parse_meta_field - not a JSON object.")
-        return {}
+    parsed = parse_json_object(value, 'gendefaults') or {}
     result = {}
     # First pass: apply aliases only if canonical key is not explicitly present
     for key, value in parsed.items():
@@ -2264,6 +2276,8 @@ def sd_generate(genparams):
     vid_req_frames = tryparseint(genparams.get("frames", 1),1)
     vid_req_frames = 1 if (not vid_req_frames or vid_req_frames < 1) else vid_req_frames
     video_output_type = genparams.get("video_output_type", 0)
+    cache_mode = str(genparams.get("cache_mode", ""))
+    cache_options = str(genparams.get("cache_options", ""))
     extra_images_arr = genparams.get("extra_images", [])
     extra_images_arr = ([] if not extra_images_arr else extra_images_arr)
     extra_images_arr = [img for img in extra_images_arr if img not in (None, "")]
@@ -2316,6 +2330,8 @@ def sd_generate(genparams):
     inputs.remove_limits = allow_remove_limits
     inputs.circular_x = tryparseint(adapter_obj.get("circular_x", genparams.get("circular_x",0)),0)
     inputs.circular_y = tryparseint(adapter_obj.get("circular_y", genparams.get("circular_y",0)),0)
+    inputs.cache_mode = cache_mode.encode("UTF-8")
+    inputs.cache_options = cache_options.encode("UTF-8")
     inputs.upscale = (True if tryparseint(genparams.get("enable_hr", 0),0) else False)
 
     lora_multipliers = prepare_lora_multipliers(genparams.get("lora", []))
@@ -5746,6 +5762,11 @@ def save_config_dict(filename, savdict, template):
         filenamestr += ".kcppt"
     do_not_save = {'analyze', 'config', 'exportconfig', 'exporttemplate', 'testmemory', 'unpack', 'version'}
     filtered = {k: v for k, v in savdict.items() if k not in do_not_save}
+    if 'gendefaults' in filtered:
+        gendefaults = parse_json_object(filtered['gendefaults'], 'gendefaults')
+        if isinstance(gendefaults, dict):
+            filtered['gendefaults'] = gendefaults
+        # keep it as-is if it's a broken string
     with open(filenamestr, 'w') as file:
         file.write(json.dumps(filtered,indent=2))
     return filenamestr
@@ -7468,7 +7489,10 @@ def show_gui():
         else:
             sd_lora_var.set("")
         sd_loramult_var.set(" ".join(f"{n:.3f}".rstrip('0').rstrip('.') for n in dict.get("sdloramult", [])))
-        gen_defaults_var.set(dict["gendefaults"] if ("gendefaults" in dict and dict["gendefaults"]) else "")
+        gendefaults = (dict["gendefaults"] if ("gendefaults" in dict and dict["gendefaults"]) else "")
+        if isinstance(gendefaults, type({})):
+            gendefaults = json.dumps(gendefaults)
+        gen_defaults_var.set(gendefaults)
         gen_defaults_overwrite_var.set(1 if "gendefaultsoverwrite" in dict and dict["gendefaultsoverwrite"] else 0)
 
         whisper_model_var.set(dict["whispermodel"] if ("whispermodel" in dict and dict["whispermodel"]) else "")
