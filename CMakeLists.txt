@@ -504,6 +504,8 @@ add_library(common2
             src/unicode-data.cpp
             otherarch/utils.cpp
             otherarch/utils.h
+            common/reasoning-budget.cpp
+            common/reasoning-budget.h
             tools/mtmd/mtmd-audio.cpp
             tools/mtmd/mtmd-audio.h)
 target_include_directories(common2 PUBLIC . ./ggml/include ./ggml/src ./ggml/src/ggml-cpu ./include ./otherarch ./otherarch/tools ./vendor/stb ./vendor ./otherarch/sdcpp ./otherarch/sdcpp/thirdparty ./tools ./common)

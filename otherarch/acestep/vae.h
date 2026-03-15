@@ -436,6 +436,11 @@ static int vae_ggml_decode_tiled(
     fprintf(stderr, "[VAE] Tiled decode: %d tiles (chunk=%d, overlap=%d, stride=%d)\n",
             num_steps, chunk_size, overlap, stride);
 
+    // FIX (Bug 2): Zero the ch1 staging zone before the loop so stale data from a
+    // previous generation (e.g. after a lowvram reload, or a shorter re-run into the
+    // same buffer) cannot bleed into gaps between tile writes and corrupt the memmove.
+    memset(audio_out + max_T_audio, 0, max_T_audio * sizeof(float));
+
     float upsample_factor = 0.0f;
     int audio_write_pos = 0;
 
@@ -483,13 +488,17 @@ static int vae_ggml_decode_tiled(
 
         // Read trimmed ch0 and ch1 directly from backend tensor into final audio_out
         // Layout: [ch0: tile_T floats, ch1: tile_T floats]
+        // FIX (Bug 1): Capture tile_T into a local before the two reads so both
+        // ch0 and ch1 use the same tile's stride. (Guards against any future refactor
+        // that might clobber tile_T between the two ggml_backend_tensor_get calls.)
+        int this_tile_T = tile_T;
         ggml_backend_tensor_get(m->graph_output,
                                 audio_out + audio_write_pos,
                                 trim_start * sizeof(float),
                                 core_len * sizeof(float));
         ggml_backend_tensor_get(m->graph_output,
                                 audio_out + max_T_audio + audio_write_pos,
-                                (tile_T + trim_start) * sizeof(float),
+                                (this_tile_T + trim_start) * sizeof(float),
                                 core_len * sizeof(float));
         audio_write_pos += core_len;
     }

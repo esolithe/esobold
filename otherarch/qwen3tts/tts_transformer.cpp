@@ -19,6 +19,8 @@
 #    define ttsfseek fseeko
 #endif
 
+bool qwen3tts_allowgpu = false;
+
 namespace qwen3_tts {
 
 TTSTransformer::TTSTransformer() = default;

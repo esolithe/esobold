@@ -501,7 +501,7 @@ static std::string detectedarch = "";
 //qwen3tts specific
 static bool is_qwen3tts_file = false;
 static qwen3_tts::Qwen3TTS qwen3tts_runner;
-bool qwen3tts_allowgpu = false;
+extern bool qwen3tts_allowgpu;
 
 int total_tts_gens = 0;
 static std::string tts_executable_path = "";

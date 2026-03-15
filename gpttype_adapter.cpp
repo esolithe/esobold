@@ -155,6 +155,7 @@ static bool load_guidance = false; //whether to enable cfg for negative prompts
 static bool check_slowness = false; //will display a suggestion to use highpriority if slow
 static bool showed_rnn_warning = false;
 static bool highpriority = false;
+static int rnn_reusable_slot_idx = -1;
 
 static int delayed_generated_tokens_limit = 0;
 std::deque<std::string> delayed_generated_tokens; //for use with antislop sampling
@@ -2591,7 +2592,7 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
 
         llama_model * llamamodel = llama_model_load_from_file(kcpp_data->model_filename.c_str(), model_params);
 
-              //prepare savestate slots
+        //prepare savestate slots
         savestate_limit = inputs.smartcacheslots;
 
         //if RNN model AND shifting and fastforward is on, enable smartcache
@@ -2601,7 +2602,7 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
             {
                 printf("RNN or Hyrbid model with FF and shifting flags enabled - SmartCache will be enabled with extra slots. Disable CtxShift if you do not want this.\n",savestate_limit);
                 kcpp_data->smartcache = true;
-                savestate_limit += 3;
+                savestate_limit += 1;
             }
         }
         savestates.resize(savestate_limit);
@@ -3438,17 +3439,28 @@ static void PrepareMediaEmbds(const int nctx, const std::vector<int> & media_int
     }
 }
 
-void smartcache_quick_snapshot()
+int smartcache_quick_snapshot(int specific_slot = -1)
 {
     int identical_slot = get_identical_existing_slot();
     if(identical_slot==-1)
     {
-        int oldest_slot = get_oldest_slot(-1);
-        gpttype_save_state_kv(oldest_slot);
+        if(specific_slot!=-1)
+        {
+            gpttype_save_state_kv(specific_slot);
+            return specific_slot;
+        }
+        else
+        {
+            int oldest_slot = get_oldest_slot(-1);
+            gpttype_save_state_kv(oldest_slot);
+            return oldest_slot;
+        }
+
     }
     else
     {
         touch_slot(identical_slot);
+        return identical_slot;
     }
 }
 
@@ -4348,6 +4360,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
     bool startedsampling = false;
     bool firstdecodedone = false; //we CANNOT use logits if the first decode has not been executed yet.
     bool v3_use_scratch = true; //for normal inference always use scratch
+    bool rnn_snapshot_taken = false;
 
     speculative_draft_result draft_results; //only use if drafting was used
     bool draft_used = false;
@@ -4465,6 +4478,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                             {
                                 //directly snapshot for a small batch
                                 smartcache_quick_snapshot();
+                                rnn_snapshot_taken = true;
                             }
                             else
                             {
@@ -4478,6 +4492,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                                     if(p==parts.size()-1)
                                     {
                                         smartcache_quick_snapshot();
+                                        rnn_snapshot_taken = true;
                                     }
                                     std::vector<gpt_vocab::id> chunk = parts[p];
                                     kcpp_embd_batch smallbatch = kcpp_embd_batch(chunk, temp_past, use_mrope, false);
@@ -4653,7 +4668,22 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                  //if running rnn model in smartcache mode, save progress before each gen
                 if(kcpp_data->smartcache && is_recurrent && file_format==FileFormat::GGUF_GENERIC && current_context_tokens.size() > 32)
                 {
-                    smartcache_quick_snapshot();
+                    if(!rnn_snapshot_taken)
+                    {
+                        smartcache_quick_snapshot();
+                    }
+                    else
+                    {
+                        //snapshot to specific slot only
+                        if(rnn_reusable_slot_idx!=-1)
+                        {
+                            smartcache_quick_snapshot(rnn_reusable_slot_idx);
+                        }
+                        else
+                        {
+                            rnn_reusable_slot_idx = smartcache_quick_snapshot();
+                        }
+                    }
                 }
             }
 
@@ -5160,10 +5190,10 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
     }
 
     //if running rnn model in smartcache mode, save progress after each gen
-    if(kcpp_data->smartcache && is_recurrent && file_format==FileFormat::GGUF_GENERIC && current_context_tokens.size() > 32)
-    {
-        smartcache_quick_snapshot();
-    }
+    // if(kcpp_data->smartcache && is_recurrent && file_format==FileFormat::GGUF_GENERIC && current_context_tokens.size() > 32)
+    // {
+    //     smartcache_quick_snapshot();
+    // }
 
     if(debugmode==1 && !is_quiet && file_format == FileFormat::GGUF_GENERIC)
     {
@@ -5173,11 +5203,12 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
 
     time2 = timer_check();
     float pt1 = (time1*1000.0/(embd_inp.size()==0?1:embd_inp.size()));
-    float ts1 = (1000.0/pt1);
+    float ts1 = (pt1>0?(1000.0/pt1):0);
     int realnpredict = kcpp_data->n_predict-remaining_tokens;
     float pt2 = (time2*1000.0/(realnpredict<=0?1:realnpredict));
-    float ts2 = (1000.0/pt2);
-    float tokens_per_second = (realnpredict <= 0 ? 0 : realnpredict / (time1 + time2));
+    float ts2 = (pt2>0?(1000.0/pt2):0);
+    float tottime = (time1 + time2);
+    float tokens_per_second = tottime>0?(realnpredict <= 0 ? 0 : realnpredict / tottime):0;
     if(debugmode==1)
     {
         printf("\n[%s] CtxLimit:%d/%d, Amt:%d/%d, Init:%.2fs, Process:%.2fs (%.1fms/T = %.2fT/s), Generate:%.2fs (%.1fms/T = %.2fT/s), Total:%.2fs (%.2fT/s)",get_timestamp_str().c_str(),(int)current_context_tokens.size(),(int)nctx, realnpredict, kcpp_data->n_predict, time0, time1, pt1, ts1, time2, pt2, ts2, (time1 + time2), tokens_per_second);

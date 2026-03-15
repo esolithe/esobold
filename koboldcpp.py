@@ -365,6 +365,8 @@ class sd_generation_inputs(ctypes.Structure):
                 ("remove_limits", ctypes.c_bool),
                 ("circular_x", ctypes.c_bool),
                 ("circular_y", ctypes.c_bool),
+                ("cache_mode", ctypes.c_char_p),
+                ("cache_options", ctypes.c_char_p),
                 ("upscale", ctypes.c_bool),
                 ("lora_len", ctypes.c_int),
                 ("lora_multipliers", ctypes.POINTER(ctypes.c_float))]
@@ -1187,6 +1189,25 @@ def get_capabilities():
     had_admin_with_hf = args.adminallowhf
     admin_type = (2 if args.admin and args.admindir and args.adminpassword else (1 if args.admin and args.admindir else 0))
     return {"result":"KoboldCpp", "version":KcppVersion, "protected":has_password, "llm":has_llm, "txt2img":has_txt2img,"vision":has_vision_support,"audio":has_audio_support,"transcribe":has_whisper,"multiplayer":has_multiplayer,"websearch":has_search,"tts":has_tts, "embeddings":has_embeddings, "music":has_music, "savedata":(savedata_obj is not None), "admin": admin_type, "guidance": has_guidance, "jinja": has_jinja, "mcp":has_mcp, "hasServerSaving": has_server_saving, "hasAdminWithHF": had_admin_with_hf, "embeddingModel": embeddingModel}
+
+def get_current_admindir_list():
+    opts = []
+    if args.admin and args.admindir:
+        dirpath = os.path.abspath(args.admindir)
+        valid_exts = (".kcpps", ".kcppt", ".gguf")
+        for entry in sorted(os.listdir(dirpath)): # Scan top-level directory
+            full_path = os.path.join(dirpath, entry)
+            if os.path.isfile(full_path) and entry.endswith(valid_exts): # If toplevel file
+                opts.append(entry)
+            elif os.path.isdir(full_path): #if dir, scan up to 1 level deep
+                for subentry in sorted(os.listdir(full_path)):
+                    sub_full_path = os.path.join(full_path, subentry)
+                    if os.path.isfile(sub_full_path) and subentry.endswith(valid_exts):
+                        rel_path = os.path.join(entry, subentry)
+                        opts.append(rel_path)
+        opts.append("initial_model")
+        opts.append("unload_model")
+    return opts
 
 def dump_gguf_metadata(file_path): #if you're gonna copy this into your own project at least credit concedo
     chunk_size = 1024*1024*12  # read first 12mb of file
@@ -2109,7 +2130,26 @@ def sd_comfyui_tranform_params(genparams):
     return genparams
 
 # json with top-level dict
-def gendefaults_parse_meta_field(input_str):
+def parse_json_object(value, field):
+    broken = False
+    if isinstance(value, str):
+        try: # Try parsing as-is
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            # Try wrapping in braces for loose key/value strings
+            try:
+                value = json.loads(f"{{{value}}}")
+            except json.JSONDecodeError:
+                broken = True
+    if isinstance(value, dict):
+        return value
+    elif broken:
+        print(f"Warning: couldn't parse {field} field.")
+    else:
+        print(f"Warning: {field} field - not a JSON object.")
+    return None
+
+def gendefaults_parse_meta_field(value):
     alias_map = {
         'cfg-scale': 'cfg_scale',
         'guidance': 'distilled_guidance',
@@ -2117,22 +2157,13 @@ def gendefaults_parse_meta_field(input_str):
         'sampling-method': 'sampler_name',
         'timestep-shift': 'shifted_timestep',
         'flow-shift': 'flow_shift',
+        'cache-mode': 'cache_mode',
+        'cache-options': 'cache_options',
+        # match sd.cpp flag
+        'cache-option': 'cache_options',
+        'cache_option': 'cache_options',
     }
-    if not isinstance(input_str, str) or not input_str.strip():
-        return {}
-    parsed = None
-    try: # Try parsing as-is
-        parsed = json.loads(input_str)
-    except json.JSONDecodeError:
-        # Try wrapping in braces for loose key/value strings
-        try:
-            parsed = json.loads(f"{{{input_str}}}")
-        except json.JSONDecodeError:
-            print("Warning: couldn't parse gendefaults_parse_meta_field.")
-            return {}
-    if not isinstance(parsed, dict):
-        print("Warning: gendefaults_parse_meta_field - not a JSON object.")
-        return {}
+    parsed = parse_json_object(value, 'gendefaults') or {}
     result = {}
     # First pass: apply aliases only if canonical key is not explicitly present
     for key, value in parsed.items():
@@ -2261,6 +2292,8 @@ def sd_generate(genparams):
     vid_req_frames = tryparseint(genparams.get("frames", 1),1)
     vid_req_frames = 1 if (not vid_req_frames or vid_req_frames < 1) else vid_req_frames
     video_output_type = genparams.get("video_output_type", 0)
+    cache_mode = str(genparams.get("cache_mode", ""))
+    cache_options = str(genparams.get("cache_options", ""))
     extra_images_arr = genparams.get("extra_images", [])
     extra_images_arr = ([] if not extra_images_arr else extra_images_arr)
     extra_images_arr = [img for img in extra_images_arr if img not in (None, "")]
@@ -2313,6 +2346,8 @@ def sd_generate(genparams):
     inputs.remove_limits = allow_remove_limits
     inputs.circular_x = tryparseint(adapter_obj.get("circular_x", genparams.get("circular_x",0)),0)
     inputs.circular_y = tryparseint(adapter_obj.get("circular_y", genparams.get("circular_y",0)),0)
+    inputs.cache_mode = cache_mode.encode("UTF-8")
+    inputs.cache_options = cache_options.encode("UTF-8")
     inputs.upscale = (True if tryparseint(genparams.get("enable_hr", 0),0) else False)
 
     lora_multipliers = prepare_lora_multipliers(genparams.get("lora", []))
@@ -4112,10 +4147,161 @@ def LaunchWebbrowser(target_url, failedmsg):
 def get_my_epurl():
     global sslvalid
     httpsaffix = ("https" if sslvalid else "http")
-    epurl = f"{httpsaffix}://localhost:{args.port}"
+    displayedport = (args.port if not args.proxy_port else args.proxy_port)
+    epurl = f"{httpsaffix}://localhost:{displayedport}"
     if args.host!="":
-        epurl = f"{httpsaffix}://{args.host}:{args.port}"
+        epurl = f"{httpsaffix}://{args.host}:{displayedport}"
     return epurl
+
+proxy_reload_lock = threading.Lock()
+###########################################################
+###   A simple reverse proxy used in Kcpp Router mode   ###
+###########################################################
+class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
+    sys_version = "1"
+    server_version = "KoboldCppServer"
+    protocol_version = "HTTP/1.1"
+    HOP_BY_HOP = { "connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailers", "transfer-encoding", "upgrade" }
+    STREAM_CHUNK = 512
+    current_model = "initial_model"
+
+    def log_message(self, fmt, *args):
+        global showdebug
+        if showdebug:
+            print(f"[proxy] {self.address_string()} {fmt % args}", flush=True)
+        pass
+
+    def wait_for_upstream_ready(self, port, timeout, interval):
+        start = time.time()
+        while time.time() - start < timeout:
+            try:
+                conn = http.client.HTTPConnection("localhost", port, timeout=5)
+                conn.request("GET", "/api/v1/info/version")
+                resp = conn.getresponse()
+                if resp.status == 200:
+                    data = resp.read()
+                    try:
+                        json.loads(data.decode("utf-8"))
+                        return True
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            time.sleep(interval)
+        return False  # timeout
+
+    def _handle(self):
+        upstream_port = self.server.upstream_port
+        length = self.headers.get("Content-Length") #  read request body
+        body = None
+        if length:
+            body = self.rfile.read(int(length))
+        headers = {} # forward headers
+        for k, v in self.headers.items():
+            if k.lower() not in self.HOP_BY_HOP:
+                headers[k] = v
+        headers["Connection"] = "close"
+
+        # maybe_stall_for_model_swap(self.path, request_body)
+        #specifically look for generation requests from completions or chat completions
+        is_post = self.command.upper() == "POST"
+        is_completions_path = (self.path.endswith('/v1/completions') or self.path.endswith('/v1/completion') or self.path=='/completions')
+        is_chat_completions_path = (self.path.endswith('/v1/chat/completions') or self.path=='/chat/completions')
+        if is_post and (is_completions_path or is_chat_completions_path):
+            model_name = ""
+            if body:
+                try:
+                    request_json = json.loads(body.decode("utf-8"))
+                    model_name = request_json.get("model")
+                except Exception:
+                    pass
+
+            if model_name and model_name != type(self).current_model:
+                with proxy_reload_lock:
+                    if model_name != type(self).current_model:
+                        whitelist = get_current_admindir_list() # see if its an allowed swap
+                        if model_name in whitelist:
+                            reqbody = json.dumps({"filename":model_name})
+                            reqheaders = {
+                                'Content-Type': 'application/json',
+                                'Content-Length': str(len(reqbody)),
+                            }
+                            if args.adminpassword:
+                                reqheaders["Authorization"] = f"Bearer {args.adminpassword}"
+                            conn = http.client.HTTPConnection('localhost', upstream_port, timeout=600)
+                            conn.request("POST", "/api/admin/reload_config", body=reqbody, headers=reqheaders)
+                            resp = conn.getresponse()
+                            time.sleep(3)
+                            if not self.wait_for_upstream_ready(upstream_port,120,0.5):
+                                self.send_error(504, "KoboldCpp model swap reload timed out")
+                                return
+                            time.sleep(0.1)
+                            type(self).current_model = model_name
+                            time.sleep(0.1)
+
+        try:  # connect upstream
+            conn = http.client.HTTPConnection('localhost', upstream_port, timeout=600)
+            conn.request( self.command, self.path, body=body, headers=headers)
+            resp = conn.getresponse()
+        except OSError as e:
+            self.send_error(502, f"KoboldCpp proxy connection failed: {e}")
+            return
+
+        self.send_response(resp.status, resp.reason) # forward response headers
+        for k, v in resp.getheaders():
+            lk = k.lower()
+            if lk in self.HOP_BY_HOP:
+                continue
+            self.send_header(k, v)
+        self.end_headers()
+        self.close_connection = True
+
+        try:  # stream response
+            while True:
+                chunk = resp.read(self.STREAM_CHUNK)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            conn.close()
+
+    # proxy all HTTP methods
+    do_GET = _handle
+    do_POST = _handle
+    do_PUT = _handle
+    do_DELETE = _handle
+    do_PATCH = _handle
+    do_OPTIONS = _handle
+    do_HEAD = _handle
+
+class KcppProxyHttpServer(http.server.HTTPServer):
+    def __init__(self, server_address, RequestHandlerClass, upstream_port):
+        self.upstream_port = upstream_port
+        super().__init__(server_address, RequestHandlerClass)
+    def process_request(self, request, client_address):
+        thread = threading.Thread(target=self._worker,args=(request, client_address),daemon=True)
+        thread.start()
+    def _worker(self, request, client_address):
+        try:
+            self.finish_request(request, client_address)
+        finally:
+            self.shutdown_request(request)
+
+def run_router_proxy(proxy_port, upstream_port):
+    server = KcppProxyHttpServer(("", proxy_port), KcppProxyHandler, upstream_port)
+    print(f"KoboldCpp Proxy starting on port {proxy_port}, forwarding to port {upstream_port}",flush=True)
+    proxy_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    proxy_thread.start()
+    return server  # Return the server object in case you need to shut it down later
+
 
 def getDBPath():
     if args.admindatadir:
@@ -5038,19 +5224,7 @@ Change Mode<br>
             if args.admin and args.admindir:
                 os.makedirs(os.path.abspath(args.admindir), exist_ok=True)
             if args.admin and args.admindir and os.path.exists(args.admindir) and self.check_header_password(args.adminpassword):
-                dirpath = os.path.abspath(args.admindir)
-                valid_exts = (".kcpps", ".kcppt", ".gguf")
-                for entry in sorted(os.listdir(dirpath)): # Scan top-level directory
-                    full_path = os.path.join(dirpath, entry)
-                    if os.path.isfile(full_path) and entry.endswith(valid_exts): # If toplevel file
-                        opts.append(entry)
-                    elif os.path.isdir(full_path): #if dir, scan up to 1 level deep
-                        for subentry in sorted(os.listdir(full_path)):
-                            sub_full_path = os.path.join(full_path, subentry)
-                            if os.path.isfile(sub_full_path) and subentry.endswith(valid_exts):
-                                rel_path = os.path.join(entry, subentry)
-                                opts.append(rel_path)
-                opts.append("unload_model")
+                opts = get_current_admindir_list()
             response_body = (json.dumps(opts).encode())
 
         elif clean_path.endswith(('/api/admin/list_models')): #used by admin to get models which can be reloaded with
@@ -5068,6 +5242,7 @@ Change Mode<br>
                 dirpath = os.path.abspath(args.admintextmodelsdir)
                 opts = [f for f in os.listdir(dirpath) if f.endswith(".gguf") and os.path.isfile(os.path.join(dirpath, f))]
             response_body = (json.dumps(opts).encode())
+
 
         elif clean_path.endswith(('/api/extra/perf')):
             lastp = handle.get_last_process_time()
@@ -5135,7 +5310,12 @@ Change Mode<br>
             response_body = (json.dumps({"logprobs":logprobsdict}).encode())
 
         elif clean_path.endswith('/v1/models') or clean_path=='/models':
-            response_body = (json.dumps({"object":"list","data":[{"id":friendlymodelname,"object":"model","created":int(time.time()),"owned_by":"koboldcpp","permission":[],"root":"koboldcpp"}]}).encode())
+            mlist = [{"id":friendlymodelname,"object":"model","created":int(time.time()),"owned_by":"koboldcpp","permission":[],"root":"koboldcpp"}]
+            if args.routermode:
+                alist = get_current_admindir_list()
+                for itm in alist:
+                    mlist.append({"id":itm,"object":"model","created":int(time.time()),"owned_by":"koboldcpp","permission":[],"root":"koboldcpp"})
+            response_body = (json.dumps({"object":"list","data":mlist}).encode())
 
         elif clean_path.endswith('/sdapi/v1/loras'):
             response_body = (json.dumps([{'name': name, 'path': path} for _, name, path, multiplier in imglorainfo if multiplier == 0.])).encode()
@@ -5842,9 +6022,9 @@ Change Mode<br>
                 except Exception:
                     targetfile = ""
                 if targetfile and targetfile!="":
-                    if targetfile=="unload_model": #special request to simply unload model
+                    if targetfile=="unload_model" or targetfile=="initial_model": #special request to simply unload model or swap back top intial model
                         print("Admin: Received request to unload model")
-                        global_memory["restart_target"] = "unload_model"
+                        global_memory["restart_target"] = targetfile
                         global_memory["restart_model"] = ""
                         resp = {"success": True}
                     else:
@@ -6197,7 +6377,35 @@ Change Mode<br>
 
                     try:
                         # Headers are already sent when streaming
-                        if not sse_stream_flag:
+                        if (api_format == 6 or api_format == 7) and genparams.get('stream', True):
+                            #ollama fake streaming
+                            self.send_response(200)
+                            self.send_header("X-Accel-Buffering", "no")
+                            self.send_header("cache-control", "no-cache")
+                            self.send_header("connection", "keep-alive")
+                            self.end_headers(content_type='text/event-stream')
+                            if api_format == 6:
+                                bodytxt = gendat.get("response","") # extract and erase the AI response from the sync payload.
+                                gendat["response"] = ""
+                                pl = {"model":friendlymodelname,"created_at":str(datetime.now(timezone.utc).isoformat()),"response":bodytxt,"done":False}
+                                self.wfile.write(f'{json.dumps(pl)}\n'.encode())
+                                self.wfile.flush()
+                                time.sleep(0.05) #short delay
+                                self.wfile.write(f'{json.dumps(gendat)}\n'.encode()) # note: gendat already contains done=true and empty response
+                                self.wfile.flush()
+                                time.sleep(0.05) #short delay
+                            else:
+                                bodytxt = gendat.get("message",{}).get("content","") # extract and erase the AI response from the sync payload.
+                                gendat["message"] = {"role":"assistant","content":""}
+                                pl = {"model":friendlymodelname,"created_at":str(datetime.now(timezone.utc).isoformat()),"message":{"role":"assistant","content":bodytxt},"done":False}
+                                self.wfile.write(f'{json.dumps(pl)}\n'.encode())
+                                self.wfile.flush()
+                                time.sleep(0.05) #short delay
+                                self.wfile.write(f'{json.dumps(gendat)}\n'.encode()) # note: gendat already contains done=true and empty response
+                                self.wfile.flush()
+                                time.sleep(0.05) #short delay
+                            self.close_connection = True
+                        elif not sse_stream_flag:
                             self.send_response(200)
                             genresp = (json.dumps(gendat).encode())
                             self.send_header('content-length', str(len(genresp)))
@@ -6718,6 +6926,11 @@ def save_config_dict(filename, savdict, template):
         filenamestr += ".kcppt"
     do_not_save = {'analyze', 'config', 'exportconfig', 'exporttemplate', 'testmemory', 'unpack', 'version'}
     filtered = {k: v for k, v in savdict.items() if k not in do_not_save}
+    if 'gendefaults' in filtered:
+        gendefaults = parse_json_object(filtered['gendefaults'], 'gendefaults')
+        if isinstance(gendefaults, dict):
+            filtered['gendefaults'] = gendefaults
+        # keep it as-is if it's a broken string
     with open(filenamestr, 'w') as file:
         file.write(json.dumps(filtered,indent=2))
     return filenamestr
@@ -6851,6 +7064,7 @@ def show_gui():
         togglehorde(1,1,1)
         toggletaesd(1,1,1)
         togglejinja(1,1,1)
+        toggleadmin(1,1,1)
         tabbuttonaction(tabnames[curr_tab_idx])
         pass
     def on_resize(event):
@@ -7085,6 +7299,7 @@ def show_gui():
     admin_data_dir_var = ctk.StringVar()
     admin_password_var = ctk.StringVar()
     singleinstance_var = ctk.IntVar(value=0)
+    router_mode_var = ctk.IntVar(value=0)
     admin_allow_hf_var = ctk.IntVar(value=0)
 
     nozenity_var = ctk.IntVar(value=0)
@@ -7892,6 +8107,10 @@ def show_gui():
                 autopath = sys.executable
             autopath = os.path.dirname(autopath)
             admin_dir_var.set(autopath)
+        if admin_var.get()==1:
+            router_mode_box.grid()
+        else:
+            router_mode_box.grid_remove()
     makecheckbox(admin_tab, "Enable Model Administration", admin_var, 1, 0, command=toggleadmin,tooltiptxt="Enable a admin server, allowing you to remotely relaunch and swap models and configs.")
     makelabelentry(admin_tab, "Admin Password:" , admin_password_var, 3, 150,padx=(120),singleline=True,tooltip="Require a password to access admin functions. You are strongly advised to use one for publically accessible instances!")
     makefileentry(admin_tab, "Config Directory (Required):", "Select directory containing .gguf or .kcpps files to relaunch from", admin_dir_var, 5, width=280, dialog_type=2, tooltiptxt="Specify a directory to look for .kcpps configs in, which can be used to swap models.")
@@ -7899,6 +8118,7 @@ def show_gui():
     makefileentry(admin_tab, "Data Directory:", "Select directory which will be used to store user data if desired", admin_data_dir_var, 9, width=280, dialog_type=2, tooltiptxt="Specify a directory to store user data in.")
     makecheckbox(admin_tab, "Allow Model Download From HuggingFace", admin_allow_hf_var, 11, 0,tooltiptxt="Allows model downloading from HuggingFace within the Lite UI.")
     makecheckbox(admin_tab, "SingleInstance Mode", singleinstance_var, 13, 0,tooltiptxt="Allows this server to be shut down by another KoboldCpp instance with singleinstance starting on the same port.")
+    router_mode_box = makecheckbox(admin_tab, "Router Mode", router_mode_var, 15, 0,tooltiptxt="Router mode uses a reverse proxy router, allowing you to easily hotswap models and configs within a single request. Requires admin mode.")
 
     def kcpp_export_template():
         nonlocal kcpp_exporting_template
@@ -7972,6 +8192,7 @@ def show_gui():
     togglectxshift(1,1,1)
     togglehorde(1,1,1)
     togglejinja(1,1,1)
+    toggleadmin(1,1,1)
 
     # launch
     def guilaunch():
@@ -8122,6 +8343,7 @@ def show_gui():
         args.password = None if (password_var.get() == "") else (password_var.get())
 
         args.port_param = defaultport if port_var.get()=="" else int(port_var.get())
+        args.port = args.port_param
         args.host = host_var.get()
         args.multiuser = multiuser_var.get()
         args.multiplayer = (multiplayer_var.get()==1)
@@ -8213,6 +8435,7 @@ def show_gui():
         args.admindatadir = admin_data_dir_var.get()
         args.adminpassword = admin_password_var.get()
         args.singleinstance = (singleinstance_var.get()==1)
+        args.routermode = router_mode_var.get()==1
         args.showgui = False #prevent showgui from leaking into configs, its cli only
         args.adminallowhf = (admin_allow_hf_var.get()==1 and not args.cli)
 
@@ -8440,7 +8663,10 @@ def show_gui():
         else:
             sd_lora_var.set("")
         sd_loramult_var.set(" ".join(f"{n:.3f}".rstrip('0').rstrip('.') for n in dict.get("sdloramult", [])))
-        gen_defaults_var.set(dict["gendefaults"] if ("gendefaults" in dict and dict["gendefaults"]) else "")
+        gendefaults = (dict["gendefaults"] if ("gendefaults" in dict and dict["gendefaults"]) else "")
+        if isinstance(gendefaults, type({})):
+            gendefaults = json.dumps(gendefaults)
+        gen_defaults_var.set(gendefaults)
         gen_defaults_overwrite_var.set(1 if "gendefaultsoverwrite" in dict and dict["gendefaultsoverwrite"] else 0)
 
         whisper_model_var.set(dict["whispermodel"] if ("whispermodel" in dict and dict["whispermodel"]) else "")
@@ -8463,6 +8689,7 @@ def show_gui():
         embeddings_gpu_var.set(dict["embeddingsgpu"] if ("embeddingsgpu" in dict) else 0)
 
         admin_var.set(dict["admin"] if ("admin" in dict) else 0)
+        router_mode_var.set(dict["routermode"] if ("routermode" in dict) else 0)
         admin_dir_var.set(dict["admindir"] if ("admindir" in dict and dict["admindir"]) else "")
         admin_text_model_dir_var.set(dict["admintextmodelsdir"] if ("admintextmodelsdir" in dict and dict["admintextmodelsdir"]) else "")
         admin_data_dir_var.set(dict["admindatadir"] if ("admindatadir" in dict and dict["admindatadir"]) else "")
@@ -8870,6 +9097,8 @@ def convert_invalid_args(args):
             dict["model_param"] = model_value
         elif isinstance(model_value, list) and model_value:  # Non-empty list
             dict["model_param"] = model_value[0]  # Take the first file in the list
+    if ("port_param" in dict and dict["port_param"] and dict["port_param"]!=defaultport):
+        dict["port"] = dict["port_param"]
     if "sdnotile" in dict and "sdtiledvae" not in dict:
         dict["sdtiledvae"] = (0 if (dict["sdnotile"]) else default_vae_tile_threshold) # convert legacy option
     if 'sdquant' in dict and type(dict['sdquant']) is bool:
@@ -8920,13 +9149,14 @@ def setuptunnel(global_memory, has_sd):
                 tunnelbinary = "./cloudflared-linux-amd64"
 
             tunnelproc = None
+            displayedport = (args.port if not args.proxy_port else args.proxy_port)
             if sys.platform == "linux":
                 clean_env = os.environ.copy()
                 clean_env.pop("LD_LIBRARY_PATH", None)
                 clean_env["PATH"] = "/usr/bin:/bin"
-                tunnelproc = subprocess.Popen(f"{tunnelbinary} tunnel --url {httpsaffix}://localhost:{int(args.port)}{ssladd}", text=True, encoding='utf-8', shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=clean_env)
+                tunnelproc = subprocess.Popen(f"{tunnelbinary} tunnel --url {httpsaffix}://localhost:{int(displayedport)}{ssladd}", text=True, encoding='utf-8', shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=clean_env)
             else:
-                tunnelproc = subprocess.Popen(f"{tunnelbinary} tunnel --url {httpsaffix}://localhost:{int(args.port)}{ssladd}", text=True, encoding='utf-8', shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                tunnelproc = subprocess.Popen(f"{tunnelbinary} tunnel --url {httpsaffix}://localhost:{int(displayedport)}{ssladd}", text=True, encoding='utf-8', shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             time.sleep(10)
 
             def tunnel_reader():
@@ -9472,9 +9702,29 @@ def main(launch_args, default_args):
         if len(args.ssl)==2 and isinstance(args.ssl[0], str) and os.path.exists(args.ssl[0]) and isinstance(args.ssl[1], str) and os.path.exists(args.ssl[1]):
             sslvalid = True
 
+    args.proxy_port = None #normally unused
+    if args.routermode:
+        if not args.admin:
+            print("\nWARNING: Router mode requires admin, enabling admin...")
+            args.admin = True
+        # setup router mode, find a usable high port swap the port
+        newport = 15001
+        for prt in range(15001,15011):
+            if not is_port_in_use(prt):
+                newport = prt
+                break
+        args.proxy_port = args.port_param
+        args.port = args.port_param = newport
+        run_router_proxy(args.proxy_port,newport)
+
     if args.admin and not args.admindir:
-        args.admin = False
-        print("\nWARNING: Admin was set without selecting an admin directory. Admin cannot be used.\n")
+        print("\nWARNING: Admin was set without selecting an admin directory. Selecting current executable directory...")
+        autopath = os.path.realpath(__file__)
+        if getattr(sys, 'frozen', False):
+            autopath = sys.executable
+        autopath = os.path.dirname(autopath)
+        args.admindir = autopath
+        print(f"Admin Directory Set: {autopath}\n")
 
     # Check if admin exists, if not add a default to the directory to allow remote model loading without a config
     if args.admin and args.admindir:
@@ -9550,7 +9800,7 @@ def main(launch_args, default_args):
                             dirpath = os.path.abspath(args.admindir)
                             targetfilepath = os.path.join(dirpath, restart_target)
                             defaultargs = vars(default_args)
-                            if (os.path.exists(targetfilepath) or restart_target=="unload_model"):
+                            if (os.path.exists(targetfilepath) or restart_target=="unload_model" or restart_target=="initial_model"):
                                 print("Terminating old process...")
                                 global_memory["load_complete"] = False
                                 kcpp_instance.terminate()
@@ -9563,6 +9813,8 @@ def main(launch_args, default_args):
                                     args.model_param = None
                                     args.model = None
                                     args.nomodel = True
+                                elif restart_target=="initial_model":
+                                    reload_from_new_args(vars(original_args))
                                 elif targetfilepath.endswith(".gguf"):
                                     reload_from_new_args(defaultargs)
                                     args.model_param = targetfilepath
@@ -9886,14 +10138,12 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
     args.defaultgenamt = max(64, min(args.defaultgenamt, 8192))
     args.defaultgenamt = min(args.defaultgenamt, maxctx / 2)
 
-    if args.port_param!=defaultport:
-        args.port = args.port_param
-
-    if start_server and args.singleinstance and is_port_in_use(args.port):
+    displayedport = (args.port if not args.proxy_port else args.proxy_port)
+    if start_server and args.singleinstance and is_port_in_use(displayedport):
         try:
-            print(f"Warning: Port {args.port} already appears to be in use by another program.")
-            print(f"Attempting to request shutdown of previous instance on port {args.port}...")
-            shutdownreq = make_url_request(f'http://localhost:{args.port}/api/extra/shutdown',{},timeout=5)
+            print(f"Warning: Port {displayedport} already appears to be in use by another program.")
+            print(f"Attempting to request shutdown of previous instance on port {displayedport}...")
+            shutdownreq = make_url_request(f'http://localhost:{displayedport}/api/extra/shutdown',{},timeout=5)
             shutdownok = (shutdownreq and "success" in shutdownreq and shutdownreq["success"] is True)
             time.sleep(2)
             print("Shutdown existing successful!" if shutdownok else "Shutdown existing failed!")
@@ -10367,15 +10617,20 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
     endpoint_url = ""
     remote_url = ""
     httpsaffix = ("https" if sslvalid else "http")
+    displayedport = (args.port if not args.proxy_port else args.proxy_port)
     if args.host=="":
-        endpoint_url = f"{httpsaffix}://localhost:{args.port}"
+        endpoint_url = f"{httpsaffix}://localhost:{displayedport}"
     else:
-        endpoint_url = f"{httpsaffix}://{args.host}:{args.port}"
+        endpoint_url = f"{httpsaffix}://{args.host}:{displayedport}"
 
     if start_server:
         if not args.remotetunnel:
-            print(f"Starting Kobold API on port {args.port} at {endpoint_url}/api/")
-            print(f"Starting OpenAI Compatible API on port {args.port} at {endpoint_url}/v1/")
+            if displayedport!=11434:
+                print("Note: For third party Ollama API Emulation, you should set the port to 11434.")
+            else:
+                print("Ollama Emulation is now available at port 11434.")
+            print(f"Starting Kobold API on port {displayedport} at {endpoint_url}/api/")
+            print(f"Starting OpenAI Compatible API on port {displayedport} at {endpoint_url}/v1/")
             print(f"Starting llama.cpp secondary WebUI at {endpoint_url}/lcpp/")
             if args.sdmodel:
                 print(f"StableUI is available at {endpoint_url}/sdui/")
@@ -10707,6 +10962,7 @@ if __name__ == '__main__':
     admingroup.add_argument("--admintextmodelsdir", metavar=('[directory]'), help="Used with remote control config switching. By passing in this argument, models in the directory will by available for restarting operations.", default="")
     admingroup.add_argument("--admindatadir", metavar=('[directory]'), help="Specify a directory to store user data in. By passing in this argument, users with the admin password will be able to save and load data from the server database.", default="")
     admingroup.add_argument("--adminallowhf", help="Enables downloading of HuggingFace models through the Lite UI.", action='store_true')
+    admingroup.add_argument("--routermode", help="Router mode uses a reverse proxy router, allowing you to easily hotswap models and configs within a single request. Requires admin mode.", action='store_true')
 
     deprecatedgroup = parser.add_argument_group('Deprecated Commands, DO NOT USE!')
     deprecatedgroup.add_argument("--hordeconfig", help=argparse.SUPPRESS, nargs='+')

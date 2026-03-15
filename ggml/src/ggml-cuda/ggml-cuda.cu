@@ -207,7 +207,14 @@ static ggml_cuda_device_info ggml_cuda_init() {
     GGML_ASSERT(info.device_count <= GGML_CUDA_MAX_DEVICES);
 
     int64_t total_vram = 0;
-    GGML_LOG_INFO("%s: found %d " GGML_CUDA_NAME " devices:\n", __func__, info.device_count);
+    for (int id = 0; id < info.device_count; ++id) {
+        cudaDeviceProp prop;
+        CUDA_CHECK(cudaGetDeviceProperties(&prop, id));
+        total_vram += prop.totalGlobalMem;
+    }
+    GGML_LOG_INFO("%s: found %d " GGML_CUDA_NAME " devices (Total VRAM: %zu MiB):\n",
+                  __func__, info.device_count, (size_t)(total_vram / (1024 * 1024)));
+    total_vram = 0;
 
     std::vector<std::pair<int, std::string>> turing_devices_without_mma;
     for (int id = 0; id < info.device_count; ++id) {
@@ -245,6 +252,12 @@ static ggml_cuda_device_info ggml_cuda_init() {
 #else
         info.devices[id].supports_cooperative_launch = false;
 #endif // !(GGML_USE_MUSA)
+
+        // cudaMemGetInfo returns info for the current device
+        size_t free_mem;
+        CUDA_CHECK(cudaSetDevice(id));
+        CUDA_CHECK(cudaMemGetInfo(&free_mem, NULL));
+
 #if defined(GGML_USE_HIP)
         info.devices[id].smpbo = prop.sharedMemPerBlock;
 
@@ -259,22 +272,25 @@ static ggml_cuda_device_info ggml_cuda_init() {
                 info.devices[id].cc += prop.minor * 0x10;
             }
         }
-        GGML_LOG_INFO("  Device %d: %s, %s (0x%x), VMM: %s, Wave Size: %d\n",
+        GGML_LOG_INFO("  Device %d: %s, %s (0x%x), VMM: %s, Wave Size: %d, VRAM: %zu MiB (%zu MiB free)\n",
                       id, prop.name, prop.gcnArchName, info.devices[id].cc & 0xffff,
-                      device_vmm ? "yes" : "no", prop.warpSize);
+                      device_vmm ? "yes" : "no", prop.warpSize,
+                      (size_t)(prop.totalGlobalMem / (1024 * 1024)), free_mem / (1024 * 1024));
 #elif defined(GGML_USE_MUSA)
         // FIXME: Ensure compatibility with varying warp sizes across different MUSA archs.
         info.devices[id].warp_size = 32;
         info.devices[id].smpbo = prop.sharedMemPerBlockOptin;
         info.devices[id].cc = GGML_CUDA_CC_OFFSET_MTHREADS + prop.major * 0x100;
         info.devices[id].cc += prop.minor * 0x10;
-        GGML_LOG_INFO("  Device %d: %s, compute capability %d.%d, VMM: %s\n",
-                        id, prop.name, prop.major, prop.minor, device_vmm ? "yes" : "no");
+        GGML_LOG_INFO("  Device %d: %s, compute capability %d.%d, VMM: %s, VRAM: %zu MiB (%zu MiB free)\n",
+                      id, prop.name, prop.major, prop.minor, device_vmm ? "yes" : "no",
+                      (size_t)(prop.totalGlobalMem / (1024 * 1024)), free_mem / (1024 * 1024));
 #else
         info.devices[id].smpbo = prop.sharedMemPerBlockOptin;
         info.devices[id].cc = 100*prop.major + 10*prop.minor;
-        GGML_LOG_INFO("  Device %d: %s, compute capability %d.%d, VMM: %s\n",
-                        id, prop.name, prop.major, prop.minor, device_vmm ? "yes" : "no");
+        GGML_LOG_INFO("  Device %d: %s, compute capability %d.%d, VMM: %s, VRAM: %zu MiB (%zu MiB free)\n",
+                      id, prop.name, prop.major, prop.minor, device_vmm ? "yes" : "no",
+                      (size_t)(prop.totalGlobalMem / (1024 * 1024)), free_mem / (1024 * 1024));
         std::string device_name(prop.name);
         if (device_name == "NVIDIA GeForce MX450") {
             turing_devices_without_mma.push_back({ id, device_name });
@@ -1226,6 +1242,34 @@ static cudaError_t ggml_cuda_cpy_tensor_2d(
     }
 }
 
+struct cublas_force_compute_type {
+    bool fp32 = false;
+    bool fp16 = false;
+};
+
+static const cublas_force_compute_type & ggml_cuda_cublas_get_force_compute_type() {
+    static const cublas_force_compute_type compute_type = [] {
+        cublas_force_compute_type result;
+
+        const bool ggml_cuda_force_cublas_compute_32f_env = getenv("GGML_CUDA_FORCE_CUBLAS_COMPUTE_32F") != nullptr;
+        const bool ggml_cuda_force_cublas_compute_16f_env = getenv("GGML_CUDA_FORCE_CUBLAS_COMPUTE_16F") != nullptr;
+
+        GGML_ASSERT(ggml_cuda_force_cublas_compute_16f_env == false || ggml_cuda_force_cublas_compute_32f_env == false);
+
+        if (ggml_cuda_force_cublas_compute_32f_env) {
+            GGML_LOG_INFO("Detected GGML_CUDA_FORCE_CUBLAS_COMPUTE_32F\n");
+            result.fp32 = true;
+        } else if (ggml_cuda_force_cublas_compute_16f_env) {
+            GGML_LOG_INFO("Detected GGML_CUDA_FORCE_CUBLAS_COMPUTE_16F\n");
+            result.fp16 = true;
+        }
+
+        return result;
+    }();
+
+    return compute_type;
+}
+
 static void ggml_cuda_op_mul_mat_cublas(
     ggml_backend_cuda_context & ctx,
     const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst, const char * src0_dd_i, const float * src1_ddf_i,
@@ -1308,7 +1352,13 @@ static void ggml_cuda_op_mul_mat_cublas(
 
         CUBLAS_CHECK(cublasSetStream(ctx.cublas_handle(id), stream));
 
-        if (GGML_CUDA_CC_IS_CDNA(cc) || GGML_CUDA_CC_IS_RDNA4(cc)) {
+        const auto & force_compute_type = ggml_cuda_cublas_get_force_compute_type();
+
+        if (!force_compute_type.fp16 && (GGML_CUDA_CC_IS_CDNA(cc)
+                                        || GGML_CUDA_CC_IS_RDNA4(cc)
+                                        || cc == GGML_CUDA_CC_VOLTA
+                                        || force_compute_type.fp32))
+        {
             const float alpha = 1.0f;
             const float beta = 0.0f;
             CUBLAS_CHECK(
@@ -1907,10 +1957,23 @@ static void ggml_cuda_mul_mat_batched_cublas_impl(ggml_backend_cuda_context & ct
     cudaDataType_t cu_data_type_b = traits::data_type;
     const void * alpha = traits::get_alpha();
     const void * beta = traits::get_beta();
-    const float alpha_f32 = 1.0f;
-    const float beta_f32 = 0.0f;
 
-    if (dst->op_params[0] == GGML_PREC_DEFAULT) {
+    const auto & force_compute_type = ggml_cuda_cublas_get_force_compute_type();
+
+    int id = ggml_cuda_get_device();
+    const int cc = ggml_cuda_info().devices[id].cc;
+    static constexpr bool is_src0_type_f16 = src0_type == GGML_TYPE_F16;
+
+    // bf16 and fp32 are already being computed in fp32 (ensure it using static_assert),
+    // so checking necessity of forced fp32 only for fp16 src0_type
+    static_assert(is_src0_type_f16 || traits::compute_type == CUBLAS_COMPUTE_32F);
+
+    const bool need_compute_32f = is_src0_type_f16 && !force_compute_type.fp16 && (GGML_CUDA_CC_IS_CDNA(cc)
+                                                                                  || GGML_CUDA_CC_IS_RDNA4(cc)
+                                                                                  || cc == GGML_CUDA_CC_VOLTA
+                                                                                  || force_compute_type.fp32);
+
+    if (dst->op_params[0] == GGML_PREC_DEFAULT && !need_compute_32f) {
         if constexpr (src0_type == GGML_TYPE_F32) {
             dst_t = (char *) dst_ddf;  // Direct F32 output
         } else {
@@ -1920,18 +1983,10 @@ static void ggml_cuda_mul_mat_batched_cublas_impl(ggml_backend_cuda_context & ct
         }
     } else {
         dst_t = (char *) dst_ddf;
-        cu_compute_type = CUBLAS_COMPUTE_32F;
-        cu_data_type = CUDA_R_32F;
-        alpha = &alpha_f32;
-        beta = &beta_f32;
-    }
-
-    int id = ggml_cuda_get_device();
-    const int cc = ggml_cuda_info().devices[id].cc;
-    if (GGML_CUDA_CC_IS_CDNA(cc) || GGML_CUDA_CC_IS_RDNA4(cc)) {
-        cu_compute_type = CUBLAS_COMPUTE_32F;
-        alpha = &alpha_f32;
-        beta = &beta_f32;
+        cu_compute_type = batched_mul_mat_traits<GGML_TYPE_F32>::compute_type;
+        cu_data_type = batched_mul_mat_traits<GGML_TYPE_F32>::data_type;
+        alpha = batched_mul_mat_traits<GGML_TYPE_F32>::get_alpha();
+        beta = batched_mul_mat_traits<GGML_TYPE_F32>::get_beta();
     }
 
     GGML_ASSERT(ne12 % ne02 == 0);
@@ -2819,14 +2874,11 @@ static bool ggml_backend_cuda_cpy_tensor_async(ggml_backend_t backend_src, ggml_
     ggml_backend_buffer_t buf_src = src->view_src ? src->view_src->buffer : src->buffer;
     ggml_backend_buffer_t buf_dst = dst->view_src ? dst->view_src->buffer : dst->buffer;
 
-    //enables async copies from CPU to CUDA, instead of only CUDA-to-CUDA
-    bool copy_from_host = ggml_backend_buffer_is_host(buf_src) && ggml_backend_dev_type(backend_src->device) == GGML_BACKEND_DEVICE_TYPE_CPU;
-
-    if (!(copy_from_host || ggml_backend_is_cuda(backend_src)) || !ggml_backend_is_cuda(backend_dst)) {
+    if (!ggml_backend_is_cuda(backend_src) || !ggml_backend_is_cuda(backend_dst)) {
         return false;
     }
 
-    if (!(copy_from_host || ggml_backend_buffer_is_cuda(buf_src)) || !ggml_backend_buffer_is_cuda(dst->buffer)) {
+    if (!ggml_backend_buffer_is_cuda(src->buffer) || !ggml_backend_buffer_is_cuda(dst->buffer)) {
         return false;
     }
 
@@ -2837,17 +2889,14 @@ static bool ggml_backend_cuda_cpy_tensor_async(ggml_backend_t backend_src, ggml_
     ggml_backend_cuda_buffer_context * buf_ctx_src = (ggml_backend_cuda_buffer_context *)buf_src->context;
     ggml_backend_cuda_buffer_context * buf_ctx_dst = (ggml_backend_cuda_buffer_context *)buf_dst->context;
 
-    if ((copy_from_host && cuda_ctx_dst->device != buf_ctx_dst->device) ||
-        !copy_from_host && (cuda_ctx_src->device != buf_ctx_src->device || cuda_ctx_dst->device != buf_ctx_dst->device)) {
+    if (cuda_ctx_src->device != buf_ctx_src->device || cuda_ctx_dst->device != buf_ctx_dst->device) {
 #ifndef NDEBUG
         GGML_LOG_DEBUG("%s: backend and buffer devices do not match\n", __func__);
 #endif
         return false;
     }
 
-    if (copy_from_host) {
-        CUDA_CHECK(cudaMemcpyAsync(dst->data, src->data, ggml_nbytes(dst), cudaMemcpyHostToDevice, cuda_ctx_dst->stream()));
-    } else if (backend_src != backend_dst) {
+    if (backend_src != backend_dst) {
         // copy on src stream
         if (cuda_ctx_src->device == cuda_ctx_dst->device) {
             CUDA_CHECK(cudaMemcpyAsync(dst->data, src->data, ggml_nbytes(dst), cudaMemcpyDeviceToDevice, cuda_ctx_src->stream()));
@@ -4997,9 +5046,15 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
         case GGML_OP_LEAKY_RELU:
         case GGML_OP_RWKV_WKV6:
         case GGML_OP_GATED_LINEAR_ATTN:
-        case GGML_OP_GATED_DELTA_NET:
         case GGML_OP_RWKV_WKV7:
             return true;
+        case GGML_OP_GATED_DELTA_NET:
+            //TODO: enable once MUSA compiler is solved https://github.com/ggml-org/llama.cpp/pull/19504#issuecomment-4018634327
+#ifdef GGML_USE_MUSA
+            return false;
+#else
+            return true;
+#endif // GGML_USE_MUSA
         case GGML_OP_FLASH_ATTN_EXT:
             return ggml_cuda_flash_attn_ext_supported(dev_ctx->device, op);
         case GGML_OP_CROSS_ENTROPY_LOSS:

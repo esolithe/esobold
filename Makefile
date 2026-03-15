@@ -110,10 +110,10 @@ endif
 CUBLASLD_FLAGS =
 CUBLAS_OBJS =
 
-OBJS_FULL += ggml-alloc.o ggml-cpu-traits.o ggml-quants.o ggml-cpu-quants.o kcpp-quantmapper.o kcpp-repackmapper.o unicode.o unicode-common.o unicode-data.o ggml-threading.o ggml-cpu-cpp.o gguf.o sgemm.o common.o llama-impl.o sampling.o kcpputils.o mtmdaudio.o
-OBJS_SIMPLE += ggml-alloc.o ggml-cpu-traits.o ggml-quants_noavx2.o ggml-cpu-quants.o kcpp-quantmapper_noavx2.o kcpp-repackmapper_noavx2.o unicode.o unicode-common.o unicode-data.o ggml-threading.o ggml-cpu-cpp.o gguf.o sgemm_noavx2.o common.o llama-impl.o sampling.o kcpputils.o mtmdaudio.o
-OBJS_SIMPLER += ggml-alloc.o ggml-cpu-traits.o ggml-quants_noavx1.o ggml-cpu-quants.o kcpp-quantmapper_noavx1.o kcpp-repackmapper_noavx1.o unicode.o unicode-common.o unicode-data.o ggml-threading.o ggml-cpu-cpp.o gguf.o sgemm_noavx1.o common.o llama-impl.o sampling.o kcpputils.o mtmdaudio.o
-OBJS_FAILSAFE += ggml-alloc.o ggml-cpu-traits.o ggml-quants_failsafe.o ggml-cpu-quants.o kcpp-quantmapper_failsafe.o kcpp-repackmapper_failsafe.o unicode.o unicode-common.o unicode-data.o ggml-threading.o ggml-cpu-cpp.o gguf.o sgemm_failsafe.o common.o llama-impl.o sampling.o kcpputils.o mtmdaudio.o
+OBJS_FULL += ggml-alloc.o ggml-cpu-traits.o ggml-quants.o ggml-cpu-quants.o kcpp-quantmapper.o kcpp-repackmapper.o unicode.o unicode-common.o unicode-data.o ggml-threading.o ggml-cpu-cpp.o gguf.o sgemm.o common.o llama-impl.o sampling.o budget.o kcpputils.o mtmdaudio.o
+OBJS_SIMPLE += ggml-alloc.o ggml-cpu-traits.o ggml-quants_noavx2.o ggml-cpu-quants.o kcpp-quantmapper_noavx2.o kcpp-repackmapper_noavx2.o unicode.o unicode-common.o unicode-data.o ggml-threading.o ggml-cpu-cpp.o gguf.o sgemm_noavx2.o common.o llama-impl.o sampling.o budget.o kcpputils.o mtmdaudio.o
+OBJS_SIMPLER += ggml-alloc.o ggml-cpu-traits.o ggml-quants_noavx1.o ggml-cpu-quants.o kcpp-quantmapper_noavx1.o kcpp-repackmapper_noavx1.o unicode.o unicode-common.o unicode-data.o ggml-threading.o ggml-cpu-cpp.o gguf.o sgemm_noavx1.o common.o llama-impl.o sampling.o budget.o kcpputils.o mtmdaudio.o
+OBJS_FAILSAFE += ggml-alloc.o ggml-cpu-traits.o ggml-quants_failsafe.o ggml-cpu-quants.o kcpp-quantmapper_failsafe.o kcpp-repackmapper_failsafe.o unicode.o unicode-common.o unicode-data.o ggml-threading.o ggml-cpu-cpp.o gguf.o sgemm_failsafe.o common.o llama-impl.o sampling.o budget.o kcpputils.o mtmdaudio.o
 
 # OS specific
 ifeq ($(UNAME_S),Linux)
@@ -675,7 +675,8 @@ expose.o: expose.cpp expose.h model_adapter.cpp
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 llama-impl.o: src/llama-impl.cpp src/llama-impl.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
-
+budget.o: common/reasoning-budget.cpp common/reasoning-budget.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 # sd.cpp objects
 sdcpp_default.o: otherarch/sdcpp/sdtype_adapter.cpp otherarch/sdcpp/stable-diffusion.h otherarch/sdcpp/stable-diffusion.cpp otherarch/sdcpp/util.cpp otherarch/sdcpp/upscaler.cpp otherarch/sdcpp/model.cpp otherarch/sdcpp/name_conversion.cpp otherarch/sdcpp/tokenize_util.cpp otherarch/sdcpp/thirdparty/zip.c
