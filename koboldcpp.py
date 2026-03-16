@@ -73,7 +73,7 @@ extra_images_max = 4 # for kontext/qwen img
 KcppVersion = "1.110"
 showdebug = True
 kcpp_instance = None #global running instance
-global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_override_config_target":""}
+global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_override_config_target":"", "last_active_timestamp":datetime.now(),"current_model":"initial_model"}
 using_gui_launcher = False
 
 handle = None
@@ -3633,7 +3633,6 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     HOP_BY_HOP = { "connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailers", "transfer-encoding", "upgrade" }
     STREAM_CHUNK = 512
-    current_model = "initial_model"
 
     def log_message(self, fmt, *args):
         global showdebug
@@ -3677,6 +3676,7 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                 headers[k] = v
         headers["Connection"] = "close"
 
+        global global_memory
         #specifically look for generation requests from completions or chat completions to handle hotswap
         is_post = self.command.upper() == "POST"
         is_completions_path = (self.path.endswith('/v1/completions') or self.path.endswith('/v1/completion') or self.path=='/completions')
@@ -3690,9 +3690,10 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                 except Exception:
                     pass
 
-            if model_name and model_name != type(self).current_model:
+            if model_name and model_name != global_memory["current_model"]:
                 with proxy_reload_lock:
-                    if model_name != type(self).current_model:
+                    if model_name != global_memory["current_model"]:
+                        global_memory["last_active_timestamp"] = datetime.now()
                         whitelist = get_current_admindir_list() # see if its an allowed swap
                         if model_name in whitelist:
                             reqbody = json.dumps({"filename":model_name})
@@ -3706,11 +3707,10 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                             conn.request("POST", "/api/admin/reload_config", body=reqbody, headers=reqheaders)
                             resp = conn.getresponse()
                             time.sleep(3)
+                            global_memory["last_active_timestamp"] = datetime.now()
                             if not self.wait_for_upstream_ready(upstream_port,120,0.5):
                                 self.send_error(504, "KoboldCpp model swap reload timed out")
                                 return
-                            time.sleep(0.1)
-                            type(self).current_model = model_name
                             time.sleep(0.1)
 
         try:  # connect upstream
@@ -5015,18 +5015,7 @@ Change Mode<br>
                         resp = {"success": True}
                     else:
                         dirpath = os.path.abspath(args.admindir)
-                        valid_exts = (".kcpps", ".kcppt", ".gguf")
-                        allowed_files = []
-                        with os.scandir(dirpath) as entries:  # Scan top-level and 1-level deep
-                            for entry in entries:
-                                if entry.is_file() and entry.name.lower().endswith(valid_exts):
-                                    allowed_files.append(entry.name)
-                                elif entry.is_dir():
-                                    subdir_name = entry.name
-                                    with os.scandir(entry.path) as subentries:
-                                        for subentry in subentries:
-                                            if subentry.is_file() and subentry.name.lower().endswith(valid_exts):
-                                                allowed_files.append(os.path.join(subdir_name, subentry.name))
+                        allowed_files = get_current_admindir_list()
                         # Normalize requested target path
                         targetfilepath = os.path.abspath(os.path.join(dirpath, targetfile))
 
@@ -5177,7 +5166,7 @@ Change Mode<br>
             is_music_audio = False
             response_body = None
             use_jinja = args.jinja
-
+            global_memory["last_active_timestamp"] = datetime.now()
             if self.path.endswith('/api/admin/check_state'):
                 if global_memory and args.admin and args.admindir and os.path.exists(args.admindir) and self.check_header_password(args.adminpassword):
                     cur_states = []
@@ -6276,6 +6265,7 @@ def show_gui():
     admin_password_var = ctk.StringVar()
     singleinstance_var = ctk.IntVar(value=0)
     router_mode_var = ctk.IntVar(value=0)
+    admin_unload_timeout_var = ctk.StringVar(value=str(0))
 
     nozenity_var = ctk.IntVar(value=0)
 
@@ -7089,6 +7079,7 @@ def show_gui():
     makecheckbox(admin_tab, "Enable Model Administration", admin_var, 1, 0, command=toggleadmin,tooltiptxt="Enable a admin server, allowing you to remotely relaunch and swap models and configs.")
     makelabelentry(admin_tab, "Admin Password:" , admin_password_var, 3, 150,padx=(120),singleline=True,tooltip="Require a password to access admin functions. You are strongly advised to use one for publically accessible instances!")
     makefileentry(admin_tab, "Config Directory (Required):", "Select directory containing .gguf or .kcpps files to relaunch from", admin_dir_var, 5, width=280, dialog_type=2, tooltiptxt="Specify a directory to look for .kcpps configs in, which can be used to swap models.")
+    makelabelentry(admin_tab, "Auto Unload Timeout:" , admin_unload_timeout_var, 7, 70,padx=(150),singleline=True,tooltip="Set an idle timeout in seconds after which KoboldCpp will automatically unload the current model.")
     makecheckbox(admin_tab, "SingleInstance Mode", singleinstance_var, 10, 0,tooltiptxt="Allows this server to be shut down by another KoboldCpp instance with singleinstance starting on the same port.")
     router_mode_box = makecheckbox(admin_tab, "Router Mode", router_mode_var, 15, 0,tooltiptxt="Router mode uses a reverse proxy router, allowing you to easily hotswap models and configs within a single request. Requires admin mode.")
 
@@ -7406,6 +7397,7 @@ def show_gui():
         args.adminpassword = admin_password_var.get()
         args.singleinstance = (singleinstance_var.get()==1)
         args.routermode = router_mode_var.get()==1
+        args.adminunloadtimeout = (0 if admin_unload_timeout_var.get()=="" else int(admin_unload_timeout_var.get()))
         args.showgui = False #prevent showgui from leaking into configs, its cli only
 
     def import_vars(dict):
@@ -7661,6 +7653,7 @@ def show_gui():
         router_mode_var.set(dict["routermode"] if ("routermode" in dict) else 0)
         admin_dir_var.set(dict["admindir"] if ("admindir" in dict and dict["admindir"]) else "")
         admin_password_var.set(dict["adminpassword"] if ("adminpassword" in dict and dict["adminpassword"]) else "")
+        admin_unload_timeout_var.set(dict["adminunloadtimeout"] if ("adminunloadtimeout" in dict and dict["adminunloadtimeout"]) else 0)
         singleinstance_var.set(dict["singleinstance"] if ("singleinstance" in dict) else 0)
 
         importvars_in_progress = False
@@ -8178,7 +8171,7 @@ def reload_from_new_args(newargs):
         args.istemplate = False
         newargs = convert_invalid_args(newargs)
         for key, value in newargs.items(): #do not overwrite certain values
-            if key not in ["remotetunnel","showgui","port","host","port_param","admin","adminpassword","admindir","ssl","nocertify","benchmark","prompt","config","downloaddir"]:
+            if key not in ["remotetunnel","showgui","port","host","port_param","admin","adminpassword","password","adminunloadtimeout","routermode","admindir","ssl","nocertify","benchmark","prompt","config","downloaddir"]:
                 setattr(args, key, value)
         setattr(args,"showgui",False)
         setattr(args,"benchmark",False)
@@ -8706,7 +8699,7 @@ def main(launch_args, default_args):
             input()
     else:  # manager command queue for admin mode
         with multiprocessing.Manager() as mp_manager:
-            global_memory = mp_manager.dict({"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_override_config_target":""})
+            global_memory = mp_manager.dict({"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_override_config_target":"", "last_active_timestamp":datetime.now(),"current_model":"initial_model"})
 
             if args.remotetunnel and not args.prompt and not args.benchmark and not args.cli:
                 setuptunnel(global_memory, True if args.sdmodel else False)
@@ -8746,6 +8739,14 @@ def main(launch_args, default_args):
                         fault_recovery_mode = False
                     restart_target = global_memory["restart_target"]
                     restart_override_config_target = global_memory["restart_override_config_target"]
+                    last_active = global_memory["last_active_timestamp"]
+                    if last_active and args.adminunloadtimeout>0:
+                        curtime = datetime.now()
+                        elapsedtime = curtime - last_active
+                        time_since_last_active = elapsedtime.total_seconds()
+                        if time_since_last_active > args.adminunloadtimeout and global_memory["current_model"]!="unload_model":
+                            print(f"[Unload Timeout] Inactive for over {time_since_last_active}s, unloading models...")
+                            restart_target = "unload_model"
                     if restart_target!="":
                         overridetxt = ("" if not restart_override_config_target else f" with override config {restart_override_config_target}")
                         print(f"Reloading new model/config: {restart_target}{overridetxt}")
@@ -8791,6 +8792,7 @@ def main(launch_args, default_args):
                                 kcpp_instance.start()
                                 global_memory["restart_target"] = ""
                                 global_memory["restart_override_config_target"] = ""
+                                global_memory["current_model"] = restart_target
                                 time.sleep(3)
                     else:
                         time.sleep(0.2)
@@ -9958,6 +9960,7 @@ if __name__ == '__main__':
     admingroup.add_argument("--admin", help="Enables admin mode, allowing you to unload and reload different configurations or models.", action='store_true')
     admingroup.add_argument("--adminpassword", metavar=('[password]'), help="Require a password to access admin functions. You are strongly advised to use one for publically accessible instances!", default=None)
     admingroup.add_argument("--admindir", metavar=('[directory]'), help="Specify a directory to look for .kcpps configs in, which can be used to swap models.", default="")
+    admingroup.add_argument("--adminunloadtimeout", help="Set an idle timeout in seconds after which KoboldCpp will automatically unload the current model.", type=int, default=0)
     admingroup.add_argument("--routermode", help="Router mode uses a reverse proxy router, allowing you to easily hotswap models and configs within a single request. Requires admin mode.", action='store_true')
 
     deprecatedgroup = parser.add_argument_group('Deprecated Commands, DO NOT USE!')
