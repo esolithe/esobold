@@ -41,6 +41,7 @@ from typing import Tuple
 import shutil
 import subprocess
 import gzip
+import queue
 
 # PDF extraction logic
 import logging
@@ -78,7 +79,7 @@ extra_images_max = 4 # for kontext/qwen img
 KcppVersion = "1.110"
 showdebug = True
 kcpp_instance = None #global running instance
-global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None}
+global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(),"current_model":"initial_model"}
 using_gui_launcher = False
 
 handle = None
@@ -94,7 +95,11 @@ ttsmodelpath = "" #if empty, not initialized
 embeddingsmodelpath = "" #if empty, not initialized
 musicllmmodelpath = "" #if empty, not initialized
 musicdiffusionmodelpath = "" #if empty, not initialized
-imglorainfo = []
+imglora_preload = []   # all preloaded LoRAs
+imglora_bypath = {}    # len(imglora_bypath) == 0 <==> static loras
+imglora_name2path = {}
+imglora_cached = True
+imglora_initial_fixed = True
 maxctx = 8192
 maxhordectx = 0 #set to whatever maxctx is if 0
 maxhordelen = 1024
@@ -369,6 +374,7 @@ class sd_generation_inputs(ctypes.Structure):
                 ("cache_options", ctypes.c_char_p),
                 ("upscale", ctypes.c_bool),
                 ("lora_len", ctypes.c_int),
+                ("lora_filenames", ctypes.POINTER(ctypes.c_char_p)),
                 ("lora_multipliers", ctypes.POINTER(ctypes.c_float))]
 
 class sd_generation_outputs(ctypes.Structure):
@@ -525,6 +531,8 @@ class MCPStdioClient:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding='utf-8',
+            errors='replace',
             bufsize=1,
             env=full_env,
             cwd=cwd
@@ -538,6 +546,15 @@ class MCPStdioClient:
             daemon=True
         )
         self.stderr_thread.start()
+
+        self._pending = {}
+        self._pending_lock = threading.Lock()
+        self.stdout_thread = threading.Thread(
+            target=self._read_stdout,
+            daemon=True
+        )
+        self.stdout_thread.start()
+
     def _read_stderr(self):
         try:
             for line in self.process.stderr:
@@ -549,22 +566,67 @@ class MCPStdioClient:
                     self.stderr_buffer.pop(0)
         finally:
             self.alive = False
+    def _read_stdout(self):  # notifications (no id) are silently dropped
+        try:
+            for line in self.process.stdout:
+                if not line:
+                    break
+                try:
+                    msg = json.loads(line)
+                except Exception:
+                    continue
+                msg_id = msg.get("id")
+                if msg_id is not None:
+                    with self._pending_lock:
+                        q = self._pending.get(msg_id)
+                    if q:
+                        q.put(msg)
+                    else:
+                        print(f"[MCP] Unexpected response id: {msg_id}")
+        finally:
+            self.alive = False
+            with self._pending_lock:
+                for q in self._pending.values():
+                    q.put(None)
 
-    def send(self, message: dict, await_response=True) -> dict: # Send JSON-RPC request and wait for one response.
+    def send(self, message: dict, await_response=True) -> dict: # Send JSON-RPC request and wait for response.
         line = json.dumps(message)
-        with self.lock:
-            if self.process.stdin.closed:
-                raise RuntimeError("MCP server stdin is closed")
-            self.process.stdin.write(line + "\n")
-            self.process.stdin.flush()
-            if not await_response:
-                return None
-            response = self.process.stdout.readline()
-        if not response:
+        msg_id = message.get("id")
+
+        if await_response and msg_id is None:
+            raise ValueError("Cannot await response for a message without an 'id' field")
+
+        response_q = queue.Queue()
+
+        try:
+            with self._pending_lock:
+                if await_response and msg_id is not None:
+                    self._pending[msg_id] = response_q
+                with self.lock:
+                    if self.process.stdin.closed:
+                        raise RuntimeError("MCP server stdin is closed")
+                    self.process.stdin.write(line + "\n")
+                    self.process.stdin.flush()
+        except Exception:
+            if await_response and msg_id is not None:
+                with self._pending_lock:
+                    self._pending.pop(msg_id, None)
+            raise
+
+        if not await_response:
+            return None
+        try:
+            response = response_q.get(timeout=120)
+        except queue.Empty:
+            raise RuntimeError("MCP server timed out (no response in 120s)")
+        finally:
+            with self._pending_lock:
+                self._pending.pop(msg_id, None)
+        if response is None:
             errmsg = "\n".join(self.stderr_buffer[-10:])
             print(f"[MCP Server Error!]\n{errmsg}")
             raise RuntimeError("MCP server closed stdout")
-        return json.loads(response)
+        return response
     def notify(self, message: dict) -> None: # Send JSON-RPC notification (no response expected).
         line = json.dumps(message)
         with self.lock:
@@ -1188,26 +1250,35 @@ def get_capabilities():
     has_server_saving = args.admin and not (args.admindatadir == "")
     had_admin_with_hf = args.adminallowhf
     admin_type = (2 if args.admin and args.admindir and args.adminpassword else (1 if args.admin and args.admindir else 0))
-    return {"result":"KoboldCpp", "version":KcppVersion, "protected":has_password, "llm":has_llm, "txt2img":has_txt2img,"vision":has_vision_support,"audio":has_audio_support,"transcribe":has_whisper,"multiplayer":has_multiplayer,"websearch":has_search,"tts":has_tts, "embeddings":has_embeddings, "music":has_music, "savedata":(savedata_obj is not None), "admin": admin_type, "guidance": has_guidance, "jinja": has_jinja, "mcp":has_mcp, "hasServerSaving": has_server_saving, "hasAdminWithHF": had_admin_with_hf, "embeddingModel": embeddingModel}
+    has_router = True if args.routermode else False
+    return {"result":"KoboldCpp", "version":KcppVersion, "protected":has_password, "llm":has_llm, "txt2img":has_txt2img,"vision":has_vision_support,"audio":has_audio_support,"transcribe":has_whisper,"multiplayer":has_multiplayer,"websearch":has_search,"tts":has_tts, "embeddings":has_embeddings, "music":has_music, "savedata":(savedata_obj is not None), "admin": admin_type, "router":has_router, "guidance": has_guidance, "jinja": has_jinja, "mcp":has_mcp, "hasServerSaving": has_server_saving, "hasAdminWithHF": had_admin_with_hf, "embeddingModel": embeddingModel}
+
+
+def scan_directory(dirpath, valid_exts, depth):
+    files = []
+    for entry in sorted(os.listdir(dirpath)): # Scan top-level directory
+        full_path = os.path.join(dirpath, entry)
+        if os.path.isfile(full_path) and entry.lower().endswith(valid_exts): # If toplevel file
+            files.append(entry)
+        elif depth > 0 and os.path.isdir(full_path): #if dir, scan up to 1 level deep
+            for subentry in sorted(os.listdir(full_path)):
+                sub_full_path = os.path.join(full_path, subentry)
+                if os.path.isfile(sub_full_path) and subentry.lower().endswith(valid_exts):
+                    rel_path = os.path.join(entry, subentry)
+                    files.append(rel_path)
+    return files
+
 
 def get_current_admindir_list():
     opts = []
     if args.admin and args.admindir:
         dirpath = os.path.abspath(args.admindir)
         valid_exts = (".kcpps", ".kcppt", ".gguf")
-        for entry in sorted(os.listdir(dirpath)): # Scan top-level directory
-            full_path = os.path.join(dirpath, entry)
-            if os.path.isfile(full_path) and entry.endswith(valid_exts): # If toplevel file
-                opts.append(entry)
-            elif os.path.isdir(full_path): #if dir, scan up to 1 level deep
-                for subentry in sorted(os.listdir(full_path)):
-                    sub_full_path = os.path.join(full_path, subentry)
-                    if os.path.isfile(sub_full_path) and subentry.endswith(valid_exts):
-                        rel_path = os.path.join(entry, subentry)
-                        opts.append(rel_path)
+        opts = scan_directory(dirpath, valid_exts, 1)
         opts.append("initial_model")
         opts.append("unload_model")
     return opts
+
 
 def dump_gguf_metadata(file_path): #if you're gonna copy this into your own project at least credit concedo
     chunk_size = 1024*1024*12  # read first 12mb of file
@@ -2033,7 +2104,7 @@ def sd_quant_option(value):
     except Exception:
         return 0
 
-def sd_load_model(model_filename,vae_filename,lora_filenames,t5xxl_filename,clip1_filename,clip2_filename,photomaker_filename,upscaler_filename):
+def sd_load_model(model_filename,vae_filename,t5xxl_filename,clip1_filename,clip2_filename,photomaker_filename,upscaler_filename):
     global args
     inputs = sd_load_model_inputs()
     inputs.model_filename = model_filename.encode("UTF-8")
@@ -2062,14 +2133,17 @@ def sd_load_model(model_filename,vae_filename,lora_filenames,t5xxl_filename,clip
     inputs.photomaker_filename = photomaker_filename.encode("UTF-8")
     inputs.upscaler_filename = upscaler_filename.encode("UTF-8")
 
-    lora_filenames = [lf.encode("UTF-8") for lf in lora_filenames[:lora_filenames_max] if lf]
-    lora_len = len(lora_filenames)
-    lora_multipliers = prepare_lora_multipliers([])
-    inputs.lora_len = lora_len
-    inputs.lora_filenames = (ctypes.c_char_p * lora_len)(*lora_filenames)
-    inputs.lora_multipliers = (ctypes.c_float * lora_len)(*lora_multipliers)
+    lora_filenames, lora_multipliers = prepare_initial_lora_multipliers()
+    inputs.lora_len = len(lora_filenames)
+    inputs.lora_filenames = (ctypes.c_char_p * inputs.lora_len)(*lora_filenames)
+    inputs.lora_multipliers = (ctypes.c_float * inputs.lora_len)(*lora_multipliers)
     # auto if no zero-weight lora, dynamic otherwise
-    inputs.lora_apply_mode = 3 if 0. in lora_multipliers else 0
+    lora_apply_mode = 0 # auto
+    if imglora_bypath:
+        lora_dynamic = 1 << 3 # accept changes at runtime
+        lora_cache   = 1 << 4 if imglora_cached else 0 # cache the preloaded LoRAs
+        lora_apply_mode = lora_dynamic | lora_cache
+    inputs.lora_apply_mode = lora_apply_mode
 
     inputs.img_hard_limit = args.sdclamped
     inputs.img_soft_limit = args.sdclampedsoft
@@ -2184,6 +2258,15 @@ def sd_upscale(genparams):
         data_main = ret.data.decode("UTF-8","ignore")
     return data_main
 
+def sanitize_lora_list(sdlora):
+    if not sdlora:
+        sdlora = []
+    elif isinstance(sdlora, str):
+        sdlora = [sdlora]
+    elif not isinstance(sdlora, list):
+        sdlora = []
+    return sdlora
+
 def sanitize_lora_multipliers(sdloramult):
     if sdloramult is None:
         sdloramult = [1.0]
@@ -2192,23 +2275,57 @@ def sanitize_lora_multipliers(sdloramult):
     sdloramult = [tryparsefloat(m, 0.) for m in sdloramult]
     return sdloramult
 
-def prepare_lora_multipliers(request_list):
-    orig_multipliers = [lora[3] for lora in imglorainfo]
-    req_by_path = {}
+def prepare_initial_lora_multipliers():
+    res_paths = []
+    res_multipliers = []
+    num_loras = len(imglora_preload)
+    if num_loras > lora_filenames_max:
+        print(f'Warning: more than {lora_filenames_max} preloaded LoRAs, extra ones will be ignored')
+        num_loras = lora_filenames_max
+    for info in imglora_preload[:num_loras]:
+        res_paths.append(info['fullpath'].encode("UTF-8"))
+        res_multipliers.append(info['multiplier'])
+    return res_paths, res_multipliers
+
+def prepare_lora_multipliers_backend(request_list, imglora_bypath):
+    req_dedup = {}
     for r in request_list:
         if not isinstance(r, dict):
             continue
-        multiplier = tryparsefloat(r.get('multiplier'), 0.)
         path = r.get('path')
-        if path and isinstance(path, str):
-            req_by_path[path] = req_by_path.get(path, 0.) + multiplier
-    result = []
-    for i, (fullpath, name, path, origmul) in enumerate(imglorainfo):
-        multiplier = orig_multipliers[i]
-        if multiplier == 0. and path in req_by_path:
-            multiplier = req_by_path[path]
-        result.append(multiplier)
-    return result
+        multiplier = tryparsefloat(r.get('multiplier'), 0.)
+        if not path or not isinstance(path, str) or not multiplier:
+            continue
+        info = imglora_bypath.get(path)
+        if info:
+            fullpath = info["fullpath"]
+            req_dedup[fullpath] = req_dedup.get(fullpath, 0.) + multiplier
+    res_paths = []
+    res_multipliers = []
+    for fullpath, multiplier in req_dedup.items():
+        if multiplier != 0.0:
+            res_paths.append(fullpath.encode("UTF-8"))
+            res_multipliers.append(multiplier)
+    # enforce lora_filenames_max
+    max_requests = lora_filenames_max - len(imglora_preload)
+    if len(res_paths) > max_requests:
+        msg_preloaded = ""
+        if len(imglora_preload) > 0:
+            msg_preloaded = f" (including {len(imglora_preload)} preloaded)"
+        print(f'Warning: more than {lora_filenames_max} requested LoRAs{msg_preloaded}, extra ones will be ignored')
+        res_paths = res_paths[:max_requests]
+        res_multipliers = res_multipliers[:max_requests]
+    return res_paths, res_multipliers
+
+def prepare_lora_multipliers(request_list):
+    return prepare_lora_multipliers_backend(request_list, imglora_bypath)
+
+def mk_sdapi_lora_list(imglora_bypath):
+    return [
+        {'name': info['name'], 'path': info['path']}
+            for info in imglora_bypath.values()
+                if not info.get('fixed')
+    ]
 
 def extract_loras_from_prompt(prompt):
     pattern = r'<lora:([^:>]+):([^>]+)>'
@@ -2234,16 +2351,17 @@ def extract_loras_from_prompt(prompt):
     return prompt, lora_data
 
 def lora_map_name_to_path(request_list):
-    name2path = {}
-    for _, name, path, _ in imglorainfo:
-        name2path[name] = path
     result = []
     for req in request_list:
         out = dict(req)
         name = out.pop('name')
-        path = name2path.get(name)
-        if path:
-            out['path'] = path
+        path = imglora_name2path.get(name)
+        if not path:
+            print(f'LoRA {name} not found')
+            continue
+        info = imglora_bypath.get(path)
+        if info:
+            out['path'] = info['path']
             result.append(out)
     return result
 
@@ -2298,6 +2416,7 @@ def sd_generate(genparams):
     extra_images_arr = ([] if not extra_images_arr else extra_images_arr)
     extra_images_arr = [img for img in extra_images_arr if img not in (None, "")]
     extra_images_arr = extra_images_arr[:extra_images_max]
+    lora_filenames, lora_multipliers = prepare_lora_multipliers(genparams.get("lora", []))
 
     #clean vars
     cfg_scale = (1 if cfg_scale < 1 else (forced_maxcfg if cfg_scale > forced_maxcfg else cfg_scale))
@@ -2349,9 +2468,8 @@ def sd_generate(genparams):
     inputs.cache_mode = cache_mode.encode("UTF-8")
     inputs.cache_options = cache_options.encode("UTF-8")
     inputs.upscale = (True if tryparseint(genparams.get("enable_hr", 0),0) else False)
-
-    lora_multipliers = prepare_lora_multipliers(genparams.get("lora", []))
-    inputs.lora_len = len(lora_multipliers)
+    inputs.lora_len = len(lora_filenames)
+    inputs.lora_filenames = (ctypes.c_char_p * inputs.lora_len)(*lora_filenames)
     inputs.lora_multipliers = (ctypes.c_float * inputs.lora_len)(*lora_multipliers)
 
     ret = handle.sd_generate(inputs)
@@ -4163,7 +4281,6 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     HOP_BY_HOP = { "connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailers", "transfer-encoding", "upgrade" }
     STREAM_CHUNK = 512
-    current_model = "initial_model"
 
     def log_message(self, fmt, *args):
         global showdebug
@@ -4207,8 +4324,8 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                 headers[k] = v
         headers["Connection"] = "close"
 
-        # maybe_stall_for_model_swap(self.path, request_body)
-        #specifically look for generation requests from completions or chat completions
+        global global_memory
+        #specifically look for generation requests from completions or chat completions to handle hotswap
         is_post = self.command.upper() == "POST"
         is_completions_path = (self.path.endswith('/v1/completions') or self.path.endswith('/v1/completion') or self.path=='/completions')
         is_chat_completions_path = (self.path.endswith('/v1/chat/completions') or self.path=='/chat/completions')
@@ -4221,9 +4338,10 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                 except Exception:
                     pass
 
-            if model_name and model_name != type(self).current_model:
+            if model_name and model_name != global_memory["current_model"]:
                 with proxy_reload_lock:
-                    if model_name != type(self).current_model:
+                    if model_name != global_memory["current_model"]:
+                        global_memory["last_active_timestamp"] = datetime.now()
                         whitelist = get_current_admindir_list() # see if its an allowed swap
                         if model_name in whitelist:
                             reqbody = json.dumps({"filename":model_name})
@@ -4237,19 +4355,57 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                             conn.request("POST", "/api/admin/reload_config", body=reqbody, headers=reqheaders)
                             resp = conn.getresponse()
                             time.sleep(3)
+                            global_memory["last_active_timestamp"] = datetime.now()
                             if not self.wait_for_upstream_ready(upstream_port,120,0.5):
                                 self.send_error(504, "KoboldCpp model swap reload timed out")
                                 return
-                            time.sleep(0.1)
-                            type(self).current_model = model_name
                             time.sleep(0.1)
 
         try:  # connect upstream
             conn = http.client.HTTPConnection('localhost', upstream_port, timeout=600)
             conn.request( self.command, self.path, body=body, headers=headers)
             resp = conn.getresponse()
-        except OSError as e:
-            self.send_error(502, f"KoboldCpp proxy connection failed: {e}")
+        except OSError:
+            html_502 = """
+            <!DOCTYPE html>
+            <html lang="en">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>502 - KoboldCpp</title>
+                <style>
+                *,dialog{padding:0;margin:0}*{box-sizing:border-box}body{background-color:#0a0e14;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen,Ubuntu,sans-serif;min-height:100vh;display:flex;justify-content:center;align-items:center}dialog{background-color:#1a222e;border:1px solid #3a4a5a;border-radius:4px;width:90%;max-width:550px;box-shadow:0 8px 32px rgba(0,0,0,.6);position:absolute;top:50%;left:50%;transform:translate(-50%,-50%)}dialog::backdrop{background-color:rgba(0,0,0,.7)}.dialog-header{background-color:#3a506b;padding:14px 18px;border-bottom:1px solid #2a3a4a}.dialog-header h2{color:#e8e8e8;font-size:15px;font-weight:600;margin:0}.dialog-content{padding:24px 20px;text-align:center}.dialog-content p{color:#d0d0d0;font-size:15px;line-height:1.7;margin:0 0 16px}.dialog-content p:last-child{margin-bottom:0;font-style:italic;color:#a0a0a0}
+                </style>
+            </head>
+            <body>
+                <dialog open>
+                    <div class="dialog-header"><h2>KoboldCpp is not available.</h2></div>
+                    <div class="dialog-content">
+                        <p>It may take some time during a model (re)load before it is ready to use.</p>
+                        <p>Taking a long time for this message to go away?<br>It may have crashed, check the logs.</p>
+                        <p>Your browser should automatically refresh when KoboldCpp is back online.</p>
+                    </div>
+                </dialog>
+            </body>
+            <script>
+                setInterval(async () => {
+                    try {
+                        const response = await fetch(window.location.href, { cache: "no-store" });
+                        if (response.ok) {
+                            window.location.reload();
+                        }
+                    } catch (err) {
+                        // Ignore network errors and try again on next interval
+                    }
+                }, 2000);
+            </script>
+            </html>
+            """
+            self.send_response(502)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(html_502.encode("utf-8"))))
+            self.end_headers()
+            self.wfile.write(html_502.encode("utf-8"))
             return
 
         self.send_response(resp.status, resp.reason) # forward response headers
@@ -4920,7 +5076,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                 return False
         return True
 
-    def check_header_password(self, target_password):
+    def check_header_password(self, target_password, target_alt_password=None):
         auth_ok = True
         if target_password and target_password !="":
             auth_header = None
@@ -4931,13 +5087,13 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                 auth_header = self.headers['authorization']
             if auth_header is not None and auth_header.startswith('Bearer '):
                 token = auth_header[len('Bearer '):].strip()
-                if token==target_password:
+                if token==target_password or (target_alt_password and target_alt_password!="" and token==target_alt_password):
                     auth_ok = True
         return auth_ok
 
     def secure_endpoint(self): #returns false if auth fails. caller should exit
         #handle password stuff
-        auth_ok = self.check_header_password(password)
+        auth_ok = self.check_header_password(password, args.adminpassword)
         if auth_ok is False:
             self.send_response(401)
             self.end_headers(content_type='application/json')
@@ -5190,7 +5346,7 @@ Change Mode<br>
             response_body = (json.dumps({"name":"KoboldAI Lite","short_name":"KoboldAI Lite","description":"Progressive Web App for KoboldAI Lite","start_url":"./","scope":".","display":"standalone","background_color":"#303030","theme_color":"#337ab7","orientation":"portrait-primary","icons":[{"src":"data:image/png;base64,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","type":"image/png","sizes":"150x150"}]}).encode())
 
         elif clean_path.endswith(('/api/v1/model', '/api/latest/model')):
-            auth_ok = self.check_header_password(password)
+            auth_ok = self.check_header_password(password, args.adminpassword)
             response_body = (json.dumps({'result': (friendlymodelname if auth_ok else "koboldcpp/protected-model") }).encode())
 
         elif clean_path.endswith(('/api/v1/config/max_length', '/api/latest/config/max_length')):
@@ -5318,7 +5474,7 @@ Change Mode<br>
             response_body = (json.dumps({"object":"list","data":mlist}).encode())
 
         elif clean_path.endswith('/sdapi/v1/loras'):
-            response_body = (json.dumps([{'name': name, 'path': path} for _, name, path, multiplier in imglorainfo if multiplier == 0.])).encode()
+            response_body = (json.dumps(mk_sdapi_lora_list(imglora_bypath))).encode()
 
         elif clean_path.endswith('/sdapi/v1/upscalers'):
             if args.sdupscaler:
@@ -6183,7 +6339,7 @@ Change Mode<br>
             is_music_audio = False
             response_body = None
             use_jinja = args.jinja
-
+            global_memory["last_active_timestamp"] = datetime.now()
             if self.path.endswith('/api/admin/check_state'):
                 if global_memory and args.admin and args.admindir and os.path.exists(args.admindir) and self.check_header_password(args.adminpassword):
                     cur_states = []
@@ -7300,6 +7456,7 @@ def show_gui():
     admin_password_var = ctk.StringVar()
     singleinstance_var = ctk.IntVar(value=0)
     router_mode_var = ctk.IntVar(value=0)
+    admin_unload_timeout_var = ctk.StringVar(value=str(0))
     admin_allow_hf_var = ctk.IntVar(value=0)
 
     nozenity_var = ctk.IntVar(value=0)
@@ -8114,11 +8271,12 @@ def show_gui():
     makecheckbox(admin_tab, "Enable Model Administration", admin_var, 1, 0, command=toggleadmin,tooltiptxt="Enable a admin server, allowing you to remotely relaunch and swap models and configs.")
     makelabelentry(admin_tab, "Admin Password:" , admin_password_var, 3, 150,padx=(120),singleline=True,tooltip="Require a password to access admin functions. You are strongly advised to use one for publically accessible instances!")
     makefileentry(admin_tab, "Config Directory (Required):", "Select directory containing .gguf or .kcpps files to relaunch from", admin_dir_var, 5, width=280, dialog_type=2, tooltiptxt="Specify a directory to look for .kcpps configs in, which can be used to swap models.")
-    makefileentry(admin_tab, "Model Directory:", "Select directory containing .gguf text model files to allow overriding configs with", admin_text_model_dir_var, 7, width=280, dialog_type=2, tooltiptxt="Specify a directory to look for .gguf text model files in, which can be used to swap models within a config.")
-    makefileentry(admin_tab, "Data Directory:", "Select directory which will be used to store user data if desired", admin_data_dir_var, 9, width=280, dialog_type=2, tooltiptxt="Specify a directory to store user data in.")
-    makecheckbox(admin_tab, "Allow Model Download From HuggingFace", admin_allow_hf_var, 11, 0,tooltiptxt="Allows model downloading from HuggingFace within the Lite UI.")
-    makecheckbox(admin_tab, "SingleInstance Mode", singleinstance_var, 13, 0,tooltiptxt="Allows this server to be shut down by another KoboldCpp instance with singleinstance starting on the same port.")
-    router_mode_box = makecheckbox(admin_tab, "Router Mode", router_mode_var, 15, 0,tooltiptxt="Router mode uses a reverse proxy router, allowing you to easily hotswap models and configs within a single request. Requires admin mode.")
+    makelabelentry(admin_tab, "Auto Unload Timeout:" , admin_unload_timeout_var, 7, 70,padx=(150),singleline=True,tooltip="Set an idle timeout in seconds after which KoboldCpp will automatically unload the current model.")
+    makefileentry(admin_tab, "Model Directory:", "Select directory containing .gguf text model files to allow overriding configs with", admin_text_model_dir_var, 9, width=280, dialog_type=2, tooltiptxt="Specify a directory to look for .gguf text model files in, which can be used to swap models within a config.")
+    makefileentry(admin_tab, "Data Directory:", "Select directory which will be used to store user data if desired", admin_data_dir_var, 11, width=280, dialog_type=2, tooltiptxt="Specify a directory to store user data in.")
+    makecheckbox(admin_tab, "Allow Model Download From HuggingFace", admin_allow_hf_var, 13, 0,tooltiptxt="Allows model downloading from HuggingFace within the Lite UI.")
+    makecheckbox(admin_tab, "SingleInstance Mode", singleinstance_var, 15, 0,tooltiptxt="Allows this server to be shut down by another KoboldCpp instance with singleinstance starting on the same port.")
+    router_mode_box = makecheckbox(admin_tab, "Router Mode", router_mode_var, 17, 0,tooltiptxt="Router mode uses a reverse proxy router, allowing you to easily hotswap models and configs within a single request. Requires admin mode.")
 
     def kcpp_export_template():
         nonlocal kcpp_exporting_template
@@ -8394,10 +8552,7 @@ def show_gui():
         if sd_upscaler_var.get() != "":
             args.sdupscaler = sd_upscaler_var.get()
         args.sdquant = sd_quant_option(sd_quant_var.get())
-        if sd_lora_var.get() != "":
-            args.sdlora = [item.strip() for item in sd_lora_var.get().split("|") if item]
-        else:
-            args.sdlora = None
+        args.sdlora = [item.strip() for item in sd_lora_var.get().split("|") if item]
         # XXX the user may have used '|' since it's used for the LoRAs
         args.sdloramult = sanitize_lora_multipliers(re.split(r"[ |]+", sd_loramult_var.get()))
 
@@ -8436,6 +8591,7 @@ def show_gui():
         args.adminpassword = admin_password_var.get()
         args.singleinstance = (singleinstance_var.get()==1)
         args.routermode = router_mode_var.get()==1
+        args.adminunloadtimeout = (0 if admin_unload_timeout_var.get()=="" else int(admin_unload_timeout_var.get()))
         args.showgui = False #prevent showgui from leaking into configs, its cli only
         args.adminallowhf = (admin_allow_hf_var.get()==1 and not args.cli)
 
@@ -8655,13 +8811,7 @@ def show_gui():
         sd_upscaler_var.set(dict["sdupscaler"] if ("sdupscaler" in dict and dict["sdupscaler"]) else "")
         sd_vaeauto_var.set(1 if ("sdvaeauto" in dict and dict["sdvaeauto"]) else 0)
         sd_tiled_vae_var.set(str(dict["sdtiledvae"]) if ("sdtiledvae" in dict and dict["sdtiledvae"]) else str(default_vae_tile_threshold))
-        if "sdlora" in dict and dict["sdlora"]:
-            if isinstance((dict["sdlora"]), list):
-                sd_lora_var.set("|".join(dict["sdlora"]))
-            else:
-                sd_lora_var.set(dict["sdlora"] if ("sdlora" in dict and dict["sdlora"]) else "")
-        else:
-            sd_lora_var.set("")
+        sd_lora_var.set("|".join(sanitize_lora_list(dict.get('sdlora'))))
         sd_loramult_var.set(" ".join(f"{n:.3f}".rstrip('0').rstrip('.') for n in dict.get("sdloramult", [])))
         gendefaults = (dict["gendefaults"] if ("gendefaults" in dict and dict["gendefaults"]) else "")
         if isinstance(gendefaults, type({})):
@@ -8694,6 +8844,7 @@ def show_gui():
         admin_text_model_dir_var.set(dict["admintextmodelsdir"] if ("admintextmodelsdir" in dict and dict["admintextmodelsdir"]) else "")
         admin_data_dir_var.set(dict["admindatadir"] if ("admindatadir" in dict and dict["admindatadir"]) else "")
         admin_password_var.set(dict["adminpassword"] if ("adminpassword" in dict and dict["adminpassword"]) else "")
+        admin_unload_timeout_var.set(dict["adminunloadtimeout"] if ("adminunloadtimeout" in dict and dict["adminunloadtimeout"]) else 0)
         singleinstance_var.set(dict["singleinstance"] if ("singleinstance" in dict) else 0)
         admin_allow_hf_var.set(dict["adminallowhf"] if ("adminallowhf" in dict) else 0)
 
@@ -9113,8 +9264,8 @@ def convert_invalid_args(args):
         dict["gendefaults"] = dict["sdgendefaults"]
     if "flashattention" in dict and "noflashattention" not in dict:
         dict["noflashattention"] = not dict["flashattention"]
-    if "sdlora" in dict and isinstance(dict["sdlora"], str):
-        dict["sdlora"] = ([dict["sdlora"]] if dict["sdlora"] else None)
+    if "sdlora" in dict:
+        dict["sdlora"] = sanitize_lora_list(dict["sdlora"])
     if "sdloramult" in dict:
         dict["sdloramult"] = sanitize_lora_multipliers(dict["sdloramult"])
     return args
@@ -9215,7 +9366,7 @@ def reload_from_new_args(newargs):
         args.istemplate = False
         newargs = convert_invalid_args(newargs)
         for key, value in newargs.items(): #do not overwrite certain values
-            if key not in ["remotetunnel","showgui","port","host","port_param","admin","adminpassword","admindir","admintextmodelsdir","admindatadir","adminallowhf","developerMode","ssl","nocertify","benchmark","prompt","config","downloaddir"]:
+            if key not in ["remotetunnel","showgui","port","host","port_param","admin","adminpassword","password","adminunloadtimeout","routermode","admindir","admintextmodelsdir","admindatadir","adminallowhf","developerMode","ssl","nocertify","benchmark","prompt","config","downloaddir"]:
                 setattr(args, key, value)
         setattr(args,"showgui",False)
         setattr(args,"benchmark",False)
@@ -9715,6 +9866,17 @@ def main(launch_args, default_args):
                 break
         args.proxy_port = args.port_param
         args.port = args.port_param = newport
+        if args.singleinstance and is_port_in_use(args.proxy_port):
+            try:
+                print(f"Warning: Port {args.proxy_port} already appears to be in use by another program.")
+                print(f"Attempting to request shutdown of previous instance on port {args.proxy_port}...")
+                shutdownreq = make_url_request(f'http://localhost:{args.proxy_port}/api/extra/shutdown',{},timeout=5)
+                shutdownok = (shutdownreq and "success" in shutdownreq and shutdownreq["success"] is True)
+                time.sleep(2)
+                print("Shutdown existing successful!" if shutdownok else "Shutdown existing failed!")
+                time.sleep(1)
+            except Exception:
+                pass
         run_router_proxy(args.proxy_port,newport)
 
     if args.admin and not args.admindir:
@@ -9745,7 +9907,7 @@ def main(launch_args, default_args):
             input()
     else:  # manager command queue for admin mode
         with multiprocessing.Manager() as mp_manager:
-            global_memory = mp_manager.dict({"tunnel_url": "", "restart_target": "", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None})
+            global_memory = mp_manager.dict({"tunnel_url": "", "restart_target": "", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(),"current_model":"initial_model"})
 
             if args.remotetunnel and not args.prompt and not args.benchmark and not args.cli:
                 setuptunnel(global_memory, True if args.sdmodel else False)
@@ -9788,6 +9950,14 @@ def main(launch_args, default_args):
                         fault_recovery_mode = False
                     restart_target = global_memory["restart_target"]
                     restart_model = global_memory["restart_model"]
+                    last_active = global_memory["last_active_timestamp"]
+                    if last_active and args.adminunloadtimeout>0:
+                        curtime = datetime.now()
+                        elapsedtime = curtime - last_active
+                        time_since_last_active = elapsedtime.total_seconds()
+                        if time_since_last_active > args.adminunloadtimeout and global_memory["current_model"]!="unload_model":
+                            print(f"[Unload Timeout] Inactive for over {time_since_last_active}s, unloading models...")
+                            restart_target = "unload_model"
                     if restart_target!="":
                         if restart_model != "":
                             global_memory["restart_model"] = ""
@@ -9839,6 +10009,7 @@ def main(launch_args, default_args):
                                 kcpp_instance.start()
                                 global_memory["restart_target"] = ""
                                 global_memory["restart_model"] = ""
+                                global_memory["current_model"] = restart_target
                                 time.sleep(3)
                     else:
                         time.sleep(0.2)
@@ -9850,26 +10021,94 @@ def main(launch_args, default_args):
                 input()
 
 
-def mk_lora_info(imgloras, multipliers):
-    # (full path, name, name+extension, can change multiplier)
-    # XXX for each LoRA, sdapi needs a name and a path; we could use
-    # the full filename as a path, but we don't know if we can expose it
-    used_lora_names = set()
-    result = []
+def mk_lora_info(imgloras, multipliers, mock_filesystem=False):
     first_multiplier = multipliers[0] if len(multipliers) > 0 else 1.
+    lora_files = []
+    lora_dirs = []
+    # identify files and dirs
     for i, lora_path in enumerate(imgloras):
         multiplier = multipliers[i] if i < len(multipliers) else first_multiplier
-        lora_file = os.path.basename(lora_path)
+        if mock_filesystem:
+            print('fake filesystem access')
+            if lora_path.endswith('/'):
+                lora_dirs.append(lora_path)
+            else:
+                lora_files.append(('', lora_path, multiplier))
+        elif os.path.isfile(lora_path):
+            lora_files.append(('', lora_path, multiplier))
+        elif os.path.isdir(lora_path):
+            lora_dirs.append(lora_path)
+        elif os.path.exists(lora_path):
+            print(f"Unexpected file type for SD LORA model file {lora_path}")
+        else:
+            print(f"Missing SD LORA model file {lora_path}...")
+    # scan all dirs
+    for lora_dir in lora_dirs:
+        print(f'Scanning {lora_dir} for LoRAs...')
+        if mock_filesystem:
+            print('fake directory scan')
+            files = ['lora1_makebelieve.gguf', 'lora2/makebelieve.gguf']
+        else:
+            files = scan_directory(lora_dir, ('.safetensors', '.gguf'), 1)
+        print(f'  found {len(files)} files under {lora_dir}')
+        for file in files:
+            lora_files.append((lora_dir, file, 0.0))
+    # dedup and map all files
+    unique_lora_names = set()
+    lora_fullmap = {}
+    for i, (lora_dir, lora_path, multiplier) in enumerate(lora_files):
+        if lora_dir:
+            # lora_path is relative: we can show it on the interface and accept it
+            lora_fullpath = os.path.join(lora_dir, lora_path)
+            # NOTE: we are including the relative directory on the short name
+            lora_file = lora_path
+            preloaded = False
+        else:
+            lora_fullpath = lora_path
+            # we don't know which portion of the path we can show, so omit it
+            lora_file = os.path.basename(lora_path)
+            preloaded = True
+        if not mock_filesystem:
+            lora_fullpath = os.path.abspath(lora_fullpath)
+        # dedup paths (e.g. preloaded and on directory)
+        info = lora_fullmap.get(lora_fullpath)
+        if info:
+            info["multiplier"] += multiplier
+            if multiplier == 0.0 and 'fixed' in info:
+                # allow changes if we see this lora again with weight 0
+                del info['fixed']
+            continue
         lora_name, lora_ext = os.path.splitext(lora_file)
         # ensure unique names
         i = 1
-        mapped_name = lora_name
-        while mapped_name in used_lora_names:
+        lora_uname = lora_name
+        while lora_uname in unique_lora_names:
             i += 1
-            mapped_name = lora_name + '_' + str(i)
-        used_lora_names.add(mapped_name)
-        result.append((lora_path, mapped_name, mapped_name + lora_ext, multiplier))
-    return result
+            lora_uname = lora_name + '_' + str(i)
+        unique_lora_names.add(lora_uname)
+        lora_upath = lora_uname + lora_ext
+        lora_entry = {
+            'fullpath': lora_fullpath,  # where it is on disk
+            'name': lora_uname,         # 'name' in api field and <lora:name:multiplier>
+            'path': lora_upath,         # 'path' in api field (relative), + extension
+            'multiplier': multiplier,   # preload multiplier
+        }
+        if preloaded:
+            lora_entry['preloaded'] = preloaded
+        if multiplier != 0.0 and imglora_initial_fixed:
+            lora_entry['fixed'] = True
+        lora_fullmap[lora_fullpath] = lora_entry
+    # build the runtime tables
+    preloaded_table = []
+    lora_path_map = {}
+    lora_name_map = {}
+    for lora_entry in lora_fullmap.values():
+        if not lora_entry.get("fixed"):  # only map LoRAs that can be changed
+            lora_path_map[lora_entry["path"]] = lora_entry
+            lora_name_map[lora_entry["name"]] = lora_entry["path"]
+        if lora_entry.get("preloaded"):
+            preloaded_table.append(lora_entry)
+    return preloaded_table, lora_path_map, lora_name_map
 
 
 def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
@@ -9894,6 +10133,9 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
 
     if args.model_param and (args.benchmark or args.prompt or args.cli):
         start_server = False
+
+    args.sdlora = sanitize_lora_list(args.sdlora)
+    args.sdloramult = sanitize_lora_multipliers(args.sdloramult)
 
     #try to read story if provided
     if args.preloadstory:
@@ -10138,12 +10380,12 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
     args.defaultgenamt = max(64, min(args.defaultgenamt, 8192))
     args.defaultgenamt = min(args.defaultgenamt, maxctx / 2)
 
-    displayedport = (args.port if not args.proxy_port else args.proxy_port)
-    if start_server and args.singleinstance and is_port_in_use(displayedport):
+    #this uses the true port instead of the displayport, because we dont want to shut down a router
+    if start_server and args.singleinstance and is_port_in_use(args.port):
         try:
-            print(f"Warning: Port {displayedport} already appears to be in use by another program.")
-            print(f"Attempting to request shutdown of previous instance on port {displayedport}...")
-            shutdownreq = make_url_request(f'http://localhost:{displayedport}/api/extra/shutdown',{},timeout=5)
+            print(f"Warning: Port {args.port} already appears to be in use by another program.")
+            print(f"Attempting to request shutdown of previous instance on port {args.port}...")
+            shutdownreq = make_url_request(f'http://localhost:{args.port}/api/extra/shutdown',{},timeout=5)
             shutdownok = (shutdownreq and "success" in shutdownreq and shutdownreq["success"] is True)
             time.sleep(2)
             print("Shutdown existing successful!" if shutdownok else "Shutdown existing failed!")
@@ -10312,23 +10554,14 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
                 exitcounter = 999
                 exit_with_error(2,f"Cannot find image model file: {imgmodel}")
         else:
-            imgloras = []
             imgvae = ""
             imgt5xxl = ""
             imgclip1 = ""
             imgclip2 = ""
             imgphotomaker = ""
             imgupscaler = ""
-            if args.sdlora and len(args.sdlora)>0:
-                for i in range (0,len(args.sdlora)):
-                    curr = args.sdlora[i]
-                    if os.path.exists(curr):
-                        imgloras.append(os.path.abspath(curr))
-                    else:
-                        print(f"Missing SD LORA model file {curr}...")
-            global imglorainfo
-            args.sdloramult = sanitize_lora_multipliers(args.sdloramult)
-            imglorainfo = mk_lora_info(imgloras, args.sdloramult)
+            global imglora_preload, imglora_bypath, imglora_name2path
+            imglora_preload, imglora_bypath, imglora_name2path = mk_lora_info(args.sdlora, args.sdloramult)
             if args.sdvae:
                 if os.path.exists(args.sdvae):
                     imgvae = os.path.abspath(args.sdvae)
@@ -10365,7 +10598,7 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
             friendlysdmodelname = os.path.basename(imgmodel)
             friendlysdmodelname = os.path.splitext(friendlysdmodelname)[0]
             friendlysdmodelname = sanitize_string(friendlysdmodelname)
-            loadok = sd_load_model(imgmodel,imgvae,imgloras,imgt5xxl,imgclip1,imgclip2,imgphotomaker,imgupscaler)
+            loadok = sd_load_model(imgmodel,imgvae,imgt5xxl,imgclip1,imgclip2,imgphotomaker,imgupscaler)
             print("Load Image Model OK: " + str(loadok))
             if not loadok:
                 exitcounter = 999
@@ -10601,6 +10834,7 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
     enabledmlist.append("AdminControl") if "admin" in caps and caps["admin"]!=0 else disabledmlist.append("AdminControl")
     enabledmlist.append("MCPBridge") if "mcp" in caps and caps["mcp"] else disabledmlist.append("MCPBridge")
     enabledmlist.append("MusicGen") if "music" in caps and caps["music"] else disabledmlist.append("MusicGen")
+    enabledmlist.append("RouterMode") if "router" in caps and caps["router"] else disabledmlist.append("RouterMode")
 
     print(f"======\nActive Modules: {' '.join(enabledmlist)}")
     print(f"Inactive Modules: {' '.join(disabledmlist)}")
@@ -10959,6 +11193,7 @@ if __name__ == '__main__':
     admingroup.add_argument("--admin", help="Enables admin mode, allowing you to unload and reload different configurations or models.", action='store_true')
     admingroup.add_argument("--adminpassword", metavar=('[password]'), help="Require a password to access admin functions. You are strongly advised to use one for publically accessible instances!", default=None)
     admingroup.add_argument("--admindir", metavar=('[directory]'), help="Specify a directory to look for .kcpps configs in, which can be used to swap models.", default="")
+    admingroup.add_argument("--adminunloadtimeout", help="Set an idle timeout in seconds after which KoboldCpp will automatically unload the current model.", type=int, default=0)
     admingroup.add_argument("--admintextmodelsdir", metavar=('[directory]'), help="Used with remote control config switching. By passing in this argument, models in the directory will by available for restarting operations.", default="")
     admingroup.add_argument("--admindatadir", metavar=('[directory]'), help="Specify a directory to store user data in. By passing in this argument, users with the admin password will be able to save and load data from the server database.", default="")
     admingroup.add_argument("--adminallowhf", help="Enables downloading of HuggingFace models through the Lite UI.", action='store_true')

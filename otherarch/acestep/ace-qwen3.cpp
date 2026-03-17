@@ -1286,6 +1286,7 @@ void unload_acestep_lm()
     {
         acestep_lm_loaded = false;
         qw3lm_free(&acestep_llm);
+        printf("Unload Music LM model...\n");
     }
 }
 

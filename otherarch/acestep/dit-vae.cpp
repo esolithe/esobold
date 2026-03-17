@@ -68,6 +68,7 @@ void unload_acestep_dit_core()
     {
         acestep_dit_core_loaded = false;
         dit_ggml_free(&acestep_dit);
+        printf("Unload music diffusion model...\n");
     }
 }
 void unload_acestep_dit_others()
@@ -79,6 +80,7 @@ void unload_acestep_dit_others()
         cond_ggml_free(&music_cond);
         detok_ggml_free(&detok);
         qwen3_free(&music_text_enc);
+        printf("Unload music tokenizer and conditioner model...\n");
     }
 }
 void unload_acestep_vae_enc()
@@ -87,6 +89,7 @@ void unload_acestep_vae_enc()
     {
         acestep_vae_enc_loaded = false;
         vae_enc_free(&vae_enc);
+        printf("Unload music VAE enc model...\n");
     }
 }
 void unload_acestep_vae_dec()
@@ -95,6 +98,7 @@ void unload_acestep_vae_dec()
     {
         acestep_vae_dec_loaded = false;
         vae_ggml_free(&vae);
+        printf("Unload music VAE dec model...\n");
     }
 }
 
