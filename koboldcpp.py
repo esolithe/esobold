@@ -588,15 +588,21 @@ class MCPStdioClient:
             raise ValueError("Cannot await response for a message without an 'id' field")
 
         response_q = queue.Queue()
-        if await_response and msg_id is not None:
-            with self._pending_lock:
-                self._pending[msg_id] = response_q
 
-        with self.lock:  # write lock only now
-            if self.process.stdin.closed:
-                raise RuntimeError("MCP server stdin is closed")
-            self.process.stdin.write(line + "\n")
-            self.process.stdin.flush()
+        try:
+            with self._pending_lock:
+                if await_response and msg_id is not None:
+                    self._pending[msg_id] = response_q
+                with self.lock:
+                    if self.process.stdin.closed:
+                        raise RuntimeError("MCP server stdin is closed")
+                    self.process.stdin.write(line + "\n")
+                    self.process.stdin.flush()
+        except Exception:
+            if await_response and msg_id is not None:
+                with self._pending_lock:
+                    self._pending.pop(msg_id, None)
+            raise
 
         if not await_response:
             return None
