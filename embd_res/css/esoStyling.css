@@ -158,3 +158,8 @@
 		width: 100% !important;
 		resize: vertical;
 	}
+
+	.helptext {
+		left: min(100% - 300px, var(--mouse_x));
+		max-width: 300px;
+	}
