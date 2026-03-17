@@ -524,6 +524,8 @@ class MCPStdioClient:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding='utf-8',
+            errors='replace',
             bufsize=1,
             env=full_env,
             cwd=cwd
