@@ -13972,14 +13972,17 @@ Current version indicated by LITEVER below.
 									}
 									else if(localflag && is_using_kcpp_with_admin() && is_using_kcpp_with_routermode())
 									{
-										msgboxYesNo("This KoboldCpp instance appears to be running in router mode.<br><br>Would you like to connect in OpenAI Chat Completions mode to allow for model hotswap?<br><br>You can switch back in the 'AI' menu later.","Router Mode Detected",
-										()=>{
-											document.getElementById("customapidropdown").value = "2";
-											render_gametext(false);
-											display_endpoint_container();
-											oai_fetch_models();
-											koboldcpp_force_allow_endpoint_selector = true;
-										},()=>{},true);
+										if (!window?.eso?.disableRouterPopupOnLoad)
+										{
+											msgboxYesNo("This KoboldCpp instance appears to be running in router mode.<br><br>Would you like to connect in OpenAI Chat Completions mode to allow for model hotswap?<br><br>You can switch back in the 'AI' menu later.","Router Mode Detected",
+											()=>{
+												document.getElementById("customapidropdown").value = "2";
+												render_gametext(false);
+												display_endpoint_container();
+												oai_fetch_models();
+												koboldcpp_force_allow_endpoint_selector = true;
+											},()=>{},true);
+										}
 									}
 
 								}else{
