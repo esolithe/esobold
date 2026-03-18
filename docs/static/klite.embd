@@ -3081,8 +3081,11 @@ Current version indicated by LITEVER below.
 	}
 	</style>
 
+	<!-- EsoLite modifications -->
 	<script src="static/js/esoGlobals.js"></script>
 	<script src="static/js/treeHandler.js"></script>
+	<script src="static/js/authorNotePositioningUtils.js"></script>
+	<!-- EsoLite modifications end -->
 
 	<script id="third-party.min">
 	//Third party JS libraries
@@ -3839,6 +3842,8 @@ Current version indicated by LITEVER below.
 	var documentdb_data = "";
 	var documentdb_sqPrefix = ""
 	var documentdb_cPrefix = ""
+	var anTurnOffset = 1
+	var anTurnType = ""
 	var generateimagesinterval = 750; //if generated images is enabled, it will trigger after every 700 new characters in context.
 	var nextgeneratedimagemilestone = generateimagesinterval; //used to keep track of when to generate the next image
 	var image_db = {}; //stores a dictionary of pending images
@@ -9734,6 +9739,8 @@ Current version indicated by LITEVER below.
 		new_save_storyobj.altbranches = alt_gametext_branches;
 		new_save_storyobj.documentdb_sqPrefix = documentdb_sqPrefix;
 		new_save_storyobj.documentdb_cPrefix = documentdb_cPrefix;
+		new_save_storyobj.anTurnOffset = anTurnOffset;
+		new_save_storyobj.anTurnType = anTurnType;
 		new_save_storyobj.worldtree = treeHandler.tree;
 
 		if (export_settings) {
@@ -10100,6 +10107,12 @@ Current version indicated by LITEVER below.
 				if(storyobj.documentdb_cPrefix)
 				{
 					documentdb_cPrefix = storyobj.documentdb_cPrefix;
+				}
+				if (storyobj.anTurnOffset) {
+					anTurnOffset = storyobj.anTurnOffset;
+				}
+				if (storyobj.anTurnType) {
+					anTurnType = storyobj.anTurnType;
 				}
 				if(storyobj.worldtree)
 				{
@@ -17258,6 +17271,8 @@ Current version indicated by LITEVER below.
 		documentdb_data = document.getElementById("documentdb_data").value;
 		documentdb_sqPrefix = document.getElementById("documentdb_sqPrefix").value;
 		documentdb_cPrefix = document.getElementById("documentdb_cPrefix").value;
+		anTurnOffset = Math.max(0, Math.floor(document.getElementById("anTurnOffset").value || 1)); // Defaults to 1 if not a valid value, min 0
+		anTurnType = document.getElementById("anTurnType").value;
 		documentdb_numresults = parseInt(documentdb_numresults);
 		documentdb_numresults = cleannum(documentdb_numresults,1,10);
 		documentdb_searchrange = parseInt(documentdb_searchrange);
@@ -17771,6 +17786,8 @@ Current version indicated by LITEVER below.
 			newlineaftermemory = true;
 			documentdb_sqPrefix = "";
 			documentdb_cPrefix = "";
+			anTurnOffset = 1;
+			anTurnType = "";
 		}
 		if(localsettings.inject_randomness_seed>0)
 		{
@@ -20274,36 +20291,41 @@ Current version indicated by LITEVER below.
 					truncated_context = substring_to_boundary(truncated_context, newlimit); //must always have at least 32 chars from main context
 				}
 
-				//insert authors note 80 tokens before the ending (320 characters).
-				let anote_dist = anote_strength;
-				let anote_insert_idx = truncated_context.length - anote_dist;
-				anote_insert_idx = clamp(anote_insert_idx, 0, truncated_context.length);
-				//try to align anote with a word boundary
-				const maxLookahead = 30;
-				let best_insert_idx = anote_insert_idx;
-				let insert_preference = 0;
-				for (let i = 0; i < maxLookahead && anote_insert_idx + i < truncated_context.length; ++i) {
-					const char = truncated_context[anote_insert_idx + i];
-					if (char == "\n") {
-						best_insert_idx = anote_insert_idx + i + 1;
-						insert_preference = 3;
-						break;
-					}
-					if (insert_preference<=1 && (char == "," || char == "!" || char == "." || char == "?")) {
-						best_insert_idx = anote_insert_idx + i + 1;
-						insert_preference = 2;
-					}
-					if (insert_preference==0 && (char == " ")) {
-						best_insert_idx = anote_insert_idx + i + 1;
-						insert_preference = 1;
-					}
-				}
-				if(insert_preference>0)
+				if (anote_strength === "turn") 
 				{
-					anote_insert_idx = best_insert_idx;
+					truncated_context = insertAuthorsNoteToContext(truncated_context, truncated_anote)
 				}
-				anote_insert_idx = clamp(anote_insert_idx, 0, truncated_context.length);
-				truncated_context = truncated_context.slice(0, anote_insert_idx) + truncated_anote + truncated_context.slice(anote_insert_idx);
+				else //insert authors note 80 tokens before the ending (320 characters).
+				{
+					let anote_dist = anote_strength;
+					let anote_insert_idx = truncated_context.length - anote_dist;
+					anote_insert_idx = clamp(anote_insert_idx, 0, truncated_context.length);
+					//try to align anote with a word boundary
+					const maxLookahead = 30;
+					let best_insert_idx = anote_insert_idx;
+					let insert_preference = 0;
+					for (let i = 0; i < maxLookahead && anote_insert_idx + i < truncated_context.length; ++i) {
+						const char = truncated_context[anote_insert_idx + i];
+						if (char == "\n") {
+							best_insert_idx = anote_insert_idx + i + 1;
+							insert_preference = 3;
+							break;
+						}
+						if (insert_preference <= 1 && (char == "," || char == "!" || char == "." || char == "?")) {
+							best_insert_idx = anote_insert_idx + i + 1;
+							insert_preference = 2;
+						}
+						if (insert_preference == 0 && (char == " ")) {
+							best_insert_idx = anote_insert_idx + i + 1;
+							insert_preference = 1;
+						}
+					}
+					if (insert_preference > 0) {
+						anote_insert_idx = best_insert_idx;
+					}
+					anote_insert_idx = clamp(anote_insert_idx, 0, truncated_context.length);
+					truncated_context = truncated_context.slice(0, anote_insert_idx) + truncated_anote + truncated_context.slice(anote_insert_idx);
+				}
 				if(!is_using_kcpp_with_added_memory())
 				{
 					truncated_context = truncated_memory + truncated_context;
@@ -26450,6 +26472,14 @@ Current version indicated by LITEVER below.
 		const kcppEmbeddingDropdownOption = Array.from(providerdropdown.options).find(opt => opt.value === "2");
 		document.getElementById("documentdb_sqPrefix").value = documentdb_sqPrefix;
 		document.getElementById("documentdb_cPrefix").value = documentdb_cPrefix;
+		document.getElementById("anTurnOffset").value = anTurnOffset;
+		document.getElementById("anTurnType").value = anTurnType;
+		if (document.querySelector("#anote_strength").value === "turn") {
+			document.querySelector("#aNoteTurnStrength").classList.remove("hidden")
+		}
+		else {
+			document.querySelector("#aNoteTurnStrength").classList.add("hidden")
+		}
 
 		if(is_using_kcpp_with_embeddings())
 		{
