@@ -21,3 +21,9 @@ window.eso.forceCompleteHideOfCorpoLeftPanel = false;
 window.eso.allowHordeEvenWithLocalAccess = () => {
     return document.getElementById("customapidropdown").value == 0 || !localflag // Originally was !localflag; 
 };
+
+
+/**
+ * Set this to supress the router popup on initial page load.  It can still be manually set using the AI button.
+ */
+window.eso.disableRouterPopupOnLoad = true;
