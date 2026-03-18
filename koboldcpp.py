@@ -86,6 +86,13 @@ handle = None
 friendlymodelname = "inactive"
 friendlysdmodelname = "inactive"
 friendlyembeddingsmodelname = "inactive"
+autoswapmode = False
+textName = None
+sttName = None
+ttsName = None
+embedName = None
+musicName = None
+imageName = None
 lastgeneratedcomfyimg = b''
 lastuploadedcomfyimg = b''
 fullsdmodelpath = ""  #if empty, it's not initialized
@@ -1230,20 +1237,24 @@ def convert_json_to_gbnf(json_obj):
 
 def get_capabilities():
     global savedata_obj, has_multiplayer, KcppVersion, friendlymodelname, friendlysdmodelname, fullsdmodelpath, password, fullwhispermodelpath, ttsmodelpath, embeddingsmodelpath, musicdiffusionmodelpath, musicllmmodelpath, has_audio_support, has_vision_support, mcp_connections
-    has_llm = not (friendlymodelname=="inactive")
-    has_txt2img = not (friendlysdmodelname=="inactive" or fullsdmodelpath=="")
+    global autoswapmode, textName, sttName, ttsName, embedName, musicName, imageName
+    has_llm = not (friendlymodelname=="inactive") or (autoswapmode and textName is not None)
+    has_txt2img = not (friendlysdmodelname=="inactive" or fullsdmodelpath=="") or (autoswapmode and imageName is not None)
     has_password = (password!="")
-    has_whisper = (fullwhispermodelpath!="")
+    has_whisper = (fullwhispermodelpath!="") or (autoswapmode and sttName is not None)
     has_search = True if args.websearch else False
-    has_tts = (ttsmodelpath!="")
-    has_embeddings = (embeddingsmodelpath!="")
-    has_music = (musicdiffusionmodelpath!="" or musicllmmodelpath!="")
-    embeddingModel = ""
-    try:
-        embeddingModel = os.path.basename(embeddingsmodelpath)
-        embeddingModel = os.path.splitext(embeddingModel)[0]
-    except:
+    has_tts = (ttsmodelpath!="") or (autoswapmode and ttsName is not None)
+    has_embeddings = (embeddingsmodelpath!="") or (autoswapmode and embedName is not None)
+    has_music = (musicdiffusionmodelpath!="" or musicllmmodelpath!="") or (autoswapmode and musicName is not None)
+    if autoswapmode and embedName is not None:
+        embeddingModel = embedName
+    else:
         embeddingModel = ""
+        try:
+            embeddingModel = os.path.basename(embeddingsmodelpath)
+            embeddingModel = os.path.splitext(embeddingModel)[0]
+        except:
+            embeddingModel = ""
     has_guidance = True if args.enableguidance else False
     has_jinja = True if args.jinja else False
     has_mcp = True if (args.mcpfile and mcp_connections and len(mcp_connections) > 0) else False
@@ -4828,6 +4839,8 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
 
     async def generate_text(self, genparams, api_format, stream_flag):
         global friendlymodelname, chatcompl_adapter, currfinishreason
+        global autoswapmode, textName, sttName, ttsName, embedName, musicName, imageName
+
         currfinishreason = None
         req_id_suffix = genparams.get('oai_uniqueid',1)
         chatcmpl_id = f"chatcmpl-A{req_id_suffix}"
@@ -4895,14 +4908,17 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                     recvtxt = None
                     currfinishreason = "tool_calls"
 
+        modelNameToReturn = friendlymodelname
+        if autoswapmode and textName is not None:
+            modelNameToReturn = textName
         if api_format == 1:
             res = {"data": {"seqs": [recvtxt]}}
         elif api_format == 3:
-            res = {"id": cmpl_id, "object": "text_completion", "created": int(time.time()), "model": friendlymodelname,
+            res = {"id": cmpl_id, "object": "text_completion", "created": int(time.time()), "model": modelNameToReturn,
                    "usage": {"prompt_tokens": prompttokens, "completion_tokens": comptokens, "total_tokens": (prompttokens+comptokens)},
                    "choices": [{"text": recvtxt, "index": 0, "finish_reason": currfinishreason, "logprobs":logprobsdict}]}
         elif api_format == 4:
-            res = {"id": chatcmpl_id, "object": "chat.completion", "created": int(time.time()), "model": friendlymodelname,
+            res = {"id": chatcmpl_id, "object": "chat.completion", "created": int(time.time()), "model": modelNameToReturn,
                    "usage": {"prompt_tokens": prompttokens, "completion_tokens": comptokens, "total_tokens": (prompttokens+comptokens)},
                    "choices": [{"index": 0, "message": {"role": "assistant", "content": recvtxt, "tool_calls": tool_calls}, "finish_reason": currfinishreason, "logprobs":logprobsdict}]}
         elif api_format == 5:
@@ -4910,9 +4926,9 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         elif api_format == 6:
             oldprompt = genparams.get('ollamabodyprompt', "")
             tokarr = tokenize_ids(oldprompt+recvtxt,False)
-            res = {"model": friendlymodelname,"created_at": str(datetime.now(timezone.utc).isoformat()),"response":recvtxt,"done": True,"done_reason":currfinishreason,"context": tokarr,"total_duration": 1,"load_duration": 1,"prompt_eval_count": prompttokens,"prompt_eval_duration": 1,"eval_count": comptokens,"eval_duration": 1}
+            res = {"model": modelNameToReturn,"created_at": str(datetime.now(timezone.utc).isoformat()),"response":recvtxt,"done": True,"done_reason":currfinishreason,"context": tokarr,"total_duration": 1,"load_duration": 1,"prompt_eval_count": prompttokens,"prompt_eval_duration": 1,"eval_count": comptokens,"eval_duration": 1}
         elif api_format == 7:
-            res = {"model": friendlymodelname,"created_at": str(datetime.now(timezone.utc).isoformat()),"message":{"role":"assistant","content":recvtxt},"done": True,"done_reason":currfinishreason,"total_duration": 1,"load_duration": 1,"prompt_eval_count": prompttokens,"prompt_eval_duration": 1,"eval_count": comptokens,"eval_duration": 1}
+            res = {"model": modelNameToReturn,"created_at": str(datetime.now(timezone.utc).isoformat()),"message":{"role":"assistant","content":recvtxt},"done": True,"done_reason":currfinishreason,"total_duration": 1,"load_duration": 1,"prompt_eval_count": prompttokens,"prompt_eval_duration": 1,"eval_count": comptokens,"eval_duration": 1}
         else: #kcpp format
             res = {"results": [{"text": recvtxt, "tool_calls": tool_calls, "finish_reason": currfinishreason, "logprobs":logprobsdict, "prompt_tokens": prompttokens, "completion_tokens": comptokens}]}
 
@@ -4935,6 +4951,12 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
 
     async def handle_sse_stream(self, genparams, api_format):
         global friendlymodelname, currfinishreason
+        global autoswapmode, textName, sttName, ttsName, embedName, musicName, imageName
+
+        modelNameToReturn = friendlymodelname
+        if autoswapmode and textName is not None:
+            modelNameToReturn = textName
+        
         using_openai_tools = genparams.get('using_openai_tools', False)
         req_id_suffix = genparams.get('oai_uniqueid',1)
         chatcmpl_id = f"chatcmpl-A{req_id_suffix}"
@@ -5033,10 +5055,10 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
 
                             if need_split_final_msg: #we need to send one message without the finish reason, then send a finish reason with no msg to follow standards
                                 if api_format == 4:  # if oai chat, set format to expected openai streaming response
-                                    event_str = json.dumps({"id":chatcmpl_id,"object":"chat.completion.chunk","created":int(time.time()),"model":friendlymodelname,"choices":[{"index":0,"finish_reason":None,"delta":delta}]})
+                                    event_str = json.dumps({"id":chatcmpl_id,"object":"chat.completion.chunk","created":int(time.time()),"model":modelNameToReturn,"choices":[{"index":0,"finish_reason":None,"delta":delta}]})
                                     await self.send_oai_sse_event(event_str)
                                 elif api_format == 3:  # non chat completions
-                                    event_str = json.dumps({"id":cmpl_id,"object":"text_completion","created":int(time.time()),"model":friendlymodelname,"choices":[{"index":0,"finish_reason":None,"text":tokenStr}]})
+                                    event_str = json.dumps({"id":cmpl_id,"object":"text_completion","created":int(time.time()),"model":modelNameToReturn,"choices":[{"index":0,"finish_reason":None,"text":tokenStr}]})
                                     await self.send_oai_sse_event(event_str)
                                 else:
                                     event_str = json.dumps({"token": tokenStr, "finish_reason":None})
@@ -5048,17 +5070,17 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                 if streamDone and ("logprobs" in genparams and genparams["logprobs"]): # this is a hack that sends an extra message containing ALL the logprobs
                                     lastlogprobs = handle.last_logprobs()
                                     logprobsdict = parse_last_logprobs(lastlogprobs)
-                                    addonstr = json.dumps({"id":chatcmpl_id,"object":"chat.completion.chunk","created":int(time.time()),"model":friendlymodelname,"choices":[{"index":0,"finish_reason":None,"delta":{'role':'assistant','content':''},"logprobs":logprobsdict}]})
+                                    addonstr = json.dumps({"id":chatcmpl_id,"object":"chat.completion.chunk","created":int(time.time()),"model":modelNameToReturn,"choices":[{"index":0,"finish_reason":None,"delta":{'role':'assistant','content':''},"logprobs":logprobsdict}]})
                                     await self.send_oai_sse_event(addonstr)
-                                event_str = json.dumps({"id":chatcmpl_id,"object":"chat.completion.chunk","created":int(time.time()),"model":friendlymodelname,"choices":[{"index":0,"finish_reason":currfinishreason,"delta":delta}]})
+                                event_str = json.dumps({"id":chatcmpl_id,"object":"chat.completion.chunk","created":int(time.time()),"model":modelNameToReturn,"choices":[{"index":0,"finish_reason":currfinishreason,"delta":delta}]})
                                 await self.send_oai_sse_event(event_str)
                             elif api_format == 3:  # non chat completions
                                 if streamDone and ("logprobs" in genparams and genparams["logprobs"]): # this is a hack that sends an extra message containing ALL the logprobs
                                     lastlogprobs = handle.last_logprobs()
                                     logprobsdict = parse_last_logprobs(lastlogprobs)
-                                    addonstr = json.dumps({"id":cmpl_id,"object":"text_completion","created":int(time.time()),"model":friendlymodelname,"choices":[{"index":0,"finish_reason":None,"text":"","logprobs":logprobsdict}]})
+                                    addonstr = json.dumps({"id":cmpl_id,"object":"text_completion","created":int(time.time()),"model":modelNameToReturn,"choices":[{"index":0,"finish_reason":None,"text":"","logprobs":logprobsdict}]})
                                     await self.send_oai_sse_event(addonstr)
-                                event_str = json.dumps({"id":cmpl_id,"object":"text_completion","created":int(time.time()),"model":friendlymodelname,"choices":[{"index":0,"finish_reason":currfinishreason,"text":tokenStr}]})
+                                event_str = json.dumps({"id":cmpl_id,"object":"text_completion","created":int(time.time()),"model":modelNameToReturn,"choices":[{"index":0,"finish_reason":currfinishreason,"text":tokenStr}]})
                                 await self.send_oai_sse_event(event_str)
                             else:
                                 event_str = json.dumps({"token": tokenStr, "finish_reason":currfinishreason})
@@ -5075,9 +5097,9 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                         if (strop and strop.get("include_usage",False)):  # Send a final chunk with usage info, only if requested
                             usage_obj = {"prompt_tokens": prompttokens, "completion_tokens": current_token, "total_tokens": (prompttokens + current_token)}
                             if api_format == 4:
-                                usage_str = json.dumps({"id":chatcmpl_id,"object":"chat.completion.chunk","created":int(time.time()),"model":friendlymodelname,"choices":[],"usage":usage_obj})
+                                usage_str = json.dumps({"id":chatcmpl_id,"object":"chat.completion.chunk","created":int(time.time()),"model":modelNameToReturn,"choices":[],"usage":usage_obj})
                             else:
-                                usage_str = json.dumps({"id":cmpl_id,"object":"text_completion","created":int(time.time()),"model":friendlymodelname,"choices":[],"usage":usage_obj})
+                                usage_str = json.dumps({"id":cmpl_id,"object":"text_completion","created":int(time.time()),"model":modelNameToReturn,"choices":[],"usage":usage_obj})
                             await self.send_oai_sse_event(usage_str)
                         await self.send_oai_sse_event('[DONE]')
                         await asyncio.sleep(async_sleep_short)
@@ -5319,7 +5341,8 @@ Change Mode<br>
         global embedded_kailite, embedded_kcpp_docs, embedded_kcpp_sdui, embedded_kailite_gz, embedded_kcpp_docs_gz, embedded_kcpp_sdui_gz, embedded_lcpp_ui_gz, embedded_musicui, embedded_musicui_gz
         global last_req_time, start_time, cached_chat_template, has_vision_support, has_audio_support, has_whisper, friendlymodelname
         global savedata_obj, has_multiplayer, multiplayer_turn_major, multiplayer_turn_minor, multiplayer_story_data_compressed, multiplayer_dataformat, multiplayer_lastactive, maxctx, maxhordelen, friendlymodelname, lastuploadedcomfyimg, lastgeneratedcomfyimg, KcppVersion, totalgens, preloaded_story, exitcounter, currentusergenkey, friendlysdmodelname, fullsdmodelpath, password, friendlyembeddingsmodelname, voicelist
-
+        global autoswapmode, textName, sttName, ttsName, embedName, musicName, imageName
+        
         clean_path = self.path.split("?")[0] #for cases where we do not want query params
         if clean_path=="/lcpp": #fix for svelte redirect issues, browser path needs to end with slash
             clean_path = "/lcpp/"
@@ -5395,7 +5418,10 @@ Change Mode<br>
 
         elif clean_path.endswith(('/api/v1/model', '/api/latest/model')):
             auth_ok = self.check_header_password(password, args.adminpassword)
-            response_body = (json.dumps({'result': (friendlymodelname if auth_ok else "koboldcpp/protected-model") }).encode())
+            modelNameToReturn = friendlymodelname
+            if autoswapmode and textName is not None:
+                modelNameToReturn = textName
+            response_body = (json.dumps({'result': (modelNameToReturn if auth_ok else "koboldcpp/protected-model") }).encode())
 
         elif clean_path.endswith(('/api/v1/config/max_length', '/api/latest/config/max_length')):
             response_body = (json.dumps({"value": maxhordelen}).encode())
@@ -5514,7 +5540,11 @@ Change Mode<br>
             response_body = (json.dumps({"logprobs":logprobsdict}).encode())
 
         elif clean_path.endswith('/v1/models') or clean_path=='/models':
-            mlist = [{"id":friendlymodelname,"object":"model","created":int(time.time()),"owned_by":"koboldcpp","permission":[],"root":"koboldcpp"}]
+            modelNameToReturn = friendlymodelname
+            if autoswapmode and textName is not None:
+                modelNameToReturn = textName
+
+            mlist = [{"id":modelNameToReturn,"object":"model","created":int(time.time()),"owned_by":"koboldcpp","permission":[],"root":"koboldcpp"}]
             if args.routermode:
                 alist = get_current_admindir_list()
                 for itm in alist:
@@ -5531,20 +5561,25 @@ Change Mode<br>
                 response_body = (json.dumps([]).encode())
 
         elif clean_path.endswith('/sdapi/v1/sd-models'):
-            if friendlysdmodelname=="inactive" or fullsdmodelpath=="":
+            if autoswapmode and imageName is not None:
+                response_body = (json.dumps([{"title":imageName,"model_name":imageName,"hash":"8888888888","sha256":"8888888888888888888888888888888888888888888888888888888888888888","filename":imageName,"config": None}]).encode())
+            elif friendlysdmodelname=="inactive" or fullsdmodelpath=="":
                 response_body = (json.dumps([]).encode())
             else:
                 response_body = (json.dumps([{"title":friendlysdmodelname,"model_name":friendlysdmodelname,"hash":"8888888888","sha256":"8888888888888888888888888888888888888888888888888888888888888888","filename":fullsdmodelpath,"config": None}]).encode())
         elif clean_path.endswith('/sdapi/v1/options'):
-            response_body = (json.dumps({"samples_format":"png","sd_model_checkpoint":friendlysdmodelname}).encode())
+            modelNameToReturn = friendlysdmodelname
+            if autoswapmode and imageName is not None:
+                modelNameToReturn = imageName
+            response_body = (json.dumps({"samples_format":"png","sd_model_checkpoint":modelNameToReturn}).encode())
         elif clean_path.endswith('/sdapi/v1/samplers'):
-            if friendlysdmodelname=="inactive" or fullsdmodelpath=="":
+            if (friendlysdmodelname=="inactive" or fullsdmodelpath=="") and not(autoswapmode and imageName is not None):
                 response_body = (json.dumps([]).encode())
             else:
                 response_body = (json.dumps([{"name":"Euler","aliases":["k_euler"],"options":{}},{"name":"Euler a","aliases":["k_euler_a","k_euler_ancestral"],"options":{}},{"name":"Heun","aliases":["k_heun"],"options":{}},{"name":"DPM2","aliases":["k_dpm_2"],"options":{}},{"name":"DPM++ 2M","aliases":["k_dpmpp_2m"],"options":{}},{"name":"DDIM","aliases":["ddim"],"options":{}},{"name":"LCM","aliases":["k_lcm"],"options":{}},{"name":"Res 2s","aliases":["k_res_2s"],"options":{}},{"name":"Res Multistep","aliases":["k_res_multistep"],"options":{}},
                       {"name":"Default","aliases":["default"],"options":{}}]).encode())
         elif clean_path.endswith('/sdapi/v1/schedulers'):
-            if friendlysdmodelname=="inactive" or fullsdmodelpath=="":
+            if (friendlysdmodelname=="inactive" or fullsdmodelpath=="") and not(autoswapmode and imageName is not None):
                 response_body = (json.dumps([]).encode())
             else:
                 response_body = (json.dumps([{"name":name,"label":name} for name in sd_get_available_schedulers()]).encode())
@@ -5581,7 +5616,10 @@ Change Mode<br>
             response_body = (json.dumps({"temperature":0.75,"speed":1,"length_penalty":1,"repetition_penalty":1,"top_p":1,"top_k":4,"enable_text_splitting":True,"stream_chunk_size":100}).encode()) #some random voices for them to enjoy
 
         elif clean_path.endswith('/api/tags') or clean_path.endswith('/api/ps'): #ollama compatible
-            response_body = (json.dumps({"models":[{"name":"koboldcpp","model":f"{friendlymodelname}:latest","modified_at":"2024-07-19T15:26:55.6122841+08:00","expires_at": "2055-06-04T19:06:25.5433636+08:00","size":394998579,"size_vram":394998579,"digest":"b5dc5e784f2a3ee1582373093acf69a2f4e2ac1710b253a001712b86a61f88bb","details":{"parent_model":"","format":"gguf","family":"koboldcpp","families":["koboldcpp"],"parameter_size":"128M","quantization_level":"Q4_0"}},{"name":"koboldcpp","model":friendlymodelname,"modified_at":"2025-01-01T01:00:00.0000000+00:00","expires_at": "2069-01-01T01:00:00.0000000+00:00","size":394998579,"size_vram":394998579,"digest":"b5dc5e784f2a3ee1582373093acf69a2f4e2ac1710b253a001712b86a61f88bb","details":{"parent_model":"","format":"gguf","family":"koboldcpp","families":["koboldcpp"],"parameter_size":"128M","quantization_level":"Q4_0"}}]}).encode())
+            modelNameToReturn = friendlymodelname
+            if autoswapmode and textName is not None:
+                modelNameToReturn = textName
+            response_body = (json.dumps({"models":[{"name":"koboldcpp","model":f"{modelNameToReturn}:latest","modified_at":"2024-07-19T15:26:55.6122841+08:00","expires_at": "2055-06-04T19:06:25.5433636+08:00","size":394998579,"size_vram":394998579,"digest":"b5dc5e784f2a3ee1582373093acf69a2f4e2ac1710b253a001712b86a61f88bb","details":{"parent_model":"","format":"gguf","family":"koboldcpp","families":["koboldcpp"],"parameter_size":"128M","quantization_level":"Q4_0"}},{"name":"koboldcpp","model":modelNameToReturn,"modified_at":"2025-01-01T01:00:00.0000000+00:00","expires_at": "2069-01-01T01:00:00.0000000+00:00","size":394998579,"size_vram":394998579,"digest":"b5dc5e784f2a3ee1582373093acf69a2f4e2ac1710b253a001712b86a61f88bb","details":{"parent_model":"","format":"gguf","family":"koboldcpp","families":["koboldcpp"],"parameter_size":"128M","quantization_level":"Q4_0"}}]}).encode())
         elif clean_path.endswith('/api/version'): #ollama compatible, NOT the kcpp version
             response_body = (json.dumps({"version":"0.7.0"}).encode())
         elif clean_path=='/ping':
@@ -5591,9 +5629,14 @@ Change Mode<br>
         elif clean_path=='/system_stats':
             response_body = (json.dumps({"system":{"os":"posix","ram_total":12345678900,"ram_free":12345678900,"comfyui_version":"v0.3.4-3-g7126ecf","python_version":"3.10.12","pytorch_version":"2.5.1","embedded_python":False,"argv":[]},"devices":[{"name":"koboldcpp","type":"cuda","index":0,"vram_total":12345678900,"vram_free":12345678900,"torch_vram_total":12345678900,"torch_vram_free":12345678900}]}).encode())
         elif clean_path=='/object_info':
-             response_body = (json.dumps({"KSampler":{"input":{"required":{"model":["MODEL",{"tooltip":""}],"seed":["INT",{"default":0,"min":0,"max":512,"tooltip":""}],"steps":["INT",{"default":20,"min":1,"max":512,"tooltip":""}],"cfg":["FLOAT",{"default":8.0,"min":0.0,"max":100.0,"step":0.1,"round":0.01,"tooltip":"512"}],"sampler_name":[["euler"],{"tooltip":""}],"scheduler":[["normal"],{"tooltip":""}],"positive":["CONDITIONING",{"tooltip":""}],"negative":["CONDITIONING",{"tooltip":""}],"latent_image":["LATENT",{"tooltip":""}],"denoise":["FLOAT",{"default":1.0,"min":0.0,"max":1.0,"step":0.01,"tooltip":""}]}},"input_order":{"required":["model","seed","steps","cfg","sampler_name","scheduler","positive","negative","latent_image","denoise"]},"output":["LATENT"],"output_is_list":[False],"output_name":["LATENT"],"name":"KSampler","display_name":"KSampler","description":"KSampler","python_module":"nodes","category":"sampling","output_node":False,"output_tooltips":[""]},"CheckpointLoaderSimple":{"input":{"required":{"ckpt_name":[[friendlysdmodelname],{"tooltip":""}]}},"input_order":{"required":["ckpt_name"]},"output":["MODEL","CLIP","VAE"],"output_is_list":[False,False,False],"output_name":["MODEL","CLIP","VAE"],"name":"CheckpointLoaderSimple","display_name":"Load","description":"","python_module":"nodes","category":"loaders","output_node":False,"output_tooltips":["","",""]},"CLIPTextEncode":{"input":{"required":{"text":["STRING",{"multiline":True,"dynamicPrompts":True,"tooltip":""}],"clip":["CLIP",{"tooltip":""}]}},"input_order":{"required":["text","clip"]},"output":["CONDITIONING"],"output_is_list":[False],"output_name":["CONDITIONING"],"name":"CLIPTextEncode","display_name":"CLIP","description":"","python_module":"nodes","category":"conditioning","output_node":False,"output_tooltips":[""]},"CLIPSetLastLayer":{"input":{"required":{"clip":["CLIP"],"stop_at_clip_layer":["INT",{"default":-1,"min":-24,"max":-1,"step":1}]}},"input_order":{"required":["clip","stop_at_clip_layer"]},"output":["CLIP"],"output_is_list":[False],"output_name":["CLIP"],"name":"CLIPSetLastLayer","display_name":"CLIPSLL","description":"","python_module":"nodes","category":"conditioning","output_node":False},"VAEDecode":{"input":{"required":{"samples":["LATENT",{"tooltip":""}],"vae":["VAE",{"tooltip":""}]}},"input_order":{"required":["samples","vae"]},"output":["IMAGE"],"output_is_list":[False],"output_name":["IMAGE"],"name":"VAEDecode","display_name":"VAE","description":"","python_module":"nodes","category":"latent","output_node":False,"output_tooltips":[""]},"VAEEncode":{"input":{"required":{"pixels":["IMAGE"],"vae":["VAE"]}},"input_order":{"required":["pixels","vae"]},"output":["LATENT"],"output_is_list":[False],"output_name":["LATENT"],"name":"VAEEncode","display_name":"VAE","description":"","python_module":"nodes","category":"latent","output_node":False},"VAEEncodeForInpaint":{"input":{"required":{"pixels":["IMAGE"],"vae":["VAE"],"mask":["MASK"],"grow_mask_by":["INT",{"default":6,"min":0,"max":64,"step":1}]}},"input_order":{"required":["pixels","vae","mask","grow_mask_by"]},"output":["LATENT"],"output_is_list":[False],"output_name":["LATENT"],"name":"VAEEncodeForInpaint","display_name":"VAE","description":"","python_module":"nodes","category":"latent/inpaint","output_node":False},"VAELoader":{"input":{"required":{"vae_name":[["kcpp_vae"]]}},"input_order":{"required":["vae_name"]},"output":["VAE"],"output_is_list":[False],"output_name":["VAE"],"name":"VAELoader","display_name":"Load VAE","description":"","python_module":"nodes","category":"loaders","output_node":False},"EmptyLatentImage":{"input":{"required":{"width":["INT",{"default":512,"min":16,"max":16384,"step":8,"tooltip":""}],"height":["INT",{"default":512,"min":16,"max":16384,"step":8,"tooltip":""}],"batch_size":["INT",{"default":1,"min":1,"max":1,"tooltip":""}]}},"input_order":{"required":["width","height","batch_size"]},"output":["LATENT"],"output_is_list":[False],"output_name":["LATENT"],"name":"EmptyLatentImage","display_name":"Empty Latent Image","description":"","python_module":"nodes","category":"latent","output_node":False,"output_tooltips":[""]}}).encode())
+            modelNameToReturn = friendlysdmodelname
+            if autoswapmode and imageName is not None:
+                modelNameToReturn = imageName
+            response_body = (json.dumps({"KSampler":{"input":{"required":{"model":["MODEL",{"tooltip":""}],"seed":["INT",{"default":0,"min":0,"max":512,"tooltip":""}],"steps":["INT",{"default":20,"min":1,"max":512,"tooltip":""}],"cfg":["FLOAT",{"default":8.0,"min":0.0,"max":100.0,"step":0.1,"round":0.01,"tooltip":"512"}],"sampler_name":[["euler"],{"tooltip":""}],"scheduler":[["normal"],{"tooltip":""}],"positive":["CONDITIONING",{"tooltip":""}],"negative":["CONDITIONING",{"tooltip":""}],"latent_image":["LATENT",{"tooltip":""}],"denoise":["FLOAT",{"default":1.0,"min":0.0,"max":1.0,"step":0.01,"tooltip":""}]}},"input_order":{"required":["model","seed","steps","cfg","sampler_name","scheduler","positive","negative","latent_image","denoise"]},"output":["LATENT"],"output_is_list":[False],"output_name":["LATENT"],"name":"KSampler","display_name":"KSampler","description":"KSampler","python_module":"nodes","category":"sampling","output_node":False,"output_tooltips":[""]},"CheckpointLoaderSimple":{"input":{"required":{"ckpt_name":[[modelNameToReturn],{"tooltip":""}]}},"input_order":{"required":["ckpt_name"]},"output":["MODEL","CLIP","VAE"],"output_is_list":[False,False,False],"output_name":["MODEL","CLIP","VAE"],"name":"CheckpointLoaderSimple","display_name":"Load","description":"","python_module":"nodes","category":"loaders","output_node":False,"output_tooltips":["","",""]},"CLIPTextEncode":{"input":{"required":{"text":["STRING",{"multiline":True,"dynamicPrompts":True,"tooltip":""}],"clip":["CLIP",{"tooltip":""}]}},"input_order":{"required":["text","clip"]},"output":["CONDITIONING"],"output_is_list":[False],"output_name":["CONDITIONING"],"name":"CLIPTextEncode","display_name":"CLIP","description":"","python_module":"nodes","category":"conditioning","output_node":False,"output_tooltips":[""]},"CLIPSetLastLayer":{"input":{"required":{"clip":["CLIP"],"stop_at_clip_layer":["INT",{"default":-1,"min":-24,"max":-1,"step":1}]}},"input_order":{"required":["clip","stop_at_clip_layer"]},"output":["CLIP"],"output_is_list":[False],"output_name":["CLIP"],"name":"CLIPSetLastLayer","display_name":"CLIPSLL","description":"","python_module":"nodes","category":"conditioning","output_node":False},"VAEDecode":{"input":{"required":{"samples":["LATENT",{"tooltip":""}],"vae":["VAE",{"tooltip":""}]}},"input_order":{"required":["samples","vae"]},"output":["IMAGE"],"output_is_list":[False],"output_name":["IMAGE"],"name":"VAEDecode","display_name":"VAE","description":"","python_module":"nodes","category":"latent","output_node":False,"output_tooltips":[""]},"VAEEncode":{"input":{"required":{"pixels":["IMAGE"],"vae":["VAE"]}},"input_order":{"required":["pixels","vae"]},"output":["LATENT"],"output_is_list":[False],"output_name":["LATENT"],"name":"VAEEncode","display_name":"VAE","description":"","python_module":"nodes","category":"latent","output_node":False},"VAEEncodeForInpaint":{"input":{"required":{"pixels":["IMAGE"],"vae":["VAE"],"mask":["MASK"],"grow_mask_by":["INT",{"default":6,"min":0,"max":64,"step":1}]}},"input_order":{"required":["pixels","vae","mask","grow_mask_by"]},"output":["LATENT"],"output_is_list":[False],"output_name":["LATENT"],"name":"VAEEncodeForInpaint","display_name":"VAE","description":"","python_module":"nodes","category":"latent/inpaint","output_node":False},"VAELoader":{"input":{"required":{"vae_name":[["kcpp_vae"]]}},"input_order":{"required":["vae_name"]},"output":["VAE"],"output_is_list":[False],"output_name":["VAE"],"name":"VAELoader","display_name":"Load VAE","description":"","python_module":"nodes","category":"loaders","output_node":False},"EmptyLatentImage":{"input":{"required":{"width":["INT",{"default":512,"min":16,"max":16384,"step":8,"tooltip":""}],"height":["INT",{"default":512,"min":16,"max":16384,"step":8,"tooltip":""}],"batch_size":["INT",{"default":1,"min":1,"max":1,"tooltip":""}]}},"input_order":{"required":["width","height","batch_size"]},"output":["LATENT"],"output_is_list":[False],"output_name":["LATENT"],"name":"EmptyLatentImage","display_name":"Empty Latent Image","description":"","python_module":"nodes","category":"latent","output_node":False,"output_tooltips":[""]}}).encode())
         elif clean_path.endswith('/api/models/checkpoints') or clean_path.endswith('/models/checkpoints'): #emulate comfyui, duplication is redundant but added for clarity
-            if friendlysdmodelname=="inactive" or fullsdmodelpath=="":
+            if autoswapmode and imageName is not None:
+                response_body = (json.dumps([imageName]).encode())
+            elif friendlysdmodelname=="inactive" or fullsdmodelpath=="":
                 response_body = (json.dumps([]).encode())
             else:
                 response_body = (json.dumps([friendlysdmodelname]).encode())
@@ -5603,8 +5646,11 @@ Change Mode<br>
             content_type = 'image/png'
             response_body = lastgeneratedcomfyimg
         elif clean_path=='/history' or clean_path=='/api/history' or clean_path.startswith('/api/history/') or clean_path.startswith('/history/'): #emulate comfyui
+            modelNameToReturn = friendlysdmodelname
+            if autoswapmode and imageName is not None:
+                modelNameToReturn = imageName
             imgdone = (False if lastgeneratedcomfyimg==b'' else True)
-            response_body = (json.dumps({"12345678-0000-0000-0000-000000000001":{"prompt":[0,"12345678-0000-0000-0000-000000000001",{"3":{"class_type":"KSampler","inputs":{"cfg":5.0,"denoise":1.0,"latent_image":["5",0],"model":["4",0],"negative":["7",0],"positive":["6",0],"sampler_name":"euler","scheduler":"normal","seed":1,"steps":20}},"4":{"class_type":"CheckpointLoaderSimple","inputs":{"ckpt_name":friendlysdmodelname}},"5":{"class_type":"EmptyLatentImage","inputs":{"batch_size":1,"height":512,"width":512}},"6":{"class_type":"CLIPTextEncode","inputs":{"clip":["4",1],"text":"prompt"}},"7":{"class_type":"CLIPTextEncode","inputs":{"clip":["4",1],"text":""}},"8":{"class_type":"VAEDecode","inputs":{"samples":["3",0],"vae":["4",2]}},"9":{"class_type":"SaveImage","inputs":{"filename_prefix":"kliteimg","images":["8",0]}}},{},["9"]],"outputs":{"9":{"images":[{"filename":"kliteimg_00001_.png","subfolder":"","type":"output"}]}},"status":{"status_str":"success","completed":imgdone,"messages":[["execution_start",{"prompt_id":"12345678-0000-0000-0000-000000000001","timestamp":1}],["execution_cached",{"nodes":[],"prompt_id":"12345678-0000-0000-0000-000000000001","timestamp":1}],["execution_success",{"prompt_id":"12345678-0000-0000-0000-000000000001","timestamp":1}]]},"meta":{"9":{"node_id":"9","display_node":"9","parent_node":None,"real_node_id":"9"}}}}).encode())
+            response_body = (json.dumps({"12345678-0000-0000-0000-000000000001":{"prompt":[0,"12345678-0000-0000-0000-000000000001",{"3":{"class_type":"KSampler","inputs":{"cfg":5.0,"denoise":1.0,"latent_image":["5",0],"model":["4",0],"negative":["7",0],"positive":["6",0],"sampler_name":"euler","scheduler":"normal","seed":1,"steps":20}},"4":{"class_type":"CheckpointLoaderSimple","inputs":{"ckpt_name":modelNameToReturn}},"5":{"class_type":"EmptyLatentImage","inputs":{"batch_size":1,"height":512,"width":512}},"6":{"class_type":"CLIPTextEncode","inputs":{"clip":["4",1],"text":"prompt"}},"7":{"class_type":"CLIPTextEncode","inputs":{"clip":["4",1],"text":""}},"8":{"class_type":"VAEDecode","inputs":{"samples":["3",0],"vae":["4",2]}},"9":{"class_type":"SaveImage","inputs":{"filename_prefix":"kliteimg","images":["8",0]}}},{},["9"]],"outputs":{"9":{"images":[{"filename":"kliteimg_00001_.png","subfolder":"","type":"output"}]}},"status":{"status_str":"success","completed":imgdone,"messages":[["execution_start",{"prompt_id":"12345678-0000-0000-0000-000000000001","timestamp":1}],["execution_cached",{"nodes":[],"prompt_id":"12345678-0000-0000-0000-000000000001","timestamp":1}],["execution_success",{"prompt_id":"12345678-0000-0000-0000-000000000001","timestamp":1}]]},"meta":{"9":{"node_id":"9","display_node":"9","parent_node":None,"real_node_id":"9"}}}}).encode())
         elif clean_path=='/ws' and ('Upgrade' in self.headers and self.headers['Upgrade'].lower() == 'websocket' and
             'Sec-WebSocket-Key' in self.headers):
             ws_key = self.headers['Sec-WebSocket-Key']
@@ -5634,6 +5680,9 @@ Change Mode<br>
             response_body = (json.dumps({"version":"0.2","software":{"name":"KoboldCpp","version":KcppVersion,"repository":"https://github.com/LostRuins/koboldcpp","homepage":"https://github.com/LostRuins/koboldcpp","logo":"https://raw.githubusercontent.com/LostRuins/koboldcpp/refs/heads/concedo/niko.ico"},"api":{"koboldai":{"name":"KoboldAI API","rel_url":"/api","documentation":"https://lite.koboldai.net/koboldcpp_api","version":KcppVersion},"openai":{"name":"OpenAI API","rel_url ":"/v1","documentation":"https://openai.com/documentation/api","version":KcppVersion}}}).encode())
 
         elif clean_path=="/props":
+            modelNameToReturn = friendlymodelname
+            if autoswapmode and textName is not None:
+                modelNameToReturn = textName
             response_body = (json.dumps({
                 "chat_template": cached_chat_template,
                 "id": 0,
@@ -5643,7 +5692,7 @@ Change Mode<br>
                     "vision": has_vision_support,
                     "audio": has_audio_support
                 },
-                "model_path": friendlymodelname,
+                "model_path": modelNameToReturn,
                 "n_ctx": maxctx,
                 "default_generation_settings": {
                     "n_ctx": maxctx,
@@ -5745,6 +5794,7 @@ Change Mode<br>
 
     def do_POST(self):
         global modelbusy, requestsinqueue, currentusergenkey, totalgens, pendingabortkey, lastuploadedcomfyimg, lastgeneratedcomfyimg, multiplayer_turn_major, multiplayer_turn_minor, multiplayer_story_data_compressed, multiplayer_dataformat, multiplayer_lastactive, net_save_slots, has_vision_support, savestate_limit, mcp_lock
+        global autoswapmode, textName, sttName, ttsName, embedName, musicName, imageName
         contlenstr = self.headers['content-length']
         content_length = 0
         body = None
@@ -6580,6 +6630,9 @@ Change Mode<br>
                     gendat = asyncio.run(self.handle_request(genparams, api_format, sse_stream_flag))
 
                     try:
+                        modelNameToReturn = friendlymodelname
+                        if autoswapmode and textName is not None:
+                            modelNameToReturn = textName
                         # Headers are already sent when streaming
                         if (api_format == 6 or api_format == 7) and genparams.get('stream', True):
                             #ollama fake streaming
@@ -6591,7 +6644,7 @@ Change Mode<br>
                             if api_format == 6:
                                 bodytxt = gendat.get("response","") # extract and erase the AI response from the sync payload.
                                 gendat["response"] = ""
-                                pl = {"model":friendlymodelname,"created_at":str(datetime.now(timezone.utc).isoformat()),"response":bodytxt,"done":False}
+                                pl = {"model":modelNameToReturn,"created_at":str(datetime.now(timezone.utc).isoformat()),"response":bodytxt,"done":False}
                                 self.wfile.write(f'{json.dumps(pl)}\n'.encode())
                                 self.wfile.flush()
                                 time.sleep(0.05) #short delay
@@ -6601,7 +6654,7 @@ Change Mode<br>
                             else:
                                 bodytxt = gendat.get("message",{}).get("content","") # extract and erase the AI response from the sync payload.
                                 gendat["message"] = {"role":"assistant","content":""}
-                                pl = {"model":friendlymodelname,"created_at":str(datetime.now(timezone.utc).isoformat()),"message":{"role":"assistant","content":bodytxt},"done":False}
+                                pl = {"model":modelNameToReturn,"created_at":str(datetime.now(timezone.utc).isoformat()),"message":{"role":"assistant","content":bodytxt},"done":False}
                                 self.wfile.write(f'{json.dumps(pl)}\n'.encode())
                                 self.wfile.flush()
                                 time.sleep(0.05) #short delay
@@ -6634,7 +6687,7 @@ Change Mode<br>
                                 "id": "koboldcpp",
                                 "object": "chat.completion.chunk",
                                 "created": int(time.time()),
-                                "model": friendlymodelname,
+                                "model": modelNameToReturn,
                                 "choices": [{"index": 0, "finish_reason": None, "delta": {"role": "assistant"}}]
                             })
                             self.wfile.write(f"data: {chunk_role}\n\n".encode())
@@ -6646,7 +6699,7 @@ Change Mode<br>
                                     "id": "koboldcpp",
                                     "object": "chat.completion.chunk",
                                     "created": int(time.time()),
-                                    "model": friendlymodelname,
+                                    "model": modelNameToReturn,
                                     "choices": [{"index": 0, "finish_reason": None, "delta": {"content": content_text}}]
                                 })
                                 self.wfile.write(f"data: {chunk_content}\n\n".encode())
@@ -6668,7 +6721,7 @@ Change Mode<br>
                                         "id": "koboldcpp",
                                         "object": "chat.completion.chunk",
                                         "created": int(time.time()),
-                                        "model": friendlymodelname,
+                                        "model": modelNameToReturn,
                                         "choices": [{"index": 0, "finish_reason": None, "delta": {"tool_calls": [tc_meta]}}]
                                     })
                                     self.wfile.write(f"data: {chunk_meta}\n\n".encode())
@@ -6685,7 +6738,7 @@ Change Mode<br>
                                         "id": "koboldcpp",
                                         "object": "chat.completion.chunk",
                                         "created": int(time.time()),
-                                        "model": friendlymodelname,
+                                        "model": modelNameToReturn,
                                         "choices": [{"index": 0, "finish_reason": None, "delta": {"tool_calls": [tc_args]}}]
                                     })
                                     self.wfile.write(f"data: {chunk_args}\n\n".encode())
@@ -6696,7 +6749,7 @@ Change Mode<br>
                                 "id": "koboldcpp",
                                 "object": "chat.completion.chunk",
                                 "created": int(time.time()),
-                                "model": friendlymodelname,
+                                "model": modelNameToReturn,
                                 "choices": [{"index": 0, "finish_reason": "tool_calls", "delta": {}}]
                             })
                             self.wfile.write(f"data: {chunk_final}\n\n".encode())
@@ -6825,6 +6878,9 @@ Change Mode<br>
                     return
                 elif is_embeddings:
                     try:
+                        modelNameToReturn = friendlyembeddingsmodelname
+                        if autoswapmode and embedName is not None:
+                            modelNameToReturn = embedName
                         gendat = embeddings_generate(genparams)
                         outdatas = []
                         odidx = 0
@@ -6836,7 +6892,7 @@ Change Mode<br>
                             else:
                                 outdatas.append({"object":"embedding","index":odidx,"embedding":od})
                             odidx += 1
-                        genresp = (json.dumps({"object":"list","data":outdatas,"model":friendlyembeddingsmodelname,"usage":{"prompt_tokens":gendat["count"],"total_tokens":gendat["count"]}}).encode())
+                        genresp = (json.dumps({"object":"list","data":outdatas,"model":modelNameToReturn,"usage":{"prompt_tokens":gendat["count"],"total_tokens":gendat["count"]}}).encode())
                         self.send_response(200)
                         self.send_header('content-length', str(len(genresp)))
                         self.end_headers(content_type='application/json')
@@ -10013,6 +10069,7 @@ def main(launch_args, default_args):
                             kcpp_instance.start()
                             global_memory["restart_target"] = ""
                             global_memory["restart_model"] = ""
+                            global_memory["swapReqType"] = None
                             time.sleep(3)
                         else:
                             break # kill the program
@@ -10190,7 +10247,7 @@ def disableSwappedFieldsInConfig(args, swapReqType):
         for e in ["whispermodel"]:
             setattr(args, e, "")
     if swapReqType != "tts":
-        for e in ["ttsmodel", "ttswavtokenizer", "ttsdir"]:
+        for e in ["ttsmodel", "ttswavtokenizer"]:
             setattr(args, e, "")
     if swapReqType != "embed":
         for e in ["embeddingsmodel"]:
@@ -10220,7 +10277,40 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
     if global_memory["modelOverride"] is not None:
         args.model_param = global_memory["modelOverride"]
 
+    global autoswapmode, textName, sttName, ttsName, embedName, musicName, imageName
+    autoswapmode = False
+    textName = None
+    sttName = None
+    ttsName = None
+    embedName = None
+    musicName = None
+    imageName = None
     if args.autoswapmode is not None and args.autoswapmode:
+        autoswapmode = True
+        if args.model_param and args.model_param!="":
+            tempName = os.path.basename(os.path.abspath(args.model_param))
+            tempName = os.path.splitext(tempName)[0]
+            textName = "koboldcpp/" + sanitize_string(tempName)
+        if args.whispermodel and args.whispermodel!="":
+            tempName = os.path.basename(os.path.abspath(args.whispermodel))
+            tempName = os.path.splitext(tempName)[0]
+            sttName = sanitize_string(tempName)
+        if args.ttsmodel and args.ttsmodel!="":
+            tempName = os.path.basename(os.path.abspath(args.ttsmodel))
+            tempName = os.path.splitext(tempName)[0]
+            ttsName = sanitize_string(tempName)
+        if args.embeddingsmodel and args.embeddingsmodel!="":
+            tempName = os.path.basename(os.path.abspath(args.embeddingsmodel))
+            tempName = os.path.splitext(tempName)[0]
+            embedName = sanitize_string(tempName)
+        if args.musicdiffusion and args.musicdiffusion!="":
+            tempName = os.path.basename(os.path.abspath(args.musicdiffusion))
+            tempName = os.path.splitext(tempName)[0]
+            musicName = sanitize_string(tempName)
+        if args.sdmodel and args.sdmodel!="":
+            tempName = os.path.basename(os.path.abspath(args.sdmodel))
+            tempName = os.path.splitext(tempName)[0]
+            imageName = sanitize_string(tempName)
         if global_memory["swapReqType"] is not None:
             disableSwappedFieldsInConfig(args, global_memory["swapReqType"])
         else:
@@ -10872,7 +10962,7 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
         print("Could not find Embedded MusicUI.")
 
     # load all TTS audio files
-    if args.ttsmodel:
+    if args.ttsmodel or ttsName is not None:
         try:
             global voicebank, voicelist
             voicebank = {}
