@@ -79,7 +79,7 @@ extra_images_max = 4 # for kontext/qwen img
 KcppVersion = "1.110"
 showdebug = True
 kcpp_instance = None #global running instance
-global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(),"current_model":"initial_model"}
+global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(),"current_model":"initial_model", "swapReqType": None, "autoswapmode": False}
 using_gui_launcher = False
 
 handle = None
@@ -4360,6 +4360,54 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                                 self.send_error(504, "KoboldCpp model swap reload timed out")
                                 return
                             time.sleep(0.1)
+        elif global_memory["autoswapmode"] is not None and global_memory["autoswapmode"]:                            
+            textReqs = ["/api/extra/generate/stream","/api/extra/tokencount","/api/v1/generate","/sdapi/v1/interrogate","/v1/completions","/v1/chat/completions"]
+            sttReqs = ["/api/extra/transcribe","/v1/audio/transcriptions"]
+            ttsReqs = ["/api/extra/tts", "/v1/audio/speech"]
+            embedReqs = ["/api/extra/embeddings", "/v1/embeddings"]
+            musicReqs = ["/api/extra/music/prepare","/api/extra/music/generate"]
+            imageReqs = ["/sdapi/v1/txt2img", "/sdapi/v1/img2img", "/sdapi/v1/upscale"] # "/sdapi/v1/sd-models", "/sdapi/v1/options", "/sdapi/v1/samplers"
+
+            swapModeChanged = False
+            if any(self.path.endswith(e) for e in textReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "text"):
+                global_memory["swapReqType"] = "text"
+                swapModeChanged = True
+            elif any(self.path.endswith(e) for e in sttReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "stt"):
+                global_memory["swapReqType"] = "stt"
+                swapModeChanged = True
+            elif any(self.path.endswith(e) for e in ttsReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "tts"):
+                global_memory["swapReqType"] = "tts"
+                swapModeChanged = True
+            elif any(self.path.endswith(e) for e in embedReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "embed"):
+                global_memory["swapReqType"] = "embed"
+                swapModeChanged = True
+            elif any(self.path.endswith(e) for e in musicReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "music"):
+                global_memory["swapReqType"] = "music"
+                swapModeChanged = True
+            elif any(self.path.endswith(e) for e in imageReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "image"):
+                global_memory["swapReqType"] = "image"
+                swapModeChanged = True
+
+            if (global_memory["swapReqType"] is not None and swapModeChanged):
+                with proxy_reload_lock:
+                    reqbody = json.dumps({"filename":global_memory["current_model"]})
+                    reqheaders = {
+                        'Content-Type': 'application/json',
+                        'Content-Length': str(len(reqbody)),
+                    }
+                    if args.adminpassword:
+                        reqheaders["Authorization"] = f"Bearer {args.adminpassword}"
+                    conn = http.client.HTTPConnection('localhost', upstream_port, timeout=600)
+                    conn.request("POST", "/api/admin/reload_config", body=reqbody, headers=reqheaders)
+                    resp = conn.getresponse()
+                    time.sleep(3)
+                    global_memory["last_active_timestamp"] = datetime.now()
+                    if not self.wait_for_upstream_ready(upstream_port,120,0.5):
+                        self.send_error(504, "KoboldCpp model swap reload timed out")
+                        return
+                    time.sleep(0.1)
+        # else:
+        #     global_memory["swapReqType"] = None
 
         try:  # connect upstream
             conn = http.client.HTTPConnection('localhost', upstream_port, timeout=600)
@@ -7456,6 +7504,7 @@ def show_gui():
     admin_password_var = ctk.StringVar()
     singleinstance_var = ctk.IntVar(value=0)
     router_mode_var = ctk.IntVar(value=0)
+    autoswap_mode_var = ctk.IntVar(value=0)
     admin_unload_timeout_var = ctk.StringVar(value=str(0))
     admin_allow_hf_var = ctk.IntVar(value=0)
 
@@ -8276,6 +8325,12 @@ def show_gui():
             router_mode_box.grid()
         else:
             router_mode_box.grid_remove()
+    def togglerouter(a,b,c):
+        if router_mode_var.get()==1:
+            autoswap_mode_box.grid()
+        else:
+            autoswap_mode_box.grid_remove()
+            
     makecheckbox(admin_tab, "Enable Model Administration", admin_var, 1, 0, command=toggleadmin,tooltiptxt="Enable a admin server, allowing you to remotely relaunch and swap models and configs.")
     makelabelentry(admin_tab, "Admin Password:" , admin_password_var, 3, 150,padx=(120),singleline=True,tooltip="Require a password to access admin functions. You are strongly advised to use one for publically accessible instances!")
     makefileentry(admin_tab, "Config Directory (Required):", "Select directory containing .gguf or .kcpps files to relaunch from", admin_dir_var, 5, width=280, dialog_type=2, tooltiptxt="Specify a directory to look for .kcpps configs in, which can be used to swap models.")
@@ -8284,7 +8339,8 @@ def show_gui():
     makefileentry(admin_tab, "Data Directory:", "Select directory which will be used to store user data if desired", admin_data_dir_var, 11, width=280, dialog_type=2, tooltiptxt="Specify a directory to store user data in.")
     makecheckbox(admin_tab, "Allow Model Download From HuggingFace", admin_allow_hf_var, 13, 0,tooltiptxt="Allows model downloading from HuggingFace within the Lite UI.")
     makecheckbox(admin_tab, "SingleInstance Mode", singleinstance_var, 15, 0,tooltiptxt="Allows this server to be shut down by another KoboldCpp instance with singleinstance starting on the same port.")
-    router_mode_box = makecheckbox(admin_tab, "Router Mode", router_mode_var, 17, 0,tooltiptxt="Router mode uses a reverse proxy router, allowing you to easily hotswap models and configs within a single request. Requires admin mode.")
+    router_mode_box = makecheckbox(admin_tab, "Router Mode", router_mode_var, 17, 0, command=togglerouter, tooltiptxt="Router mode uses a reverse proxy router, allowing you to easily hotswap models and configs within a single request. Requires admin mode.")
+    autoswap_mode_box = makecheckbox(admin_tab, "Autoswap Mode", autoswap_mode_var, 19, 0,tooltiptxt="Autoswap mode builds on router mode to allow switching of model types within the same config automatically. Requires admin mode and router mode. All models desired must be defined within the same config.")
 
     def kcpp_export_template():
         nonlocal kcpp_exporting_template
@@ -8599,6 +8655,7 @@ def show_gui():
         args.adminpassword = admin_password_var.get()
         args.singleinstance = (singleinstance_var.get()==1)
         args.routermode = router_mode_var.get()==1
+        args.autoswapmode = autoswap_mode_var.get()==1
         args.adminunloadtimeout = (0 if admin_unload_timeout_var.get()=="" else int(admin_unload_timeout_var.get()))
         args.showgui = False #prevent showgui from leaking into configs, its cli only
         args.adminallowhf = (admin_allow_hf_var.get()==1 and not args.cli)
@@ -8848,6 +8905,7 @@ def show_gui():
 
         admin_var.set(dict["admin"] if ("admin" in dict) else 0)
         router_mode_var.set(dict["routermode"] if ("routermode" in dict) else 0)
+        autoswap_mode_var.set(dict["autoswapmode"] if ("autoswapmode" in dict) else 0)
         admin_dir_var.set(dict["admindir"] if ("admindir" in dict and dict["admindir"]) else "")
         admin_text_model_dir_var.set(dict["admintextmodelsdir"] if ("admintextmodelsdir" in dict and dict["admintextmodelsdir"]) else "")
         admin_data_dir_var.set(dict["admindatadir"] if ("admindatadir" in dict and dict["admindatadir"]) else "")
@@ -9862,6 +9920,10 @@ def main(launch_args, default_args):
             sslvalid = True
 
     args.proxy_port = None #normally unused
+    if args.autoswapmode:
+        if not args.routermode:
+            print("\nWARNING: Autoswap mode requires router, enabling router...")
+            args.routermode = True
     if args.routermode:
         if not args.admin:
             print("\nWARNING: Router mode requires admin, enabling admin...")
@@ -9915,7 +9977,7 @@ def main(launch_args, default_args):
             input()
     else:  # manager command queue for admin mode
         with multiprocessing.Manager() as mp_manager:
-            global_memory = mp_manager.dict({"tunnel_url": "", "restart_target": "", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(),"current_model":"initial_model"})
+            global_memory = mp_manager.dict({"tunnel_url": "", "restart_target": "", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(),"current_model":"initial_model", "swapReqType": None, "autoswapmode": False})
 
             if args.remotetunnel and not args.prompt and not args.benchmark and not args.cli:
                 setuptunnel(global_memory, True if args.sdmodel else False)
@@ -10012,6 +10074,7 @@ def main(launch_args, default_args):
                                         print(f"Setting model to {restart_model}")
                                         global_memory["modelOverride"] = restart_model
 
+                                global_memory["autoswapmode"] = args.autoswapmode
                                 kcpp_instance = multiprocessing.Process(target=kcpp_main_process,kwargs={"launch_args": args, "g_memory": global_memory, "gui_launcher": False})
                                 kcpp_instance.daemon = True
                                 kcpp_instance.start()
@@ -10118,6 +10181,27 @@ def mk_lora_info(imgloras, multipliers, mock_filesystem=False):
             preloaded_table.append(lora_entry)
     return preloaded_table, lora_path_map, lora_name_map
 
+def disableSwappedFieldsInConfig(args, swapReqType):
+    print(f"Swapping to type: {swapReqType}")
+    if swapReqType != "text":
+        for e in ["model", "model_param", "lora", "mmproj"]:
+            setattr(args, e, "")
+    if swapReqType != "stt":
+        for e in ["whispermodel"]:
+            setattr(args, e, "")
+    if swapReqType != "tts":
+        for e in ["ttsmodel", "ttswavtokenizer", "ttsdir"]:
+            setattr(args, e, "")
+    if swapReqType != "embed":
+        for e in ["embeddingsmodel"]:
+            setattr(args, e, "")
+    if swapReqType != "music":
+        for e in ["musicllm", "musicembeddings", "musicdiffusion", "musicvae"]:
+            setattr(args, e, "")
+    if swapReqType != "image":
+        for e in ["sdmodel", "sdt5xxl", "sdclip1", "sdclip2", "sdphotomaker", "sdupscaler", "sdvae", "sdlora"]:
+            setattr(args, e, "")
+        
 
 def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
     global embedded_kailite, embedded_kcpp_docs, embedded_kcpp_sdui, embedded_kailite_gz, embedded_kcpp_docs_gz, embedded_kcpp_sdui_gz, embedded_lcpp_ui_gz, embedded_musicui, embedded_musicui_gz, start_time, exitcounter, global_memory, using_gui_launcher
@@ -10135,6 +10219,13 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
 
     if global_memory["modelOverride"] is not None:
         args.model_param = global_memory["modelOverride"]
+
+    if args.autoswapmode is not None and args.autoswapmode:
+        if global_memory["swapReqType"] is not None:
+            disableSwappedFieldsInConfig(args, global_memory["swapReqType"])
+        else:
+            global_memory["swapReqType"] = "text"
+            disableSwappedFieldsInConfig(args, "text")
     
     noModelLoaded = args.nomodel and not ("model_param" in args and args.model_param is not None and len(args.model_param) > 0 and len(args.model_param[0]) > 0)
     global_memory["currentModel"] = None if noModelLoaded else args.model_param
@@ -11210,6 +11301,7 @@ if __name__ == '__main__':
     admingroup.add_argument("--admindatadir", metavar=('[directory]'), help="Specify a directory to store user data in. By passing in this argument, users with the admin password will be able to save and load data from the server database.", default="")
     admingroup.add_argument("--adminallowhf", help="Enables downloading of HuggingFace models through the Lite UI.", action='store_true')
     admingroup.add_argument("--routermode", help="Router mode uses a reverse proxy router, allowing you to easily hotswap models and configs within a single request. Requires admin mode.", action='store_true')
+    admingroup.add_argument("--autoswapmode", help="Autoswap mode builds on router mode to allow switching of model types within the same config automatically. Requires admin mode and router mode. All models desired must be defined within the same config.", action='store_true')
 
     deprecatedgroup = parser.add_argument_group('Deprecated Commands, DO NOT USE!')
     deprecatedgroup.add_argument("--hordeconfig", help=argparse.SUPPRESS, nargs='+')
