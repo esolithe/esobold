@@ -7939,9 +7939,17 @@ def show_gui():
             quick_gpu_layers_entry.grid_remove()
             autofit_padding_label.grid(row=6, column=0, padx=8, pady=1, stick="nw")
             autofit_padding_entry.grid(row=6, column=0, padx=160, pady=1, stick="nw")
+            moecpu_box.grid_remove()
+            tenos_box.grid_remove()
+            moecpu_box_lbl.grid_remove()
+            tenos_box_lbl.grid_remove()
         else:
             autofit_padding_label.grid_remove()
             autofit_padding_entry.grid_remove()
+            moecpu_box.grid()
+            tenos_box.grid()
+            moecpu_box_lbl.grid()
+            tenos_box_lbl.grid()
 
         changed_gpulayers_estimate()
         changed_gpu_choice_var()
@@ -8108,9 +8116,9 @@ def show_gui():
     jinjatoolsbox = makecheckbox(context_tab, "Jinja for Tools", jinja_tools_var, row=45 ,padx=(140), tooltiptxt="Allows jinja even with tool calls. If unchecked, jinja will be disabled when tools are used.")
     jinja_var.trace_add("write", togglejinja)
     makelabelentry(context_tab, "MoE Experts:", moeexperts_var, row=55, padx=(120), singleline=True, tooltip="Override number of MoE experts.")
-    makelabelentry(context_tab, "MoE CPU Layers:", moecpu_var, row=55, padx=(320), singleline=True, tooltip="Force Mixture of Experts (MoE) weights of the first N layers to the CPU.\nSetting it higher than GPU layers has no effect.", labelpadx=(210))
+    moecpu_box,moecpu_box_lbl = makelabelentry(context_tab, "MoE CPU Layers:", moecpu_var, row=55, padx=(320), singleline=True, tooltip="Force Mixture of Experts (MoE) weights of the first N layers to the CPU.\nSetting it higher than GPU layers has no effect.", labelpadx=(210))
     makelabelentry(context_tab, "Override KV:", override_kv_var, row=57, padx=(120), singleline=True, width=150, tooltip="Override metadata value by key. Separate multiple values with commas. Format is name=type:value. Types: int, float, bool, str")
-    makelabelentry(context_tab, "Override Tensors:", override_tensors_var, row=59, padx=(120), singleline=True, width=150, tooltip="Override selected backend for specific tensors matching tensor_name_regex_pattern=buffer_type, same as in llama.cpp.")
+    tenos_box,tenos_box_lbl = makelabelentry(context_tab, "Override Tensors:", override_tensors_var, row=59, padx=(120), singleline=True, width=150, tooltip="Override selected backend for specific tensors matching tensor_name_regex_pattern=buffer_type, same as in llama.cpp.")
 
     # Model Tab
     model_tab = tabcontent["Loaded Files"]
@@ -10418,6 +10426,10 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
             if MaxMemory[0] == 0: #try to get gpu vram for cuda if not picked yet
                 fetch_gpu_properties(True,True)
                 pass
+            if args.autofit:
+                print("Forced autofit is selected, moecpu and overridetensors will be set automatically.")
+                args.overridetensors = ""
+                args.moecpu = 0
             if args.gpulayers==-1:
                 if (not args.usecpu) and ((args.usecuda is not None) or (args.usevulkan is not None) or sys.platform=="darwin"):
                     if MaxMemory[0] > 0:

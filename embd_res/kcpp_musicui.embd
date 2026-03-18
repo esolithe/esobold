@@ -188,7 +188,13 @@ input[type="checkbox"] {
     <div><label>Key</label><input id="keyscale"></div>
     <div><label>Time Sig</label><input id="timesignature"></div>
     <div><label>Language</label><input id="vocal_language"></div>
-    <div><label>Seed</label><input id="seed" type="number"></div>
+    <div>
+      <label>Seed</label>
+      <div style="display:flex; gap:6px;">
+        <input id="seed" type="number" style="flex:1;">
+        <button type="button" class="secondary" onclick="randomizeSeed()">🎲</button>
+      </div>
+    </div>
   </div>
 
   <div class="advanced-toggle" onclick="toggleAdvanced()">⚙ Advanced Settings</div>
@@ -315,6 +321,12 @@ function initDB(){
   });
 }
 
+function randomizeSeed(){
+  const seedInput = document.getElementById("seed");
+  const randomSeed = Math.floor(Math.random() * 899999 + 100000);
+  seedInput.value = randomSeed;
+}
+
 function toggleAdvanced(){
   document.getElementById("advanced").classList.toggle("hidden");
 }
@@ -366,6 +378,11 @@ async function planSong(){
     currentController=new AbortController();
     setLoading(true);
 
+    const seedInput = document.getElementById("seed");
+    if(seedInput.value === "-1" || seedInput.value === ""){
+      randomizeSeed();
+    }
+
     const res=await fetch(buildUrl("/api/extra/music/prepare"),{
       method:"POST",
       headers:{"Content-Type":"application/json"},
@@ -403,6 +420,11 @@ async function generateSong(){
   try{
     currentController=new AbortController();
     setLoading(true);
+
+    const seedInput = document.getElementById("seed");
+    if(seedInput.value === "-1" || seedInput.value === ""){
+      randomizeSeed();
+    }
 
     const payload=getFormData();
 
