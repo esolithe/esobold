@@ -3875,6 +3875,8 @@ def run_router_proxy(proxy_port, upstream_port):
     global args, sslvalid
     if args.ssl and sslvalid:
         import ssl
+        if args.nocertify:
+            ssl._create_default_https_context = ssl._create_unverified_context
         certpath = os.path.abspath(args.ssl[0])
         keypath = os.path.abspath(args.ssl[1])
         context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
