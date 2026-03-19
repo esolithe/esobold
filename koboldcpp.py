@@ -10096,9 +10096,14 @@ def main(launch_args, default_args):
                         curtime = datetime.now()
                         elapsedtime = curtime - last_active
                         time_since_last_active = elapsedtime.total_seconds()
-                        if time_since_last_active > args.adminunloadtimeout and global_memory["current_model"]!="unload_model":
-                            print(f"[Unload Timeout] Inactive for over {time_since_last_active}s, unloading models...")
-                            restart_target = "unload_model"
+                        if time_since_last_active > args.adminunloadtimeout:
+                            if args.autoswapmode :
+                                if global_memory["swapReqType"] is not None and global_memory["swapReqType"] != "nomodel":
+                                    print(f"[Unload Timeout] Inactive for over {time_since_last_active}s, unloading models via autoswap...")
+                                    global_memory["swapReqType"] = "nomodel"
+                            elif global_memory["current_model"]!="unload_model":
+                                print(f"[Unload Timeout] Inactive for over {time_since_last_active}s, unloading models...")
+                                restart_target = "unload_model"
                     if restart_target!="":
                         if restart_model != "":
                             global_memory["restart_model"] = ""
@@ -10328,8 +10333,9 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
         if global_memory["swapReqType"] is not None:
             disableSwappedFieldsInConfig(args, global_memory["swapReqType"])
         else:
-            global_memory["swapReqType"] = "text"
-            disableSwappedFieldsInConfig(args, "text")
+            global_memory["swapReqType"] = "nomodel"
+            setattr(args, "nomodel", True)
+            disableSwappedFieldsInConfig(args, "nomodel")
     
     noModelLoaded = args.nomodel and not ("model_param" in args and args.model_param is not None and len(args.model_param) > 0 and len(args.model_param[0]) > 0)
     global_memory["currentModel"] = None if noModelLoaded else args.model_param
