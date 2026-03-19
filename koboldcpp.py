@@ -10306,6 +10306,7 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
     imageName = None
     if args.autoswapmode is not None and args.autoswapmode:
         autoswapmode = True
+        global_memory["autoswapmode"] = True
         if args.model_param and args.model_param!="":
             tempName = os.path.basename(os.path.abspath(args.model_param))
             tempName = os.path.splitext(tempName)[0]
@@ -10336,6 +10337,8 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
             global_memory["swapReqType"] = "nomodel"
             setattr(args, "nomodel", True)
             disableSwappedFieldsInConfig(args, "nomodel")
+    else:
+        global_memory["autoswapmode"] = True
     
     noModelLoaded = args.nomodel and not ("model_param" in args and args.model_param is not None and len(args.model_param) > 0 and len(args.model_param[0]) > 0)
     global_memory["currentModel"] = None if noModelLoaded else args.model_param
