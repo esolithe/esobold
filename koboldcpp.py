@@ -10338,7 +10338,7 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
             setattr(args, "nomodel", True)
             disableSwappedFieldsInConfig(args, "nomodel")
     else:
-        global_memory["autoswapmode"] = True
+        global_memory["autoswapmode"] = False
     
     noModelLoaded = args.nomodel and not ("model_param" in args and args.model_param is not None and len(args.model_param) > 0 and len(args.model_param[0]) > 0)
     global_memory["currentModel"] = None if noModelLoaded else args.model_param
