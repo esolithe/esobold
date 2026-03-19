@@ -4424,7 +4424,9 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
             conn = http.client.HTTPConnection('localhost', upstream_port, timeout=600)
             conn.request( self.command, self.path, body=body, headers=headers)
             resp = conn.getresponse()
-        except OSError:
+        except OSError as e:
+            if args.debugmode:
+                print(f"OSError has occurred: {e}")
             html_502 = """
             <!DOCTYPE html>
             <html lang="en">
@@ -4512,7 +4514,19 @@ class KcppProxyHttpServer(http.server.HTTPServer):
 
 def run_router_proxy(proxy_port, upstream_port):
     server = KcppProxyHttpServer(("", proxy_port), KcppProxyHandler, upstream_port)
-    print(f"KoboldCpp Proxy starting on port {proxy_port}, forwarding to port {upstream_port}",flush=True)
+    global args, sslvalid
+    if args.ssl and sslvalid:
+        import ssl
+        if args.nocertify:
+            ssl._create_default_https_context = ssl._create_unverified_context
+        certpath = os.path.abspath(args.ssl[0])
+        keypath = os.path.abspath(args.ssl[1])
+        context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+        context.load_cert_chain(certfile=certpath, keyfile=keypath)
+        server.socket = context.wrap_socket(server.socket, server_side=True)
+        print(f"KoboldCpp Proxy starting on port {proxy_port} (SSL/HTTPS), forwarding to port {upstream_port}",flush=True)
+    else:
+        print(f"KoboldCpp Proxy starting on port {proxy_port}, forwarding to port {upstream_port}",flush=True)
     proxy_thread = threading.Thread(target=server.serve_forever, daemon=True)
     proxy_thread.start()
     return server  # Return the server object in case you need to shut it down later
@@ -6972,7 +6986,7 @@ def RunServerMultiThreaded(addr, port, server_handler):
         ipv6_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         ipv6_sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
 
-    if args.ssl and sslvalid:
+    if args.ssl and sslvalid and not args.routermode: #if routermode, ssl is already offloaded
         import ssl
         certpath = os.path.abspath(args.ssl[0])
         keypath = os.path.abspath(args.ssl[1])
