@@ -4297,11 +4297,13 @@ def tmpfs_make_state(max_size_bytes=0, source_dir="", initialized=False):
         "initialized": initialized,
     }
 
-def tmpfs_to_bytes(content):
+def tmpfs_to_bytes(content, isB64 = False):
     if isinstance(content, bytes):
         return content
     if content is None:
         return b""
+    if isB64:
+        return base64.b64decode(content)
     return str(content).encode("utf-8")
 
 def tmpfs_snapshot_state():
@@ -4373,9 +4375,9 @@ def tmpfs_get_file(path):
         raise FileNotFoundError(f"Tmpfs file not found: {normalized_path}")
     return normalized_path, entry
 
-def tmpfs_write_file(path, content, modified=None):
+def tmpfs_write_file(path, content, modified=None, isB64 = False):
     normalized_path = tmpfs_normalize_path(path)
-    content_bytes = tmpfs_to_bytes(content)
+    content_bytes = tmpfs_to_bytes(content, isB64)
     with tmpfs_lock:
         tmpfs = tmpfs_snapshot_state()
         files = tmpfs["files"]
@@ -6479,7 +6481,7 @@ Change Mode<br>
             else:
                 try:
                     tempbody = json.loads(body)
-                    normalized_path = tmpfs_write_file(tempbody.get('path', ''), tempbody.get('content', ''))
+                    normalized_path = tmpfs_write_file(tempbody.get('path', ''), tempbody.get('content', ''), None, tempbody.get('isB64', False))
                     response_body = (json.dumps({"success": True, "path": normalized_path, "metadata": tmpfs_metadata(normalized_path)}).encode())
                 except ValueError as e:
                     response_code = 507 if 'size limit exceeded' in str(e).lower() else 400

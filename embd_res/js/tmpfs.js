@@ -167,7 +167,7 @@ class TmpfsClient {
      * @param {string|Uint8Array|ArrayBuffer} content
      * @returns {Promise<{success:boolean, path:string, metadata:object}>}
      */
-    async write(path, content) {
+    async write(path, content, isB64 = false) {
         let payload_content;
         if (typeof content === 'string') {
             payload_content = content;
@@ -176,7 +176,7 @@ class TmpfsClient {
             const bytes = content instanceof ArrayBuffer ? new Uint8Array(content) : content;
             payload_content = btoa(String.fromCharCode(...bytes));
         }
-        return this._post('/api/extra/tmpfs/write', { path, content: payload_content });
+        return this._post('/api/extra/tmpfs/write', { path, content: payload_content, isB64 });
     }
 
     /**

@@ -29,6 +29,197 @@ let preparePromptForImageGen = (prompt) => {
 	return prompt.replaceAll(/\.+/g, ",").replaceAll(/_+/g, " ").replaceAll(/\n+/g, " ")
 }
 
+let normalizeBase64ImageData = (input = "") => {
+	let value = `${input || ""}`
+	let parts = value.split(",")
+	if (parts.length === 2 && parts[0].startsWith("data:")) {
+		return parts[1]
+	}
+	return value
+}
+
+let base64ToUint8Array = (base64 = "") => {
+	let cleanBase64 = `${base64 || ""}`.trim()
+	if (cleanBase64 === "") return new Uint8Array(0)
+	let binaryString = atob(cleanBase64)
+	let bytes = new Uint8Array(binaryString.length)
+	for (let index = 0; index < binaryString.length; index++) {
+		bytes[index] = binaryString.charCodeAt(index)
+	}
+	return bytes
+}
+
+let blobToDataUrl = async (blob) => {
+	return await new Promise((resolve, reject) => {
+		let reader = new FileReader()
+		reader.onload = () => resolve(`${reader.result || ""}`)
+		reader.onerror = () => reject(new Error("Failed to read blob as data URL."))
+		reader.readAsDataURL(blob)
+	})
+}
+
+let readTmpfsPathAsDataUrl = async (tmpfsPath) => {
+	let rawResp = await window.tmpfsClient.fetch_raw(tmpfsPath)
+	let blob = await rawResp.blob()
+	return await blobToDataUrl(blob)
+}
+
+let readTmpfsPathAsBase64 = async (tmpfsPath) => {
+	return normalizeBase64ImageData(await readTmpfsPathAsDataUrl(tmpfsPath))
+}
+
+let writeBase64ToTmpfs = async (tmpfsPath, base64Data) => {
+	let bytes = base64ToUint8Array(base64Data)
+	return await window.tmpfsClient.write(tmpfsPath, bytes, true)
+}
+
+let waitForUserImageSelection = async () => {
+	waitingFori2iSelection = true
+	await new Promise((resolve) => {
+		let intervalId = setInterval(() => {
+			if (waitingFori2iSelection === false || endCurrent) {
+				clearInterval(intervalId)
+				resolve()
+			}
+		}, 1000)
+	})
+	let selected = `${i2i64 || ""}`
+	i2i64 = undefined
+	waitingFori2iSelection = false
+	return selected
+}
+
+let kcppVoiceOptionsCache = ["kobo", "custom", "voicejson"]
+let kcppVoiceOptionsFetchPromise = null
+
+let fetchKcppVoiceOptionsForCommand = async (forceRefresh = false) => {
+	if (!!kcppVoiceOptionsFetchPromise && !forceRefresh) {
+		return await kcppVoiceOptionsFetchPromise
+	}
+	kcppVoiceOptionsFetchPromise = (async () => {
+	let resp = await fetch(apply_proxy_url(custom_kobold_endpoint + koboldcpp_voices_endpoint), {
+		method: "GET",
+		headers: get_kobold_header(),
+	})
+	if (!resp.ok) {
+		let bodyText = await resp.text().catch(() => "")
+		throw new Error(`voice list fetch failed (${resp.status}) ${bodyText}`.trim())
+	}
+	let data = await resp.json()
+	let voices = Array.isArray(data) ? data.map(voice => `${voice || ""}`.trim()).filter(voice => voice.length > 0) : []
+	let nextVoices = [...voices, "custom", "voicejson"]
+	kcppVoiceOptionsCache = nextVoices.length > 0 ? nextVoices : ["kobo", "custom", "voicejson"]
+	return kcppVoiceOptionsCache
+	})()
+	try {
+		return await kcppVoiceOptionsFetchPromise
+	}
+	finally {
+		kcppVoiceOptionsFetchPromise = null
+	}
+}
+
+let getKcppVoiceOptionsForCommand = () => {
+	fetchKcppVoiceOptionsForCommand().catch(() => null)
+	return [...kcppVoiceOptionsCache]
+}
+
+let resolveKcppVoiceForPayload = async (voiceArg) => {
+	let selectedVoice = `${voiceArg || ""}`.trim()
+	let availableVoices = await fetchKcppVoiceOptionsForCommand().catch(() => ["kobo", "custom", "voicejson"])
+	if (selectedVoice === "") {
+		selectedVoice = `${localsettings.kcpp_tts_voice || availableVoices[0] || "kobo"}`.trim()
+	}
+	if (!["custom", "voicejson"].includes(selectedVoice) && !availableVoices.includes(selectedVoice)) {
+		selectedVoice = availableVoices.find(voice => !["custom", "voicejson"].includes(voice)) || localsettings.kcpp_tts_voice || "kobo"
+	}
+	let payload = {
+		voice: selectedVoice,
+		speaker_json: undefined,
+	}
+	if (selectedVoice === "custom") {
+		payload.voice = `${document.getElementById("kcpp_tts_voice_custom")?.value || ""}`.trim()
+	}
+	if (selectedVoice === "voicejson" && !!localsettings.kcpp_tts_json) {
+		payload.speaker_json = localsettings.kcpp_tts_json
+	}
+	return payload
+}
+
+let postKcppJson = async (endpoint, payload) => {
+	let resp = await fetch(apply_proxy_url(custom_kobold_endpoint + endpoint), {
+		method: "POST",
+		headers: {
+			...get_kobold_header(),
+			"Content-Type": "application/json",
+		},
+		body: JSON.stringify(payload || {}),
+	})
+	if (!resp.ok) {
+		let bodyText = await resp.text().catch(() => "")
+		throw new Error(`${endpoint} failed (${resp.status}) ${bodyText}`.trim())
+	}
+	return resp
+}
+
+let generateA1111ImageBase64 = async (prompt, aspect, sourceImageBase64 = "", extraImages = []) => {
+	let styledPrompt = `${prompt || ""}`
+	if (!!localsettings.image_styles && localsettings.image_styles !== "") {
+		styledPrompt = `${localsettings.image_styles} ${styledPrompt}`
+	}
+	styledPrompt = styledPrompt.replace(/###/gm, "")
+	let negprompt = localsettings.image_negprompt ? (` ### ${localsettings.image_negprompt}`) : ""
+	if (localsettings.image_negprompt == "none") {
+		negprompt = ""
+	}
+	let sizing = calcImageSizing(aspect)
+	let { iwidth, iheight } = getImageSizing(sizing)
+	let desiredModel = document.getElementById("generate_images_local_model")?.value || localsettings.generate_images_model || ""
+	let payload = {
+		prompt: `${styledPrompt}${negprompt}`,
+		params: {
+			cfg_scale: localsettings.img_cfgscale,
+			sampler_name: localsettings.img_sampler,
+			height: iheight,
+			width: iwidth,
+			steps: localsettings.img_steps,
+			denoising_strength: localsettings.img_img2imgstr,
+			clip_skip: localsettings.img_clipskip,
+		},
+		models: [desiredModel],
+		source_image: sourceImageBase64 || "",
+	}
+	if (!!extraImages && Array.isArray(extraImages) && extraImages.length > 0) {
+		payload.extra_images = extraImages
+	}
+	return await new Promise((resolve, reject) => {
+		generate_a1111_image(payload, (outputImageBase64) => {
+			if (!!outputImageBase64) {
+				resolve(outputImageBase64)
+			} else {
+				reject(new Error("Image generation failed."))
+			}
+		})
+	})
+}
+
+let mergeMusicPrepareIntoState = (prepareResult) => {
+	let existingState = `${getDocumentFromTextDB("State") || ""}`.trim()
+	let mergedState = null
+	try {
+		let parsed = JSON.parse(existingState || "{}")
+		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+			parsed = { value: existingState }
+		}
+		parsed.music_prepare = prepareResult
+		mergedState = JSON.stringify(parsed)
+	}
+	catch {
+		mergedState = `${existingState}${existingState.length > 0 ? "\n\n" : ""}[Music Prepare]\n${JSON.stringify(prepareResult)}`
+	}
+	replaceDocumentFromTextDB("State", mergedState)
+}
+
 let overwriteWIFromAgent = (uniqueIdentifier, selectionKeys, content) => {
 	let baseWI = {
 		"key": selectionKeys.join(","),
@@ -290,7 +481,7 @@ let openTmpfsEmbedByName = async (args = {}) => {
 }
 
 window.openTmpfsEmbedByName = openTmpfsEmbedByName;
-window.closeTmpfsEmbedByName = clampTmpfsEmbedLayout;
+window.closeTmpfsEmbedByName = closeTmpfsEmbedByName;
 
 let getCommands = (agentRunState) => {
 	let { currentChainOfThought, agentStopOnRequestForInput } = agentRunState
@@ -704,6 +895,10 @@ let getCommands = (agentRunState) => {
 				if (!!analysisPrompt) {
 					waitingFori2iSelection = true
 					addThought(currentChainOfThought, createSysPrompt, `Please click an image as a source for image analysis`, true)
+					let { agentVisualiser } = agentRunState;
+					if (typeof agentVisualiser === "function") {
+						await agentVisualiser(objRefAssign({}, agentRunState, { agentRunState }))
+					}
 
 					let waitForI2ILoop = () => {
 						return new Promise((resolve, reject) => {
@@ -751,10 +946,26 @@ let getCommands = (agentRunState) => {
 			"executor": async (action) => {
 				let prompt = action?.args?.prompt
 				let aspect = action?.args?.aspect
+				let waitForImageGenToComplete = async (imageId) => {
+					await new Promise(resolve => {
+						let complete = false;
+						image_db[imageId].callback = () => complete = true;
+						imageIntervalId = setInterval(() => {
+							if (complete || endCurrent) {
+								clearInterval(imageIntervalId)
+								resolve();
+							}
+						}, 1000)
+					})
+				}
 				if (!!prompt) {
 					if (!!action?.args?.edit_existing_image) {
 						waitingFori2iSelection = true
 						addThought(currentChainOfThought, createSysPrompt, `Please click an image as a source for img2img generation`, true)
+						let { agentVisualiser } = agentRunState;
+						if (typeof agentVisualiser === "function") {
+							await agentVisualiser(objRefAssign({}, agentRunState, { agentRunState }))
+						}
 
 						let waitForI2ILoop = () => {
 							return new Promise((resolve, reject) => {
@@ -768,7 +979,8 @@ let getCommands = (agentRunState) => {
 						}
 						await waitForI2ILoop()
 						if (!!i2i64) {
-							generate_new_image(preparePromptForImageGen(prompt), i2i64, true, calcImageSizing(aspect))
+							let imageId = generate_new_image(preparePromptForImageGen(prompt), i2i64, true, calcImageSizing(aspect))
+							await waitForImageGenToComplete(imageId)
 							addThought(currentChainOfThought, createSysPrompt, `Image generated`)
 						}
 						else {
@@ -778,7 +990,8 @@ let getCommands = (agentRunState) => {
 						waitingFori2iSelection = false;
 					}
 					else {
-						generate_new_image(preparePromptForImageGen(prompt), undefined, true, calcImageSizing(aspect))
+						let imageId = generate_new_image(preparePromptForImageGen(prompt), undefined, true, calcImageSizing(aspect))
+						await waitForImageGenToComplete(imageId)						
 						addThought(currentChainOfThought, createSysPrompt, `Image generated`)
 					}
 				}
@@ -788,46 +1001,213 @@ let getCommands = (agentRunState) => {
 			}
 		},
 		{
-			"name": "generate_image_based_on_another_image",
-			"description": "Generates an image using AI based on a prompt and an input image. Will prompt the user to select an image. Be specific in the prompt about physical characteristics and settings as names of people may not be known.",
+			"name": "music_prepare",
+			"description": "Prepare music generation settings from a caption and store the prepared fields in current state.",
+			"args": {
+				"caption": "<short description of the song to create>"
+			},
+			"enabled": is_using_kcpp_with_musicgen(),
+			"executor": async (action) => {
+				try {
+					let caption = `${action?.args?.caption || ""}`.trim()
+					if (caption === "") {
+						addThought(currentChainOfThought, createSysPrompt, `Music prepare failed - caption is required`)
+						return
+					}
+					let response = await postKcppJson("/api/extra/music/prepare", { caption })
+					let result = await response.json()
+					mergeMusicPrepareIntoState(result)
+					addThought(currentChainOfThought, createSysPrompt, `Music prepare succeeded and state has been updated\n${objToText(result)}`)
+				}
+				catch (e) {
+					addThought(currentChainOfThought, createSysPrompt, `Music prepare failed - ${e?.message || e}`)
+				}
+			}
+		},
+		{
+			"name": "tmpfs_generate_music",
+			"description": "Generate music with KoboldCpp music endpoint and save the output audio into tmpfs.",
+			"args": {
+				"caption": "<song caption>",
+				"lyrics": "<song lyrics>",
+				"bpm": {
+					description: "<beats per minute>",
+					type: "integer"
+				},
+				"duration": {
+					description: "<duration in seconds>",
+					type: "integer"
+				},
+				"keyscale": "<musical key>",
+				"timesignature": "<time signature>",
+				"vocal_language": "<vocal language code>",
+				"inference_steps": {
+					description: "<diffusion inference steps>",
+					type: "integer"
+				},
+				"tmpfs_input_path": "<optional tmpfs reference audio path>",
+				"tmpfs_output_path": "<tmpfs output path for generated audio (.wav/.mp3)>"
+			},
+			"enabled": is_using_kcpp_with_musicgen() && is_using_kcpp_with_tmpfs(),
+			"executor": async (action) => {
+				try {
+					let args = action?.args || {}
+					let outputPath = `${args.tmpfs_output_path || ""}`.trim()
+					if (outputPath === "") {
+						addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: generate_music failed - tmpfs_output_path is required`)
+						return
+					}
+					let preparedFromState = {}
+					try {
+						let parsed = JSON.parse(`${getDocumentFromTextDB("State") || "{}"}`)
+						preparedFromState = parsed?.music_prepare || {}
+					}
+					catch {
+						preparedFromState = {}
+					}
+					let payload = {
+						caption: `${args.caption || preparedFromState.caption || ""}`,
+						lyrics: `${args.lyrics || preparedFromState.lyrics || ""}`,
+						bpm: parseInt(args.bpm ?? preparedFromState.bpm ?? 120),
+						duration: parseFloat(args.duration ?? preparedFromState.duration ?? 64),
+						keyscale: `${args.keyscale || preparedFromState.keyscale || "G minor"}`,
+						timesignature: `${args.timesignature || preparedFromState.timesignature || "2"}`,
+						vocal_language: `${args.vocal_language || preparedFromState.vocal_language || "en"}`,
+						inference_steps: parseInt(args.inference_steps ?? preparedFromState.inference_steps ?? 8),
+					}
+					let inputPath = `${args.tmpfs_input_path || ""}`.trim()
+					if (inputPath !== "") {
+						payload.music_reference_audio_data = await readTmpfsPathAsBase64(inputPath)
+					}
+					let response = await postKcppJson("/api/extra/music/generate", payload)
+					let audioData = await response.arrayBuffer()
+					let writeResult = await window.tmpfsClient.write(outputPath, new Uint8Array(audioData))
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: generate_music result\n${objToText(writeResult)}`)
+				}
+				catch (e) {
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: generate_music failed - ${e?.message || e}`)
+				}
+			}
+		},
+		{
+			"name": "tmpfs_transcribe",
+			"description": "Transcribe a .wav audio file from tmpfs using KoboldCpp transcribe endpoint.",
+			"args": {
+				"path": "<tmpfs path to .wav file>",
+				"prompt": "<optional transcription prompt>",
+				"langcode": "<language code or auto>",
+				"suppress_non_speech": {
+					description: "<true to suppress non-speech noise>",
+					type: "boolean"
+				}
+			},
+			"enabled": is_using_kcpp_with_whisper() && is_using_kcpp_with_tmpfs(),
+			"executor": async (action) => {
+				try {
+					let tmpfsPath = `${action?.args?.path || ""}`.trim()
+					if (!tmpfsPath.toLowerCase().endsWith(".wav")) {
+						addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: transcribe failed - only .wav files are supported`)
+						return
+					}
+					let dataUrl = await readTmpfsPathAsDataUrl(tmpfsPath)
+					let response = await postKcppJson(koboldcpp_transcribe_endpoint, {
+						audio_data: dataUrl,
+						prompt: `${action?.args?.prompt || ""}`,
+						suppress_non_speech: !!action?.args?.suppress_non_speech,
+						langcode: `${action?.args?.langcode || "auto"}`,
+					})
+					let result = await response.json()
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: transcribe result\n${objToText(result)}`)
+				}
+				catch (e) {
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: transcribe failed - ${e?.message || e}`)
+				}
+			}
+		},
+		{
+			"name": "tmpfs_generate_image",
+			"description": "Generate an image (txt2img or img2img) and save it into tmpfs.",
 			"args": {
 				"prompt": "<prompt to generate image with>",
 				"aspect": {
 					type: "string",
 					description: "<aspect ratio - must be \"landscape\", \"portrait\" or \"square\">"
-				}
+				},
+				"tmpfs_input_image_paths": {
+					description: "<optional tmpfs image paths to use as inputs>",
+					type: "array",
+					items: { type: "string" }
+				},
+				"prompt_user_for_image": {
+					description: "<prompt user to click an image to use as input>",
+					type: "boolean"
+				},
+				"tmpfs_output_path": "<tmpfs output path for generated image>"
 			},
-			"enabled": false, // localsettings.generate_images_mode == 2, // Only enabled if local endpoint exists / is in use
+			"enabled": (localsettings.generate_images_mode == 2) && is_using_kcpp_with_tmpfs(),
 			"executor": async (action) => {
-				let i2iPrompt = action?.args?.prompt
-				if (!!i2iPrompt) {
-					waitingFori2iSelection = true
-					addThought(currentChainOfThought, createSysPrompt, `Please click an image as a source for img2img generation`, true)
-
-					let waitForI2ILoop = () => {
-						return new Promise((resolve, reject) => {
-							let intervalId = setInterval(() => {
-								if (waitingFori2iSelection === false || endCurrent) {
-									clearInterval(intervalId)
-									resolve()
-								}
-							}, 1000)
-						})
+				try {
+					let args = action?.args || {}
+					let prompt = `${args.prompt || ""}`.trim()
+					let outputPath = `${args.tmpfs_output_path || ""}`.trim()
+					if (prompt === "" || outputPath === "") {
+						addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: generate_image failed - prompt and tmpfs_output_path are required`)
+						return
 					}
-					await waitForI2ILoop()
-					if (!!i2i64) {
-						let aspectI2I = action?.args?.aspect
-						generate_new_image(preparePromptForImageGen(i2iPrompt), i2i64, true, calcImageSizing(aspectI2I))
-						addThought(currentChainOfThought, createSysPrompt, `Image generated`)
+					let inputImages = []
+					let inputPaths = Array.isArray(args.tmpfs_input_image_paths) ? args.tmpfs_input_image_paths : []
+					for (let index = 0; index < inputPaths.length; index++) {
+						let currentPath = `${inputPaths[index] || ""}`.trim()
+						if (currentPath !== "") {
+							inputImages.push(await readTmpfsPathAsBase64(currentPath))
+						}
 					}
-					else {
-						addThought(currentChainOfThought, createSysPrompt, `User did not select an image - no image generated`)
+					if (!!args.prompt_user_for_image) {
+						addThought(currentChainOfThought, createSysPrompt, `Please click an image as an additional source for tmpfs image generation`, true)
+						let { agentVisualiser } = agentRunState;
+						if (typeof agentVisualiser === "function") {
+							await agentVisualiser(objRefAssign({}, agentRunState, { agentRunState }))
+						}
+						let selectedImage = await waitForUserImageSelection()
+						if (!!selectedImage) {
+							inputImages.unshift(normalizeBase64ImageData(selectedImage))
+						}
 					}
-					i2i64 = undefined;
-					waitingFori2iSelection = false;
+					let sourceImage = inputImages.length > 0 ? inputImages[0] : ""
+					let outputBase64 = await generateA1111ImageBase64(preparePromptForImageGen(prompt), args.aspect, sourceImage, inputImages.slice(1))
+					let writeResult = await writeBase64ToTmpfs(outputPath, outputBase64)
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: generate_image result\n${objToText(writeResult)}`)
 				}
-				else {
-					addThought(currentChainOfThought, createSysPrompt, `No prompt provided, image not generated`)
+				catch (e) {
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: generate_image failed - ${e?.message || e}`)
+				}
+			}
+		},
+		{
+			"name": "tmpfs_describe_image",
+			"description": "Describe an image in tmpfs using vision analysis.",
+			"args": {
+				"path": "<tmpfs image path>",
+				"question": "<optional focus question>"
+			},
+			"enabled": is_using_kcpp_with_tmpfs() && is_using_kcpp_with_vision(),
+			"executor": async (action) => {
+				try {
+					let tmpfsPath = `${action?.args?.path || ""}`.trim()
+					if (tmpfsPath === "") {
+						addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: describe_image failed - path is required`)
+						return
+					}
+					let analysisPrompt = "Describe the image in detail. Transcribe and include any text from the image in the description."
+					if (!!action?.args?.question) {
+						analysisPrompt += ` Specifically please focus on:\n\n${action?.args?.question}`
+					}
+					let base64Image = await readTmpfsPathAsBase64(tmpfsPath)
+					let analysisResult = await generateAndGetTextFromPrompt(`${createInstructPrompt(analysisPrompt)}${instructendplaceholder}${!!localsettings?.inject_jailbreak_instruct ? localsettings.custom_jailbreak_text : ""}`, undefined, [base64Image])
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: describe_image result\n${analysisResult}`)
+				}
+				catch (e) {
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: describe_image failed - ${e?.message || e}`)
 				}
 			}
 		},
@@ -1117,21 +1497,66 @@ let getCommands = (agentRunState) => {
 			}
 		},
 		{
-			"name": "speak",
-			"description": "Say something to the user using text to speech.",
+			"name": "generate_tts",
+			"description": "Generate speech with Kobold TTS and play it for the user.",
 			"args": {
-				"textToSay": "<text to say>"
+				"textToSay": "<text to say>",
+				"voice": {
+					description: "<voice from KoboldCpp speakers list>",
+					type: "string",
+					enum: getKcppVoiceOptionsForCommand()
+				}
 			},
 			"outputVisibleToUser": true,
 			"enabled": localsettings.tts_mode == KCPP_TTS_ID, // Only enabled if local endpoint exists / is in use
-			"executor": (action) => {
+			"executor": async (action) => {
 				let textToSay = action?.args?.textToSay
 				if (!!textToSay) {
-					tts_speak(textToSay)
+					let voiceConfig = await resolveKcppVoiceForPayload(action?.args?.voice)
+					await tts_speak(textToSay, false, false, false, voiceConfig.voice)
 					addThought(currentChainOfThought, createSysPrompt, `Text has been spoken`)
 				}
 				else {
 					addThought(currentChainOfThought, createSysPrompt, `No text provided, nothing has been said`)
+				}
+			}
+		},
+		{
+			"name": "tmpfs_generate_tts",
+			"description": "Generate TTS audio with Kobold and save it to a tmpfs output path.",
+			"args": {
+				"textToSay": "<text to say>",
+				"voice": {
+					description: "<voice from KoboldCpp speakers list>",
+					type: "string",
+					enum: getKcppVoiceOptionsForCommand()
+				},
+				"tmpfs_output_path": "<tmpfs output path for generated audio (.wav)>"
+			},
+			"enabled": (localsettings.tts_mode == KCPP_TTS_ID) && is_using_kcpp_with_tmpfs(),
+			"executor": async (action) => {
+				try {
+					let textToSay = `${action?.args?.textToSay || ""}`.trim()
+					let outputPath = `${action?.args?.tmpfs_output_path || ""}`.trim()
+					if (textToSay === "" || outputPath === "") {
+						addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: generate_tts failed - textToSay and tmpfs_output_path are required`)
+						return
+					}
+					let voiceConfig = await resolveKcppVoiceForPayload(action?.args?.voice)
+					let payload = {
+						input: textToSay,
+						voice: voiceConfig.voice,
+					}
+					if (!!voiceConfig.speaker_json) {
+						payload.speaker_json = voiceConfig.speaker_json
+					}
+					let response = await postKcppJson(koboldcpp_tts_endpoint, payload)
+					let audioBuffer = await response.arrayBuffer()
+					let result = await window.tmpfsClient.write(outputPath, new Uint8Array(audioBuffer))
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: generate_tts result\n${objToText(result)}`)
+				}
+				catch (e) {
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: generate_tts failed - ${e?.message || e}`)
 				}
 			}
 		}
