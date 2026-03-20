@@ -1263,11 +1263,12 @@ def get_capabilities():
     has_guidance = True if args.enableguidance else False
     has_jinja = True if args.jinja else False
     has_mcp = True if (args.mcpfile and mcp_connections and len(mcp_connections) > 0) else False
+    has_tmpfs = tmpfs_is_enabled()
     has_server_saving = args.admin and not (args.admindatadir == "")
     had_admin_with_hf = args.adminallowhf
     admin_type = (2 if args.admin and args.admindir and args.adminpassword else (1 if args.admin and args.admindir else 0))
     has_router = True if args.routermode else False
-    return {"result":"KoboldCpp", "version":KcppVersion, "protected":has_password, "llm":has_llm, "txt2img":has_txt2img,"vision":has_vision_support,"audio":has_audio_support,"transcribe":has_whisper,"multiplayer":has_multiplayer,"websearch":has_search,"tts":has_tts, "embeddings":has_embeddings, "music":has_music, "savedata":(savedata_obj is not None), "admin": admin_type, "router":has_router, "guidance": has_guidance, "jinja": has_jinja, "mcp":has_mcp, "hasServerSaving": has_server_saving, "hasAdminWithHF": had_admin_with_hf, "embeddingModel": embeddingModel}
+    return {"result":"KoboldCpp", "version":KcppVersion, "protected":has_password, "llm":has_llm, "txt2img":has_txt2img,"vision":has_vision_support,"audio":has_audio_support,"transcribe":has_whisper,"multiplayer":has_multiplayer,"websearch":has_search,"tts":has_tts, "embeddings":has_embeddings, "music":has_music, "tmpfs":has_tmpfs, "savedata":(savedata_obj is not None), "admin": admin_type, "router":has_router, "guidance": has_guidance, "jinja": has_jinja, "mcp":has_mcp, "hasServerSaving": has_server_saving, "hasAdminWithHF": had_admin_with_hf, "embeddingModel": embeddingModel}
 
 
 def scan_directory(dirpath, valid_exts, depth):
@@ -4324,6 +4325,15 @@ def tmpfs_snapshot_state():
         "initialized": bool(tmpfs.get("initialized", False)) if isinstance(tmpfs, dict) else False,
     }
 
+def tmpfs_is_enabled():
+    parsed_args = globals().get("args", None)
+    configured_max_mb = max(0, tryparseint(getattr(parsed_args, "tmpfsmaxsize", 0), 0))
+    if configured_max_mb <= 0:
+        return False
+    with tmpfs_lock:
+        tmpfs = tmpfs_snapshot_state()
+    return tryparseint(tmpfs.get("max_size_bytes", 0), 0) > 0
+
 def tmpfs_normalize_path(raw_path, allow_root=False):
     if raw_path is None:
         raise ValueError("Missing tmpfs path.")
@@ -4572,6 +4582,11 @@ def initialize_tmpfs_from_args():
     with tmpfs_lock:
         current_tmpfs = tmpfs_snapshot_state()
         if current_tmpfs["initialized"]:
+            if configured_limit <= 0:
+                if current_tmpfs["current_size_bytes"] > 0:
+                    utfprint("Warning: Tmpfs disabled because --tmpfsmaxsize is not set (> 0 required).")
+                tmpfs_set_state(tmpfs_make_state(0, "", initialized=True))
+                return
             if configured_limit > 0:
                 current_tmpfs["max_size_bytes"] = configured_limit
             if source_dir and not current_tmpfs["source_dir"]:
@@ -4579,6 +4594,12 @@ def initialize_tmpfs_from_args():
             if current_tmpfs["max_size_bytes"] > 0 and current_tmpfs["current_size_bytes"] > current_tmpfs["max_size_bytes"]:
                 utfprint("Warning: Existing tmpfs contents exceed the configured size limit – limit ignored.")
             tmpfs_set_state(current_tmpfs)
+            return
+
+        if configured_limit <= 0:
+            if source_dir:
+                utfprint("Warning: Ignoring --tmpfsdir because --tmpfsmaxsize is not set (> 0 required to enable tmpfs).")
+            tmpfs_set_state(tmpfs_make_state(0, "", initialized=True))
             return
 
         tmpfs = tmpfs_make_state(configured_limit, source_dir, initialized=True)
@@ -5758,110 +5779,144 @@ Change Mode<br>
                     response_body = (f"Resource not found").encode()
 
         elif clean_path == "/tmp.zip":
-            parsed_url = urllib.parse.urlparse(self.path)
-            parsed_dict = urllib.parse.parse_qs(parsed_url.query)
-            zip_dir = str(parsed_dict.get('dir', [''])[0])
-            zip_body = tmpfs_build_zip_bytes(zip_dir)
-            self.send_response(200)
-            self.send_header('content-length', str(len(zip_body)))
-            self.send_header('Content-Disposition', 'attachment; filename="tmpfs.zip"')
-            self.end_headers(content_type='application/zip')
-            self.wfile.write(zip_body)
-            return
+            if not tmpfs_is_enabled():
+                response_code = 503
+                response_body = ("Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it.").encode()
+                content_type = 'text/plain'
+            else:
+                parsed_url = urllib.parse.urlparse(self.path)
+                parsed_dict = urllib.parse.parse_qs(parsed_url.query)
+                zip_dir = str(parsed_dict.get('dir', [''])[0])
+                zip_body = tmpfs_build_zip_bytes(zip_dir)
+                self.send_response(200)
+                self.send_header('content-length', str(len(zip_body)))
+                self.send_header('Content-Disposition', 'attachment; filename="tmpfs.zip"')
+                self.end_headers(content_type='application/zip')
+                self.wfile.write(zip_body)
+                return
 
         elif clean_path.startswith('/tmp/'):
             content_type = 'application/octet-stream'
-            try:
-                tmpfs_path = tmpfs_normalize_path(clean_path[4:])
-                _, tmpfs_entry = tmpfs_get_file(tmpfs_path)
-                response_body = tmpfs_entry.get("content", b"")
-                detected_type = mimetypes.guess_type(tmpfs_path)[0]
-                if detected_type:
-                    content_type = detected_type
-            except Exception as e:
-                utfprint("Error getting tmpfs resource: " + str(e))
-                response_code = 404
-                response_body = (f"Resource not found").encode()
+            if not tmpfs_is_enabled():
+                response_code = 503
+                response_body = ("Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it.").encode()
                 content_type = 'text/plain'
+            else:
+                try:
+                    tmpfs_path = tmpfs_normalize_path(clean_path[4:])
+                    _, tmpfs_entry = tmpfs_get_file(tmpfs_path)
+                    response_body = tmpfs_entry.get("content", b"")
+                    detected_type = mimetypes.guess_type(tmpfs_path)[0]
+                    if detected_type:
+                        content_type = detected_type
+                except Exception as e:
+                    utfprint("Error getting tmpfs resource: " + str(e))
+                    response_code = 404
+                    response_body = (f"Resource not found").encode()
+                    content_type = 'text/plain'
 
         elif clean_path.endswith('/api/extra/tmpfs/files'):
-            parsed_url = urllib.parse.urlparse(self.path)
-            parsed_dict = urllib.parse.parse_qs(parsed_url.query)
-            pattern = str(parsed_dict.get('pattern', ['*'])[0])
-            response_body = (json.dumps({"paths": tmpfs_list_paths(pattern)}).encode())
+            if not tmpfs_is_enabled():
+                response_code = 503
+                response_body = (json.dumps({"error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
+            else:
+                parsed_url = urllib.parse.urlparse(self.path)
+                parsed_dict = urllib.parse.parse_qs(parsed_url.query)
+                pattern = str(parsed_dict.get('pattern', ['*'])[0])
+                response_body = (json.dumps({"paths": tmpfs_list_paths(pattern)}).encode())
 
         elif clean_path.endswith('/api/extra/tmpfs/search'):
-            parsed_url = urllib.parse.urlparse(self.path)
-            parsed_dict = urllib.parse.parse_qs(parsed_url.query)
-            pattern = str(parsed_dict.get('pattern', ['*'])[0])
-            path_pattern = str(parsed_dict.get('path_pattern', ['*'])[0])
-            max_results = tryparseint(parsed_dict.get('max_results', [100])[0], 100)
-            response_body = (json.dumps({"matches": tmpfs_search_content(pattern, path_pattern, max_results)}).encode())
+            if not tmpfs_is_enabled():
+                response_code = 503
+                response_body = (json.dumps({"error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
+            else:
+                parsed_url = urllib.parse.urlparse(self.path)
+                parsed_dict = urllib.parse.parse_qs(parsed_url.query)
+                pattern = str(parsed_dict.get('pattern', ['*'])[0])
+                path_pattern = str(parsed_dict.get('path_pattern', ['*'])[0])
+                max_results = tryparseint(parsed_dict.get('max_results', [100])[0], 100)
+                response_body = (json.dumps({"matches": tmpfs_search_content(pattern, path_pattern, max_results)}).encode())
 
         elif clean_path.endswith('/api/extra/tmpfs/metadata'):
-            parsed_url = urllib.parse.urlparse(self.path)
-            parsed_dict = urllib.parse.parse_qs(parsed_url.query)
-            try:
-                response_body = (json.dumps(tmpfs_metadata(parsed_dict.get('path', [''])[0])).encode())
-            except FileNotFoundError as e:
-                response_code = 404
-                response_body = (json.dumps({"error": str(e)}).encode())
-            except Exception as e:
-                response_code = 400
-                response_body = (json.dumps({"error": str(e)}).encode())
+            if not tmpfs_is_enabled():
+                response_code = 503
+                response_body = (json.dumps({"error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
+            else:
+                parsed_url = urllib.parse.urlparse(self.path)
+                parsed_dict = urllib.parse.parse_qs(parsed_url.query)
+                try:
+                    response_body = (json.dumps(tmpfs_metadata(parsed_dict.get('path', [''])[0])).encode())
+                except FileNotFoundError as e:
+                    response_code = 404
+                    response_body = (json.dumps({"error": str(e)}).encode())
+                except Exception as e:
+                    response_code = 400
+                    response_body = (json.dumps({"error": str(e)}).encode())
 
         elif clean_path.endswith('/api/extra/tmpfs/content'):
-            parsed_url = urllib.parse.urlparse(self.path)
-            parsed_dict = urllib.parse.parse_qs(parsed_url.query)
-            try:
-                normalized_path, all_lines, selected_lines = tmpfs_read_lines(
-                    parsed_dict.get('path', [''])[0],
-                    parsed_dict.get('start', [1])[0],
-                    parsed_dict.get('end', [None])[0],
-                )
-                response_body = (json.dumps({
-                    "path": normalized_path,
-                    "start_line": selected_lines[0]["line"] if selected_lines else 0,
-                    "end_line": selected_lines[-1]["line"] if selected_lines else 0,
-                    "total_lines": len(all_lines),
-                    "lines": selected_lines,
-                }).encode())
-            except FileNotFoundError as e:
-                response_code = 404
-                response_body = (json.dumps({"error": str(e)}).encode())
-            except Exception as e:
-                response_code = 400
-                response_body = (json.dumps({"error": str(e)}).encode())
+            if not tmpfs_is_enabled():
+                response_code = 503
+                response_body = (json.dumps({"error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
+            else:
+                parsed_url = urllib.parse.urlparse(self.path)
+                parsed_dict = urllib.parse.parse_qs(parsed_url.query)
+                try:
+                    normalized_path, all_lines, selected_lines = tmpfs_read_lines(
+                        parsed_dict.get('path', [''])[0],
+                        parsed_dict.get('start', [1])[0],
+                        parsed_dict.get('end', [None])[0],
+                    )
+                    response_body = (json.dumps({
+                        "path": normalized_path,
+                        "start_line": selected_lines[0]["line"] if selected_lines else 0,
+                        "end_line": selected_lines[-1]["line"] if selected_lines else 0,
+                        "total_lines": len(all_lines),
+                        "lines": selected_lines,
+                    }).encode())
+                except FileNotFoundError as e:
+                    response_code = 404
+                    response_body = (json.dumps({"error": str(e)}).encode())
+                except Exception as e:
+                    response_code = 400
+                    response_body = (json.dumps({"error": str(e)}).encode())
 
         elif clean_path.endswith('/api/extra/tmpfs/url'):
-            parsed_url = urllib.parse.urlparse(self.path)
-            parsed_dict = urllib.parse.parse_qs(parsed_url.query)
-            try:
-                normalized_path = tmpfs_normalize_path(parsed_dict.get('path', [''])[0])
-                tmpfs_get_file(normalized_path)
-                response_body = (json.dumps({
-                    "path": normalized_path,
-                    "url": self.build_external_url(f"/tmp{normalized_path}"),
-                }).encode())
-            except FileNotFoundError as e:
-                response_code = 404
-                response_body = (json.dumps({"error": str(e)}).encode())
-            except Exception as e:
-                response_code = 400
-                response_body = (json.dumps({"error": str(e)}).encode())
+            if not tmpfs_is_enabled():
+                response_code = 503
+                response_body = (json.dumps({"error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
+            else:
+                parsed_url = urllib.parse.urlparse(self.path)
+                parsed_dict = urllib.parse.parse_qs(parsed_url.query)
+                try:
+                    normalized_path = tmpfs_normalize_path(parsed_dict.get('path', [''])[0])
+                    tmpfs_get_file(normalized_path)
+                    response_body = (json.dumps({
+                        "path": normalized_path,
+                        "url": self.build_external_url(f"/tmp{normalized_path}"),
+                    }).encode())
+                except FileNotFoundError as e:
+                    response_code = 404
+                    response_body = (json.dumps({"error": str(e)}).encode())
+                except Exception as e:
+                    response_code = 400
+                    response_body = (json.dumps({"error": str(e)}).encode())
 
         elif clean_path.endswith('/api/extra/tmpfs/download'):
-            with tmpfs_lock:
-                tmpfs = tmpfs_snapshot_state()
-            parsed_url = urllib.parse.urlparse(self.path)
-            parsed_dict = urllib.parse.parse_qs(parsed_url.query)
-            zip_dir = str(parsed_dict.get('dir', [''])[0])
-            zip_url = self.build_external_url('/tmp.zip' + (f'?dir={urllib.parse.quote(zip_dir)}' if zip_dir else ''))
-            response_body = (json.dumps({
-                "url": zip_url,
-                "file_count": len(tmpfs["files"]),
-                "size_bytes": tmpfs["current_size_bytes"],
-            }).encode())
+            if not tmpfs_is_enabled():
+                response_code = 503
+                response_body = (json.dumps({"error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
+            else:
+                with tmpfs_lock:
+                    tmpfs = tmpfs_snapshot_state()
+                parsed_url = urllib.parse.urlparse(self.path)
+                parsed_dict = urllib.parse.parse_qs(parsed_url.query)
+                zip_dir = str(parsed_dict.get('dir', [''])[0])
+                zip_url = self.build_external_url('/tmp.zip' + (f'?dir={urllib.parse.quote(zip_dir)}' if zip_dir else ''))
+                response_body = (json.dumps({
+                    "url": zip_url,
+                    "file_count": len(tmpfs["files"]),
+                    "size_bytes": tmpfs["current_size_bytes"],
+                }).encode())
 
         elif clean_path in ["/noscript","noscript"]: #noscript webui
             self.noscript_webui()
@@ -6318,75 +6373,95 @@ Change Mode<br>
                 response_body = (json.dumps({"value": -1}).encode())
 
         elif self.path.endswith('/api/extra/tmpfs/write_lines'):
-            try:
-                tempbody = json.loads(body)
-                normalized_path = tmpfs_apply_line_updates(
-                    tempbody.get('path', ''),
-                    tempbody.get('lines', []),
-                    tempbody.get('start_line', 1),
-                    tempbody.get('append', False),
-                )
-                response_body = (json.dumps({"success": True, "path": normalized_path, "metadata": tmpfs_metadata(normalized_path)}).encode())
-            except FileNotFoundError as e:
-                response_code = 404
-                response_body = (json.dumps({"success": False, "error": str(e)}).encode())
-            except ValueError as e:
-                response_code = 507 if 'size limit exceeded' in str(e).lower() else 400
-                response_body = (json.dumps({"success": False, "error": str(e)}).encode())
-            except Exception as e:
-                response_code = 400
-                response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+            if not tmpfs_is_enabled():
+                response_code = 503
+                response_body = (json.dumps({"success": False, "error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
+            else:
+                try:
+                    tempbody = json.loads(body)
+                    normalized_path = tmpfs_apply_line_updates(
+                        tempbody.get('path', ''),
+                        tempbody.get('lines', []),
+                        tempbody.get('start_line', 1),
+                        tempbody.get('append', False),
+                    )
+                    response_body = (json.dumps({"success": True, "path": normalized_path, "metadata": tmpfs_metadata(normalized_path)}).encode())
+                except FileNotFoundError as e:
+                    response_code = 404
+                    response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+                except ValueError as e:
+                    response_code = 507 if 'size limit exceeded' in str(e).lower() else 400
+                    response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+                except Exception as e:
+                    response_code = 400
+                    response_body = (json.dumps({"success": False, "error": str(e)}).encode())
 
         elif self.path.endswith('/api/extra/tmpfs/delete'):
-            try:
-                tempbody = json.loads(body)
-                normalized_path = tmpfs_delete_file(tempbody.get('path', ''))
-                response_body = (json.dumps({"success": True, "path": normalized_path}).encode())
-            except FileNotFoundError as e:
-                response_code = 404
-                response_body = (json.dumps({"success": False, "error": str(e)}).encode())
-            except Exception as e:
-                response_code = 400
-                response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+            if not tmpfs_is_enabled():
+                response_code = 503
+                response_body = (json.dumps({"success": False, "error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
+            else:
+                try:
+                    tempbody = json.loads(body)
+                    normalized_path = tmpfs_delete_file(tempbody.get('path', ''))
+                    response_body = (json.dumps({"success": True, "path": normalized_path}).encode())
+                except FileNotFoundError as e:
+                    response_code = 404
+                    response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+                except Exception as e:
+                    response_code = 400
+                    response_body = (json.dumps({"success": False, "error": str(e)}).encode())
 
         elif self.path.endswith('/api/extra/tmpfs/write'):
-            try:
-                tempbody = json.loads(body)
-                normalized_path = tmpfs_write_file(tempbody.get('path', ''), tempbody.get('content', ''))
-                response_body = (json.dumps({"success": True, "path": normalized_path, "metadata": tmpfs_metadata(normalized_path)}).encode())
-            except ValueError as e:
-                response_code = 507 if 'size limit exceeded' in str(e).lower() else 400
-                response_body = (json.dumps({"success": False, "error": str(e)}).encode())
-            except Exception as e:
-                response_code = 400
-                response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+            if not tmpfs_is_enabled():
+                response_code = 503
+                response_body = (json.dumps({"success": False, "error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
+            else:
+                try:
+                    tempbody = json.loads(body)
+                    normalized_path = tmpfs_write_file(tempbody.get('path', ''), tempbody.get('content', ''))
+                    response_body = (json.dumps({"success": True, "path": normalized_path, "metadata": tmpfs_metadata(normalized_path)}).encode())
+                except ValueError as e:
+                    response_code = 507 if 'size limit exceeded' in str(e).lower() else 400
+                    response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+                except Exception as e:
+                    response_code = 400
+                    response_body = (json.dumps({"success": False, "error": str(e)}).encode())
 
         elif self.path.endswith('/api/extra/tmpfs/move'):
-            try:
-                tempbody = json.loads(body)
-                source_path, destination_path = tmpfs_move_file(tempbody.get('source', ''), tempbody.get('destination', ''))
-                response_body = (json.dumps({"success": True, "source": source_path, "destination": destination_path, "metadata": tmpfs_metadata(destination_path)}).encode())
-            except FileNotFoundError as e:
-                response_code = 404
-                response_body = (json.dumps({"success": False, "error": str(e)}).encode())
-            except Exception as e:
-                response_code = 400
-                response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+            if not tmpfs_is_enabled():
+                response_code = 503
+                response_body = (json.dumps({"success": False, "error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
+            else:
+                try:
+                    tempbody = json.loads(body)
+                    source_path, destination_path = tmpfs_move_file(tempbody.get('source', ''), tempbody.get('destination', ''))
+                    response_body = (json.dumps({"success": True, "source": source_path, "destination": destination_path, "metadata": tmpfs_metadata(destination_path)}).encode())
+                except FileNotFoundError as e:
+                    response_code = 404
+                    response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+                except Exception as e:
+                    response_code = 400
+                    response_body = (json.dumps({"success": False, "error": str(e)}).encode())
 
         elif self.path.endswith('/api/extra/tmpfs/copy'):
-            try:
-                tempbody = json.loads(body)
-                source_path, destination_path = tmpfs_copy_file(tempbody.get('source', ''), tempbody.get('destination', ''))
-                response_body = (json.dumps({"success": True, "source": source_path, "destination": destination_path, "metadata": tmpfs_metadata(destination_path)}).encode())
-            except FileNotFoundError as e:
-                response_code = 404
-                response_body = (json.dumps({"success": False, "error": str(e)}).encode())
-            except ValueError as e:
-                response_code = 507 if 'size limit exceeded' in str(e).lower() else 400
-                response_body = (json.dumps({"success": False, "error": str(e)}).encode())
-            except Exception as e:
-                response_code = 400
-                response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+            if not tmpfs_is_enabled():
+                response_code = 503
+                response_body = (json.dumps({"success": False, "error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
+            else:
+                try:
+                    tempbody = json.loads(body)
+                    source_path, destination_path = tmpfs_copy_file(tempbody.get('source', ''), tempbody.get('destination', ''))
+                    response_body = (json.dumps({"success": True, "source": source_path, "destination": destination_path, "metadata": tmpfs_metadata(destination_path)}).encode())
+                except FileNotFoundError as e:
+                    response_code = 404
+                    response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+                except ValueError as e:
+                    response_code = 507 if 'size limit exceeded' in str(e).lower() else 400
+                    response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+                except Exception as e:
+                    response_code = 400
+                    response_body = (json.dumps({"success": False, "error": str(e)}).encode())
 
         elif self.path.endswith('/api/extra/detokenize'):
             if not self.secure_endpoint():
