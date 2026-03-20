@@ -234,8 +234,9 @@ let openTmpfsEmbedByName = async (args = {}) => {
 		expandBtn.innerText = "↗"
 		expandBtn.title = "Open in new tab"
 		expandBtn.onclick = () => {
-			if (!!contentElem?.src) {
-				window.open(contentElem.src, "_blank", "noopener,noreferrer")
+			let srcUrl = container?.querySelector(".kcpp-tmpfs-embed-content")?.src
+			if (!!srcUrl) {
+				window.open(srcUrl, "_blank", "noopener,noreferrer")
 			}
 		}
 
