@@ -18,6 +18,7 @@ import ctypes
 import multiprocessing
 import math
 import re
+import fnmatch
 import argparse
 import platform
 import base64
@@ -35,6 +36,9 @@ import random
 import hashlib
 import urllib.parse
 import urllib.request
+import mimetypes
+import posixpath
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Tuple
@@ -79,8 +83,9 @@ extra_images_max = 4 # for kontext/qwen img
 KcppVersion = "1.110"
 showdebug = True
 kcpp_instance = None #global running instance
-global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(),"current_model":"initial_model", "swapReqType": None, "autoswapmode": False}
+global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(),"current_model":"initial_model", "swapReqType": None, "autoswapmode": False, "tmpfs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "initialized": False}}
 using_gui_launcher = False
+tmpfs_lock = threading.Lock()
 
 handle = None
 friendlymodelname = "inactive"
@@ -4282,6 +4287,330 @@ def get_my_epurl():
         epurl = f"{httpsaffix}://{args.host}:{displayedport}"
     return epurl
 
+def tmpfs_make_state(max_size_bytes=0, source_dir="", initialized=False):
+    return {
+        "files": {},
+        "current_size_bytes": 0,
+        "max_size_bytes": max(0, tryparseint(max_size_bytes, 0)),
+        "source_dir": source_dir or "",
+        "initialized": initialized,
+    }
+
+def tmpfs_to_bytes(content):
+    if isinstance(content, bytes):
+        return content
+    if content is None:
+        return b""
+    return str(content).encode("utf-8")
+
+def tmpfs_snapshot_state():
+    tmpfs = global_memory.get("tmpfs", {}) if global_memory else {}
+    files = {}
+    if isinstance(tmpfs, dict):
+        for path, entry in dict(tmpfs.get("files", {})).items():
+            if not isinstance(entry, dict):
+                continue
+            content_bytes = tmpfs_to_bytes(entry.get("content", b""))
+            files[path] = {
+                "content": content_bytes,
+                "modified": entry.get("modified", ""),
+                "size": tryparseint(entry.get("size", len(content_bytes)), len(content_bytes)),
+            }
+    return {
+        "files": files,
+        "current_size_bytes": tryparseint(tmpfs.get("current_size_bytes", 0), 0) if isinstance(tmpfs, dict) else 0,
+        "max_size_bytes": tryparseint(tmpfs.get("max_size_bytes", 0), 0) if isinstance(tmpfs, dict) else 0,
+        "source_dir": tmpfs.get("source_dir", "") if isinstance(tmpfs, dict) else "",
+        "initialized": bool(tmpfs.get("initialized", False)) if isinstance(tmpfs, dict) else False,
+    }
+
+def tmpfs_normalize_path(raw_path, allow_root=False):
+    if raw_path is None:
+        raise ValueError("Missing tmpfs path.")
+    path = urllib.parse.unquote(str(raw_path)).replace("\\", "/")
+    if path.startswith("/tmp/"):
+        path = path[4:]
+    elif path == "/tmp":
+        path = "/"
+    normalized = posixpath.normpath("/" + path.lstrip("/"))
+    if normalized in ("/..", "..") or normalized.startswith("/../"):
+        raise ValueError("Invalid tmpfs path.")
+    if not allow_root and normalized == "/":
+        raise ValueError("Tmpfs path must target a file.")
+    return normalized
+
+def tmpfs_is_binary(content_bytes):
+    return b"\x00" in content_bytes
+
+def tmpfs_decode_text(content_bytes):
+    return tmpfs_to_bytes(content_bytes).decode("utf-8", "replace")
+
+def tmpfs_count_lines(content_bytes):
+    if tmpfs_is_binary(content_bytes):
+        return 0
+    return len(tmpfs_decode_text(content_bytes).splitlines())
+
+def tmpfs_set_state(tmpfs_state):
+    if global_memory is not None:
+        global_memory["tmpfs"] = tmpfs_state
+
+def tmpfs_get_file(path):
+    normalized_path = tmpfs_normalize_path(path)
+    with tmpfs_lock:
+        tmpfs = tmpfs_snapshot_state()
+        entry = tmpfs["files"].get(normalized_path)
+    if entry is None:
+        raise FileNotFoundError(f"Tmpfs file not found: {normalized_path}")
+    return normalized_path, entry
+
+def tmpfs_write_file(path, content, modified=None):
+    normalized_path = tmpfs_normalize_path(path)
+    content_bytes = tmpfs_to_bytes(content)
+    with tmpfs_lock:
+        tmpfs = tmpfs_snapshot_state()
+        files = tmpfs["files"]
+        old_size = files.get(normalized_path, {}).get("size", 0)
+        new_total = tmpfs["current_size_bytes"] - old_size + len(content_bytes)
+        max_size = tmpfs["max_size_bytes"]
+        if max_size > 0 and new_total > max_size:
+            raise ValueError(f"Tmpfs size limit exceeded ({new_total} > {max_size} bytes).")
+        files[normalized_path] = {
+            "content": content_bytes,
+            "modified": modified or datetime.now(timezone.utc).isoformat(),
+            "size": len(content_bytes),
+        }
+        tmpfs["current_size_bytes"] = new_total
+        tmpfs["initialized"] = True
+        tmpfs_set_state(tmpfs)
+    return normalized_path
+
+def tmpfs_delete_file(path):
+    normalized_path = tmpfs_normalize_path(path)
+    with tmpfs_lock:
+        tmpfs = tmpfs_snapshot_state()
+        files = tmpfs["files"]
+        if normalized_path not in files:
+            raise FileNotFoundError(f"Tmpfs file not found: {normalized_path}")
+        removed_size = files[normalized_path].get("size", len(files[normalized_path].get("content", b"")))
+        del files[normalized_path]
+        tmpfs["current_size_bytes"] = max(0, tmpfs["current_size_bytes"] - removed_size)
+        tmpfs["initialized"] = True
+        tmpfs_set_state(tmpfs)
+    return normalized_path
+
+def tmpfs_copy_file(source_path, destination_path):
+    normalized_source = tmpfs_normalize_path(source_path)
+    normalized_destination = tmpfs_normalize_path(destination_path)
+    with tmpfs_lock:
+        tmpfs = tmpfs_snapshot_state()
+        files = tmpfs["files"]
+        if normalized_source not in files:
+            raise FileNotFoundError(f"Tmpfs file not found: {normalized_source}")
+        source_entry = files[normalized_source]
+        destination_size = files.get(normalized_destination, {}).get("size", 0)
+        new_total = tmpfs["current_size_bytes"] - destination_size + source_entry["size"]
+        max_size = tmpfs["max_size_bytes"]
+        if max_size > 0 and new_total > max_size:
+            raise ValueError(f"Tmpfs size limit exceeded ({new_total} > {max_size} bytes).")
+        files[normalized_destination] = {
+            "content": source_entry["content"],
+            "modified": datetime.now(timezone.utc).isoformat(),
+            "size": source_entry["size"],
+        }
+        tmpfs["current_size_bytes"] = new_total
+        tmpfs["initialized"] = True
+        tmpfs_set_state(tmpfs)
+    return normalized_source, normalized_destination
+
+def tmpfs_move_file(source_path, destination_path):
+    normalized_source = tmpfs_normalize_path(source_path)
+    normalized_destination = tmpfs_normalize_path(destination_path)
+    with tmpfs_lock:
+        tmpfs = tmpfs_snapshot_state()
+        files = tmpfs["files"]
+        if normalized_source not in files:
+            raise FileNotFoundError(f"Tmpfs file not found: {normalized_source}")
+        source_entry = files[normalized_source]
+        destination_size = files.get(normalized_destination, {}).get("size", 0)
+        if normalized_destination != normalized_source:
+            del files[normalized_source]
+            new_total = tmpfs["current_size_bytes"] - destination_size
+        else:
+            new_total = tmpfs["current_size_bytes"]
+        files[normalized_destination] = {
+            "content": source_entry["content"],
+            "modified": datetime.now(timezone.utc).isoformat(),
+            "size": source_entry["size"],
+        }
+        tmpfs["current_size_bytes"] = max(0, new_total)
+        tmpfs["initialized"] = True
+        tmpfs_set_state(tmpfs)
+    return normalized_source, normalized_destination
+
+def tmpfs_list_paths(pattern="*"):
+    wildcard = pattern or "*"
+    with tmpfs_lock:
+        tmpfs = tmpfs_snapshot_state()
+        paths = sorted(tmpfs["files"].keys())
+    return [path for path in paths if fnmatch.fnmatch(path, wildcard) or fnmatch.fnmatch(path.lstrip("/"), wildcard)]
+
+def tmpfs_search_content(pattern="*", path_pattern="*", max_results=100):
+    wildcard = pattern or "*"
+    path_glob = path_pattern or "*"
+    max_hits = max(1, tryparseint(max_results, 100))
+    with tmpfs_lock:
+        tmpfs = tmpfs_snapshot_state()
+        items = sorted(tmpfs["files"].items())
+    matches = []
+    for path, entry in items:
+        if not (fnmatch.fnmatch(path, path_glob) or fnmatch.fnmatch(path.lstrip("/"), path_glob)):
+            continue
+        content_bytes = entry.get("content", b"")
+        if tmpfs_is_binary(content_bytes):
+            continue
+        for line_number, line_content in enumerate(tmpfs_decode_text(content_bytes).splitlines(), start=1):
+            if fnmatch.fnmatch(line_content, wildcard):
+                matches.append({
+                    "path": path,
+                    "line_start": line_number,
+                    "line_end": line_number,
+                    "snippet": line_content,
+                })
+                if len(matches) >= max_hits:
+                    return matches
+    return matches
+
+def tmpfs_read_lines(path, start_line=1, end_line=None):
+    normalized_path, entry = tmpfs_get_file(path)
+    content_bytes = entry.get("content", b"")
+    if tmpfs_is_binary(content_bytes):
+        raise ValueError(f"Tmpfs file is binary and cannot be read as lines: {normalized_path}")
+    lines = tmpfs_decode_text(content_bytes).splitlines()
+    start_idx = max(1, tryparseint(start_line, 1))
+    end_idx = len(lines) if end_line is None else max(start_idx, tryparseint(end_line, start_idx))
+    selected = []
+    for line_number in range(start_idx, min(end_idx, len(lines)) + 1):
+        selected.append({"line": line_number, "content": lines[line_number - 1]})
+    return normalized_path, lines, selected
+
+def tmpfs_apply_line_updates(path, line_updates, start_line=1, append=False):
+    normalized_path = tmpfs_normalize_path(path)
+    try:
+        _, entry = tmpfs_get_file(normalized_path)
+        existing_bytes = entry.get("content", b"")
+    except FileNotFoundError:
+        existing_bytes = b""
+    if tmpfs_is_binary(existing_bytes):
+        raise ValueError(f"Tmpfs file is binary and cannot be modified by line: {normalized_path}")
+    existing_lines = tmpfs_decode_text(existing_bytes).splitlines()
+    resolved_updates = []
+    next_line = max(1, tryparseint(start_line, 1))
+    if append:
+        next_line = len(existing_lines) + 1
+    if isinstance(line_updates, dict):
+        for line_number, content in sorted(line_updates.items(), key=lambda item: tryparseint(item[0], 0)):
+            resolved_updates.append((max(1, tryparseint(line_number, next_line)), str(content)))
+    elif isinstance(line_updates, list):
+        for item in line_updates:
+            if isinstance(item, dict):
+                line_number = max(1, tryparseint(item.get("line", next_line), next_line))
+                content = str(item.get("content", ""))
+                resolved_updates.append((line_number, content))
+                next_line = line_number + 1
+            else:
+                resolved_updates.append((next_line, str(item)))
+                next_line += 1
+    else:
+        raise ValueError("Line updates must be a list or object.")
+    for line_number, content in resolved_updates:
+        while len(existing_lines) < (line_number - 1):
+            existing_lines.append("")
+        if len(existing_lines) == (line_number - 1):
+            existing_lines.append(content)
+        else:
+            existing_lines[line_number - 1] = content
+    tmpfs_write_file(normalized_path, "\n".join(existing_lines))
+    return normalized_path
+
+def tmpfs_metadata(path):
+    normalized_path, entry = tmpfs_get_file(path)
+    content_bytes = entry.get("content", b"")
+    return {
+        "path": normalized_path,
+        "last_modified": entry.get("modified", ""),
+        "size_bytes": entry.get("size", len(content_bytes)),
+        "total_lines": tmpfs_count_lines(content_bytes),
+        "binary": tmpfs_is_binary(content_bytes),
+    }
+
+def tmpfs_build_zip_bytes(dir_prefix=""):
+    prefix = (tmpfs_normalize_path(dir_prefix) + "/").lstrip("/") if dir_prefix and dir_prefix.strip("/") else ""
+    with tmpfs_lock:
+        tmpfs = tmpfs_snapshot_state()
+        items = sorted(
+            ((p, e) for p, e in tmpfs["files"].items() if not prefix or p.lstrip("/").startswith(prefix)),
+            key=lambda x: x[0],
+        )
+    archive_buffer = io.BytesIO()
+    with zipfile.ZipFile(archive_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zip_file:
+        for path, entry in items:
+            arc_name = path.lstrip("/")
+            info = zipfile.ZipInfo(arc_name)
+            try:
+                modified_dt = datetime.fromisoformat(entry.get("modified", "").replace("Z", "+00:00"))
+                info.date_time = modified_dt.astimezone().timetuple()[:6]
+            except Exception:
+                info.date_time = datetime.now().timetuple()[:6]
+            info.compress_type = zipfile.ZIP_DEFLATED
+            zip_file.writestr(info, entry.get("content", b""))
+    return archive_buffer.getvalue()
+
+def initialize_tmpfs_from_args():
+    configured_limit = max(0, tryparseint(getattr(args, "tmpfsmaxsize", 0), 0)) * 1024 * 1024
+    configured_source = getattr(args, "tmpfsdir", "") or ""
+    source_dir = os.path.abspath(configured_source) if configured_source else ""
+    with tmpfs_lock:
+        current_tmpfs = tmpfs_snapshot_state()
+        if current_tmpfs["initialized"]:
+            if configured_limit > 0:
+                current_tmpfs["max_size_bytes"] = configured_limit
+            if source_dir and not current_tmpfs["source_dir"]:
+                current_tmpfs["source_dir"] = source_dir
+            if current_tmpfs["max_size_bytes"] > 0 and current_tmpfs["current_size_bytes"] > current_tmpfs["max_size_bytes"]:
+                utfprint("Warning: Existing tmpfs contents exceed the configured size limit – limit ignored.")
+            tmpfs_set_state(current_tmpfs)
+            return
+
+        tmpfs = tmpfs_make_state(configured_limit, source_dir, initialized=True)
+        if source_dir:
+            if not os.path.isdir(source_dir):
+                utfprint(f"Warning: Tmpfs source directory does not exist: {source_dir} – starting with empty tmpfs.")
+                tmpfs_set_state(tmpfs)
+                return
+            for root, _, filenames in os.walk(source_dir):
+                for filename in filenames:
+                    disk_path = os.path.join(root, filename)
+                    if not os.path.isfile(disk_path):
+                        continue
+                    try:
+                        relative_path = os.path.relpath(disk_path, source_dir).replace("\\", "/")
+                        virtual_path = tmpfs_normalize_path(relative_path)
+                        with open(disk_path, mode="rb") as file_handle:
+                            content_bytes = file_handle.read()
+                        new_total = tmpfs["current_size_bytes"] + len(content_bytes)
+                        if tmpfs["max_size_bytes"] > 0 and new_total > tmpfs["max_size_bytes"]:
+                            utfprint(f"Warning: Tmpfs size limit reached while loading {disk_path} – skipping remaining files.")
+                            break
+                        tmpfs["files"][virtual_path] = {
+                            "content": content_bytes,
+                            "modified": datetime.fromtimestamp(os.path.getmtime(disk_path), timezone.utc).isoformat(),
+                            "size": len(content_bytes),
+                        }
+                        tmpfs["current_size_bytes"] += len(content_bytes)
+                    except Exception as load_err:
+                        utfprint(f"Warning: Could not load tmpfs file {disk_path}: {load_err} – skipping.")
+        tmpfs_set_state(tmpfs)
+
 proxy_reload_lock = threading.Lock()
 ###########################################################
 ###   A simple reverse proxy used in Kcpp Router mode   ###
@@ -5189,6 +5518,13 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             return False
         return True
 
+    def build_external_url(self, target_path):
+        forwarded_proto = self.headers.get('X-Forwarded-Proto', '')
+        scheme = forwarded_proto.split(',')[0].strip() if forwarded_proto else ("https" if sslvalid else "http")
+        host = self.headers.get('X-Forwarded-Host') or self.headers.get('Host') or f"localhost:{self.port}"
+        host = host.split(',')[0].strip()
+        return f"{scheme}://{host}{target_path}"
+
     def noscript_webui(self):
         global modelbusy, sslvalid
         parsed_url = urllib.parse.urlparse(self.path)
@@ -5367,6 +5703,7 @@ Change Mode<br>
 
         clean_path = clean_path.rstrip('/')
         response_body = None
+        response_code = 200
         content_type = 'application/json'
         content_encoding = None
 
@@ -5409,11 +5746,8 @@ Change Mode<br>
                 response_body = (f"Resource not found").encode()
             else:
                 try:
-                    import mimetypes
                     with open(resPath, mode='rb') as f:
                         resData = f.read()
-                        # resData = resData.decode("UTF-8","ignore")
-                        # response_body = resData.encode()
                         response_body = resData
                         try:
                             content_type = mimetypes.guess_type(resPath)[0]
@@ -5422,6 +5756,112 @@ Change Mode<br>
                 except Exception as e:
                     utfprint("Error getting resource: " + str(e))
                     response_body = (f"Resource not found").encode()
+
+        elif clean_path == "/tmp.zip":
+            parsed_url = urllib.parse.urlparse(self.path)
+            parsed_dict = urllib.parse.parse_qs(parsed_url.query)
+            zip_dir = str(parsed_dict.get('dir', [''])[0])
+            zip_body = tmpfs_build_zip_bytes(zip_dir)
+            self.send_response(200)
+            self.send_header('content-length', str(len(zip_body)))
+            self.send_header('Content-Disposition', 'attachment; filename="tmpfs.zip"')
+            self.end_headers(content_type='application/zip')
+            self.wfile.write(zip_body)
+            return
+
+        elif clean_path.startswith('/tmp/'):
+            content_type = 'application/octet-stream'
+            try:
+                tmpfs_path = tmpfs_normalize_path(clean_path[4:])
+                _, tmpfs_entry = tmpfs_get_file(tmpfs_path)
+                response_body = tmpfs_entry.get("content", b"")
+                detected_type = mimetypes.guess_type(tmpfs_path)[0]
+                if detected_type:
+                    content_type = detected_type
+            except Exception as e:
+                utfprint("Error getting tmpfs resource: " + str(e))
+                response_code = 404
+                response_body = (f"Resource not found").encode()
+                content_type = 'text/plain'
+
+        elif clean_path.endswith('/api/extra/tmpfs/files'):
+            parsed_url = urllib.parse.urlparse(self.path)
+            parsed_dict = urllib.parse.parse_qs(parsed_url.query)
+            pattern = str(parsed_dict.get('pattern', ['*'])[0])
+            response_body = (json.dumps({"paths": tmpfs_list_paths(pattern)}).encode())
+
+        elif clean_path.endswith('/api/extra/tmpfs/search'):
+            parsed_url = urllib.parse.urlparse(self.path)
+            parsed_dict = urllib.parse.parse_qs(parsed_url.query)
+            pattern = str(parsed_dict.get('pattern', ['*'])[0])
+            path_pattern = str(parsed_dict.get('path_pattern', ['*'])[0])
+            max_results = tryparseint(parsed_dict.get('max_results', [100])[0], 100)
+            response_body = (json.dumps({"matches": tmpfs_search_content(pattern, path_pattern, max_results)}).encode())
+
+        elif clean_path.endswith('/api/extra/tmpfs/metadata'):
+            parsed_url = urllib.parse.urlparse(self.path)
+            parsed_dict = urllib.parse.parse_qs(parsed_url.query)
+            try:
+                response_body = (json.dumps(tmpfs_metadata(parsed_dict.get('path', [''])[0])).encode())
+            except FileNotFoundError as e:
+                response_code = 404
+                response_body = (json.dumps({"error": str(e)}).encode())
+            except Exception as e:
+                response_code = 400
+                response_body = (json.dumps({"error": str(e)}).encode())
+
+        elif clean_path.endswith('/api/extra/tmpfs/content'):
+            parsed_url = urllib.parse.urlparse(self.path)
+            parsed_dict = urllib.parse.parse_qs(parsed_url.query)
+            try:
+                normalized_path, all_lines, selected_lines = tmpfs_read_lines(
+                    parsed_dict.get('path', [''])[0],
+                    parsed_dict.get('start', [1])[0],
+                    parsed_dict.get('end', [None])[0],
+                )
+                response_body = (json.dumps({
+                    "path": normalized_path,
+                    "start_line": selected_lines[0]["line"] if selected_lines else 0,
+                    "end_line": selected_lines[-1]["line"] if selected_lines else 0,
+                    "total_lines": len(all_lines),
+                    "lines": selected_lines,
+                }).encode())
+            except FileNotFoundError as e:
+                response_code = 404
+                response_body = (json.dumps({"error": str(e)}).encode())
+            except Exception as e:
+                response_code = 400
+                response_body = (json.dumps({"error": str(e)}).encode())
+
+        elif clean_path.endswith('/api/extra/tmpfs/url'):
+            parsed_url = urllib.parse.urlparse(self.path)
+            parsed_dict = urllib.parse.parse_qs(parsed_url.query)
+            try:
+                normalized_path = tmpfs_normalize_path(parsed_dict.get('path', [''])[0])
+                tmpfs_get_file(normalized_path)
+                response_body = (json.dumps({
+                    "path": normalized_path,
+                    "url": self.build_external_url(f"/tmp{normalized_path}"),
+                }).encode())
+            except FileNotFoundError as e:
+                response_code = 404
+                response_body = (json.dumps({"error": str(e)}).encode())
+            except Exception as e:
+                response_code = 400
+                response_body = (json.dumps({"error": str(e)}).encode())
+
+        elif clean_path.endswith('/api/extra/tmpfs/download'):
+            with tmpfs_lock:
+                tmpfs = tmpfs_snapshot_state()
+            parsed_url = urllib.parse.urlparse(self.path)
+            parsed_dict = urllib.parse.parse_qs(parsed_url.query)
+            zip_dir = str(parsed_dict.get('dir', [''])[0])
+            zip_url = self.build_external_url('/tmp.zip' + (f'?dir={urllib.parse.quote(zip_dir)}' if zip_dir else ''))
+            response_body = (json.dumps({
+                "url": zip_url,
+                "file_count": len(tmpfs["files"]),
+                "size_bytes": tmpfs["current_size_bytes"],
+            }).encode())
 
         elif clean_path in ["/noscript","noscript"]: #noscript webui
             self.noscript_webui()
@@ -5798,7 +6238,7 @@ Change Mode<br>
             rp = f"Error: KoboldCpp HTTP Server is running, but this endpoint does not exist. Please check the URL and METHOD.<br><a href=\"/api\">[Read API documentation here]</a><br><br>Current path: {self.path}"
             self.wfile.write(rp.encode())
         else:
-            self.send_response(200)
+            self.send_response(response_code)
             self.send_header('content-length', str(len(response_body)))
             if content_encoding:
                 self.send_header('Content-Encoding', content_encoding)
@@ -5876,6 +6316,77 @@ Change Mode<br>
                 utfprint("Count Tokens - Body Error: " + str(e))
                 response_code = 400
                 response_body = (json.dumps({"value": -1}).encode())
+
+        elif self.path.endswith('/api/extra/tmpfs/write_lines'):
+            try:
+                tempbody = json.loads(body)
+                normalized_path = tmpfs_apply_line_updates(
+                    tempbody.get('path', ''),
+                    tempbody.get('lines', []),
+                    tempbody.get('start_line', 1),
+                    tempbody.get('append', False),
+                )
+                response_body = (json.dumps({"success": True, "path": normalized_path, "metadata": tmpfs_metadata(normalized_path)}).encode())
+            except FileNotFoundError as e:
+                response_code = 404
+                response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+            except ValueError as e:
+                response_code = 507 if 'size limit exceeded' in str(e).lower() else 400
+                response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+            except Exception as e:
+                response_code = 400
+                response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+
+        elif self.path.endswith('/api/extra/tmpfs/delete'):
+            try:
+                tempbody = json.loads(body)
+                normalized_path = tmpfs_delete_file(tempbody.get('path', ''))
+                response_body = (json.dumps({"success": True, "path": normalized_path}).encode())
+            except FileNotFoundError as e:
+                response_code = 404
+                response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+            except Exception as e:
+                response_code = 400
+                response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+
+        elif self.path.endswith('/api/extra/tmpfs/write'):
+            try:
+                tempbody = json.loads(body)
+                normalized_path = tmpfs_write_file(tempbody.get('path', ''), tempbody.get('content', ''))
+                response_body = (json.dumps({"success": True, "path": normalized_path, "metadata": tmpfs_metadata(normalized_path)}).encode())
+            except ValueError as e:
+                response_code = 507 if 'size limit exceeded' in str(e).lower() else 400
+                response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+            except Exception as e:
+                response_code = 400
+                response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+
+        elif self.path.endswith('/api/extra/tmpfs/move'):
+            try:
+                tempbody = json.loads(body)
+                source_path, destination_path = tmpfs_move_file(tempbody.get('source', ''), tempbody.get('destination', ''))
+                response_body = (json.dumps({"success": True, "source": source_path, "destination": destination_path, "metadata": tmpfs_metadata(destination_path)}).encode())
+            except FileNotFoundError as e:
+                response_code = 404
+                response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+            except Exception as e:
+                response_code = 400
+                response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+
+        elif self.path.endswith('/api/extra/tmpfs/copy'):
+            try:
+                tempbody = json.loads(body)
+                source_path, destination_path = tmpfs_copy_file(tempbody.get('source', ''), tempbody.get('destination', ''))
+                response_body = (json.dumps({"success": True, "source": source_path, "destination": destination_path, "metadata": tmpfs_metadata(destination_path)}).encode())
+            except FileNotFoundError as e:
+                response_code = 404
+                response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+            except ValueError as e:
+                response_code = 507 if 'size limit exceeded' in str(e).lower() else 400
+                response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+            except Exception as e:
+                response_code = 400
+                response_body = (json.dumps({"success": False, "error": str(e)}).encode())
 
         elif self.path.endswith('/api/extra/detokenize'):
             if not self.secure_endpoint():
@@ -10047,7 +10558,7 @@ def main(launch_args, default_args):
             input()
     else:  # manager command queue for admin mode
         with multiprocessing.Manager() as mp_manager:
-            global_memory = mp_manager.dict({"tunnel_url": "", "restart_target": "", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(),"current_model":"initial_model", "swapReqType": None, "autoswapmode": False})
+            global_memory = mp_manager.dict({"tunnel_url": "", "restart_target": "", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(),"current_model":"initial_model", "swapReqType": None, "autoswapmode": False, "tmpfs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "initialized": False}})
 
             if args.remotetunnel and not args.prompt and not args.benchmark and not args.cli:
                 setuptunnel(global_memory, True if args.sdmodel else False)
@@ -10289,6 +10800,8 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
     global_memory = g_memory
     using_gui_launcher = gui_launcher
     start_time = time.time()
+
+    initialize_tmpfs_from_args()
 
     if args.model_param and (args.prompt and not args.cli) and not args.benchmark and not (args.debugmode >= 1):
         suppress_stdout()
@@ -11337,6 +11850,8 @@ if __name__ == '__main__':
     advparser.add_argument("--nobostoken", help="Prevents BOS token from being added at the start of any prompt. Usually NOT recommended for most models.", action='store_true')
     advparser.add_argument("--enableguidance", help="Enables the use of Classifier-Free-Guidance, which allows the use of negative prompts. Has performance and memory impact.", action='store_true')
     advparser.add_argument("--maxrequestsize", metavar=('[size in MB]'), help="Specify a max request payload size. Any requests to the server larger than this size will be dropped. Do not change if unsure.", type=int, default=32)
+    advparser.add_argument("--tmpfsmaxsize", metavar=('[size in MB]'), help="Maximum total size of the in-memory tmp file system. Set to 0 for unlimited.", type=int, default=0)
+    advparser.add_argument("--tmpfsdir", metavar=('[directory]'), help="Load an initial on-disk directory into the in-memory tmp file system at startup.", default="")
     advparser.add_argument("--overridekv","--override-kv", metavar=('[name=type:value]'), help="Override metadata value by key. Separate multiple values with commas. Format is name=type:value. Types: int, float, bool, str", default="")
     advparser.add_argument("--overridetensors","--override-tensor","-ot", metavar=('[tensor name pattern=buffer type]'), help="Override selected backend for specific tensors matching tensor_name_regex_pattern=buffer_type, same as in llama.cpp.", default="")
     advparser.add_argument("--developerMode", help="Enables developer utilities, such as hot reloading of Kobold Lite.", default=False, type=bool)
