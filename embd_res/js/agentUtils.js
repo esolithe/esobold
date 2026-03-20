@@ -1218,13 +1218,17 @@ let getCommands = (agentRunState) => {
 				"pattern": {
 					description: "<glob pattern, default *>",
 					type: "string"
+				},
+				"case_insensitive": {
+					description: "<true for case-insensitive matching>",
+					type: "boolean"
 				}
 			},
 			"enabled": is_using_kcpp_with_tmpfs(),
 			"executor": async (action) => {
 				try {
 					let pattern = action?.args?.pattern
-					let result = await window.tmpfsClient.list(pattern)
+					let result = await window.tmpfsClient.list(pattern, action?.args?.case_insensitive)
 					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: list result\n${objToText(result)}`)
 				}
 				catch (e) {
@@ -1247,12 +1251,16 @@ let getCommands = (agentRunState) => {
 				"max_results": {
 					description: "<max result count>",
 					type: "integer"
+				},
+				"case_insensitive": {
+					description: "<true for case-insensitive matching>",
+					type: "boolean"
 				}
 			},
 			"enabled": is_using_kcpp_with_tmpfs(),
 			"executor": async (action) => {
 				try {
-					let result = await window.tmpfsClient.search(action?.args?.pattern, action?.args?.path_pattern, action?.args?.max_results)
+					let result = await window.tmpfsClient.search(action?.args?.pattern, action?.args?.path_pattern, action?.args?.max_results, action?.args?.case_insensitive)
 					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: search result\n${objToText(result)}`)
 				}
 				catch (e) {

@@ -4459,14 +4459,26 @@ def tmpfs_move_file(source_path, destination_path):
         tmpfs_set_state(tmpfs)
     return normalized_source, normalized_destination
 
-def tmpfs_list_paths(pattern="*"):
+def tmpfs_match_glob(value, wildcard, case_insensitive=False):
+    value_text = str(value or "")
+    wildcard_text = str(wildcard or "*")
+    if case_insensitive:
+        value_text = value_text.lower()
+        wildcard_text = wildcard_text.lower()
+    return fnmatch.fnmatchcase(value_text, wildcard_text)
+
+def tmpfs_list_paths(pattern="*", case_insensitive=False):
     wildcard = pattern or "*"
     with tmpfs_lock:
         tmpfs = tmpfs_snapshot_state()
         paths = sorted(tmpfs["files"].keys())
-    return [path for path in paths if fnmatch.fnmatch(path, wildcard) or fnmatch.fnmatch(path.lstrip("/"), wildcard)]
+    return [
+        path
+        for path in paths
+        if tmpfs_match_glob(path, wildcard, case_insensitive) or tmpfs_match_glob(path.lstrip("/"), wildcard, case_insensitive)
+    ]
 
-def tmpfs_search_content(pattern="*", path_pattern="*", max_results=100):
+def tmpfs_search_content(pattern="*", path_pattern="*", max_results=100, case_insensitive=False):
     wildcard = pattern or "*"
     path_glob = path_pattern or "*"
     max_hits = max(1, tryparseint(max_results, 100))
@@ -4475,13 +4487,13 @@ def tmpfs_search_content(pattern="*", path_pattern="*", max_results=100):
         items = sorted(tmpfs["files"].items())
     matches = []
     for path, entry in items:
-        if not (fnmatch.fnmatch(path, path_glob) or fnmatch.fnmatch(path.lstrip("/"), path_glob)):
+        if not (tmpfs_match_glob(path, path_glob, case_insensitive) or tmpfs_match_glob(path.lstrip("/"), path_glob, case_insensitive)):
             continue
         content_bytes = entry.get("content", b"")
         if tmpfs_is_binary(content_bytes):
             continue
         for line_number, line_content in enumerate(tmpfs_decode_text(content_bytes).splitlines(), start=1):
-            if fnmatch.fnmatch(line_content, wildcard):
+            if tmpfs_match_glob(line_content, wildcard, case_insensitive):
                 matches.append({
                     "path": path,
                     "line_start": line_number,
@@ -5885,7 +5897,8 @@ Change Mode<br>
                 parsed_url = urllib.parse.urlparse(self.path)
                 parsed_dict = urllib.parse.parse_qs(parsed_url.query)
                 pattern = str(parsed_dict.get('pattern', ['*'])[0])
-                response_body = (json.dumps({"paths": tmpfs_list_paths(pattern)}).encode())
+                case_insensitive_flag = str(parsed_dict.get('case_insensitive', ['0'])[0]).strip().lower() in ['1', 'true', 'yes', 'on']
+                response_body = (json.dumps({"paths": tmpfs_list_paths(pattern, case_insensitive_flag)}).encode())
 
         elif clean_path.endswith('/api/extra/tmpfs/search'):
             if not tmpfs_is_enabled():
@@ -5897,7 +5910,8 @@ Change Mode<br>
                 pattern = str(parsed_dict.get('pattern', ['*'])[0])
                 path_pattern = str(parsed_dict.get('path_pattern', ['*'])[0])
                 max_results = tryparseint(parsed_dict.get('max_results', [100])[0], 100)
-                response_body = (json.dumps({"matches": tmpfs_search_content(pattern, path_pattern, max_results)}).encode())
+                case_insensitive_flag = str(parsed_dict.get('case_insensitive', ['0'])[0]).strip().lower() in ['1', 'true', 'yes', 'on']
+                response_body = (json.dumps({"matches": tmpfs_search_content(pattern, path_pattern, max_results, case_insensitive_flag)}).encode())
 
         elif clean_path.endswith('/api/extra/tmpfs/metadata'):
             if not tmpfs_is_enabled():

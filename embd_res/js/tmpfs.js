@@ -67,8 +67,8 @@ class TmpfsClient {
      * @param {string} [pattern='*']
      * @returns {Promise<string[]>}
      */
-    async list(pattern) {
-        const data = await this._get('/api/extra/tmpfs/files', { pattern });
+    async list(pattern, case_insensitive) {
+        const data = await this._get('/api/extra/tmpfs/files', { pattern, case_insensitive });
         return data.paths;
     }
 
@@ -79,8 +79,8 @@ class TmpfsClient {
      * @param {number} [max_results=100]
      * @returns {Promise<Array<{path:string, line:number, text:string}>>}
      */
-    async search(pattern, path_pattern, max_results) {
-        const data = await this._get('/api/extra/tmpfs/search', { pattern, path_pattern, max_results });
+    async search(pattern, path_pattern, max_results, case_insensitive) {
+        const data = await this._get('/api/extra/tmpfs/search', { pattern, path_pattern, max_results, case_insensitive });
         return data.matches;
     }
 
