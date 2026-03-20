@@ -5795,7 +5795,7 @@ Change Mode<br>
                 self.wfile.write(zip_body)
                 return
 
-        elif clean_path.startswith('/tmp/'):
+        elif clean_path == '/tmp' or clean_path.startswith('/tmp/'):
             content_type = 'application/octet-stream'
             if not tmpfs_is_enabled():
                 response_code = 503
@@ -5809,6 +5809,66 @@ Change Mode<br>
                     detected_type = mimetypes.guess_type(tmpfs_path)[0]
                     if detected_type:
                         content_type = detected_type
+                except (FileNotFoundError, ValueError):
+                    try:
+                        requested_dir = tmpfs_normalize_path(clean_path[4:], allow_root=True)
+                        dir_prefix = "" if requested_dir == "/" else (requested_dir.rstrip("/") + "/")
+                        with tmpfs_lock:
+                            tmpfs = tmpfs_snapshot_state()
+                            paths = sorted(tmpfs["files"].keys())
+
+                        child_dirs = set()
+                        child_files = []
+                        for path in paths:
+                            if requested_dir == "/":
+                                relative_path = path.lstrip("/")
+                            else:
+                                if not path.startswith(dir_prefix):
+                                    continue
+                                relative_path = path[len(dir_prefix):]
+
+                            if not relative_path:
+                                continue
+                            first_part = relative_path.split("/", 1)[0]
+                            if "/" in relative_path:
+                                child_dirs.add(first_part)
+                            else:
+                                child_files.append(first_part)
+
+                        if child_dirs or child_files:
+                            requested_dir_escaped = html.escape(requested_dir)
+                            directory_items = []
+
+                            if requested_dir != "/":
+                                parent_dir = posixpath.dirname(requested_dir.rstrip("/"))
+                                parent_dir = parent_dir if parent_dir else "/"
+                                parent_href = "/tmp/" if parent_dir == "/" else f"/tmp{urllib.parse.quote(parent_dir, safe='/')}/"
+                                directory_items.append(f'<li><a href="{parent_href}">..</a></li>')
+
+                            for dirname in sorted(child_dirs):
+                                target_dir = f"/{dirname}" if requested_dir == "/" else f"{requested_dir.rstrip('/')}/{dirname}"
+                                href = f"/tmp{urllib.parse.quote(target_dir, safe='/')}/"
+                                directory_items.append(f'<li><a href="{href}">{html.escape(dirname)}/</a></li>')
+
+                            for filename in sorted(child_files):
+                                target_file = f"/{filename}" if requested_dir == "/" else f"{requested_dir.rstrip('/')}/{filename}"
+                                href = f"/tmp{urllib.parse.quote(target_file, safe='/')}"
+                                directory_items.append(f'<li><a href="{href}">{html.escape(filename)}</a></li>')
+
+                            directory_html = "\n".join(directory_items)
+                            response_body = (
+                                "<!doctype html><html><head><meta charset='utf-8'><title>Tmpfs Directory</title></head>"
+                                f"<body><h3>Tmpfs Directory: {requested_dir_escaped}</h3>"
+                                f"<p>{len(child_dirs)} dirs, {len(child_files)} files</p><ul>{directory_html}</ul></body></html>"
+                            ).encode("utf-8")
+                            content_type = 'text/html'
+                        else:
+                            raise
+                    except Exception as e:
+                        utfprint("Error getting tmpfs resource: " + str(e))
+                        response_code = 404
+                        response_body = (f"Resource not found").encode()
+                        content_type = 'text/plain'
                 except Exception as e:
                     utfprint("Error getting tmpfs resource: " + str(e))
                     response_code = 404
