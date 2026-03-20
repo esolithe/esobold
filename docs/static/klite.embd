@@ -3933,6 +3933,7 @@ Current version indicated by LITEVER below.
 	var koboldcpp_has_jinja = false;
 	var koboldcpp_has_mcp = false;
 	var koboldcpp_has_musicgen = false;
+	var koboldcpp_has_tmpfs = false;
 	var koboldcpp_has_routermode = false;
 	var no_escape_html = false;
 	var timetaken_timestamp = performance.now();
@@ -9264,6 +9265,10 @@ Current version indicated by LITEVER below.
     {
         return (custom_kobold_endpoint!="" && koboldcpp_version && koboldcpp_version!="" && compare_version_str(koboldcpp_version, "1.108") >= 0 && koboldcpp_has_musicgen);
     }
+	function is_using_kcpp_with_tmpfs()
+	{
+		return (custom_kobold_endpoint!="" && koboldcpp_version && koboldcpp_version!="" && compare_version_str(koboldcpp_version, "1.110") >= 0 && koboldcpp_has_tmpfs);
+	}
 	function is_using_kcpp_with_routermode()
 	{
 		return (custom_kobold_endpoint!="" && koboldcpp_version && koboldcpp_version!="" && compare_version_str(koboldcpp_version, "1.110") >= 0 && koboldcpp_has_routermode);
@@ -13841,6 +13846,7 @@ Current version indicated by LITEVER below.
                                     koboldcpp_has_jinja = (data.jinja ? true : false);
 									koboldcpp_has_mcp = (data.mcp ? true : false);
 									koboldcpp_has_musicgen = (data.music ? true : false);
+									koboldcpp_has_tmpfs = (data.tmpfs ? true : false);
 									koboldcpp_has_routermode = (data.router ? true:false);
 									koboldcpp_embedding_model = data?.embeddingModel
 									koboldcpp_has_admin_with_HF = (data.hasAdminWithHF ? true : false)
@@ -32303,6 +32309,7 @@ Current version indicated by LITEVER below.
 <script src="static/js/ext/colourToCSSFilters.js"></script>
 <!-- Third party libs end -->
 <!-- EsoLite modifications -->
+<script src="static/js/tmpfs.js"></script>
 <script src="static/js/encryptUtils.js"></script>
 <script src="static/js/serverSideSaving.js"></script>
 <link rel="stylesheet" type="text/css" href="static/css/serverSideScenario.css" />

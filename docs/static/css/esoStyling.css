@@ -163,3 +163,54 @@
 		left: min(100% - 300px, var(--mouse_x));
 		max-width: 300px;
 	}
+
+	/* TmpFS embed */
+	.kcpp-tmpfs-embed-window {
+		position: fixed;
+		background-color: var(--theme_color_bg_popups);
+		border: 1px solid var(--theme_color_border);
+		border-radius: 8px;
+		box-shadow: 0 12px 36px rgba(0, 0, 0, 0.4);
+		overflow: hidden;
+		resize: both;
+		min-width: 180px;
+		min-height: 140px;
+		display: flex;
+		flex-direction: column;
+		backdrop-filter: blur(3px);
+	}
+
+	.kcpp-tmpfs-embed-header {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		padding: 8px 10px;
+		background-color: var(--theme_color_accent_bg);
+		color: var(--theme_color_accent_fg);
+		font-size: var(--theme_font_size_medium);
+		cursor: move;
+	}
+
+	.kcpp-tmpfs-embed-title {
+		flex: 1;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		font-weight: bold;
+	}
+
+	.kcpp-tmpfs-embed-button {
+		cursor: pointer;
+		border: none;
+		background: transparent;
+		color: inherit;
+		font-size: 16px;
+	}
+
+	.kcpp-tmpfs-embed-content {
+		width: 100%;
+		height: 100%;
+		flex: 1;
+		border: none;
+		background: white;
+	}

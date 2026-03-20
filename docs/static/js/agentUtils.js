@@ -97,6 +97,142 @@ let objToText = (obj, depth = 0) => {
 }
 
 let wordCountEnabled = false
+let getTmpfsEmbedRegistry = () => {
+	if (!window.kcppTmpfsEmbeds) {
+		window.kcppTmpfsEmbeds = {}
+	}
+	return window.kcppTmpfsEmbeds
+}
+
+let clampTmpfsEmbedLayout = (layout = {}) => {
+	let viewportWidth = Math.max(1, window.innerWidth || 1)
+	let viewportHeight = Math.max(1, window.innerHeight || 1)
+	let minWidth = Math.min(180, viewportWidth)
+	let minHeight = Math.min(140, viewportHeight)
+	let width = Math.max(minWidth, Math.min(parseInt(layout.width ?? Math.floor(viewportWidth * 0.4)) || minWidth, viewportWidth))
+	let height = Math.max(minHeight, Math.min(parseInt(layout.height ?? Math.floor(viewportHeight * 0.4)) || minHeight, viewportHeight))
+	let x = Math.max(0, Math.min(parseInt(layout.x ?? 0) || 0, Math.max(0, viewportWidth - width)))
+	let y = Math.max(0, Math.min(parseInt(layout.y ?? 0) || 0, Math.max(0, viewportHeight - height)))
+	return { x, y, width, height, viewportWidth, viewportHeight }
+}
+
+let raiseTmpfsEmbed = (container) => {
+	window.kcppTmpfsEmbedZ = (window.kcppTmpfsEmbedZ || 4000) + 1
+	container.style.zIndex = `${window.kcppTmpfsEmbedZ}`
+}
+
+let closeTmpfsEmbedByName = (name) => {
+	let registry = getTmpfsEmbedRegistry()
+	let normalizedName = `${name || ""}`.trim()
+	if (normalizedName === "") {
+		return { success: false, closed: false, reason: "Missing embed name." }
+	}
+	let existing = registry[normalizedName]
+	if (!!existing?.container) {
+		existing.container.remove()
+	}
+	delete registry[normalizedName]
+	return { success: true, closed: !!existing, name: normalizedName }
+}
+
+let openTmpfsEmbedByName = async (args = {}) => {
+	let normalizedName = `${args?.name || ""}`.trim()
+	let targetPath = `${args?.file_path || args?.path || ""}`.trim()
+	if (normalizedName === "") {
+		throw new Error("Missing embed name.")
+	}
+	if (targetPath === "") {
+		throw new Error("Missing tmpfs file path.")
+	}
+	let layout = clampTmpfsEmbedLayout(args)
+	let urlInfo = await window.tmpfsClient.url(targetPath)
+	let registry = getTmpfsEmbedRegistry()
+	let existing = registry[normalizedName]
+	let container = existing?.container
+	let titleElem = existing?.titleElem
+	let embedElem = existing?.embedElem
+
+	if (!container) {
+		container = document.createElement("div")
+		container.className = "kcpp-tmpfs-embed-window"
+		container.onmousedown = () => raiseTmpfsEmbed(container)
+
+		titleElem = document.createElement("div")
+		titleElem.className = "kcpp-tmpfs-embed-title"
+
+		let header = document.createElement("div")
+		header.className = "kcpp-tmpfs-embed-header"
+		header.addEventListener("mousedown", (e) => {
+			if (e.target.closest("button")) return
+			e.preventDefault()
+			raiseTmpfsEmbed(container)
+			let startX = e.clientX - container.offsetLeft
+			let startY = e.clientY - container.offsetTop
+			let onMouseMove = (me) => {
+				let newX = Math.max(0, Math.min(me.clientX - startX, window.innerWidth - container.offsetWidth))
+				let newY = Math.max(0, Math.min(me.clientY - startY, window.innerHeight - container.offsetHeight))
+				container.style.left = `${newX}px`
+				container.style.top = `${newY}px`
+			}
+			let onMouseUp = () => {
+				document.removeEventListener("mousemove", onMouseMove)
+				document.removeEventListener("mouseup", onMouseUp)
+			}
+			document.addEventListener("mousemove", onMouseMove)
+			document.addEventListener("mouseup", onMouseUp)
+		})
+
+		let expandBtn = document.createElement("button")
+		expandBtn.type = "button"
+		expandBtn.className = "kcpp-tmpfs-embed-button"
+		expandBtn.innerText = "↗"
+		expandBtn.title = "Open in new tab"
+		expandBtn.onclick = () => {
+			if (!!embedElem?.src) {
+				window.open(embedElem.src, "_blank", "noopener,noreferrer")
+			}
+		}
+
+		let closeBtn = document.createElement("button")
+		closeBtn.type = "button"
+		closeBtn.className = "kcpp-tmpfs-embed-button"
+		closeBtn.innerText = "✕"
+		closeBtn.title = "Close"
+		closeBtn.onclick = () => closeTmpfsEmbedByName(normalizedName)
+
+		embedElem = document.createElement("embed")
+		embedElem.className = "kcpp-tmpfs-embed-content"
+		embedElem.type = "text/html"
+
+		header.appendChild(titleElem)
+		header.appendChild(expandBtn)
+		header.appendChild(closeBtn)
+		container.appendChild(header)
+		container.appendChild(embedElem)
+		document.body.appendChild(container)
+
+		registry[normalizedName] = { container, titleElem, embedElem }
+	}
+
+	titleElem.innerText = `${normalizedName} | ${urlInfo?.path || targetPath}`
+	container.style.left = `${layout.x}px`
+	container.style.top = `${layout.y}px`
+	container.style.width = `${layout.width}px`
+	container.style.height = `${layout.height}px`
+	container.dataset.embedName = normalizedName
+	container.dataset.embedPath = `${urlInfo?.path || targetPath}`
+	embedElem.src = urlInfo?.url || targetPath
+	raiseTmpfsEmbed(container)
+
+	return {
+		success: true,
+		name: normalizedName,
+		path: urlInfo?.path || targetPath,
+		url: urlInfo?.url || targetPath,
+		...layout,
+	}
+}
+
 let getCommands = (agentRunState) => {
 	let { currentChainOfThought, agentStopOnRequestForInput } = agentRunState
 	return [
@@ -633,6 +769,291 @@ let getCommands = (agentRunState) => {
 				}
 				else {
 					addThought(currentChainOfThought, createSysPrompt, `No prompt provided, image not generated`)
+				}
+			}
+		},
+		{
+			"name": "tmpfs_list",
+			"description": "List paths in tmpfs, optionally filtered by glob pattern.",
+			"args": {
+				"pattern": {
+					description: "<glob pattern, default *>",
+					type: "string"
+				}
+			},
+			"enabled": is_using_kcpp_with_tmpfs(),
+			"executor": async (action) => {
+				try {
+					let pattern = action?.args?.pattern
+					let result = await window.tmpfsClient.list(pattern)
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: list result\n${objToText(result)}`)
+				}
+				catch (e) {
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: list failed - ${e?.message || e}`)
+				}
+			}
+		},
+		{
+			"name": "tmpfs_search",
+			"description": "Search file contents in tmpfs by text pattern.",
+			"args": {
+				"pattern": {
+					description: "<content pattern>",
+					type: "string"
+				},
+				"path_pattern": {
+					description: "<glob path filter, default *>",
+					type: "string"
+				},
+				"max_results": {
+					description: "<max result count>",
+					type: "integer"
+				}
+			},
+			"enabled": is_using_kcpp_with_tmpfs(),
+			"executor": async (action) => {
+				try {
+					let result = await window.tmpfsClient.search(action?.args?.pattern, action?.args?.path_pattern, action?.args?.max_results)
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: search result\n${objToText(result)}`)
+				}
+				catch (e) {
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: search failed - ${e?.message || e}`)
+				}
+			}
+		},
+		{
+			"name": "tmpfs_metadata",
+			"description": "Get metadata for a tmpfs file.",
+			"args": {
+				"path": "<file path>"
+			},
+			"enabled": is_using_kcpp_with_tmpfs(),
+			"executor": async (action) => {
+				try {
+					let result = await window.tmpfsClient.metadata(action?.args?.path)
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: metadata result\n${objToText(result)}`)
+				}
+				catch (e) {
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: metadata failed - ${e?.message || e}`)
+				}
+			}
+		},
+		{
+			"name": "tmpfs_url",
+			"description": "Get the public URL for a tmpfs file.",
+			"args": {
+				"path": "<file path>"
+			},
+			"enabled": is_using_kcpp_with_tmpfs(),
+			"executor": async (action) => {
+				try {
+					let result = await window.tmpfsClient.url(action?.args?.path)
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: url result\n${objToText(result)}`)
+				}
+				catch (e) {
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: url failed - ${e?.message || e}`)
+				}
+			}
+		},
+		{
+			"name": "tmpfs_content",
+			"description": "Read line-based text content from a tmpfs file.",
+			"args": {
+				"path": "<file path>",
+				"start": {
+					description: "<start line, 1-based>",
+					type: "integer"
+				},
+				"end": {
+					description: "<end line, 1-based>",
+					type: "integer"
+				}
+			},
+			"enabled": is_using_kcpp_with_tmpfs(),
+			"executor": async (action) => {
+				try {
+					let result = await window.tmpfsClient.content(action?.args?.path, action?.args?.start, action?.args?.end)
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: content result\n${objToText(result)}`)
+				}
+				catch (e) {
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: content failed - ${e?.message || e}`)
+				}
+			}
+		},
+		{
+			"name": "tmpfs_download_info",
+			"description": "Get tmpfs download information for full tmpfs or one subdirectory.",
+			"args": {
+				"dir": {
+					description: "<optional directory prefix>",
+					type: "string"
+				}
+			},
+			"enabled": is_using_kcpp_with_tmpfs(),
+			"executor": async (action) => {
+				try {
+					let result = await window.tmpfsClient.download_info(action?.args?.dir)
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: download_info result\n${objToText(result)}`)
+				}
+				catch (e) {
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: download_info failed - ${e?.message || e}`)
+				}
+			}
+		},
+		{
+			"name": "tmpfs_write_text",
+			"description": "Write plain text content to a tmpfs file.",
+			"args": {
+				"path": "<file path>",
+				"content": "<text content>"
+			},
+			"enabled": is_using_kcpp_with_tmpfs(),
+			"executor": async (action) => {
+				try {
+					let content = action?.args?.content
+					if (typeof content !== "string") {
+						addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: write_text failed - content must be text (binary is not enabled yet)`)
+						return
+					}
+					let result = await window.tmpfsClient.write(action?.args?.path, content)
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: write_text result\n${objToText(result)}`)
+				}
+				catch (e) {
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: write_text failed - ${e?.message || e}`)
+				}
+			}
+		},
+		{
+			"name": "tmpfs_write_lines",
+			"description": "Write or append lines in a tmpfs text file.",
+			"args": {
+				"path": "<file path>",
+				"lines": {
+					description: "<array of lines>",
+					type: "array",
+					items: { type: "string" }
+				},
+				"start_line": {
+					description: "<start line, default 1>",
+					type: "integer"
+				},
+				"append": {
+					description: "<append mode>",
+					type: "boolean"
+				}
+			},
+			"enabled": is_using_kcpp_with_tmpfs(),
+			"executor": async (action) => {
+				try {
+					let result = await window.tmpfsClient.write_lines(action?.args?.path, action?.args?.lines, action?.args?.start_line, action?.args?.append)
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: write_lines result\n${objToText(result)}`)
+				}
+				catch (e) {
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: write_lines failed - ${e?.message || e}`)
+				}
+			}
+		},
+		{
+			"name": "tmpfs_delete",
+			"description": "Delete a tmpfs file.",
+			"args": {
+				"path": "<file path>"
+			},
+			"enabled": is_using_kcpp_with_tmpfs(),
+			"executor": async (action) => {
+				try {
+					let result = await window.tmpfsClient.delete(action?.args?.path)
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: delete result\n${objToText(result)}`)
+				}
+				catch (e) {
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: delete failed - ${e?.message || e}`)
+				}
+			}
+		},
+		{
+			"name": "tmpfs_move",
+			"description": "Move or rename a tmpfs file.",
+			"args": {
+				"source": "<source path>",
+				"destination": "<destination path>"
+			},
+			"enabled": is_using_kcpp_with_tmpfs(),
+			"executor": async (action) => {
+				try {
+					let result = await window.tmpfsClient.move(action?.args?.source, action?.args?.destination)
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: move result\n${objToText(result)}`)
+				}
+				catch (e) {
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: move failed - ${e?.message || e}`)
+				}
+			}
+		},
+		{
+			"name": "tmpfs_copy",
+			"description": "Copy a tmpfs file.",
+			"args": {
+				"source": "<source path>",
+				"destination": "<destination path>"
+			},
+			"enabled": is_using_kcpp_with_tmpfs(),
+			"executor": async (action) => {
+				try {
+					let result = await window.tmpfsClient.copy(action?.args?.source, action?.args?.destination)
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: copy result\n${objToText(result)}`)
+				}
+				catch (e) {
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: copy failed - ${e?.message || e}`)
+				}
+			}
+		},
+		{
+			"name": "tmpfs_open_embed",
+			"description": `Open or replace a named floating embed window for a tmpfs file URL. Position and size are clamped to the viewport and the header can be dragged to reposition. Current viewport: ${window.innerWidth}x${window.innerHeight}px.`,
+			"args": {
+				"name": "<unique embed name>",
+				"file_path": "<tmpfs file path>",
+				"x": {
+					description: "<x coordinate in pixels>",
+					type: "integer"
+				},
+				"y": {
+					description: "<y coordinate in pixels>",
+					type: "integer"
+				},
+				"width": {
+					description: "<window width in pixels>",
+					type: "integer"
+				},
+				"height": {
+					description: "<window height in pixels>",
+					type: "integer"
+				}
+			},
+			"enabled": is_using_kcpp_with_tmpfs(),
+			"executor": async (action) => {
+				try {
+					let result = await openTmpfsEmbedByName(action?.args || {})
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: open_embed result\n${objToText(result)}`)
+				}
+				catch (e) {
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: open_embed failed - ${e?.message || e}`)
+				}
+			}
+		},
+		{
+			"name": "tmpfs_close_embed",
+			"description": "Close a named floating tmpfs embed window if it exists. No error is thrown if it is already closed.",
+			"args": {
+				"name": "<embed name to close>"
+			},
+			"enabled": is_using_kcpp_with_tmpfs(),
+			"executor": async (action) => {
+				try {
+					let result = closeTmpfsEmbedByName(action?.args?.name)
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: close_embed result\n${objToText(result)}`)
+				}
+				catch (e) {
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: close_embed failed - ${e?.message || e}`)
 				}
 			}
 		},
