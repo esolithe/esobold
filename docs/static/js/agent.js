@@ -912,13 +912,21 @@ let runAgentCycle = async (agentRunState = {}) => {
                 history += agentRequestBody
                 history += wiToInclude
             }
-            history += anToInclude
+            let isANoteTurnBased = "turn" === anote_strength
+            if (!isANoteTurnBased)
+            {
+                history += anToInclude
+            }
             history += finalAgentPrompt
             // Add the start tag for the AI to guide it to respond as the AI
             history += instructendplaceholder
             // Add jailbreak if present
             if (!!localsettings?.inject_jailbreak_instruct) {
                 history += localsettings.custom_jailbreak_text
+            }
+            if (isANoteTurnBased)
+            {
+                history = insertAuthorsNoteToContext(history, anToInclude)
             }
             let resp = await generateAndGetTextFromPrompt(replace_placeholders(history), jsonGrammar, [], recentActions.map(JSON.stringify))
 
