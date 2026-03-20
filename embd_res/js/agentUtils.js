@@ -637,6 +637,240 @@ let getCommands = (agentRunState) => {
 			}
 		},
 		{
+			"name": "tmpfs_list",
+			"description": "List paths in tmpfs, optionally filtered by glob pattern.",
+			"args": {
+				"pattern": {
+					description: "<glob pattern, default *>",
+					type: "string"
+				}
+			},
+			"enabled": is_using_kcpp_with_tmpfs(),
+			"executor": async (action) => {
+				try {
+					let pattern = action?.args?.pattern
+					let result = await window.tmpfsClient.list(pattern)
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: list result\n${objToText(result)}`)
+				}
+				catch (e) {
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: list failed - ${e?.message || e}`)
+				}
+			}
+		},
+		{
+			"name": "tmpfs_search",
+			"description": "Search file contents in tmpfs by text pattern.",
+			"args": {
+				"pattern": {
+					description: "<content pattern>",
+					type: "string"
+				},
+				"path_pattern": {
+					description: "<glob path filter, default *>",
+					type: "string"
+				},
+				"max_results": {
+					description: "<max result count>",
+					type: "integer"
+				}
+			},
+			"enabled": is_using_kcpp_with_tmpfs(),
+			"executor": async (action) => {
+				try {
+					let result = await window.tmpfsClient.search(action?.args?.pattern, action?.args?.path_pattern, action?.args?.max_results)
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: search result\n${objToText(result)}`)
+				}
+				catch (e) {
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: search failed - ${e?.message || e}`)
+				}
+			}
+		},
+		{
+			"name": "tmpfs_metadata",
+			"description": "Get metadata for a tmpfs file.",
+			"args": {
+				"path": "<file path>"
+			},
+			"enabled": is_using_kcpp_with_tmpfs(),
+			"executor": async (action) => {
+				try {
+					let result = await window.tmpfsClient.metadata(action?.args?.path)
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: metadata result\n${objToText(result)}`)
+				}
+				catch (e) {
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: metadata failed - ${e?.message || e}`)
+				}
+			}
+		},
+		{
+			"name": "tmpfs_url",
+			"description": "Get the public URL for a tmpfs file.",
+			"args": {
+				"path": "<file path>"
+			},
+			"enabled": is_using_kcpp_with_tmpfs(),
+			"executor": async (action) => {
+				try {
+					let result = await window.tmpfsClient.url(action?.args?.path)
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: url result\n${objToText(result)}`)
+				}
+				catch (e) {
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: url failed - ${e?.message || e}`)
+				}
+			}
+		},
+		{
+			"name": "tmpfs_content",
+			"description": "Read line-based text content from a tmpfs file.",
+			"args": {
+				"path": "<file path>",
+				"start": {
+					description: "<start line, 1-based>",
+					type: "integer"
+				},
+				"end": {
+					description: "<end line, 1-based>",
+					type: "integer"
+				}
+			},
+			"enabled": is_using_kcpp_with_tmpfs(),
+			"executor": async (action) => {
+				try {
+					let result = await window.tmpfsClient.content(action?.args?.path, action?.args?.start, action?.args?.end)
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: content result\n${objToText(result)}`)
+				}
+				catch (e) {
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: content failed - ${e?.message || e}`)
+				}
+			}
+		},
+		{
+			"name": "tmpfs_download_info",
+			"description": "Get tmpfs download information for full tmpfs or one subdirectory.",
+			"args": {
+				"dir": {
+					description: "<optional directory prefix>",
+					type: "string"
+				}
+			},
+			"enabled": is_using_kcpp_with_tmpfs(),
+			"executor": async (action) => {
+				try {
+					let result = await window.tmpfsClient.download_info(action?.args?.dir)
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: download_info result\n${objToText(result)}`)
+				}
+				catch (e) {
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: download_info failed - ${e?.message || e}`)
+				}
+			}
+		},
+		{
+			"name": "tmpfs_write_text",
+			"description": "Write plain text content to a tmpfs file.",
+			"args": {
+				"path": "<file path>",
+				"content": "<text content>"
+			},
+			"enabled": is_using_kcpp_with_tmpfs(),
+			"executor": async (action) => {
+				try {
+					let content = action?.args?.content
+					if (typeof content !== "string") {
+						addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: write_text failed - content must be text (binary is not enabled yet)`)
+						return
+					}
+					let result = await window.tmpfsClient.write(action?.args?.path, content)
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: write_text result\n${objToText(result)}`)
+				}
+				catch (e) {
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: write_text failed - ${e?.message || e}`)
+				}
+			}
+		},
+		{
+			"name": "tmpfs_write_lines",
+			"description": "Write or append lines in a tmpfs text file.",
+			"args": {
+				"path": "<file path>",
+				"lines": {
+					description: "<array of lines>",
+					type: "array",
+					items: { type: "string" }
+				},
+				"start_line": {
+					description: "<start line, default 1>",
+					type: "integer"
+				},
+				"append": {
+					description: "<append mode>",
+					type: "boolean"
+				}
+			},
+			"enabled": is_using_kcpp_with_tmpfs(),
+			"executor": async (action) => {
+				try {
+					let result = await window.tmpfsClient.write_lines(action?.args?.path, action?.args?.lines, action?.args?.start_line, action?.args?.append)
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: write_lines result\n${objToText(result)}`)
+				}
+				catch (e) {
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: write_lines failed - ${e?.message || e}`)
+				}
+			}
+		},
+		{
+			"name": "tmpfs_delete",
+			"description": "Delete a tmpfs file.",
+			"args": {
+				"path": "<file path>"
+			},
+			"enabled": is_using_kcpp_with_tmpfs(),
+			"executor": async (action) => {
+				try {
+					let result = await window.tmpfsClient.delete(action?.args?.path)
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: delete result\n${objToText(result)}`)
+				}
+				catch (e) {
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: delete failed - ${e?.message || e}`)
+				}
+			}
+		},
+		{
+			"name": "tmpfs_move",
+			"description": "Move or rename a tmpfs file.",
+			"args": {
+				"source": "<source path>",
+				"destination": "<destination path>"
+			},
+			"enabled": is_using_kcpp_with_tmpfs(),
+			"executor": async (action) => {
+				try {
+					let result = await window.tmpfsClient.move(action?.args?.source, action?.args?.destination)
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: move result\n${objToText(result)}`)
+				}
+				catch (e) {
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: move failed - ${e?.message || e}`)
+				}
+			}
+		},
+		{
+			"name": "tmpfs_copy",
+			"description": "Copy a tmpfs file.",
+			"args": {
+				"source": "<source path>",
+				"destination": "<destination path>"
+			},
+			"enabled": is_using_kcpp_with_tmpfs(),
+			"executor": async (action) => {
+				try {
+					let result = await window.tmpfsClient.copy(action?.args?.source, action?.args?.destination)
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: copy result\n${objToText(result)}`)
+				}
+				catch (e) {
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: copy failed - ${e?.message || e}`)
+				}
+			}
+		},
+		{
 			"name": "speak",
 			"description": "Say something to the user using text to speech.",
 			"args": {
