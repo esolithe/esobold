@@ -7928,7 +7928,7 @@ def show_gui():
 
     tabs = ctk.CTkFrame(root, corner_radius = 0, width=windowwidth, height=windowheight-50)
     tabs.grid(row=0, stick="nsew")
-    tabnames= ["Quick Launch", "Hardware", "Context", "Loaded Files", "Network", "Horde Worker","Image Gen","Audio","Admin","Extra"]
+    tabnames= ["Quick Launch", "Hardware", "Context", "Loaded Files", "Network", "Horde Worker","Image Gen","Audio","Admin","Temp FS","Extra"]
     navbuttons = {}
     navbuttonframe = ctk.CTkFrame(tabs, width=int(104), height=int(tabs.cget("height")))
     navbuttonframe.grid(row=0, column=0, padx=2,pady=2)
@@ -8088,6 +8088,9 @@ def show_gui():
     autoswap_mode_var = ctk.IntVar(value=0)
     admin_unload_timeout_var = ctk.StringVar(value=str(0))
     admin_allow_hf_var = ctk.IntVar(value=0)
+
+    tmpfs_maxsize_var = ctk.StringVar(value="0")
+    tmpfs_dir_var = ctk.StringVar(value="")
 
     nozenity_var = ctk.IntVar(value=0)
 
@@ -8923,6 +8926,11 @@ def show_gui():
     router_mode_box = makecheckbox(admin_tab, "Router Mode", router_mode_var, 17, 0, command=togglerouter, tooltiptxt="Router mode uses a reverse proxy router, allowing you to easily hotswap models and configs within a single request. Requires admin mode.")
     autoswap_mode_box = makecheckbox(admin_tab, "Autoswap Mode", autoswap_mode_var, 19, 0,tooltiptxt="Autoswap mode builds on router mode to allow switching of model types within the same config automatically. Requires admin mode and router mode. All models desired must be defined within the same config.")
 
+    tempfs_tab = tabcontent["Temp FS"]
+    makelabel(tempfs_tab, "Max TempFS Size (MB):", 1, 0, "Maximum total size for the in-memory temp filesystem. Set 0 for unlimited.")
+    ctk.CTkEntry(tempfs_tab, width=100, textvariable=tmpfs_maxsize_var).grid(row=2, column=0, padx=8, pady=2, stick="nw")
+    makefileentry(tempfs_tab, "Initial TempFS Directory:", "Select directory to preload into TempFS", tmpfs_dir_var, 4, width=280, singlerow=False, dialog_type=2, tooltiptxt="Optional directory to preload into TempFS on startup.")
+
     def kcpp_export_template():
         nonlocal kcpp_exporting_template
         kcpp_exporting_template = True
@@ -9238,6 +9246,8 @@ def show_gui():
         args.routermode = router_mode_var.get()==1
         args.autoswapmode = autoswap_mode_var.get()==1
         args.adminunloadtimeout = (0 if admin_unload_timeout_var.get()=="" else int(admin_unload_timeout_var.get()))
+        args.tmpfsmaxsize = max(0, tryparseint(tmpfs_maxsize_var.get(), 0))
+        args.tmpfsdir = tmpfs_dir_var.get()
         args.showgui = False #prevent showgui from leaking into configs, its cli only
         args.adminallowhf = (admin_allow_hf_var.get()==1 and not args.cli)
 
@@ -9494,6 +9504,9 @@ def show_gui():
         admin_unload_timeout_var.set(dict["adminunloadtimeout"] if ("adminunloadtimeout" in dict and dict["adminunloadtimeout"]) else 0)
         singleinstance_var.set(dict["singleinstance"] if ("singleinstance" in dict) else 0)
         admin_allow_hf_var.set(dict["adminallowhf"] if ("adminallowhf" in dict) else 0)
+
+        tmpfs_maxsize_var.set(str(dict["tmpfsmaxsize"]) if ("tmpfsmaxsize" in dict and dict["tmpfsmaxsize"] is not None) else "0")
+        tmpfs_dir_var.set(dict["tmpfsdir"] if ("tmpfsdir" in dict and dict["tmpfsdir"]) else "")
 
         importvars_in_progress = False
         gui_changed_modelfile()
