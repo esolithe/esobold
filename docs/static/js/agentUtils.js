@@ -135,6 +135,49 @@ let closeTmpfsEmbedByName = (name) => {
 	return { success: true, closed: !!existing, name: normalizedName }
 }
 
+let getTmpfsMediaKindByUrl = (url = "") => {
+	let normalized = `${url || ""}`.toLowerCase().split("#")[0].split("?")[0]
+	let imageExtensions = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".avif", ".ico"]
+	let videoExtensions = [".mp4", ".webm", ".ogv", ".mov", ".m4v"]
+	let audioExtensions = [".mp3", ".wav", ".m4a", ".aac", ".flac", ".opus", ".oga", ".ogg"]
+	if (imageExtensions.some((ext) => normalized.endsWith(ext))) {
+		return "image"
+	}
+	if (videoExtensions.some((ext) => normalized.endsWith(ext))) {
+		return "video"
+	}
+	if (audioExtensions.some((ext) => normalized.endsWith(ext))) {
+		return "audio"
+	}
+	return "embed"
+}
+
+let createTmpfsEmbedContentElement = (kind) => {
+	if (kind === "image") {
+		let imageElem = document.createElement("img")
+		imageElem.className = "kcpp-tmpfs-embed-content kcpp-tmpfs-embed-media"
+		imageElem.loading = "lazy"
+		imageElem.decoding = "async"
+		return imageElem
+	}
+	if (kind === "video") {
+		let videoElem = document.createElement("video")
+		videoElem.className = "kcpp-tmpfs-embed-content kcpp-tmpfs-embed-media"
+		videoElem.controls = true
+		return videoElem
+	}
+	if (kind === "audio") {
+		let audioElem = document.createElement("audio")
+		audioElem.className = "kcpp-tmpfs-embed-content kcpp-tmpfs-embed-audio"
+		audioElem.controls = true
+		return audioElem
+	}
+	let embedElem = document.createElement("embed")
+	embedElem.className = "kcpp-tmpfs-embed-content"
+	embedElem.type = "text/html"
+	return embedElem
+}
+
 let openTmpfsEmbedByName = async (args = {}) => {
 	let normalizedName = `${args?.name || ""}`.trim()
 	let targetPath = `${args?.file_path || args?.path || ""}`.trim()
@@ -150,7 +193,10 @@ let openTmpfsEmbedByName = async (args = {}) => {
 	let existing = registry[normalizedName]
 	let container = existing?.container
 	let titleElem = existing?.titleElem
-	let embedElem = existing?.embedElem
+	let contentElem = existing?.contentElem
+	let contentKind = existing?.contentKind || "embed"
+	let targetUrl = urlInfo?.url || targetPath
+	let targetKind = getTmpfsMediaKindByUrl(targetUrl)
 
 	if (!container) {
 		container = document.createElement("div")
@@ -188,8 +234,9 @@ let openTmpfsEmbedByName = async (args = {}) => {
 		expandBtn.innerText = "↗"
 		expandBtn.title = "Open in new tab"
 		expandBtn.onclick = () => {
-			if (!!embedElem?.src) {
-				window.open(embedElem.src, "_blank", "noopener,noreferrer")
+			let srcUrl = container?.querySelector(".kcpp-tmpfs-embed-content")?.src
+			if (!!srcUrl) {
+				window.open(srcUrl, "_blank", "noopener,noreferrer")
 			}
 		}
 
@@ -200,18 +247,27 @@ let openTmpfsEmbedByName = async (args = {}) => {
 		closeBtn.title = "Close"
 		closeBtn.onclick = () => closeTmpfsEmbedByName(normalizedName)
 
-		embedElem = document.createElement("embed")
-		embedElem.className = "kcpp-tmpfs-embed-content"
-		embedElem.type = "text/html"
+		contentElem = createTmpfsEmbedContentElement(targetKind)
+		contentKind = targetKind
 
 		header.appendChild(titleElem)
 		header.appendChild(expandBtn)
 		header.appendChild(closeBtn)
 		container.appendChild(header)
-		container.appendChild(embedElem)
+		container.appendChild(contentElem)
 		document.body.appendChild(container)
 
-		registry[normalizedName] = { container, titleElem, embedElem }
+		registry[normalizedName] = { container, titleElem, contentElem, contentKind }
+	}
+
+	if (contentKind !== targetKind) {
+		let nextContentElem = createTmpfsEmbedContentElement(targetKind)
+		if (!!contentElem?.parentElement) {
+			contentElem.parentElement.replaceChild(nextContentElem, contentElem)
+		}
+		contentElem = nextContentElem
+		contentKind = targetKind
+		registry[normalizedName] = { container, titleElem, contentElem, contentKind }
 	}
 
 	titleElem.innerText = `${normalizedName} | ${urlInfo?.path || targetPath}`
@@ -221,7 +277,7 @@ let openTmpfsEmbedByName = async (args = {}) => {
 	container.style.height = `${layout.height}px`
 	container.dataset.embedName = normalizedName
 	container.dataset.embedPath = `${urlInfo?.path || targetPath}`
-	embedElem.src = urlInfo?.url || targetPath
+	contentElem.src = targetUrl
 	raiseTmpfsEmbed(container)
 
 	return {
@@ -232,6 +288,9 @@ let openTmpfsEmbedByName = async (args = {}) => {
 		...layout,
 	}
 }
+
+window.openTmpfsEmbedByName = openTmpfsEmbedByName;
+window.closeTmpfsEmbedByName = clampTmpfsEmbedLayout;
 
 let getCommands = (agentRunState) => {
 	let { currentChainOfThought, agentStopOnRequestForInput } = agentRunState

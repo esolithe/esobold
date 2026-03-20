@@ -212,5 +212,20 @@
 		height: 100%;
 		flex: 1;
 		border: none;
-		background: white;
+	}
+
+	.kcpp-tmpfs-embed-media {
+		width: 100%;
+		height: 100%;
+		flex: 1;
+		min-height: 0;
+		object-fit: contain;
+	}
+
+	.kcpp-tmpfs-embed-audio {
+		width: 100%;
+		height: auto;
+		flex: 0 0 auto;
+		min-height: 54px;
+		background-color: var(--theme_color_bg_popups);
 	}
