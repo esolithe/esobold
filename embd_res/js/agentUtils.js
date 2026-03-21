@@ -484,7 +484,7 @@ window.openTmpfsEmbedByName = openTmpfsEmbedByName;
 window.closeTmpfsEmbedByName = closeTmpfsEmbedByName;
 
 let getCommands = (agentRunState) => {
-	let { currentChainOfThought, agentStopOnRequestForInput } = agentRunState
+	let { currentChainOfThought } = agentRunState
 	return [
 		{
 			"name": "do_nothing",
@@ -498,7 +498,7 @@ let getCommands = (agentRunState) => {
 		},
 		{
 			"name": "send_message",
-			"description": "Sends text to the user. When asking for user input include suggestions for them to respond with.",
+			"description": "Sends text to the user.",
 			"args": {
 				"whoToSendMessageAs": {
 					description: "<whose perspective is the response written from>",
@@ -514,10 +514,6 @@ let getCommands = (agentRunState) => {
 					},
 					minItems: 1,
 					maxItems: 5
-				},
-				"suggestionsToPickFrom": {
-					description: "<suggestions written from the user's perspective which they can pick from for their next action>",
-					type: "array",
 				}
 			},
 			"enabled": true,
@@ -525,28 +521,97 @@ let getCommands = (agentRunState) => {
 			"executor": (action) => {
 				if (!!action?.args?.messages) {
 					clearSuggestions()
-					let messageShowToUser = false
 					action?.args?.messages.forEach(message => {
 						if (!!message && message.trim().length > 0)
 						{
 							addThought(currentChainOfThought, createAIPrompt, agentRunState?.agentName ? `${agentRunState?.agentName}: ${message}` : message)
-							messageShowToUser = true;
 						}
 					})
+				}
+			}
+		},
+		{
+			"name": "userInput",
+			"description": "Requests structured input from the user. Use this when you need the user to provide specific information before continuing.",
+			"args": {
+				"prompt": {
+					description: "<question or information request for the user>",
+					type: "string"
+				},
+				"suggestions": {
+					description: "<optional suggested replies the user can click>",
+					type: "array",
+					items: {
+						type: "string",
+					},
+					optional: true
+				},
+				"continueWithCurrentPlan": {
+					description: "<true to continue the current plan with the user's response, false to generate a new plan because the current one is incorrect>",
+					type: "boolean",
+				}
+			},
+			"enabled": true,
+			"outputVisibleToUser": true,
+			"executor": async (action) => {
+				let prompt = (action?.args?.prompt || "").toString().trim()
+				if (!prompt) {
+					addThought(currentChainOfThought, createSysPrompt, "Request for user input failed - no prompt provided")
+					return true
+				}
 
-					let suggestions = action?.args?.suggestionsToPickFrom
-					if (messageShowToUser && !!suggestions && Array.isArray(suggestions)) {
-						try {
-							let actualSuggestions = suggestions.map(String).filter(text => text.trim().length > 0)
-							if (actualSuggestions.length > 0) {
-								setSuggestions(actualSuggestions)
-								return !!agentStopOnRequestForInput
-							}
-						}
-						catch {
-							// Do not care about an error here, it's a nice to have if the suggestions show
-						}
-					}
+				let suggestions = action?.args?.suggestions
+				if (!Array.isArray(suggestions)) {
+					suggestions = []
+				}
+				suggestions = suggestions.map(String).map(text => text.trim()).filter(text => text.length > 0)
+
+				let continueWithCurrentPlan = !!action?.args?.continueWithCurrentPlan
+				addThought(currentChainOfThought, createSysPrompt, `Request for user input: ${prompt}`, true)
+
+				if (typeof window.requestAgentUserInput !== "function") {
+					addThought(currentChainOfThought, createSysPrompt, "User input UI is unavailable. Stopping loop.", true)
+					agentRunState.skipTaskCompletionCheck = true
+					return true
+				}
+
+				let response = await window.requestAgentUserInput({
+					prompt,
+					suggestions
+				})
+
+				let userOverrideToStop = !response || response.action === "stop"
+				let userInput = (response?.input || "").toString().trim(), noInputFromUser = !userInput
+				if (userOverrideToStop || noInputFromUser) {
+					agentRunState.skipTaskCompletionCheck = true
+					addThought(currentChainOfThought, createSysPrompt, "User chose to stop the loop or provided no input", true)
+					return true
+				}
+
+				let isFinalAction = agentRunState.recentActions.length - (!!agentRunState?.planToUse ? 1 : 0) - 1 === agentRunState.currentOrderOfActionsOverall.length
+				if (continueWithCurrentPlan && !isFinalAction)
+				{
+					addThought(currentChainOfThought, createInstructPrompt, `Input provided by user: ${userInput}`)
+					return false
+				}
+				else
+				{
+					agentRunState.skipTaskCompletionCheck = true
+					setTimeout(() => {
+						window.execAgentCycle(objRefAssign({}, {
+							initialPrompt: userInput,
+							printToConsole: !!agentRunState?.printToConsole,
+							agentName: agentRunState?.agentName,
+							systemPrompt: agentRunState?.systemPrompt,
+							agentPrompt: agentRunState?.agentPrompt,
+							configOverrides: agentRunState?.configOverrides,
+							isUsingWhitelist: agentRunState?.isUsingWhitelist,
+							agentStopOnRequestForInput: agentRunState?.agentStopOnRequestForInput,
+							surpressMessagesToUser: agentRunState?.surpressMessagesToUser,
+							excludeSpecificMessagePrefixes: agentRunState?.excludeSpecificMessagePrefixes
+						}))
+					}, 10)
+					return true
 				}
 			}
 		},
@@ -866,7 +931,7 @@ let getCommands = (agentRunState) => {
 		},
 		{
 			"name": "wordcount",
-			"description": "Enables or disables a word count for each 'ask_user', 'thought' or 'send_message'.",
+			"description": "Enables or disables a word count for each 'userInput', 'thought' or 'send_message'.",
 			"args": {
 				"state": {
 					description: "<true or false>",
@@ -1723,7 +1788,9 @@ let getCommandsSchema = (commands = getEnabledCommands()) => {
 					}
 				}
 
-				args.required.push(arg)
+				if (!command.args[arg]?.optional) {
+					args.required.push(arg)
+				}
 			}
 
 		}
@@ -1789,7 +1856,7 @@ let agentConstraints = `Constraints:
 6. Never repeat recent questions or actions.
 7. Check recent history before asking questions.`,
 	agentResources = `Resources:
-1. Use "ask_user" to tell them to implement new commands if you need one. Do not use ask_user unless absolutely necessary.
+1. Use "userInput" to ask the user for additional information when needed. Do not use userInput unless absolutely necessary.
 2. When responding with None, use null, as otherwise the JSON cannot be parsed.
 3. Use "overwrite_current_state" to keep current information.
 4. Use "add_to_history" to store background information which may be needed in future.
