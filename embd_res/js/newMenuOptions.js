@@ -28,6 +28,7 @@ display_settings = () => {
     document.getElementById("agentStopOnRequestForInput").checked = localsettings.agentStopOnRequestForInput;
     document.getElementById("agentCOTMax").value = localsettings.agentCOTMax;
     document.getElementById("agentCOTMaxnumeric").value = localsettings.agentCOTMax;
+    document.getElementById("agentAutoContinue").checked = localsettings.agentAutoContinue;
     document.getElementById("agentCOTRepeatsMax").value = localsettings.agentCOTRepeatsMax;
     document.getElementById("agentCOTRepeatsMaxnumeric").value = localsettings.agentCOTRepeatsMax;
     document.getElementById("disableSaveCompressionLocally").checked = localsettings.disableSaveCompressionLocally;
@@ -57,6 +58,7 @@ confirm_settings = () => {
     localsettings.agentHideCOT = (document.getElementById("agentHideCOT").checked ? true : false);
     localsettings.agentStopOnRequestForInput = (document.getElementById("agentStopOnRequestForInput").checked ? true : false);
     localsettings.agentCOTMax = document.getElementById("agentCOTMax").value;
+    localsettings.agentAutoContinue = (document.getElementById("agentAutoContinue").checked ? true : false);
     localsettings.agentCOTRepeatsMax = document.getElementById("agentCOTRepeatsMax").value;
     localsettings.disableSaveCompressionLocally = (document.getElementById("disableSaveCompressionLocally").checked ? true : false);
     localsettings.enableRunningMemory = (document.getElementById("enableRunningMemory").checked ? true : false);
@@ -105,6 +107,9 @@ window.addEventListener('load', () => {
     }
     if (localsettings?.agentCOTRepeatsMax == undefined) {
         localsettings.agentCOTRepeatsMax = 1
+    }
+    if (localsettings?.agentAutoContinue == undefined) {
+        localsettings.agentAutoContinue = true
     }
     if (localsettings?.disableSaveCompressionLocally == undefined) {
         localsettings.disableSaveCompressionLocally = true
@@ -355,6 +360,9 @@ window.addEventListener('load', () => {
 
     settingLabelElem = createSettingElementTextArea("agentSavedMacros", "Macros which can be used to trigger the agent with custom logic.", "Macros which can be used to trigger the agent with custom logic. Macros can be invoked by 'macroName::prompt'.")
     settingLabelElem.querySelector("#agentSavedMacros").classList.add("fullScreenTextEditNoAuto")
+    lastSettingContainer.before(settingLabelElem)
+
+    settingLabelElem = createSettingElemBool("agentAutoContinue", "Agent continues until completion (experimental)", "After prompting the agent, the maximum amount of actions the agent can take within a single plan are based on the maximum agent actions. If this option is ticked, and the agent thinks the task is not complete it will automatically create a new plan and continue. If this option is unticked, the user will be prompted to decide how to proceed.")
     lastSettingContainer.before(settingLabelElem)
 
     // Hidden as this is no longer is in use for now

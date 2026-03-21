@@ -1388,10 +1388,18 @@ let askUserToRetryIncompleteTask = async (agentRunState) => {
         return
     }
 
-    let retryResult = await createAgentUserInputPopup({
-        prompt: "Task may be incomplete. Do you want the agent to run again? You can add details before continuing.",
-        suggestions: []
-    })
+    let retryResult;
+    if (!!localsettings?.agentAutoContinue)
+    {
+        retryResult = "continue"
+    }
+    else
+    {
+        retryResult = await createAgentUserInputPopup({
+            prompt: "Task may be incomplete. Do you want the agent to run again? You can add details before continuing.",
+            suggestions: []
+        })
+    }
 
     if (!retryResult || retryResult.action === "stop") {
         return
