@@ -818,6 +818,8 @@ let runAgentCycle = async (agentRunState = {}) => {
         }
 
         for (let i = !!agentRunState?.planToUse ? 1 : 0; i < Number(localsettings.agentCOTMax) + 1 && (currentOrderOfActionsOverall.length === 0 || i < currentOrderOfActionsOverall.length + 1) && endCurrent === false; i++) {
+            Array(...document.getElementsByClassName("stopThinking")).forEach(elem => elem.classList.remove("hidden"))
+
             let nextAction = []
             let validCommands = getEnabledCommands(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist).map(command => command.name).filter(name => i != 0 || name != "stop_thinking")
             if (i == 0) {
@@ -880,12 +882,12 @@ let runAgentCycle = async (agentRunState = {}) => {
 
             let promptOverview = currentOrderOfActionDescriptionsOverall.length > 0 ? currentOrderOfActionDescriptionsOverall[i - 1] : null
             if (i === 0) {
-                let planningPrompt = "The last action from the user is the instruction. If you need to ask the user for a response, the action ask_user must be used and be put as the final action in the order. When handling images always use actions to get information when needed especially for descriptions. Produces a list of actions to respond to this instruction."
+                let planningPrompt = "The last action from the user is the instruction. If you need to ask the user for a response, the action userInput must be used and be put as the final action in the order. When handling images always use actions to get information when needed especially for descriptions. Produces a list of actions to respond to this instruction."
                 if (!!agentRunState?.agentName) {
-                    planningPrompt += ` You must respond as ${agentRunState.agentName} when using the send_message or ask_user actions. Choose the person based on the user's instruction.`
+                    planningPrompt += ` You must respond as ${agentRunState.agentName} when using the send_message or userInput actions. Choose the person based on the user's instruction.`
                 }
                 else if (localsettings.inject_chatnames_instruct) {
-                    planningPrompt += ` You must respond as ${localsettings.chatopponent.split("||$||").join(" or ")} when using the send_message or ask_user actions. Choose the person based on the user's instruction.`
+                    planningPrompt += ` You must respond as ${localsettings.chatopponent.split("||$||").join(" or ")} when using the send_message or userInput actions. Choose the person based on the user's instruction.`
                 }
                 promptOverview = planningPrompt
             }
@@ -1075,6 +1077,8 @@ let runAgentCycle = async (agentRunState = {}) => {
         if (typeof agentRunState?.agentFinaliser === "function") {
             await agentRunState.agentFinaliser(agentRunState)
         }
+
+        await askUserToRetryIncompleteTask(agentRunState)
     }
     catch (e)
     {
@@ -1178,15 +1182,19 @@ let toggleAgent = () => {
     render_gametext();
 }
 
-let stopAgentThinking = () => {
+let stopAgentThinking = async () => {
 
     endCurrent = true
-    Array(...document.getElementsByClassName("stopThinking")).forEach(elem => elem.classList.add("hidden"))
+    if (currentAgentCycle.length > 0) {
+        endCurrent = true
+        await Promise.all(currentAgentCycle.map(c => c.status))
+    }
     currentAgentCycle = []
     if (window?.intervalIdForBackgroundAgent !== undefined)
     {
         clearInterval(window.intervalIdForBackgroundAgent)
     }
+    Array(...document.getElementsByClassName("stopThinking")).forEach(elem => elem.classList.add("hidden"))
     submit_multiplayer(true)
     trigger_abort_controller()
 }
@@ -1229,6 +1237,195 @@ let setSuggestions = (suggestions) => {
 let clearSuggestions = () => {
     currentSuggestions = []
     removeChoiceContainer()
+}
+
+let removeAgentUserInputPopup = () => {
+    if (document.getElementById("agentUserInputOverlay")) {
+        document.getElementById("agentUserInputOverlay").remove()
+    }
+}
+
+let createAgentUserInputPopup = ({ prompt, suggestions = [] }) => {
+    removeAgentUserInputPopup()
+    return new Promise((resolve) => {
+        let overlay = document.createElement("div")
+        overlay.id = "agentUserInputOverlay"
+        overlay.classList.add("agent-user-input-overlay")
+
+        let card = document.createElement("div")
+        card.classList.add("agent-user-input-popup")
+
+        let title = document.createElement("div")
+        title.classList.add("agent-user-input-header")
+        title.innerText = "Agent input required"
+
+        let body = document.createElement("div")
+        body.classList.add("agent-user-input-body")
+
+        let promptText = document.createElement("div")
+        promptText.innerText = prompt || "Please provide input"
+
+        let suggestionsContainer = document.createElement("div")
+        suggestionsContainer.classList.add("agent-user-input-suggestions")
+
+        let input = document.createElement("input")
+        input.type = "text"
+        input.placeholder = "Type your response..."
+        input.classList.add("agent-user-input-text")
+
+        let controls = document.createElement("div")
+        controls.classList.add("agent-user-input-controls")
+
+        let confirmAndContinue = document.createElement("button")
+        confirmAndContinue.classList.add("btn-primary")
+        confirmAndContinue.innerText = "Confirm and continue loop"
+
+        let stopLoop = document.createElement("button")
+        stopLoop.classList.add("btn-primary")
+        stopLoop.innerText = "Stop loop"
+
+        let completeOnce = (result) => {
+            removeAgentUserInputPopup()
+            resolve(result)
+        }
+
+        suggestions.forEach(suggestion => {
+            let button = document.createElement("button")
+            button.classList.add("btn-primary")
+            button.innerText = suggestion
+            button.onclick = () => {
+                input.value = suggestion
+                input.focus()
+            }
+            suggestionsContainer.appendChild(button)
+        })
+
+        confirmAndContinue.onclick = () => {
+            completeOnce({ action: "continue", input: input.value || "" })
+        }
+
+        stopLoop.onclick = () => {
+            completeOnce({ action: "stop" })
+        }
+
+        input.onkeydown = (e) => {
+            if (e.key === "Enter") {
+                e.preventDefault()
+                confirmAndContinue.click()
+            }
+        }
+
+        body.appendChild(promptText)
+        if (suggestions.length > 0) {
+            body.appendChild(suggestionsContainer)
+        }
+        body.appendChild(input)
+        controls.appendChild(confirmAndContinue)
+        controls.appendChild(stopLoop)
+        body.appendChild(controls)
+        card.appendChild(title)
+        card.appendChild(body)
+        overlay.appendChild(card)
+        document.body.appendChild(overlay)
+        input.focus()
+    })
+}
+
+window.requestAgentUserInput = createAgentUserInputPopup
+
+let getTaskCompletionCheckGrammar = async () => {
+    let completionSchema = {
+        type: "object",
+        properties: {
+            isTaskComplete: {
+                type: "boolean"
+            }
+        },
+        required: ["isTaskComplete"]
+    }
+
+    let opt = {
+        method: "POST",
+        headers: get_kobold_header(),
+        body: JSON.stringify({ schema: completionSchema }),
+    }
+
+    return fetch(`${custom_kobold_endpoint}/api/extra/json_to_grammar`, opt)
+        .then((response) => response.json())
+        .then(resp => {
+            if (!!resp && !!resp?.success) {
+                return resp.result
+            }
+            return ""
+        })
+        .catch(() => "")
+}
+
+let checkIfTaskComplete = async (agentRunState) => {
+    try {
+        let latestActions = getLastActions(20)
+        let latestActionsText = latestActions.map(action => `${action.source}: ${action.msg}`).join("\n")
+        let objective = agentRunState?.initialPrompt || ""
+
+        let completionPrompt = createSysPrompt("You are validating whether the current task objective has been completed. Return only a JSON object with the boolean field isTaskComplete.")
+            + createInstructPrompt(`Task objective:\n${objective}\n\nRecent actions and outputs:\n${latestActionsText}\n\nDecide if the task is complete.`)
+
+        let grammar = await getTaskCompletionCheckGrammar()
+        let response = await generateAndGetTextFromPrompt(completionPrompt, grammar)
+        if (!!response) {
+            let parsed = JSON.parse(response)
+            if (typeof parsed?.isTaskComplete === "boolean") {
+                return parsed.isTaskComplete
+            }
+        }
+    }
+    catch {
+        // suppress completion checker errors
+    }
+    return null
+}
+
+let askUserToRetryIncompleteTask = async (agentRunState) => {
+    if (!!agentRunState?.skipTaskCompletionCheck || endCurrent) {
+        return
+    }
+    let isTaskComplete = await checkIfTaskComplete(agentRunState)
+    if (isTaskComplete !== false) {
+        return
+    }
+
+    let retryResult, shouldAutoContinue = !!localsettings?.agentAutoContinue;
+    if (shouldAutoContinue)
+    {
+        retryResult = "continue"
+    }
+    else
+    {
+        retryResult = await createAgentUserInputPopup({
+            prompt: "Task may be incomplete. Do you want the agent to run again? You can add details before continuing.",
+            suggestions: []
+        })
+    }
+
+    if (!retryResult || retryResult.action === "stop") {
+        return
+    }
+
+    let retryInput = (retryResult.input || "Please continue and complete the task.").trim()
+    if (!!retryInput) {
+        window.execAgentCycle(objRefAssign({}, {
+            initialPrompt: shouldAutoContinue ? "" : retryInput,
+            printToConsole: !!agentRunState?.printToConsole,
+            agentName: agentRunState?.agentName,
+            systemPrompt: agentRunState?.systemPrompt,
+            agentPrompt: agentRunState?.agentPrompt,
+            configOverrides: agentRunState?.configOverrides,
+            isUsingWhitelist: agentRunState?.isUsingWhitelist,
+            agentStopOnRequestForInput: agentRunState?.agentStopOnRequestForInput,
+            surpressMessagesToUser: agentRunState?.surpressMessagesToUser,
+            excludeSpecificMessagePrefixes: agentRunState?.excludeSpecificMessagePrefixes
+        }))
+    }
 }
 
 let renderSuggestions = () => {

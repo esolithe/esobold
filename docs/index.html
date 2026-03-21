@@ -18984,7 +18984,7 @@ Current version indicated by LITEVER below.
 	var tts_queue_embed = false;
 	var tts_queue_download = false;
 	var ttsIsBeingGenerated = false
-	function tts_speak(text, do_download=false, do_embed_tts=false, is_test=false)
+	function tts_speak(text, do_download=false, do_embed_tts=false, is_test=false, voice_override="")
 	{
 		let ssval = localsettings.tts_mode;
 		let streamallowed = (ssval==XTTS_ID || ssval==ALLTALK_ID || ssval==OAI_TTS_ID || ssval==KCPP_TTS_ID);
@@ -18996,10 +18996,11 @@ Current version indicated by LITEVER below.
 			tts_speak_input_queue = text2.split("\n").map(chunk => chunk.trim()).filter(chunk => chunk.length > 0);
 			tts_queue_embed = do_embed_tts;
 			tts_queue_download = do_download;
+			return Promise.resolve(true);
 		}
 		else
 		{
-			tts_speak_direct(text,do_download,do_embed_tts,is_test,false);
+			return tts_speak_direct(text,do_download,do_embed_tts,is_test,false,voice_override);
 		}
 	}
 	function poll_chunked_tts()
@@ -19032,11 +19033,11 @@ Current version indicated by LITEVER below.
 		}
 	}
 
-	function tts_speak_direct(text, do_download=false, do_embed_tts=false, is_test=false, append_to_outqueue=false)
+	function tts_speak_direct(text, do_download=false, do_embed_tts=false, is_test=false, append_to_outqueue=false, voice_override="")
 	{
 		if(!text || text=="" || text.trim()=="")
 		{
-			return;
+			return Promise.resolve(false);
 		}
 		ttsIsBeingGenerated = true
 		let ssval = localsettings.tts_mode;
@@ -19109,12 +19110,20 @@ Current version indicated by LITEVER below.
 					};
 				} else {
 					sub_endpt = apply_proxy_url(custom_kobold_endpoint + koboldcpp_tts_endpoint);
+					let selectedVoice = document.getElementById("kcpp_tts_voice").value;
+					let effectiveVoice = (`${voice_override || ""}`.trim()!="") ? `${voice_override || ""}`.trim() : selectedVoice;
 					let is_voicejson = (document.getElementById("kcpp_tts_voice").value == "voicejson");
 					let is_custom = (document.getElementById("kcpp_tts_voice").value == "custom");
+					if (effectiveVoice == "voicejson") {
+						is_voicejson = true;
+					}
+					if (effectiveVoice == "custom") {
+						is_custom = true;
+					}
 					payload =
 					{
 						"input": text,
-						"voice": (is_custom)?document.getElementById("kcpp_tts_voice_custom").value:document.getElementById("kcpp_tts_voice").value
+						"voice": (is_custom)?document.getElementById("kcpp_tts_voice_custom").value:effectiveVoice
 					};
 					if(is_voicejson && vcjson)
 					{
@@ -19123,7 +19132,7 @@ Current version indicated by LITEVER below.
 					ttsheaders = get_kobold_header();
 				}
 
-				fetch(sub_endpt, {
+				return fetch(sub_endpt, {
 					method: 'POST',
 					headers: ttsheaders,
 					body: JSON.stringify(payload),
@@ -19180,7 +19189,7 @@ Current version indicated by LITEVER below.
 						"speaker_wav": document.getElementById("xtts_voices").value,
 						"language": document.getElementById("xtts_lang").value.trim()
 					};
-					fetch(localsettings.saved_xtts_url + xtts_gen_endpoint, {
+					return fetch(localsettings.saved_xtts_url + xtts_gen_endpoint, {
 						method: 'POST',
 						headers: {
 							'Content-Type': 'application/json'
@@ -19272,7 +19281,7 @@ Current version indicated by LITEVER below.
 
 						// Create streaming URL, but right now it's as good as sync
 						const streamingUrl = `${localsettings.saved_alltalk_url}${alltalk_stream_endpoint}?${params.toString()}`;
-						fetch(streamingUrl)
+						return fetch(streamingUrl)
 						.then(response => response.arrayBuffer())
 						.then(data => {
 							audiofile_ref = data.slice(0);
@@ -19317,7 +19326,7 @@ Current version indicated by LITEVER below.
 						formData.append("rvcnarrator_voice_gen", document.getElementById("alltalk_rvc_voice").value);
 						formData.append("rvcnarrator_pitch", document.getElementById("alltalk_rvc_pitch").value);
 
-						fetch(localsettings.saved_alltalk_url + alltalk_gen_endpoint, {
+						return fetch(localsettings.saved_alltalk_url + alltalk_gen_endpoint, {
 							method: 'POST',
 							body: formData, // send payload as FormData
 						}).then(response => {
@@ -19405,6 +19414,7 @@ Current version indicated by LITEVER below.
 						});
 					}
 				}
+				return Promise.resolve(false);
 			}
 		}
 		else if(ssval==WEBBROWSER_TTS_ID)
@@ -19415,16 +19425,25 @@ Current version indicated by LITEVER below.
 				pickedwebvoice = 0;
 			}
 			if ('speechSynthesis' in window) {
-				let utterance = new window.SpeechSynthesisUtterance(text);
-				utterance.voice = voicelist[pickedwebvoice];
-				utterance.rate = ssrate;
-				window.speechSynthesis.speak(utterance);
-				utterance.onend = function(event) {
-					update_submit_button(false);
-					ttsIsBeingGenerated = false
-				};
+				return new Promise((resolve) => {
+					let utterance = new window.SpeechSynthesisUtterance(text);
+					utterance.voice = voicelist[pickedwebvoice];
+					utterance.rate = ssrate;
+					window.speechSynthesis.speak(utterance);
+					utterance.onend = function(event) {
+						update_submit_button(false);
+						ttsIsBeingGenerated = false
+						resolve(true)
+					};
+					utterance.onerror = function() {
+						ttsIsBeingGenerated = false
+						resolve(false)
+					};
+				});
 			}
+			return Promise.resolve(false);
 		}
+		return Promise.resolve(false);
 	}
 
 	var ptt_start_timestamp = performance.now();
@@ -22984,6 +23003,10 @@ Current version indicated by LITEVER below.
 				for (let key in image_db) {
 					let img = image_db[key];
 					let matchstr = "[<|p|" + key + "|p|>]";
+					// Need a window level callback once 
+					if (img.done == true && img.result && img.result != "" && img?.callback !== undefined) {
+						img?.callback()
+					}
 					if (gametext_arr[i].includes(matchstr)) {
 						hasChangedImage = true; //set here to update timers
 						if (img.done == true && img.result && img.result != "") {
