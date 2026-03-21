@@ -2435,7 +2435,7 @@ def sd_generate(genparams):
     inputs.cfg_scale = cfg_scale
     if distilled_guidance is not None:
         inputs.distilled_guidance = distilled_guidance
-    inputs.denoising_strength = denoising_strength
+    inputs.denoising_strength = (0 if denoising_strength < 0 else (1 if denoising_strength > 1 else denoising_strength))
     if shifted_timestep is not None:
         inputs.shifted_timestep = shifted_timestep
     if flow_shift is not None:

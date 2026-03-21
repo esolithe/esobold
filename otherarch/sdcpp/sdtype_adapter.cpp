@@ -1463,8 +1463,18 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
             unsigned char * png = nullptr;
             if(inputs.upscale && upscaler_ctx != nullptr)
             {
-                printf("Upscaling output image...\n");
-                upscaled_image = upscale(upscaler_ctx, results[i], 2);
+                //special case, is img2img and denoise strength is 0 and steps is 1, do a passthru
+                if(sd_params->sample_steps<=1 && sd_params->strength<=0 && is_img2img && extra_image_data.size()==0)
+                {
+                    printf("Upscaling input image (passthrough mode)...\n");
+                    upscaled_image = upscale(upscaler_ctx, input_image, 2);
+                }
+                else
+                {
+                    printf("Upscaling output image...\n");
+                    upscaled_image = upscale(upscaler_ctx, results[i], 2);
+                }
+
                 png = stbi_write_png_to_mem(upscaled_image.data, 0, upscaled_image.width, upscaled_image.height, upscaled_image.channel, &out_data_len, get_image_params(params, lora_meta).c_str());
             } else {
                 png = stbi_write_png_to_mem(results[i].data, 0, results[i].width, results[i].height, results[i].channel, &out_data_len, get_image_params(params, lora_meta).c_str());
