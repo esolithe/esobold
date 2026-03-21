@@ -67,8 +67,8 @@ class TmpfsClient {
      * @param {string} [pattern='*']
      * @returns {Promise<string[]>}
      */
-    async list(pattern) {
-        const data = await this._get('/api/extra/tmpfs/files', { pattern });
+    async list(pattern, case_insensitive) {
+        const data = await this._get('/api/extra/tmpfs/files', { pattern, case_insensitive });
         return data.paths;
     }
 
@@ -79,8 +79,8 @@ class TmpfsClient {
      * @param {number} [max_results=100]
      * @returns {Promise<Array<{path:string, line:number, text:string}>>}
      */
-    async search(pattern, path_pattern, max_results) {
-        const data = await this._get('/api/extra/tmpfs/search', { pattern, path_pattern, max_results });
+    async search(pattern, path_pattern, max_results, case_insensitive) {
+        const data = await this._get('/api/extra/tmpfs/search', { pattern, path_pattern, max_results, case_insensitive });
         return data.matches;
     }
 
@@ -167,7 +167,7 @@ class TmpfsClient {
      * @param {string|Uint8Array|ArrayBuffer} content
      * @returns {Promise<{success:boolean, path:string, metadata:object}>}
      */
-    async write(path, content) {
+    async write(path, content, isB64 = false) {
         let payload_content;
         if (typeof content === 'string') {
             payload_content = content;
@@ -176,7 +176,7 @@ class TmpfsClient {
             const bytes = content instanceof ArrayBuffer ? new Uint8Array(content) : content;
             payload_content = btoa(String.fromCharCode(...bytes));
         }
-        return this._post('/api/extra/tmpfs/write', { path, content: payload_content });
+        return this._post('/api/extra/tmpfs/write', { path, content: payload_content, isB64 });
     }
 
     /**

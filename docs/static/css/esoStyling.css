@@ -229,3 +229,60 @@
 		min-height: 54px;
 		background-color: var(--theme_color_bg_popups);
 	}
+
+	/* Agent user input popup */
+	.agent-user-input-overlay {
+		position: fixed;
+		top: 0;
+		left: 0;
+		width: 100vw;
+		height: 100vh;
+		z-index: 12000;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+	}
+
+	.agent-user-input-popup {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+		width: min(640px, 92vw);
+		max-height: 80vh;
+		overflow-y: auto;
+		padding: 0;
+		background-color: var(--theme_color_bg_popups);
+		border: 1px solid var(--theme_color_border);
+		color: var(--theme_color_fg);
+		font-size: var(--main_font_size);
+		border-radius: 8px;
+		box-shadow: 0 12px 36px rgba(0, 0, 0, 0.4);
+	}
+
+	.agent-user-input-header {
+		display: flex;
+		align-items: center;
+		padding: 8px 10px;
+		background-color: var(--theme_color_accent_bg);
+		color: var(--theme_color_accent_fg);
+		font-size: var(--theme_font_size_medium);
+		font-weight: bold;
+	}
+
+	.agent-user-input-body {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+		padding: 12px;
+	}
+
+	.agent-user-input-suggestions,
+	.agent-user-input-controls {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+	}
+
+	.agent-user-input-text {
+		width: 100%;
+	}
