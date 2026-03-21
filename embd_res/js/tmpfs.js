@@ -174,7 +174,8 @@ class TmpfsClient {
         } else {
             // Binary: encode to base64 so it travels safely over JSON
             const bytes = content instanceof ArrayBuffer ? new Uint8Array(content) : content;
-            payload_content = btoa(String.fromCharCode(...bytes));
+            payload_content = bytesToB64(bytes);
+            isB64 = true;
         }
         return this._post('/api/extra/tmpfs/write', { path, content: payload_content, isB64 });
     }
