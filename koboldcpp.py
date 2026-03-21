@@ -5802,9 +5802,17 @@ Change Mode<br>
                 parsed_dict = urllib.parse.parse_qs(parsed_url.query)
                 zip_dir = str(parsed_dict.get('dir', [''])[0])
                 zip_body = tmpfs_build_zip_bytes(zip_dir)
+                zip_filename = "tmpfs.zip"
+                try:
+                    normalized_dir = tmpfs_normalize_path(zip_dir, allow_root=True)
+                    dir_name = posixpath.basename(normalized_dir.rstrip('/')) if normalized_dir != '/' else 'tmpfs'
+                    if dir_name:
+                        zip_filename = f"{dir_name}.zip"
+                except Exception:
+                    pass
                 self.send_response(200)
                 self.send_header('content-length', str(len(zip_body)))
-                self.send_header('Content-Disposition', 'attachment; filename="tmpfs.zip"')
+                self.send_header('Content-Disposition', f'attachment; filename="{zip_filename}"')
                 self.end_headers(content_type='application/zip')
                 self.wfile.write(zip_body)
                 return
@@ -5851,6 +5859,8 @@ Change Mode<br>
 
                         if child_dirs or child_files:
                             requested_dir_escaped = html.escape(requested_dir)
+                            zip_dir_param = "" if requested_dir == "/" else f"?dir={urllib.parse.quote(requested_dir, safe='/')}"
+                            zip_href = f"/tmp.zip{zip_dir_param}"
                             directory_items = []
 
                             if requested_dir != "/":
@@ -5873,7 +5883,9 @@ Change Mode<br>
                             response_body = (
                                 "<!doctype html><html><head><meta charset='utf-8'><title>Tmpfs Directory</title></head>"
                                 f"<body><h3>Tmpfs Directory: {requested_dir_escaped}</h3>"
-                                f"<p>{len(child_dirs)} dirs, {len(child_files)} files</p><ul>{directory_html}</ul></body></html>"
+                                f"<p>{len(child_dirs)} dirs, {len(child_files)} files</p>"
+                                f"<p><a href=\"{zip_href}\">Download this directory as zip</a></p>"
+                                f"<ul>{directory_html}</ul></body></html>"
                             ).encode("utf-8")
                             content_type = 'text/html'
                         else:
