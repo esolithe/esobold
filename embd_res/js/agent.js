@@ -1388,8 +1388,8 @@ let askUserToRetryIncompleteTask = async (agentRunState) => {
         return
     }
 
-    let retryResult;
-    if (!!localsettings?.agentAutoContinue)
+    let retryResult, shouldAutoContinue = !!localsettings?.agentAutoContinue;
+    if (shouldAutoContinue)
     {
         retryResult = "continue"
     }
@@ -1408,7 +1408,7 @@ let askUserToRetryIncompleteTask = async (agentRunState) => {
     let retryInput = (retryResult.input || "Please continue and complete the task.").trim()
     if (!!retryInput) {
         window.execAgentCycle(objRefAssign({}, {
-            initialPrompt: retryInput,
+            initialPrompt: shouldAutoContinue ? "" : retryInput,
             printToConsole: !!agentRunState?.printToConsole,
             agentName: agentRunState?.agentName,
             systemPrompt: agentRunState?.systemPrompt,

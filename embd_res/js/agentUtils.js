@@ -551,7 +551,7 @@ let getCommands = (agentRunState) => {
 					type: "boolean",
 				}
 			},
-			"enabled": true,
+			"enabled": !!agentRunState?.agentStopOnRequestForInput,
 			"outputVisibleToUser": true,
 			"executor": async (action) => {
 				let prompt = (action?.args?.prompt || "").toString().trim()
