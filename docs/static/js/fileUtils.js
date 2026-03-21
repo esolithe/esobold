@@ -12,6 +12,13 @@ let jsObjToBytes = (data) => {
     }
     return text
 }
+let bytesToB64 = (bytes) => {
+    let text = "";
+    for (var i = 0; i < Math.ceil(bytes.length / 32768.0); i++) {
+        text += String.fromCharCode.apply(null, bytes.slice(i * 32768, Math.min((i + 1) * 32768, bytes.length)))
+    }
+    return btoa(text)
+}
 let getDownloadDataFromManager = async (charName) => {
     let characterType = allCharacterNames.find(c => c.name === charName)?.type;
     if (characterType !== undefined) {
