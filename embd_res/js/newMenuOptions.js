@@ -349,10 +349,10 @@ window.addEventListener('load', () => {
     }
     lastSettingContainer.before(settingLabelElem)
 
-    settingLabelElem = createSettingElemBool("agentHideCOT", "Hide agent COT (experimental)", "Hides agent thinking steps (such as searches)")
+    settingLabelElem = createSettingElemBool("agentHideCOT", "Hide agent COT", "Hides agent thinking steps (such as searches)")
     lastSettingContainer.before(settingLabelElem)
 
-    settingLabelElem = createSettingElemRange("agentCOTMax", "Maximum agent actions", "Defines the maximum number of actions the agent can take without a user input", 1, 20, 1, 5)
+    settingLabelElem = createSettingElemRange("agentCOTMax", "Maximum agent actions per plan", "Defines the maximum number of actions the agent can plan ahead", 1, 20, 1, 5)
     lastSettingContainer.before(settingLabelElem)
 
     settingLabelElem = createSettingElemBool("agentStopOnRequestForInput", "Can agent ask for input?", "Determines if the agent can ask the user for input while executing the plan")

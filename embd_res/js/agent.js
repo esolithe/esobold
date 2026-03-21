@@ -818,6 +818,8 @@ let runAgentCycle = async (agentRunState = {}) => {
         }
 
         for (let i = !!agentRunState?.planToUse ? 1 : 0; i < Number(localsettings.agentCOTMax) + 1 && (currentOrderOfActionsOverall.length === 0 || i < currentOrderOfActionsOverall.length + 1) && endCurrent === false; i++) {
+            Array(...document.getElementsByClassName("stopThinking")).forEach(elem => elem.classList.remove("hidden"))
+
             let nextAction = []
             let validCommands = getEnabledCommands(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist).map(command => command.name).filter(name => i != 0 || name != "stop_thinking")
             if (i == 0) {
@@ -1180,15 +1182,19 @@ let toggleAgent = () => {
     render_gametext();
 }
 
-let stopAgentThinking = () => {
+let stopAgentThinking = async () => {
 
     endCurrent = true
-    Array(...document.getElementsByClassName("stopThinking")).forEach(elem => elem.classList.add("hidden"))
+    if (currentAgentCycle.length > 0) {
+        endCurrent = true
+        await Promise.all(currentAgentCycle.map(c => c.status))
+    }
     currentAgentCycle = []
     if (window?.intervalIdForBackgroundAgent !== undefined)
     {
         clearInterval(window.intervalIdForBackgroundAgent)
     }
+    Array(...document.getElementsByClassName("stopThinking")).forEach(elem => elem.classList.add("hidden"))
     submit_multiplayer(true)
     trigger_abort_controller()
 }
