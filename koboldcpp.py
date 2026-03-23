@@ -7389,6 +7389,7 @@ def show_gui():
             args.usecpu = True
         if runopts_var.get()=="Use CPU (Old CPU)":
             args.noavx2 = True
+            args.usecpu = True
         if runopts_var.get()=="Failsafe Mode (Older CPU)":
             args.noavx2 = True
             args.usecpu = True
