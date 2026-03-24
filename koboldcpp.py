@@ -2540,11 +2540,11 @@ def tts_prepare_voice_json(jsonstr):
         return None
 
 def tts_extract_instruction(x):
-    match = re.match(r'^\[([^\]]+)\]\s*(.+)$', x)
+    match = re.match(r'^\[([^\]]+)\]\s*(.+)$', x, re.DOTALL)
     if match:
         instruction = match.group(1)
         x1 = match.group(2)
-        return x1, instruction
+        return x1, (instruction if instruction else "")
     return x, ""
 
 def tts_generate(genparams):
@@ -4166,7 +4166,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
 
                             # hack for lcppui reasoning_content for thinking models
                             delta = {'role':'assistant','content':tokenStr}
-                            if genparams.get('encapsulate_thinking', False):
+                            if genparams.get('encapsulate_thinking', True):
                                 for pair in thinkpairs:
                                     if encap_first_loop and not encap_in_thinking and genparams.get("prompt","").endswith(pair["start"]):
                                         encap_in_thinking = True
