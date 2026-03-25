@@ -74,7 +74,7 @@ extra_images_max = 4 # for kontext/qwen img
 KcppVersion = "1.111"
 showdebug = True
 kcpp_instance = None #global running instance
-global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_override_config_target":"", "last_active_timestamp":datetime.now(),"current_model":"initial_model"}
+global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_override_config_target":"", "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model"}
 using_gui_launcher = False
 
 handle = None
@@ -3772,7 +3772,12 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
         is_post = self.command.upper() == "POST"
         is_completions_path = (self.path.endswith('/v1/completions') or self.path.endswith('/v1/completion') or self.path=='/completions')
         is_chat_completions_path = (self.path.endswith('/v1/chat/completions') or self.path=='/chat/completions')
-        if is_post and (is_completions_path or is_chat_completions_path):
+
+        #any requests to the following endpoints is capable of waking the server
+        wake_requests = ["/api/extra/generate/stream","/api/extra/tokencount","/api/v1/generate","/sdapi/v1/interrogate","/v1/completions","/v1/chat/completions","/api/extra/transcribe","/v1/audio/transcriptions","/api/extra/tts","/v1/audio/speech","/api/extra/embeddings","/v1/embeddings","/api/extra/music/prepare","/api/extra/music/generate","/sdapi/v1/txt2img","/sdapi/v1/img2img","/sdapi/v1/upscale"]
+        is_wake_request = self.path in wake_requests
+
+        if is_post and (is_completions_path or is_chat_completions_path or is_wake_request):
             model_name = ""
             if body:
                 try:
@@ -3781,28 +3786,32 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                 except Exception:
                     pass
 
-            if model_name and model_name != global_memory["current_model"]:
+            was_auto_unloaded = (global_memory["triggered_sleeping"] and global_memory["current_model"]=="unload_model")
+            if (model_name and model_name != global_memory["current_model"]) or was_auto_unloaded:
                 with proxy_reload_lock:
-                    if model_name != global_memory["current_model"]:
+                    whitelist = get_current_admindir_list() # see if its an allowed swap
+                    if was_auto_unloaded and not model_name:
+                        model_name = "initial_model"
+                    if model_name != global_memory["current_model"] and (model_name in whitelist):
                         global_memory["last_active_timestamp"] = datetime.now()
-                        whitelist = get_current_admindir_list() # see if its an allowed swap
-                        if model_name in whitelist:
-                            reqbody = json.dumps({"filename":model_name})
-                            reqheaders = {
-                                'Content-Type': 'application/json',
-                                'Content-Length': str(len(reqbody)),
-                            }
-                            if args.adminpassword:
-                                reqheaders["Authorization"] = f"Bearer {args.adminpassword}"
-                            conn = http.client.HTTPConnection('localhost', upstream_port, timeout=600)
-                            conn.request("POST", "/api/admin/reload_config", body=reqbody, headers=reqheaders)
-                            resp = conn.getresponse()
-                            time.sleep(3)
-                            global_memory["last_active_timestamp"] = datetime.now()
-                            if not self.wait_for_upstream_ready(upstream_port,120,0.5):
-                                self.send_error(504, "KoboldCpp model swap reload timed out")
-                                return
-                            time.sleep(0.1)
+                        global_memory["triggered_sleeping"] = False
+                        reqbody = json.dumps({"filename":model_name})
+                        reqheaders = {
+                            'Content-Type': 'application/json',
+                            'Content-Length': str(len(reqbody)),
+                        }
+                        if args.adminpassword:
+                            reqheaders["Authorization"] = f"Bearer {args.adminpassword}"
+                        conn = http.client.HTTPConnection('localhost', upstream_port, timeout=600)
+                        conn.request("POST", "/api/admin/reload_config", body=reqbody, headers=reqheaders)
+                        resp = conn.getresponse()
+                        time.sleep(3)
+                        global_memory["last_active_timestamp"] = datetime.now()
+                        global_memory["triggered_sleeping"] = False
+                        if not self.wait_for_upstream_ready(upstream_port,120,0.5):
+                            self.send_error(504, "KoboldCpp model swap reload timed out")
+                            return
+                        time.sleep(0.1)
 
         try:  # connect upstream
             conn = http.client.HTTPConnection('localhost', upstream_port, timeout=600)
@@ -5313,6 +5322,7 @@ Change Mode<br>
             response_body = None
             use_jinja = args.jinja
             global_memory["last_active_timestamp"] = datetime.now()
+            global_memory["triggered_sleeping"] = False
             if self.path.endswith('/api/admin/check_state'):
                 if global_memory and args.admin and args.admindir and os.path.exists(args.admindir) and self.check_header_password(args.adminpassword):
                     cur_states = []
@@ -8885,7 +8895,7 @@ def main(launch_args, default_args):
             input()
     else:  # manager command queue for admin mode
         with multiprocessing.Manager() as mp_manager:
-            global_memory = mp_manager.dict({"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_override_config_target":"", "last_active_timestamp":datetime.now(),"current_model":"initial_model"})
+            global_memory = mp_manager.dict({"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_override_config_target":"", "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model"})
 
             if args.remotetunnel and not args.prompt and not args.benchmark and not args.cli:
                 setuptunnel(global_memory, True if args.sdmodel else False)
@@ -8933,6 +8943,7 @@ def main(launch_args, default_args):
                         if time_since_last_active > args.adminunloadtimeout and global_memory["current_model"]!="unload_model":
                             print(f"[Unload Timeout] Inactive for over {time_since_last_active}s, unloading models...")
                             restart_target = "unload_model"
+                            global_memory["triggered_sleeping"] = True
                     if restart_target!="":
                         overridetxt = ("" if not restart_override_config_target else f" with override config {restart_override_config_target}")
                         print(f"Reloading new model/config: {restart_target}{overridetxt}")
