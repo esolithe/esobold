@@ -2,8 +2,6 @@
 #include <cstdint>
 
 const int tensor_split_max = 16;
-const int images_max = 8;
-const int audio_max = 4;
 const int logprobs_max = 10;
 const int overridekv_max = 16;
 
@@ -54,7 +52,7 @@ struct load_model_inputs
     const bool use_smartcontext = false;
     const bool use_contextshift = false;
     const bool use_fastforward = false;
-    const int kcpp_main_gpu = 0;
+    const int kcpp_main_gpu = -1;
     const char * vulkan_info = nullptr;
     const int batchsize = 512;
     const bool autofit = false;
@@ -91,8 +89,10 @@ struct generation_inputs
     const char * memory = nullptr;
     const char * negative_prompt = nullptr;
     const float guidance_scale = 1;
-    const char * images[images_max] = {};
-    const char * audio[audio_max] = {};
+    const int images_len = 0;
+    const char ** images = nullptr;
+    const int audio_len = 0;
+    const char ** audio = nullptr;
     const int max_context_length = 0;
     const int max_length = 0;
     const float temperature = 0.0f;
@@ -172,7 +172,7 @@ struct sd_load_model_inputs
 {
     const char * model_filename = nullptr;
     const char * executable_path = nullptr;
-    const int kcpp_main_gpu = 0;
+    const int kcpp_main_gpu = -1;
     const char * vulkan_info = nullptr;
     const int threads = 0;
     const int quant = 0;
@@ -255,7 +255,7 @@ struct whisper_load_model_inputs
 {
     const char * model_filename = nullptr;
     const char * executable_path = nullptr;
-    const int kcpp_main_gpu = 0;
+    const int kcpp_main_gpu = -1;
     const char * vulkan_info = nullptr;
     const char * devices_override = nullptr;
     const bool quiet = false;
@@ -280,7 +280,7 @@ struct tts_load_model_inputs
     const char * ttc_model_filename = nullptr;
     const char * cts_model_filename = nullptr;
     const char * executable_path = nullptr;
-    const int kcpp_main_gpu = 0;
+    const int kcpp_main_gpu = -1;
     const char * vulkan_info = nullptr;
     const int gpulayers = 0;
     const bool flash_attention = false;
@@ -298,6 +298,7 @@ struct tts_generation_inputs
     const char * custom_speaker_text = "";
     const char * custom_speaker_data = "";
     const char * reference_audio = "";
+    const char * speaker_instruction = "";
 };
 struct tts_generation_outputs
 {
@@ -310,7 +311,7 @@ struct embeddings_load_model_inputs
     const int threads = 4;
     const char * model_filename = nullptr;
     const char * executable_path = nullptr;
-    const int kcpp_main_gpu = 0;
+    const int kcpp_main_gpu = -1;
     const char * vulkan_info = nullptr;
     const int gpulayers = 0;
     const bool flash_attention = false;
@@ -340,7 +341,7 @@ struct music_load_model_inputs
     const char * musicvae_filename = nullptr;
     const bool lowvram = false;
     const char * executable_path = nullptr;
-    const int kcpp_main_gpu = 0;
+    const int kcpp_main_gpu = -1;
     const char * vulkan_info = nullptr;
     const char * devices_override = nullptr;
     const bool quiet = false;

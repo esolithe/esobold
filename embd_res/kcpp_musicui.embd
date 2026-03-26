@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>KoboldCpp Music Generation</title>
+<title>KoboldCpp Music and Audio Generation</title>
 
 <style>
 :root{
@@ -158,7 +158,29 @@ input[type="checkbox"] {
   cursor: pointer;
 }
 
-
+select{
+  width:100%;
+  padding:8px 10px;
+  border-radius:8px;
+  border:none;
+  background:#0f172a;
+  color:var(--text);
+  font-size:14px;
+  appearance:none;
+  -webkit-appearance:none;
+  -moz-appearance:none;
+  cursor:pointer;
+}
+select{
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position:
+    calc(100% - 15px) calc(50% - 3px),
+    calc(100% - 10px) calc(50% - 3px);
+  background-size:5px 5px;
+  background-repeat:no-repeat;
+}
 </style>
 
 </head>
@@ -166,11 +188,16 @@ input[type="checkbox"] {
 
 <header>
 <img style="width: 36px; height: 36px; vertical-align: middle; margin-right:4px" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAMAAACdt4HsAAAAAXNSR0IB2cksfwAAAAlwSFlzAAALEwAACxMBAJqcGAAAADxQTFRFS2Si+X5+pmBfHyApLjZSS2SjP057Vzw5EA4Sf1ZT+9Sv1WpqnYx/7qaYw7vUAAAAS2Sj9PPzgnrLS2SjAzrF9gAAABR0Uk5T///////w////////////AKj//yMlHqVpAAAD3klEQVR4nKWXi7KjIAyGFSgxEjhV3/9d90+8onZPd810prWSDwi50fyoTNP7/X79g2D4NJlqo+rvV/Mf8npPM2B6/4+6ihKaB/pGaH4e6IPw00y3+48xhBC3J32Id+NeUzN9UPfer4RoD/eIqbnuwLS7zncLAfqdPvvDmvY9XAE6vuuImEAw8fNT1/kr4Qqw+YhdIocfJl0glxyTvyG8m7MNY1B9diAkmgGUODnH7Km7AF53AGEjUJtWYdUPzn0LyC6AQO0qCUCi1PKXAM5tCwXeAC0ROf36AqA2VACmbQ8yP9DVimeA6lPKkLaW3EPylXAARBXV701OhOVPI6hcAXH1mTyP7e8AMyEc4mQDzP7XrfOfl5D7ndAdfXID6NwMyXACEpEbgPTCLJn1hEGoAep/OKheQiCEEhj1HgBQX1ZxQMPLlyVsABwejkp8EGEQAkxRA4RgIRYhTxme1fkKoBZwAHjLA+b/cgLQ8gZ4gZ+tVtgAnboaa+Lg0IwRhBqAmX0cI0WFqHN3FUAXAOPpzIWhPzZYQgUAu4ljiaKTaKwtZtwAIdv8XkocR9+UYM5/BMTRxzJKsWEu+RPAAsBxKSWWgTHS18cofiwhlCJD4cApUb0CNWKA/5dhwAqKD2UIXAEoFgUMkIJTCCcjzkGE890BQhXA685WQNqD6ujKWDRhhI7EdKUCtKSGxd8ASEr+6sqNApKPeD/iFEpT6nAUcAMgMmBzqwVPgJCd80X3AIlDDcjSzH8PJbD7AGiT020WjfcCN0jI5WwJGk5axP4eikeyvQd4HE5i7I4xEpWANKg0m2p0OUIcQKJnd7uCaABMRebOSOoB1WUVYACzaGSs012NaI5gAC0GcPWD9iLI6/qVdGeXY7R6xu1M0FAhG7s865ctw97Zoz85kuXi5T2EbaZatLileQA+VifrYGrT7ruL+lbZ0orYcXQJpry/tl+26l1s8sOy+BxMqKjr23nf7mhFnktbOgJOGQmnVG0ZVve06VvDUFmEztGIhHAy2YHA+qsCuFNS1T0Edf41AOZ1b7uwH1tYYFA4p3U1owiOOu+AsyxrQ3AIXwrLXtryL4BPpW0rrvMaPgHSx+K6l3cj3Oin1lH6S3nfd+KDa51lAjJhE6ddz7XRu29xUH51O95SgNOahDTB3PPvLc7cZPWYEVlVlp5AkGtJK/63XZoq0jBsvUrPeNDvr/tE1SnD3qxIEVuNfAsY0J9w4Ux2ZKizHPLHFdw127r7HIS2ZpvFTHHbbN+3+2Qm29p9NvXv2v3twkHHCwd9vnA8vvI8vnQ9vvY9v3g+vvo+v3w/u/7/AZoAPJwrbZ1IAAAAAElFTkSuQmCC"/>
-<span>KoboldCpp Music Generation UI</span></header>
+<span>KoboldCpp Music and Audio Generation</span></header>
 
 <div class="wrapper">
 
 <div class="panel">
+<div style="display:flex; gap:8px; margin-bottom:10px;">
+  <button class="secondary" onclick="switchTab('music')" id="tab_music">🎵 Music</button>
+  <button class="secondary" onclick="switchTab('tts')" id="tab_tts">🗣 TTS</button>
+</div>
+<div id="musicTab">
   <h2>Song Setup</h2>
 
   <label>Caption</label> <div style="float:right"><input id="rewrite_caption" type="checkbox" style="width: auto;vertical-align: middle;" checked><label>Rewrite Caption</label></div>
@@ -254,6 +281,43 @@ input[type="checkbox"] {
   <p style="font-size:14px">Click 'Plan' first to generate lyrics, BPM and duration. Edit as needed.
   <br>When satisfied, click 'Generate' to make the music</p>
   </div>
+</div>
+<div id="ttsTab" class="hidden">
+
+  <h2>TTS Generation</h2>
+
+  <label>Text</label>
+  <textarea id="tts_input" placeholder="Enter text to speak..."></textarea>
+
+  <div style="margin-top:10px">
+    <label>Voice</label>
+    <div style="display:flex; gap:6px;">
+      <select id="tts_voice" style="flex:1;"></select>
+      <button class="secondary" onclick="fetchVoices()">↻</button>
+    </div>
+  </div>
+
+  <div style="margin-top:10px">
+    <label>Instruction (optional)</label>
+    <input id="tts_instruction" placeholder="e.g. angry shouting loud male">
+  </div>
+
+  <div style="margin-top:14px">
+    <label>API Base URL (optional)</label>
+    <input id="tts_baseUrl" placeholder="http://localhost:5001">
+  </div>
+
+  <div id="ttsActions" class="actions">
+    <button class="primary" onclick="generateTTS()">Generate Speech</button>
+    <button class="danger" onclick="clearTTS()">Clear</button>
+  </div>
+  <div id="inlineSpinner2" class="inline-spinner hidden"></div>
+
+  <p style="font-size:14px;margin-top:10px">
+    Generate speech clips and store them in your library.
+  </p>
+
+</div>
 
 </div>
 
@@ -281,10 +345,115 @@ let currentPage=1;
 let totalItems=0;
 let currentController=null;
 
+let currentTab = "music";
+
+function switchTab(tab){
+  currentTab = tab;
+
+  document.getElementById("musicTab").classList.toggle("hidden", tab !== "music");
+  document.getElementById("ttsTab").classList.toggle("hidden", tab !== "tts");
+
+  document.getElementById("tab_music").classList.toggle("primary", tab==="music");
+  document.getElementById("tab_tts").classList.toggle("primary", tab==="tts");
+
+  loadLibrary(); // refresh view if needed later
+}
+
+async function fetchVoices(){
+  try{
+    const base = document.getElementById("tts_baseUrl").value.trim();
+    const url = (base ? base.replace(/\/$/,"") : "") + "/speakers_list";
+
+    const res = await fetch(url);
+    if(!res.ok) throw new Error();
+
+    const voices = await res.json();
+    populateVoiceList(voices);
+
+    showMessage("Voices loaded.");
+  }catch(e){
+    populateVoiceList(["kobo"]);
+    showMessage("⚠ Failed to fetch voices. Using fallback.");
+  }
+}
+
+function populateVoiceList(list){
+  const select = document.getElementById("tts_voice");
+  select.innerHTML = "";
+  list.forEach(v=>{
+    const opt=document.createElement("option");
+    opt.value=v;
+    opt.textContent=v;
+    select.appendChild(opt);
+  });
+}
+
+async function generateTTS(){
+  try{
+    currentController=new AbortController();
+    setLoading(true);
+
+    const base = document.getElementById("tts_baseUrl").value.trim();
+    const url = (base ? base.replace(/\/$/,"") : "") + "/v1/audio/speech";
+
+    const payload = {
+      input: document.getElementById("tts_input").value,
+      voice: document.getElementById("tts_voice").value
+    };
+
+    const instruction = document.getElementById("tts_instruction").value;
+    if(instruction) payload.instruction = instruction;
+
+    const res = await fetch(url,{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify(payload),
+      signal:currentController.signal
+    });
+
+    if(!res.ok) throw new Error();
+
+    const audioBlob = await res.blob();
+
+    const tx=db.transaction(STORE,"readwrite");
+    tx.objectStore(STORE).add({
+      title: payload.input.slice(0,30),
+      date:new Date().toISOString(),
+      params:payload,
+      audio:audioBlob,
+      type:"tts"
+    });
+
+    tx.oncomplete=()=>{
+      currentPage=1;
+      loadLibrary();
+      showMessage("TTS generated!");
+    };
+
+  }catch(e){
+    if(e.name!=="AbortError")
+      showMessage("⚠ Failed to generate TTS.");
+  }finally{
+    currentController=null;
+    setLoading(false);
+  }
+}
+
+function clearTTS(){
+  document.getElementById("tts_input").value="";
+  document.getElementById("tts_instruction").value="";
+}
+
+//end of tts part
+
 function setLoading(isLoading){
   document.getElementById("normalActions").style.display = isLoading ? "none" : "flex";
+  document.getElementById("ttsActions").style.display = isLoading ? "none" : "flex";
+
+  // shared controls
   document.getElementById("abortBtn").classList.toggle("hidden", !isLoading);
   document.getElementById("inlineSpinner").classList.toggle("hidden", !isLoading);
+  document.getElementById("inlineSpinner2").classList.toggle("hidden", !isLoading);
 }
 
 function abortRequest(){
@@ -511,7 +680,7 @@ function loadLibrary(){
         let ismp3 = (item.params?(item.params.use_mp3?true:false):false);
         let savfmt = (ismp3?".mp3":".wav");
         div.innerHTML=`
-          <h4>${item.title}</h4>
+          <h4>${item.type==="tts" ? "🗣 " : "🎵 "}${item.title}</h4>
           <div class="meta">${new Date(item.date).toLocaleString()}</div>
           <audio controls src="${url}"></audio>
           <div style="margin-top:6px;display:flex;gap:6px;">
@@ -577,6 +746,7 @@ function importPlan(event){
 }
 
 initDB().then(loadLibrary);
+fetchVoices();
 </script>
 
 </body>

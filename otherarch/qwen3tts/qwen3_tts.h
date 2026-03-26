@@ -91,7 +91,7 @@ public:
     // Generate speech from text
     // text: input text to synthesize
     // params: generation parameters
-    tts_result synthesize(const std::string & text,
+    tts_result synthesize(const std::string & text, const std::string & instruction, const int speaker_id,
                           const tts_params & params = tts_params());
 
     // Generate speech with voice cloning
@@ -114,6 +114,8 @@ public:
     // Set progress callback
     void set_progress_callback(tts_progress_callback_t callback);
 
+    bool load_speaker_enc(); //return false if failed to load encoder
+
     // Get error message
     const std::string & get_error() const { return error_msg_; }
 
@@ -121,7 +123,7 @@ public:
     bool is_loaded() const { return models_loaded_; }
 
 private:
-    tts_result synthesize_internal(const std::string & text,
+    tts_result synthesize_internal(const std::string & text, const std::string & instruction, const int speakerid,
                                    const float * speaker_embedding,
                                    const tts_params & params,
                                    tts_result & result);

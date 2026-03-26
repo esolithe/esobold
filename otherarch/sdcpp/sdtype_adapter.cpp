@@ -159,6 +159,7 @@ static std::vector<uint8_t *> input_extraimage_buffers;
 const int max_extra_images = 4;
 
 static std::string sdvulkandeviceenv;
+static std::string sdmaingpuenv;
 static int cfg_tiled_vae_threshold = 0;
 static int cfg_square_limit = 0;
 static int cfg_side_limit = 0;
@@ -283,6 +284,18 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
     cfg_side_limit = inputs.img_hard_limit;
     cfg_square_limit = inputs.img_soft_limit;
     printf("\nImageGen Init - Load Model: %s\n",inputs.model_filename);
+
+    {
+        //kcpp allow gpu id override
+        std::string sdmaingpu = std::to_string(inputs.kcpp_main_gpu);
+        const char* existingenv = getenv("SD_VK_DEVICE");
+        int kcpp_parseinfo_maindevice = inputs.kcpp_main_gpu<=0?0:inputs.kcpp_main_gpu;
+        if(kcpp_parseinfo_maindevice>0 && !existingenv && sdmaingpu!="")
+        {
+            sdmaingpuenv = "SD_VK_DEVICE="+sdmaingpu;
+            putenv((char*)sdmaingpuenv.c_str());
+        }
+    }
 
     int lora_apply_mode = LORA_APPLY_AT_RUNTIME;
     bool lora_dynamic = false;
@@ -930,8 +943,23 @@ static void parse_cache_options(sd_cache_params_t & params, const std::string& c
     }
 }
 
+static std::string raw_image_to_png_base64(const sd_image_t& img, std::string parameters = "") {
+    std::string result;
+    int out_data_len = 0;
+    unsigned char * png = stbi_write_png_to_mem(img.data, 0, img.width, img.height, img.channel, &out_data_len, parameters != "" ? parameters.c_str() : nullptr);
+    if (png != NULL) {
+        result = kcpp_base64_encode(png,out_data_len);
+        free(png);
+    }
+    return result;
+}
+
+
 sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
 {
+    recent_data = "";
+    recent_data2 = "";
+
     sd_generation_outputs output;
 
     if(sd_ctx == nullptr || sd_params == nullptr)
@@ -943,7 +971,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
         output.status = 0;
         return output;
     }
-    sd_image_t * results;
+    sd_image_t * results = nullptr;
 
     //sanitize prompts, remove quotes and limit lengths
     std::string cleanprompt = clean_input_prompt(inputs.prompt);
@@ -1251,6 +1279,9 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
     int generated_num_results = 1;
     remove_limits = inputs.remove_limits;
 
+     //special case, is img2img and denoise strength is 0 and steps is 1, do a passthru
+    bool is_passthrough = (sd_params->sample_steps<=1 && sd_params->strength<=0 && is_img2img && vid_req_frames<=1 && extra_image_data.size()==0);
+
     if(is_vid_model)
     {
         std::vector<sd_image_t> control_frames; //empty for now
@@ -1385,11 +1416,14 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
 
         fflush(stdout);
 
-        results = generate_image(sd_ctx, &params);
-
+        if (is_passthrough) {
+            printf("No generation triggered, passthrough mode.\n");
+        } else {
+            results = generate_image(sd_ctx, &params);
+        }
     }
 
-    if (results == NULL) {
+    if (!is_passthrough && results == NULL) {
         printf("\nKCPP SD generate failed!\n");
         output.data = "";
         output.data_extra = "";
@@ -1398,88 +1432,93 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
         return output;
     }
 
-    bool wasanim = false;
+    bool isanim = (vid_req_frames>1 && generated_num_results>1 && is_vid_model);
     sd_image_t upscaled_image;
     upscaled_image.data = nullptr;
 
-    for (int i = 0; i < params.batch_count; i++) {
-        if (results[i].data == NULL) {
-            continue;
-        }
-
-        //if multiframe, make a video
-        if(vid_req_frames>1 && generated_num_results>1 && is_vid_model)
+    if (is_passthrough)
+    {
+        //either return original image or upscale if needed
+        sd_image_t *result_image = &input_image;
+        if(inputs.upscale && upscaler_ctx != nullptr)
         {
-            if(!sd_is_quiet && sddebugmode==1)
-            {
-                printf("\nSaving video buffer, VIDEO_OUTPUT_TYPE=%d...",video_output_type);
-            }
-            uint8_t * out_data = nullptr;
-            uint8_t * out_data2 = nullptr;
-            size_t out_len = 0;
-            size_t out_len2 = 0;
-            int status = 0;
-            int status2 = 0;
-            wasanim = true;
-
-            if(video_output_type==0 || video_output_type==2)
-            {
-                status = create_gif_buf_from_sd_images_msf(results, generated_num_results, 16, &out_data,&out_len);
-            }
-            if(video_output_type==1 || video_output_type==2)
-            {
-                status2 = create_mjpg_avi_membuf_from_sd_images(results, generated_num_results, 16, 40, &out_data2,&out_len2);
+            printf("Upscaling original image (passthrough)...\n");
+            upscaled_image = upscale(upscaler_ctx, input_image, 2);
+            result_image = &upscaled_image;
+        }
+        recent_data = raw_image_to_png_base64(*result_image);
+    }
+    else
+    {
+        for (int i = 0; i < params.batch_count; i++)
+        {
+            if (results[i].data == NULL) {
+                continue;
             }
 
-            if(!sd_is_quiet && sddebugmode==1)
+            //if multiframe, make a video
+            if(isanim)
             {
-                printf("Video Output Sizes: GIF=%zu AVI=%zu\n",out_len,out_len2);
-                if(status==0 && status2==0)
+                if(!sd_is_quiet && sddebugmode==1)
                 {
-                    printf("Video(s) Saved (Len %zu)!\n",out_len);
-                } else {
-                    printf("Save Failed!\n");
+                    printf("\nSaving video buffer, VIDEO_OUTPUT_TYPE=%d...",video_output_type);
+                }
+                uint8_t * out_data = nullptr;
+                uint8_t * out_data2 = nullptr;
+                size_t out_len = 0;
+                size_t out_len2 = 0;
+                int status = 0;
+                int status2 = 0;
+
+                if(video_output_type==0 || video_output_type==2)
+                {
+                    status = create_gif_buf_from_sd_images_msf(results, generated_num_results, 16, &out_data,&out_len);
+                }
+                if(video_output_type==1 || video_output_type==2)
+                {
+                    status2 = create_mjpg_avi_membuf_from_sd_images(results, generated_num_results, 16, 40, &out_data2,&out_len2);
+                }
+
+                if(!sd_is_quiet && sddebugmode==1)
+                {
+                    printf("Video Output Sizes: GIF=%zu AVI=%zu\n",out_len,out_len2);
+                    if(status==0 && status2==0)
+                    {
+                        printf("Video(s) Saved (Len %zu)!\n",out_len);
+                    } else {
+                        printf("Save Failed!\n");
+                    }
+                }
+                if(status==0 && out_len>0)
+                {
+                    recent_data = kcpp_base64_encode(out_data, out_len);
+                    free(out_data);
+                }
+                if (status2 == 0 && out_len2 > 0) {
+                    if (recent_data == "") {
+                        recent_data = kcpp_base64_encode(out_data2, out_len2);
+                    } else {
+                        recent_data2 = kcpp_base64_encode(out_data2, out_len2);
+                    }
+                    free(out_data2);
                 }
             }
-            recent_data = "";
-            recent_data2 = "";
-            if(status==0 && out_len>0)
+            else
             {
-                recent_data = kcpp_base64_encode(out_data, out_len);
-                free(out_data);
-            }
-            if (status2 == 0 && out_len2 > 0) {
-                if (recent_data == "") {
-                    recent_data = kcpp_base64_encode(out_data2, out_len2);
-                } else {
-                    recent_data2 = kcpp_base64_encode(out_data2, out_len2);
+                sd_image_t *result_image = &results[i];
+                if(inputs.upscale && upscaler_ctx != nullptr)
+                {
+                    printf("Upscaling output image...\n");
+                    upscaled_image = upscale(upscaler_ctx, results[i], 2);
+                    result_image = &upscaled_image;
                 }
-                free(out_data2);
-            }
-        }
-        else
-        {
-            int out_data_len;
-            unsigned char * png = nullptr;
-            if(inputs.upscale && upscaler_ctx != nullptr)
-            {
-                printf("Upscaling output image...\n");
-                upscaled_image = upscale(upscaler_ctx, results[i], 2);
-                png = stbi_write_png_to_mem(upscaled_image.data, 0, upscaled_image.width, upscaled_image.height, upscaled_image.channel, &out_data_len, get_image_params(params, lora_meta).c_str());
-            } else {
-                png = stbi_write_png_to_mem(results[i].data, 0, results[i].width, results[i].height, results[i].channel, &out_data_len, get_image_params(params, lora_meta).c_str());
+                std::string meta_image_info = get_image_params(params, lora_meta);
+                recent_data = raw_image_to_png_base64(*result_image, meta_image_info);
             }
 
-            if (png != NULL)
-            {
-                recent_data = kcpp_base64_encode(png,out_data_len);
-                recent_data2 = "";
-                free(png);
-            }
+            free(results[i].data);
+            results[i].data = NULL;
         }
-
-        free(results[i].data);
-        results[i].data = NULL;
     }
 
     if(upscaled_image.data)
@@ -1491,7 +1530,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
     free(results);
     output.data = recent_data.c_str();
     output.data_extra = recent_data2.c_str();
-    output.animated = (wasanim?1:0);
+    output.animated = (isanim?1:0);
     output.status = 1;
     total_img_gens += 1;
     if(!sd_is_quiet)
@@ -1504,6 +1543,9 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
 
 sd_generation_outputs sdtype_upscale(const sd_upscale_inputs inputs)
 {
+    recent_data = "";
+    recent_data2 = "";
+
     sd_generation_outputs output;
     output.data = "";
     output.data_extra = "";
@@ -1539,14 +1581,7 @@ sd_generation_outputs sdtype_upscale(const sd_upscale_inputs inputs)
         source_img.data = upscale_src_buffer;
 
         upscaled_image = upscale(upscaler_ctx, source_img, inputs.upscaling_resize);
-        int out_data_len;
-        unsigned char * png = stbi_write_png_to_mem(upscaled_image.data, 0, upscaled_image.width, upscaled_image.height, upscaled_image.channel, &out_data_len, nullptr);
-        if (png != NULL)
-        {
-            recent_data = kcpp_base64_encode(png,out_data_len);
-            recent_data2 = "";
-            free(png);
-        }
+        recent_data = raw_image_to_png_base64(upscaled_image);
         free(upscaled_image.data);
         output.data = recent_data.c_str();
         output.data_extra = recent_data2.c_str();

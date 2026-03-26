@@ -789,6 +789,10 @@ static speculative_draft_result speculative_decoding_eval_chunk(llama_context * 
 
 // KCPP SAMPLING FUNCTIONS
 void sample_softmax(llama_token_data_array * cur_p, bool do_sort=true) {
+    if(!(cur_p->size > 0))
+    {
+        throw std::runtime_error("No valid candidates during sampling. Current request aborted!");
+    }
     GGML_ASSERT(cur_p->size > 0);
     // Sort the logits in descending order
     if (!cur_p->sorted && do_sort) {
@@ -2149,16 +2153,20 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
     kcpp_data->n_threads = inputs.threads;
     kcpp_data->n_blasthreads = inputs.blasthreads;
     bool isGguf = (file_format == FileFormat::GGUF_GENERIC);
+    kcpp_pipeline_parallelism = inputs.pipelineparallel;
     kcpp_data->n_batch = GetBatchSize(inputs.batchsize, in_file_format);
     kcpp_data->n_ubatch = kcpp_data->n_batch;
+    if(isGguf && kcpp_pipeline_parallelism)
+    {
+        //double the logical batch, while keeping the physical batch the same, pipeline parallel set GGML_SCHED_MAX_COPIES to 2
+        kcpp_data->n_batch *= 2;
+    }
     kcpp_data->flash_attn = inputs.flash_attention;
     kcpp_data->model_filename = inputs.model_filename;
     kcpp_data->use_smartcontext = inputs.use_smartcontext;
     kcpp_data->use_contextshift = inputs.use_contextshift;
     kcpp_data->use_fastforward = inputs.use_fastforward;
     kcpp_data->smartcache = inputs.smartcache;
-
-    kcpp_pipeline_parallelism = inputs.pipelineparallel;
     kcpp_data->swa_full = !inputs.swa_support;
     if (!kcpp_data->swa_full) {
         if (inputs.use_contextshift) {
@@ -2390,11 +2398,12 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
             }
         }
 
-        #if defined(GGML_USE_CUDA)
         if(kcpp_parseinfo_maindevice>0)
         {
-            printf("CUDA: Set main device to %d\n",kcpp_parseinfo_maindevice);
+            printf("Main GPU device: Try set to %d\n",kcpp_parseinfo_maindevice);
         }
+
+        #if defined(GGML_USE_CUDA)
         printf("CUDA MMQ: %s\n",(inputs.use_mmq?"True":"False"));
         printf("---\nInitializing CUDA/HIP, please wait, the following step may take a few minutes (only for first launch)...\n---\n");
         ggml_cuda_set_mul_mat_q(inputs.use_mmq);
@@ -3639,7 +3648,8 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
     }
     media_objects.clear();
     std::string new_media_composite = "";
-    for(int x=0;x<images_max;++x)
+
+    for(int x=0;x<inputs.images_len;++x)
     {
         std::string item = inputs.images[x];
         if(item!="")
@@ -3669,7 +3679,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
             new_media_composite += item;
         }
     }
-    for(int x=0;x<audio_max;++x)
+    for(int x=0;x<inputs.audio_len;++x)
     {
         std::string item = inputs.audio[x];
         if(item!="")

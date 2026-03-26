@@ -1007,6 +1007,14 @@ static std::vector<std::string> generate_phase1_batch(
                         continue;
                     }
                 }
+
+                // Safety check: if we've reached the token limit, force TOKEN_IM_END
+                // to prevent KV cache exhaustion (FATAL: kv_len > max_seq)
+                if ((int)seqs[i].gen_tokens.size() >= max_new_tokens - 1 && !seqs[i].done) {
+                    forced_tokens.clear();
+                    forced_tokens.push_back(TOKEN_IM_END);
+                }
+
                 seqs[i].gen_tokens.push_back(tok);
             }
             seqs[i].last_token = tok;

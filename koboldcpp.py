@@ -54,8 +54,8 @@ import io
 # constants
 sampler_order_max = 7
 tensor_split_max = 16
-images_max = 8
-audio_max = 4
+images_max = 16
+audio_max = 16
 bias_min_value = -100.0
 bias_max_value = 100.0
 logprobs_max = 10
@@ -80,10 +80,10 @@ dry_seq_break_max = 128
 extra_images_max = 4 # for kontext/qwen img
 
 # global vars
-KcppVersion = "1.110"
+KcppVersion = "1.111"
 showdebug = True
 kcpp_instance = None #global running instance
-global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(),"current_model":"initial_model", "swapReqType": None, "autoswapmode": False, "tmpfs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "initialized": False}}
+global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "swapReqType": None, "autoswapmode": False, "tmpfs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "initialized": False}}
 using_gui_launcher = False
 tmpfs_lock = threading.Lock()
 
@@ -270,8 +270,10 @@ class generation_inputs(ctypes.Structure):
                 ("memory", ctypes.c_char_p),
                 ("negative_prompt", ctypes.c_char_p),
                 ("guidance_scale", ctypes.c_float),
-                ("images", ctypes.c_char_p * images_max),
-                ("audio", ctypes.c_char_p * audio_max),
+                ("images_len", ctypes.c_int),
+                ("images", ctypes.POINTER(ctypes.c_char_p)),
+                ("audio_len", ctypes.c_int),
+                ("audio", ctypes.POINTER(ctypes.c_char_p)),
                 ("max_context_length", ctypes.c_int),
                 ("max_length", ctypes.c_int),
                 ("temperature", ctypes.c_float),
@@ -443,7 +445,8 @@ class tts_generation_inputs(ctypes.Structure):
                 ("custom_speaker_voice", ctypes.c_char_p),
                 ("custom_speaker_text", ctypes.c_char_p),
                 ("custom_speaker_data", ctypes.c_char_p),
-                ("reference_audio", ctypes.c_char_p)]
+                ("reference_audio", ctypes.c_char_p),
+                ("speaker_instruction", ctypes.c_char_p)]
 
 class tts_generation_outputs(ctypes.Structure):
     _fields_ = [("status", ctypes.c_int),
@@ -928,7 +931,7 @@ def init_library():
 def set_backend_props(inputs):
     # we must force an explicit tensor split
     # otherwise the default will divide equally and multigpu crap will slow it down badly
-    inputs.kcpp_main_gpu = 0
+    inputs.kcpp_main_gpu = -1
     if(args.maingpu is not None and args.maingpu>=0):
         inputs.kcpp_main_gpu = args.maingpu
 
@@ -1063,6 +1066,8 @@ def old_cpu_check(): #return -1 for pass, 0 if has avx2, 1 if has avx, 2 if has 
     except Exception:
         return -1 #cannot determine
 
+def has_valid_model():
+    return args.model_param or args.sdmodel or args.whispermodel or args.ttsmodel or args.embeddingsmodel or args.musicdiffusion or args.musicllm or args.mcpfile or args.nomodel
 
 def unpack_to_dir(destpath = ""):
     srcpath = os.path.abspath(os.path.dirname(__file__))
@@ -1927,16 +1932,18 @@ def generate(genparams, stream_flag=False):
     inputs.memory = memory.encode("UTF-8")
     inputs.negative_prompt = negative_prompt.encode("UTF-8")
     inputs.guidance_scale = guidance_scale
-    for n in range(images_max):
-        if not images or n >= len(images):
-            inputs.images[n] = "".encode("UTF-8")
-        else:
-            inputs.images[n] = images[n].encode("UTF-8")
-    for n in range(audio_max):
-        if not audio or n >= len(audio):
-            inputs.audio[n] = "".encode("UTF-8")
-        else:
-            inputs.audio[n] = audio[n].encode("UTF-8")
+
+    images = images[-images_max:]
+    inputs.images_len = len(images)
+    inputs.images = (ctypes.c_char_p * inputs.images_len)()
+    for n, item in enumerate(images):
+        inputs.images[n] = item.encode("UTF-8")
+    audio = audio[-audio_max:]
+    inputs.audio_len = len(audio)
+    inputs.audio = (ctypes.c_char_p * inputs.audio_len)()
+    for n, item in enumerate(audio):
+        inputs.audio[n] = item.encode("UTF-8")
+
     global showmaxctxwarning
     if max_context_length > maxctx:
         if showmaxctxwarning:
@@ -2165,6 +2172,7 @@ def sd_load_model(model_filename,vae_filename,t5xxl_filename,clip1_filename,clip
     inputs.img_hard_limit = args.sdclamped
     inputs.img_soft_limit = args.sdclampedsoft
     inputs = set_backend_props(inputs)
+    inputs.kcpp_main_gpu = args.sdmaingpu
     ret = handle.sd_load_model(inputs)
     return ret
 
@@ -2465,7 +2473,7 @@ def sd_generate(genparams):
     inputs.cfg_scale = cfg_scale
     if distilled_guidance is not None:
         inputs.distilled_guidance = distilled_guidance
-    inputs.denoising_strength = denoising_strength
+    inputs.denoising_strength = (0 if denoising_strength < 0 else (1 if denoising_strength > 1 else denoising_strength))
     if shifted_timestep is not None:
         inputs.shifted_timestep = shifted_timestep
     if flow_shift is not None:
@@ -3135,6 +3143,14 @@ def tts_prepare_voice_json(jsonstr):
     except Exception:
         return None
 
+def tts_extract_instruction(x):
+    match = re.match(r'^\[([^\]]+)\]\s*(.+)$', x, re.DOTALL)
+    if match:
+        instruction = match.group(1)
+        x1 = match.group(2)
+        return x1, (instruction if instruction else "")
+    return x, ""
+
 def tts_generate(genparams):
     global args, voicebank, voicelist
     prompt = genparams.get("input", genparams.get("text", ""))
@@ -3155,6 +3171,11 @@ def tts_generate(genparams):
         voice = simple_lcg_hash(voicestr.strip()) if voicestr else 1
     inputs = tts_generation_inputs()
     inputs.custom_speaker_voice = normalized_voice.encode("UTF-8")
+    ttsinstruction = genparams.get("instruction", "")
+    # if no instruction provided, extract from text
+    if not genparams.get("instruction", ""):
+        prompt, ttsinstruction = tts_extract_instruction(prompt)
+    inputs.speaker_instruction = ttsinstruction.encode("UTF-8")
     inputs.prompt = prompt.encode("UTF-8")
     inputs.speaker_seed = voice
     aseed = -1
@@ -3504,7 +3525,7 @@ def detect_toolcall_tags(text: str): #for use with jinja tool responses, detect 
         return tag
     return None
 
-def format_jinja(messages, tools):
+def format_jinja(messages, tools, chat_template_kwargs=None):
     try:
         def strftime_now(format='%Y-%m-%d %H:%M:%S'):
             return datetime.now().strftime(format)
@@ -3525,10 +3546,18 @@ def format_jinja(messages, tools):
         jinja_env.filters["tojson"] = tojson
         jinja_compiled_template = jinja_env.from_string(cached_chat_template)
         text = None
+        last_assist_msg = messages[-1]["content"]
+        chat_template_kwargs = chat_template_kwargs or {}
+        assist_should_prefill = (messages and messages[-1]["role"] == "assistant" and last_assist_msg and isinstance(last_assist_msg, str) and len(last_assist_msg.strip())>0) #avoid single character newline or space content
         if tools and len(tools)>0:
-            text = jinja_compiled_template.render(messages=messages, tools=tools, add_generation_prompt=True, bos_token="", eos_token="")
+            text = jinja_compiled_template.render(messages=messages, tools=tools, add_generation_prompt=True, bos_token="", eos_token="", **chat_template_kwargs)
         else:
-            text = jinja_compiled_template.render(messages=messages, add_generation_prompt=True, bos_token="", eos_token="")
+            text = jinja_compiled_template.render(messages=messages, add_generation_prompt=True, bos_token="", eos_token="", **chat_template_kwargs)
+
+        if assist_should_prefill and text: # handle prefill continuations
+            lastindex = text.rfind(last_assist_msg)
+            if lastindex != -1:
+                text = text[:lastindex + len(last_assist_msg)]
         return text if text else None
     except Exception as e:
         print(f"Jinja formatting failed: {e}")
@@ -4016,10 +4045,20 @@ ws ::= | " " | "\n" [ \t]{0,20}
             attachedaudid = 0
             jinja_output = None
             jinjatools = genparams.get('tools', [])
+            jinjakwargs = None
+            try:
+                jinjakwargsstr = args.jinja_kwargs if args.jinja_kwargs else None
+                if jinjakwargsstr and isinstance(jinjakwargsstr, str):
+                    jinjakwargs = json.loads(jinjakwargsstr)
+            except Exception:
+                print("Jinja Kwargs not valid JSON dict!")
+                pass
             if use_jinja and cached_chat_template:
-                jinja_output = format_jinja(messages_array,jinjatools)
+                jinja_output = format_jinja(messages_array,jinjatools,jinjakwargs)
             if jinja_output:
                 messages_string = jinja_output
+                if jinja_output.rstrip().endswith("<think>"): #the prompt template already forced a start think.
+                    genparams["jinja_already_started_thinking"] = True
                 if jinjatools and len(jinjatools)>0:
                     genparams["using_openai_tools"] = True
                 # handle media
@@ -4704,7 +4743,12 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
         is_post = self.command.upper() == "POST"
         is_completions_path = (self.path.endswith('/v1/completions') or self.path.endswith('/v1/completion') or self.path=='/completions')
         is_chat_completions_path = (self.path.endswith('/v1/chat/completions') or self.path=='/chat/completions')
-        if is_post and (is_completions_path or is_chat_completions_path):
+
+        #any requests to the following endpoints is capable of waking the server
+        wake_requests = ["/api/extra/generate/stream","/api/extra/tokencount","/api/v1/generate","/sdapi/v1/interrogate","/v1/completions","/v1/chat/completions","/api/extra/transcribe","/v1/audio/transcriptions","/api/extra/tts","/v1/audio/speech","/api/extra/embeddings","/v1/embeddings","/api/extra/music/prepare","/api/extra/music/generate","/sdapi/v1/txt2img","/sdapi/v1/img2img","/sdapi/v1/upscale"]
+        is_wake_request = self.path in wake_requests
+
+        if is_post and (is_completions_path or is_chat_completions_path or is_wake_request):
             model_name = ""
             if body:
                 try:
@@ -4713,28 +4757,32 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                 except Exception:
                     pass
 
-            if model_name and model_name != global_memory["current_model"]:
+            was_auto_unloaded = (global_memory["triggered_sleeping"] and global_memory["current_model"]=="unload_model")
+            if (model_name and model_name != global_memory["current_model"]) or was_auto_unloaded:
                 with proxy_reload_lock:
-                    if model_name != global_memory["current_model"]:
+                    whitelist = get_current_admindir_list() # see if its an allowed swap
+                    if was_auto_unloaded and not model_name:
+                        model_name = "initial_model"
+                    if model_name != global_memory["current_model"] and (model_name in whitelist):
                         global_memory["last_active_timestamp"] = datetime.now()
-                        whitelist = get_current_admindir_list() # see if its an allowed swap
-                        if model_name in whitelist:
-                            reqbody = json.dumps({"filename":model_name})
-                            reqheaders = {
-                                'Content-Type': 'application/json',
-                                'Content-Length': str(len(reqbody)),
-                            }
-                            if args.adminpassword:
-                                reqheaders["Authorization"] = f"Bearer {args.adminpassword}"
-                            conn = http.client.HTTPConnection('localhost', upstream_port, timeout=600)
-                            conn.request("POST", "/api/admin/reload_config", body=reqbody, headers=reqheaders)
-                            resp = conn.getresponse()
-                            time.sleep(3)
-                            global_memory["last_active_timestamp"] = datetime.now()
-                            if not self.wait_for_upstream_ready(upstream_port,120,0.5):
-                                self.send_error(504, "KoboldCpp model swap reload timed out")
-                                return
-                            time.sleep(0.1)
+                        global_memory["triggered_sleeping"] = False
+                        reqbody = json.dumps({"filename":model_name})
+                        reqheaders = {
+                            'Content-Type': 'application/json',
+                            'Content-Length': str(len(reqbody)),
+                        }
+                        if args.adminpassword:
+                            reqheaders["Authorization"] = f"Bearer {args.adminpassword}"
+                        conn = http.client.HTTPConnection('localhost', upstream_port, timeout=600)
+                        conn.request("POST", "/api/admin/reload_config", body=reqbody, headers=reqheaders)
+                        resp = conn.getresponse()
+                        time.sleep(3)
+                        global_memory["last_active_timestamp"] = datetime.now()
+                        global_memory["triggered_sleeping"] = False
+                        if not self.wait_for_upstream_ready(upstream_port,120,0.5):
+                            self.send_error(504, "KoboldCpp model swap reload timed out")
+                            return
+                        time.sleep(0.1)
         elif global_memory["autoswapmode"] is not None and global_memory["autoswapmode"]:                            
             textReqs = ["/api/extra/generate/stream","/api/extra/tokencount","/api/v1/generate","/sdapi/v1/interrogate","/v1/completions","/v1/chat/completions"]
             sttReqs = ["/api/extra/transcribe","/v1/audio/transcriptions"]
@@ -4777,6 +4825,7 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                     resp = conn.getresponse()
                     time.sleep(3)
                     global_memory["last_active_timestamp"] = datetime.now()
+                    global_memory["triggered_sleeping"] = False
                     if not self.wait_for_upstream_ready(upstream_port,120,0.5):
                         self.send_error(504, "KoboldCpp model swap reload timed out")
                         return
@@ -5350,6 +5399,8 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         encap_in_thinking = False
+        if genparams.get('jinja_already_started_thinking', False):
+            encap_in_thinking = True
         encap_first_loop = True
         thinkpairs = [{"start":"<|channel|>analysis<|message|>","end":"<|start|>assistant<|channel|>final<|message|>"},
                       {"start":"<think>","end":"</think>"}]
@@ -5408,7 +5459,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
 
                             # hack for lcppui reasoning_content for thinking models
                             delta = {'role':'assistant','content':tokenStr}
-                            if genparams.get('encapsulate_thinking', False):
+                            if genparams.get('encapsulate_thinking', True):
                                 for pair in thinkpairs:
                                     if encap_first_loop and not encap_in_thinking and genparams.get("prompt","").endswith(pair["start"]):
                                         encap_in_thinking = True
@@ -7128,6 +7179,7 @@ Change Mode<br>
             response_body = None
             use_jinja = args.jinja
             global_memory["last_active_timestamp"] = datetime.now()
+            global_memory["triggered_sleeping"] = False
             if self.path.endswith('/api/admin/check_state'):
                 if global_memory and args.admin and args.admindir and os.path.exists(args.admindir) and self.check_header_password(args.adminpassword):
                     cur_states = []
@@ -7961,7 +8013,7 @@ def show_gui():
             if dlfile:
                 args.model_param = dlfile
             load_config_cli(args.model_param)
-        if not args.model_param and not args.sdmodel and not args.whispermodel and not args.ttsmodel and not args.embeddingsmodel and not args.musicdiffusion and not args.musicllm and not args.mcpfile and not args.nomodel:
+        if not has_valid_model():
             global exitcounter
             exitcounter = 999
             exit_with_error(2,"No gguf model or kcpps file was selected. Exiting.")
@@ -8160,6 +8212,7 @@ def show_gui():
     chatcompletionsadapter_var = ctk.StringVar(value="AutoGuess")
     jinja_var = ctk.IntVar(value=0)
     jinja_tools_var = ctk.IntVar(value=0)
+    jinja_kwargs_var = ctk.StringVar()
     moeexperts_var = ctk.StringVar(value=str(-1))
     moecpu_var = ctk.StringVar(value=str(0))
     defaultgenamt_var = ctk.StringVar(value=str(default_genlen))
@@ -8222,6 +8275,8 @@ def show_gui():
     sd_clamped_soft_var = ctk.StringVar(value="0")
     sd_threads_var = ctk.StringVar(value=str(default_threads))
     sd_quant_var = ctk.StringVar(value=sd_quant_choices[0])
+    sd_main_gpu_var = ctk.StringVar(value="-1")
+
     gen_defaults_var = ctk.StringVar()
     gen_defaults_overwrite_var = ctk.IntVar(value=0)
 
@@ -8336,7 +8391,7 @@ def show_gui():
     def makelabelentry(parent, text, var, row=0, width=50, padx=8, singleline=False, tooltip="", labelpadx=8):
         label = makelabel(parent, text, row, 0, tooltip, padx=labelpadx)
         entry = ctk.CTkEntry(parent, width=width, textvariable=var)
-        entry.grid(row=row, column=(0 if singleline else 1), padx=padx, sticky="nw")
+        entry.grid(row=row, column=(0 if singleline else 1), padx=padx, pady=1, sticky="nw")
         return entry, label
 
     #file dialog types: 0=openfile,1=savefile,2=opendir
@@ -8821,7 +8876,7 @@ def show_gui():
     layercounter_label.grid(row=6, column=0, padx=230, sticky="W")
     layercounter_label.configure(text_color="#ffff00")
     tensor_split_entry,tensor_split_label = makelabelentry(hardware_tab, "Tensor Split:", tensor_split_str_vars, 8, 80, padx=160, singleline=True, tooltip='When using multiple GPUs this option controls how large tensors should be split across all GPUs.\nUses a comma-separated list of non-negative values that assigns the proportion of data that each GPU should get in order.\nFor example, "3,2" will assign 60% of the data to GPU 0 and 40% to GPU 1.')
-    maingpu_entry,maingpu_label = makelabelentry(hardware_tab, "Main GPU:" , maingpu_var, 8, 50,padx=340,singleline=True,tooltip="Only for multi-gpu, which GPU to set as main?\nIf left blank or -1, uses default value.",labelpadx=270)
+    maingpu_entry,maingpu_label = makelabelentry(hardware_tab, "Main GPU:" , maingpu_var, 8, 50,padx=340,singleline=True,tooltip="Only for multi-gpu, which GPU ID to set as main?\nIf left blank or -1, uses default value.",labelpadx=270)
 
     # threads
     makelabelentry(hardware_tab, "Threads:" , threads_var, 11, 50, padx=160, singleline=True,tooltip="How many threads to use.\nRecommended value is your CPU core count, defaults are usually OK.")
@@ -8906,12 +8961,17 @@ def show_gui():
     def togglejinja(a,b,c):
         if jinja_var.get()==1:
             jinjatoolsbox.grid()
+            jinjakwargsbox.grid()
+            jinjakwargsboxlbl.grid()
         else:
             jinja_tools_var.set(0)
             jinjatoolsbox.grid_remove()
+            jinjakwargsbox.grid_remove()
+            jinjakwargsboxlbl.grid_remove()
         changed_gpulayers_estimate()
     makecheckbox(context_tab, "Use Jinja", jinja_var, row=45, command=togglejinja, tooltiptxt="Enables using jinja chat template formatting for chat completions endpoint. Other endpoints are unaffected.")
     jinjatoolsbox = makecheckbox(context_tab, "Jinja for Tools", jinja_tools_var, row=45 ,padx=(140), tooltiptxt="Allows jinja even with tool calls. If unchecked, jinja will be disabled when tools are used.")
+    jinjakwargsbox,jinjakwargsboxlbl = makelabelentry(context_tab, "J.Kwargs:", jinja_kwargs_var, row=45, width=80, padx=(350), singleline=True, tooltip='Set additiona fields for Jinja JSON template parser, must be a valid json object.\nSpecified as JSON fields: {"KEY1":"VALUE1", "KEY2":"VALUE2"...}', labelpadx=290)
     jinja_var.trace_add("write", togglejinja)
     makelabelentry(context_tab, "MoE Experts:", moeexperts_var, row=55, padx=(120), singleline=True, tooltip="Override number of MoE experts.")
     moecpu_box,moecpu_box_lbl = makelabelentry(context_tab, "MoE CPU Layers:", moecpu_var, row=55, padx=(320), singleline=True, tooltip="Force Mixture of Experts (MoE) weights of the first N layers to the CPU.\nSetting it higher than GPU layers has no effect.", labelpadx=(210))
@@ -9008,7 +9068,9 @@ def show_gui():
     makefileentry(images_tab, "Image Gen. Model (safetensors/gguf):", "Select Image Gen Model File", sd_model_var, 1, width=280, singlecol=True, filetypes=[("*.safetensors *.gguf","*.safetensors *.gguf")], tooltiptxt="Select a .safetensors or .gguf Image Generation model file on disk to be loaded.")
     makelabelentry(images_tab, "Clamp Resolution Limit (Hard):", sd_clamped_var, 4, 50, padx=(190),singleline=True,tooltip="Limit generation steps and output image size for shared use.\nSet to 0 to disable, otherwise value is clamped to the max size limit (min 512px).")
     makelabelentry(images_tab, "(Soft):", sd_clamped_soft_var, 4, 50, padx=(290),singleline=True,tooltip="Square image size restriction, to protect the server against memory crashes.\nAllows width-height tradeoffs, eg. 640 allows 640x640 and 512x768\nLeave at 0 for the default value: 832 for SD1.5/SD2, 1024 otherwise.",labelpadx=(250))
-    makelabelentry(images_tab, "ImgThreads:" , sd_threads_var, 8, 50,padx=(290),singleline=True,tooltip="How many threads to use during image generation.\nIf left blank, uses same value as threads.",labelpadx=(210))
+    makelabelentry(images_tab, "ImgThreads:" , sd_threads_var, 8, 40,padx=(280),singleline=True,tooltip="How many threads to use during image generation.\nIf left blank, uses same value as threads.",labelpadx=(200))
+    makelabelentry(images_tab, "ImgGPU:" , sd_main_gpu_var, 8, 40,padx=394,singleline=True,tooltip="Which GPU ID to use for Image Gen?\nIf left blank or -1, uses default value.",labelpadx=340)
+
     sd_model_var.trace_add("write", gui_changed_modelfile)
     makelabelcombobox(images_tab, "Compress Weights: ", sd_quant_var, 8, width=(60), padx=(126), labelpadx=8, tooltiptxt="Quantizes the SD model weights to save memory.\nHigher levels save more memory, and cause more quality degradation.", values=sd_quant_choices)
     sd_quant_var.trace_add("write", changed_gpulayers_estimate)
@@ -9173,8 +9235,11 @@ def show_gui():
     # launch
     def guilaunch():
         if model_var.get() == "" and sd_model_var.get() == "" and whisper_model_var.get() == "" and tts_model_var.get() == "" and embeddings_model_var.get() == "" and musicdiffusion_var.get() == "" and musicllm_var.get() == "" and nomodel.get()!=1:
-            tmp = zentk_askopenfilename(title="Select ggml model .bin or .gguf file")
-            model_var.set(tmp)
+            # prevent launch without at least one valid model
+            givehelp = show_gui_yesnobox("No Models Selected","Error: You need to load at least one AI model to continue.\n\nDo you want help finding a model?")
+            if givehelp == 'yes':
+                display_help()
+            return
         nonlocal nextstate
         nextstate = 1
         root.withdraw()
@@ -9241,6 +9306,7 @@ def show_gui():
             args.usecpu = True
         if runopts_var.get()=="Use CPU (Old CPU)":
             args.noavx2 = True
+            args.usecpu = True
         if runopts_var.get()=="Failsafe Mode (Older CPU)":
             args.noavx2 = True
             args.usecpu = True
@@ -9282,6 +9348,8 @@ def show_gui():
         args.nobostoken = (nobostoken_var.get()==1)
         args.jinja = (jinja_var.get()==1)
         args.jinja_tools = (jinja_tools_var.get()==1)
+        if jinja_kwargs_var.get() != "":
+            args.jinja_kwargs = jinja_kwargs_var.get()
         args.enableguidance = (enableguidance_var.get()==1)
         args.overridekv = None if override_kv_var.get() == "" else override_kv_var.get()
         args.overridetensors = None if override_tensors_var.get() == "" else override_tensors_var.get()
@@ -9373,6 +9441,7 @@ def show_gui():
         args.sdlora = [item.strip() for item in sd_lora_var.get().split("|") if item]
         # XXX the user may have used '|' since it's used for the LoRAs
         args.sdloramult = sanitize_lora_multipliers(re.split(r"[ |]+", sd_loramult_var.get()))
+        args.sdmaingpu = (-1 if sd_main_gpu_var.get()=="" else int(sd_main_gpu_var.get()))
 
         if gen_defaults_var.get() != "":
             args.gendefaults = gen_defaults_var.get()
@@ -9549,6 +9618,11 @@ def show_gui():
         nobostoken_var.set(dict["nobostoken"] if ("nobostoken" in dict) else 0)
         jinja_var.set(dict["jinja"] if ("jinja" in dict) else 0)
         jinja_tools_var.set(dict["jinja_tools"] if ("jinja_tools" in dict) else 0)
+        jinja_kwargs = (dict["jinja_kwargs"] if ("jinja_kwargs" in dict and dict["jinja_kwargs"]) else "")
+        if isinstance(jinja_kwargs, type({})):
+            jinja_kwargs = json.dumps(jinja_kwargs)
+        jinja_kwargs_var.set(jinja_kwargs)
+
         enableguidance_var.set(dict["enableguidance"] if ("enableguidance" in dict) else 0)
         if "overridekv" in dict and dict["overridekv"]:
             override_kv_var.set(dict["overridekv"])
@@ -9634,6 +9708,11 @@ def show_gui():
         sd_tiled_vae_var.set(str(dict["sdtiledvae"]) if ("sdtiledvae" in dict and dict["sdtiledvae"]) else str(default_vae_tile_threshold))
         sd_lora_var.set("|".join(sanitize_lora_list(dict.get('sdlora'))))
         sd_loramult_var.set(" ".join(f"{n:.3f}".rstrip('0').rstrip('.') for n in dict.get("sdloramult", [])))
+        if "sdmaingpu" in dict:
+            sd_main_gpu_var.set(dict["sdmaingpu"])
+        else:
+            sd_main_gpu_var.set("-1")
+
         gendefaults = (dict["gendefaults"] if ("gendefaults" in dict and dict["gendefaults"]) else "")
         if isinstance(gendefaults, type({})):
             gendefaults = json.dumps(gendefaults)
@@ -9711,32 +9790,55 @@ def show_gui():
     def display_help():
         popup = ctk.CTkToplevel(root)
         popup.title("Help Menu")
-        popup.geometry("380x380")
-        noobbox_var = ctk.StringVar(value="")
+        popup.geometry("380x440")
+        templatedchoice_var = ctk.StringVar(value="")
+        templatecatbox_var = ctk.StringVar(value="Newbie Templates")
+        POPULAR_TEMPLATE_LBL = "Popular Templates"
+        NEWB_TEMPLATE_LBL = "Newbie Templates"
+        POPULAR_TEMPLATE_REPO = "popular-templates"
+        NEWB_TEMPLATE_REPO = "newbie-templates"
+        newbdesc1 = newbdesc2 = None
         def display_hf():
             popup.destroy()
             model_searcher()
-        def fetch_noob_templates():
-            nonlocal noobbox
+        def fetch_easy_templates(a,b,c):
+            nonlocal templatechoicebox, templatecatbox, newbdesc1, newbdesc2
             noobmodels = []
-            resp = make_url_request("https://huggingface.co/api/models/koboldcpp/newbie-templates",None,'GET',{},10)
-            for m in resp["siblings"]:
-                entry = m["rfilename"]
-                if entry.endswith(".kcppt") and "LowSpec" in entry:
-                    noobmodels.append(entry[:-6])
-            for m in resp["siblings"]:
-                entry = m["rfilename"]
-                if entry.endswith(".kcppt") and "MidSpec" in entry:
-                    noobmodels.append(entry[:-6])
-            for m in resp["siblings"]:
-                entry = m["rfilename"]
-                if entry.endswith(".kcppt") and "HighSpec" in entry:
-                    noobmodels.append(entry[:-6])
-            noobbox.configure(values=noobmodels)
+            resp = None
+            if templatecatbox_var.get() == POPULAR_TEMPLATE_LBL:
+                resp = make_url_request(f"https://huggingface.co/api/models/koboldcpp/{POPULAR_TEMPLATE_REPO}", None, 'GET', {}, 10)
+                newbdesc1.pack_forget()
+                newbdesc2.pack_forget()
+                commdesc.pack(pady=(10, 0))
+                for m in resp["siblings"]:
+                    entry = m["rfilename"]
+                    if entry.endswith(".kcppt"):
+                        noobmodels.append(entry[:-6])
+            else:
+                resp = make_url_request(f"https://huggingface.co/api/models/koboldcpp/{NEWB_TEMPLATE_REPO}", None, 'GET', {}, 10)
+                newbdesc1.pack(pady=(10, 0))
+                newbdesc2.pack(pady=(10, 0))
+                commdesc.pack_forget()
+                for m in resp["siblings"]:
+                    entry = m["rfilename"]
+                    if entry.endswith(".kcppt") and "LowSpec" in entry:
+                        noobmodels.append(entry[:-6])
+                for m in resp["siblings"]:
+                    entry = m["rfilename"]
+                    if entry.endswith(".kcppt") and "MidSpec" in entry:
+                        noobmodels.append(entry[:-6])
+                for m in resp["siblings"]:
+                    entry = m["rfilename"]
+                    if entry.endswith(".kcppt") and "HighSpec" in entry:
+                        noobmodels.append(entry[:-6])
+            templatechoicebox.configure(values=noobmodels)
             if len(noobmodels)>0:
-                noobbox_var.set(noobmodels[0])
-        def load_noob_template():
-            fname = f"https://huggingface.co/koboldcpp/newbie-templates/resolve/main/{noobbox_var.get()}.kcppt"
+                templatedchoice_var.set(noobmodels[0])
+        def load_easy_template():
+            nonlocal templatechoicebox, templatecatbox, newbdesc1, newbdesc2
+            cat = templatecatbox.get()
+            repo = (POPULAR_TEMPLATE_REPO if cat==POPULAR_TEMPLATE_LBL else NEWB_TEMPLATE_REPO)
+            fname = f"https://huggingface.co/koboldcpp/{repo}/resolve/main/{templatedchoice_var.get()}.kcppt"
             data = make_url_request(fname,data=None,method="GET")
             if data is not None:
                 import_vars(data)
@@ -9746,12 +9848,19 @@ def show_gui():
         ctk.CTkButton(popup, text="Read Starter Guides", command=display_starter_guides).pack(pady=5)
         ctk.CTkButton(popup, text="Search Model on Hugginface", command=display_hf).pack(pady=5)
         ctk.CTkLabel(popup, text="Or, Pick an Easy Template for Newbies").pack(pady=(12, 0))
-        noobbox = ctk.CTkComboBox(popup, values=[], width=280, variable=noobbox_var, state="readonly")
-        noobbox.pack(pady=5)
-        ctk.CTkButton(popup, text="Load Template", command=load_noob_template).pack(pady=5)
-        ctk.CTkLabel(popup, text="LowSpec = Recommend 6GB VRAM\nMidSpec = Recommend 12GB VRAM\nHighSpec = Recommend 24GB VRAM").pack(pady=(10, 0))
-        ctk.CTkLabel(popup, text="Everything = All Features         Text = Text Generation\nImages = Image Generation         Vision = Image Recognition\nVoice = Speech Generation         Audio = Speech Recognition").pack(pady=(10, 0))
-        fetch_noob_templates()
+        templatecatbox = ctk.CTkComboBox(popup, values=[NEWB_TEMPLATE_LBL,POPULAR_TEMPLATE_LBL], width=280, variable=templatecatbox_var, state="readonly")
+        templatecatbox.pack(pady=5)
+        templatechoicebox = ctk.CTkComboBox(popup, values=[], width=280, variable=templatedchoice_var, state="readonly")
+        templatechoicebox.pack(pady=5)
+        ctk.CTkButton(popup, text="Load Template", command=load_easy_template).pack(pady=5)
+        newbdesc1 = ctk.CTkLabel(popup, text="LowSpec = Recommend 6GB VRAM\nMidSpec = Recommend 12GB VRAM\nHighSpec = Recommend 24GB VRAM")
+        newbdesc1.pack(pady=(10, 0))
+        newbdesc2 = ctk.CTkLabel(popup, text="Everything = All Features         Text = Text Generation\nImages = Image Generation         Vision = Image Recognition\nVoice = Speech Generation         Audio = Speech Recognition")
+        newbdesc2.pack(pady=(10, 0))
+        commdesc = ctk.CTkLabel(popup, text="Templates here are subject to change from time to time.\n\nFound a broken template? Want to contribute one?\nVisit https://huggingface.co/koboldcpp/popular-templates/")
+        commdesc.pack_forget()
+        templatecatbox_var.trace_add("write", fetch_easy_templates)
+        fetch_easy_templates(1,1,1)
         popup.transient(root)
 
     def display_help_models():
@@ -9768,7 +9877,7 @@ def show_gui():
     ctk.CTkButton(tabs , text = "Update", fg_color="#9900cc", hover_color="#aa11dd", command = display_updates, width=90, height = 35 ).grid(row=1,column=0, stick="sw", padx= 5, pady=5)
     ctk.CTkButton(tabs , text = "Save Config", fg_color="#084a66", hover_color="#085a88", command = save_config_gui, width=60, height = 35 ).grid(row=1,column=1, stick="sw", padx= 5, pady=5)
     ctk.CTkButton(tabs , text = "Load Config", fg_color="#084a66", hover_color="#085a88", command = load_config_gui, width=60, height = 35 ).grid(row=1,column=1, stick="sw", padx= (92), pady=5)
-    ctk.CTkButton(tabs , text = "Get Help", fg_color="#992222", hover_color="#bb3333", command = display_help, width=60, height = 35 ).grid(row=1,column=1, stick="sw", padx= (180), pady=5)
+    ctk.CTkButton(tabs , text = "Get Help", fg_color="#992222", hover_color="#bb3333", command = display_help, width=70, height = 35 ).grid(row=1,column=1, stick="sw", padx= (180), pady=5)
 
     # start a thread that tries to get actual gpu names and layer counts
     gpuinfo_thread = threading.Thread(target=auto_set_backend_gui)
@@ -9797,16 +9906,11 @@ def show_gui():
         kcpp_exporting_template = False
         export_vars()
 
-        if not args.model_param and not args.sdmodel and not args.whispermodel and not args.ttsmodel and not args.embeddingsmodel and not args.musicdiffusion and not args.musicllm and not args.mcpfile and not args.nomodel:
+        if not has_valid_model():
             exitcounter = 999
             print("")
             time.sleep(0.5)
-            if using_gui_launcher:
-                givehelp = show_gui_yesnobox("No Model Loaded","No text or image model file was selected. Need a model to continue.\n\nDo you want help finding a GGUF model?")
-                if givehelp == 'yes':
-                    display_help_models()
-            else:
-                print("No text or image model file was selected. Cannot continue.", flush=True)
+            print("Error: No valid model files were selected. Cannot continue.", flush=True)
             time.sleep(2)
             sys.exit(2)
 
@@ -10242,6 +10346,8 @@ def convert_args_to_template(savdict):
     savdict["hordekey"] = ""
     savdict["hordeworkername"] = ""
     savdict["sdthreads"] = 0
+    savdict["maingpu"] = -1
+    savdict["sdmaingpu"] = -1
     savdict["password"] = None
     savdict["adminpassword"] = None
     savdict["usemmap"] = False
@@ -10659,7 +10765,7 @@ def main(launch_args, default_args):
         return
 
     # show the GUI launcher if a model was not provided
-    if args.showgui or (not args.model_param and not args.sdmodel and not args.whispermodel and not args.ttsmodel and not args.embeddingsmodel and not args.musicdiffusion and not args.musicllm and not args.mcpfile and not args.nomodel):
+    if args.showgui or not has_valid_model():
         #give them a chance to pick a file
         print("For command line arguments, please refer to --help")
         print("***")
@@ -10736,7 +10842,7 @@ def main(launch_args, default_args):
             input()
     else:  # manager command queue for admin mode
         with multiprocessing.Manager() as mp_manager:
-            global_memory = mp_manager.dict({"tunnel_url": "", "restart_target": "", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(),"current_model":"initial_model", "swapReqType": None, "autoswapmode": False, "tmpfs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "initialized": False}})
+            global_memory = mp_manager.dict({"tunnel_url": "", "restart_target": "", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "swapReqType": None, "autoswapmode": False, "tmpfs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "initialized": False}})
 
             if args.remotetunnel and not args.prompt and not args.benchmark and not args.cli:
                 setuptunnel(global_memory, True if args.sdmodel else False)
@@ -10793,6 +10899,7 @@ def main(launch_args, default_args):
                             elif global_memory["current_model"]!="unload_model":
                                 print(f"[Unload Timeout] Inactive for over {time_since_last_active}s, unloading models...")
                                 restart_target = "unload_model"
+                            global_memory["triggered_sleeping"] = True
                     if restart_target!="":
                         if restart_model != "":
                             global_memory["restart_model"] = ""
@@ -11670,7 +11777,7 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
         with open(os.path.join(embddir, "kcpp_musicui.embd"), mode='rb') as f:
             embedded_musicui = f.read()
             embedded_musicui_gz = gzip.compress(embedded_musicui)
-            if args.musicllm or args.musicdiffusion:
+            if args.musicllm or args.musicdiffusion or args.ttsmodel:
                 print("Embedded MusicUI loaded.")
     except Exception:
         print("Could not find Embedded MusicUI.")
@@ -11694,6 +11801,8 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
 
             voicelist.append("random")
             voicebank["random"] = ""
+            voicelist.append("instruct")
+            voicebank["instruct"] = ""
 
             if args.ttsdir and os.path.isdir(args.ttsdir):
                 for filename in os.listdir(args.ttsdir):
@@ -11775,7 +11884,7 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
             print(f"Starting llama.cpp secondary WebUI at {endpoint_url}/lcpp/")
             if args.sdmodel:
                 print(f"StableUI is available at {endpoint_url}/sdui/")
-            if args.musicdiffusion or args.musicllm:
+            if args.musicdiffusion or args.musicllm or args.ttsmodel:
                 print(f"MusicUI is available at {endpoint_url}/musicui/")
         elif global_memory:
             val = global_memory["tunnel_url"]
@@ -11787,7 +11896,7 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
                 print(f"Starting llama.cpp secondary WebUI at {endpoint_url}/lcpp/")
                 if args.sdmodel:
                     print(f"StableUI is available at {endpoint_url}/sdui/")
-                if args.musicdiffusion or args.musicllm:
+                if args.musicdiffusion or args.musicllm or args.ttsmodel:
                     print(f"MusicUI is available at {endpoint_url}/musicui/")
             global_memory["load_complete"] = True
         if args.launch:
@@ -12014,6 +12123,7 @@ if __name__ == '__main__':
     advparser.add_argument("--chatcompletionsadapter", metavar=('[filename]'), help="Select an optional ChatCompletions Adapter JSON file to force custom instruct tags.", default="AutoGuess")
     advparser.add_argument("--jinja", help="Enables using jinja chat template formatting for chat completions endpoint. Other endpoints are unaffected. Tool calls are done without jinja.", action='store_true')
     advparser.add_argument("--jinja_tools","--jinja-tools","--jinjatools", help="Enables using jinja chat template formatting for chat completions endpoint. Other endpoints are unaffected. Tool calls are done with jinja.", action='store_true')
+    advparser.add_argument("--jinja_kwargs","--jinja-kwargs","--jinjakwargs","--chat-template-kwargs", metavar=('{"parameter":"value",...}'), help="Set additiona fields for Jinja JSON template parser, must be a valid JSON object.", default="")
     advparser.add_argument("--noflashattention","--no-flash-attn","-nofa", help="Disables flash attention.", action='store_true')
     advparser.add_argument("--lowvram","-nkvo","--no-kv-offload", help="If supported by the backend, do not offload KV to GPU (lowvram mode). Not recommended, will be slow.", action='store_true')
     advparser.add_argument("--quantkv", help="Sets the KV cache data type quantization, 0=f16, 1=q8, 2=q4. Requires Flash Attention for full effect, otherwise only K cache is quantized.",metavar=('[quantization level 0/1/2]'), type=int, choices=[0,1,2], default=0)
@@ -12075,6 +12185,8 @@ if __name__ == '__main__':
     sdparsergrouplora.add_argument("--sdlora", metavar=('[filename]'), help="Specify image generation LoRAs safetensors models to be applied. Multiple LoRAs are accepted.", nargs='+')
     sdparsergroup.add_argument("--sdloramult", metavar=('[amounts]'), help="Multipliers for the image LoRA model to be applied.", type=float, nargs='+', default=[1.0])
     sdparsergroup.add_argument("--sdtiledvae", metavar=('[maxres]'), help="Adjust the automatic VAE tiling trigger for images above this size. 0 disables vae tiling.", type=int, default=default_vae_tile_threshold)
+    sdparsergroup.add_argument("--sdmaingpu", metavar=('[Device ID]'), help="If specified, Image Generation weights will be placed on the selected GPU index", type=int, default=-1)
+
     whisperparsergroup = parser.add_argument_group('Whisper Transcription Commands')
     whisperparsergroup.add_argument("--whispermodel", metavar=('[filename]'), help="Specify a Whisper .bin model to enable Speech-To-Text transcription.", default="")
 
