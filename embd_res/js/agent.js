@@ -1185,6 +1185,7 @@ let toggleAgent = () => {
 let stopAgentThinking = async () => {
 
     endCurrent = true
+    trigger_abort_controller()
     if (currentAgentCycle.length > 0) {
         endCurrent = true
         await Promise.all(currentAgentCycle.map(c => c.status))
@@ -1196,7 +1197,6 @@ let stopAgentThinking = async () => {
     }
     Array(...document.getElementsByClassName("stopThinking")).forEach(elem => elem.classList.add("hidden"))
     submit_multiplayer(true)
-    trigger_abort_controller()
 }
 
 let createStopThinkingButton = () => {
