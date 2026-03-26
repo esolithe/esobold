@@ -98,6 +98,7 @@ ttsName = None
 embedName = None
 musicName = None
 imageName = None
+mmprojName = None
 lastgeneratedcomfyimg = b''
 lastuploadedcomfyimg = b''
 fullsdmodelpath = ""  #if empty, it's not initialized
@@ -1247,7 +1248,7 @@ def convert_json_to_gbnf(json_obj):
 
 def get_capabilities():
     global savedata_obj, has_multiplayer, KcppVersion, friendlymodelname, friendlysdmodelname, fullsdmodelpath, password, fullwhispermodelpath, ttsmodelpath, embeddingsmodelpath, musicdiffusionmodelpath, musicllmmodelpath, has_audio_support, has_vision_support, mcp_connections
-    global autoswapmode, textName, sttName, ttsName, embedName, musicName, imageName
+    global autoswapmode, textName, sttName, ttsName, embedName, musicName, imageName, mmprojName
     has_llm = not (friendlymodelname=="inactive") or (autoswapmode and textName is not None)
     has_txt2img = not (friendlysdmodelname=="inactive" or fullsdmodelpath=="") or (autoswapmode and imageName is not None)
     has_password = (password!="")
@@ -1256,6 +1257,8 @@ def get_capabilities():
     has_tts = (ttsmodelpath!="") or (autoswapmode and ttsName is not None)
     has_embeddings = (embeddingsmodelpath!="") or (autoswapmode and embedName is not None)
     has_music = (musicdiffusionmodelpath!="" or musicllmmodelpath!="") or (autoswapmode and musicName is not None)
+    visionSupport = (has_vision_support) or (autoswapmode and mmprojName is not None)
+    audioSupport = (has_audio_support) # or (autoswapmode and mmprojName is not None)
     if autoswapmode and embedName is not None:
         embeddingModel = embedName
     else:
@@ -1273,7 +1276,7 @@ def get_capabilities():
     had_admin_with_hf = args.adminallowhf
     admin_type = (2 if args.admin and args.admindir and args.adminpassword else (1 if args.admin and args.admindir else 0))
     has_router = True if args.routermode else False
-    return {"result":"KoboldCpp", "version":KcppVersion, "protected":has_password, "llm":has_llm, "txt2img":has_txt2img,"vision":has_vision_support,"audio":has_audio_support,"transcribe":has_whisper,"multiplayer":has_multiplayer,"websearch":has_search,"tts":has_tts, "embeddings":has_embeddings, "music":has_music, "tmpfs":has_tmpfs, "savedata":(savedata_obj is not None), "admin": admin_type, "router":has_router, "guidance": has_guidance, "jinja": has_jinja, "mcp":has_mcp, "hasServerSaving": has_server_saving, "hasAdminWithHF": had_admin_with_hf, "embeddingModel": embeddingModel}
+    return {"result":"KoboldCpp", "version":KcppVersion, "protected":has_password, "llm":has_llm, "txt2img":has_txt2img,"vision":visionSupport,"audio":audioSupport,"transcribe":has_whisper,"multiplayer":has_multiplayer,"websearch":has_search,"tts":has_tts, "embeddings":has_embeddings, "music":has_music, "tmpfs":has_tmpfs, "savedata":(savedata_obj is not None), "admin": admin_type, "router":has_router, "guidance": has_guidance, "jinja": has_jinja, "mcp":has_mcp, "hasServerSaving": has_server_saving, "hasAdminWithHF": had_admin_with_hf, "embeddingModel": embeddingModel}
 
 
 def scan_directory(dirpath, valid_exts, depth):
@@ -4748,7 +4751,8 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
         wake_requests = ["/api/extra/generate/stream","/api/extra/tokencount","/api/v1/generate","/sdapi/v1/interrogate","/v1/completions","/v1/chat/completions","/api/extra/transcribe","/v1/audio/transcriptions","/api/extra/tts","/v1/audio/speech","/api/extra/embeddings","/v1/embeddings","/api/extra/music/prepare","/api/extra/music/generate","/sdapi/v1/txt2img","/sdapi/v1/img2img","/sdapi/v1/upscale"]
         is_wake_request = self.path in wake_requests
 
-        if is_post and (is_completions_path or is_chat_completions_path or is_wake_request):
+        autoswapEnabled = global_memory["autoswapmode"] is not None and global_memory["autoswapmode"]
+        if is_post and (is_completions_path or is_chat_completions_path or (not autoswapEnabled and is_wake_request)):
             model_name = ""
             if body:
                 try:
@@ -4783,7 +4787,7 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                             self.send_error(504, "KoboldCpp model swap reload timed out")
                             return
                         time.sleep(0.1)
-        elif global_memory["autoswapmode"] is not None and global_memory["autoswapmode"]:                            
+        elif autoswapEnabled:                            
             textReqs = ["/api/extra/generate/stream","/api/extra/tokencount","/api/v1/generate","/sdapi/v1/interrogate","/v1/completions","/v1/chat/completions"]
             sttReqs = ["/api/extra/transcribe","/v1/audio/transcriptions"]
             ttsReqs = ["/api/extra/tts", "/v1/audio/speech"]
@@ -5266,7 +5270,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
 
     async def generate_text(self, genparams, api_format, stream_flag):
         global friendlymodelname, chatcompl_adapter, currfinishreason
-        global autoswapmode, textName, sttName, ttsName, embedName, musicName, imageName
+        global autoswapmode, textName, sttName, ttsName, embedName, musicName, imageName, mmprojName
 
         currfinishreason = None
         req_id_suffix = genparams.get('oai_uniqueid',1)
@@ -5380,7 +5384,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
 
     async def handle_sse_stream(self, genparams, api_format):
         global friendlymodelname, currfinishreason
-        global autoswapmode, textName, sttName, ttsName, embedName, musicName, imageName
+        global autoswapmode, textName, sttName, ttsName, embedName, musicName, imageName, mmprojName
 
         modelNameToReturn = friendlymodelname
         if autoswapmode and textName is not None:
@@ -5779,7 +5783,7 @@ Change Mode<br>
         global embedded_kailite, embedded_kcpp_docs, embedded_kcpp_sdui, embedded_kailite_gz, embedded_kcpp_docs_gz, embedded_kcpp_sdui_gz, embedded_lcpp_ui_gz, embedded_musicui, embedded_musicui_gz
         global last_req_time, start_time, cached_chat_template, has_vision_support, has_audio_support, has_whisper, friendlymodelname
         global savedata_obj, has_multiplayer, multiplayer_turn_major, multiplayer_turn_minor, multiplayer_story_data_compressed, multiplayer_dataformat, multiplayer_lastactive, maxctx, maxhordelen, friendlymodelname, lastuploadedcomfyimg, lastgeneratedcomfyimg, KcppVersion, totalgens, preloaded_story, exitcounter, currentusergenkey, friendlysdmodelname, fullsdmodelpath, password, friendlyembeddingsmodelname, voicelist
-        global autoswapmode, textName, sttName, ttsName, embedName, musicName, imageName
+        global autoswapmode, textName, sttName, ttsName, embedName, musicName, imageName, mmprojName
         
         clean_path = self.path.split("?")[0] #for cases where we do not want query params
         if clean_path=="/lcpp": #fix for svelte redirect issues, browser path needs to end with slash
@@ -6333,13 +6337,16 @@ Change Mode<br>
             modelNameToReturn = friendlymodelname
             if autoswapmode and textName is not None:
                 modelNameToReturn = textName
+            mmprojOverride = False
+            if autoswapmode and mmprojName is not None:
+                mmprojOverride = True
             response_body = (json.dumps({
                 "chat_template": cached_chat_template,
                 "id": 0,
 		        "id_task": -1,
                 "total_slots": 1,
                 "modalities": {
-                    "vision": has_vision_support,
+                    "vision": mmprojOverride or has_vision_support,
                     "audio": has_audio_support
                 },
                 "model_path": modelNameToReturn,
@@ -6444,7 +6451,7 @@ Change Mode<br>
 
     def do_POST(self):
         global modelbusy, requestsinqueue, currentusergenkey, totalgens, pendingabortkey, lastuploadedcomfyimg, lastgeneratedcomfyimg, multiplayer_turn_major, multiplayer_turn_minor, multiplayer_story_data_compressed, multiplayer_dataformat, multiplayer_lastactive, net_save_slots, has_vision_support, savestate_limit, mcp_lock
-        global autoswapmode, textName, sttName, ttsName, embedName, musicName, imageName
+        global autoswapmode, textName, sttName, ttsName, embedName, musicName, imageName, mmprojName
         contlenstr = self.headers['content-length']
         content_length = 0
         body = None
@@ -7246,7 +7253,10 @@ Change Mode<br>
             elif self.path.endswith('/v1/chat/completions') or self.path=='/chat/completions':
                 api_format = 4
             elif self.path.endswith('/sdapi/v1/interrogate'):
-                if not has_vision_support:
+                mmprojOverride = False
+                if autoswapmode and mmprojName is not None:
+                    mmprojOverride = True
+                if not mmprojOverride and not has_vision_support:
                     self.send_response(503)
                     self.end_headers(content_type='application/json')
                     self.wfile.write(json.dumps({"detail": {
@@ -11094,9 +11104,10 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
     if global_memory["modelOverride"] is not None:
         args.model_param = global_memory["modelOverride"]
 
-    global autoswapmode, textName, sttName, ttsName, embedName, musicName, imageName
+    global autoswapmode, textName, sttName, ttsName, embedName, musicName, imageName, mmprojName
     autoswapmode = False
     textName = None
+    mmprojName = None
     sttName = None
     ttsName = None
     embedName = None
@@ -11109,6 +11120,10 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
             tempName = os.path.basename(os.path.abspath(args.model_param))
             tempName = os.path.splitext(tempName)[0]
             textName = "koboldcpp/" + sanitize_string(tempName)
+            if args.mmproj and args.mmproj!="": # multimodal vision and audio support is assumed to work with mmproj - this may be incorrect!
+                tempName = os.path.basename(os.path.abspath(args.mmproj))
+                tempName = os.path.splitext(tempName)[0]
+                mmprojName = sanitize_string(tempName)
         if args.whispermodel and args.whispermodel!="":
             tempName = os.path.basename(os.path.abspath(args.whispermodel))
             tempName = os.path.splitext(tempName)[0]
