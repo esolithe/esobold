@@ -855,30 +855,6 @@ std::string common_docker_resolve_model(const std::string & docker) {
     }
 }
 
-#else
-
-common_hf_file_res common_get_hf_file(const std::string &, const std::string &, bool, const common_header_list &) {
-    throw std::runtime_error("download functionality is not enabled in this build");
-}
-
-bool common_download_model(const common_params_model &, const std::string &, bool, const common_header_list &) {
-    throw std::runtime_error("download functionality is not enabled in this build");
-}
-
-std::string common_docker_resolve_model(const std::string &) {
-    throw std::runtime_error("download functionality is not enabled in this build");
-}
-
-int common_download_file_single(const std::string &,
-                                const std::string &,
-                                const std::string &,
-                                bool,
-                                const common_header_list &) {
-    throw std::runtime_error("download functionality is not enabled in this build");
-}
-
-#endif // defined(LLAMA_USE_HTTPLIB)
-
 std::vector<common_cached_model_info> common_list_cached_models() {
     std::unordered_set<std::string> seen;
     std::vector<common_cached_model_info> result;
@@ -898,3 +874,72 @@ std::vector<common_cached_model_info> common_list_cached_models() {
 
     return result;
 }
+
+
+#else
+
+// common_hf_file_res common_get_hf_file(const std::string &, const std::string &, bool, const common_header_list &) {
+//     throw std::runtime_error("download functionality is not enabled in this build");
+// }
+
+common_download_model_result common_download_model(const common_params_model        & model,
+                            const std::string                & bearer_token,
+                            const common_download_model_opts & opts,
+                            const common_header_list         & headers) {
+    throw std::runtime_error("download functionality is not enabled in this build");
+}
+
+std::string common_docker_resolve_model(const std::string &) {
+    throw std::runtime_error("download functionality is not enabled in this build");
+}
+
+int common_download_file_single(const std::string &,
+                                const std::string &,
+                                const std::string &,
+                                bool,
+                                const common_header_list &, bool) {
+    throw std::runtime_error("download functionality is not enabled in this build");
+}
+
+struct gguf_split_info {
+    std::string prefix; // tag included
+    std::string tag;
+    int index;
+    int count;
+};
+static gguf_split_info get_gguf_split_info(const std::string & path) {
+    static const std::regex re_split("^(.+)-([0-9]{5})-of-([0-9]{5})$", std::regex::icase);
+    static const std::regex re_tag("[-.]([A-Z0-9_]+)$", std::regex::icase);
+    std::smatch m;
+
+    std::string prefix = path;
+    string_remove_suffix(prefix, ".gguf");
+
+    int index = 1;
+    int count = 1;
+
+    if (std::regex_match(prefix, m, re_split)) {
+        index = std::stoi(m[2].str());
+        count = std::stoi(m[3].str());
+        prefix = m[1].str();
+    }
+
+    std::string tag;
+    if (std::regex_search(prefix, m, re_tag)) {
+        tag = m[1].str();
+        for (char & c : tag) {
+            c = std::toupper((unsigned char)c);
+        }
+    }
+
+    return {std::move(prefix), std::move(tag), index, count};
+}
+
+std::vector<common_cached_model_info> common_list_cached_models() {
+    std::vector<common_cached_model_info> result;
+    return result;
+}
+
+
+#endif // defined(LLAMA_USE_HTTPLIB)
+

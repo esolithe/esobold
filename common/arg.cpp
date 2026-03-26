@@ -531,12 +531,12 @@ static bool common_params_parse_ex(int argc, char ** argv, common_params_context
     // parse the first time to get -hf option (used for remote preset)
     parse_cli_args();
 
-    // TODO: Remove later
-    try {
-        hf_cache::migrate_old_cache_to_hf_cache(params.hf_token, params.offline);
-    } catch (const std::exception & e) {
-        LOG_WRN("HF cache migration failed: %s\n", e.what());
-    }
+    // TODO: Remove later // KCPP: remove for now
+    // try {
+    //     hf_cache::migrate_old_cache_to_hf_cache(params.hf_token, params.offline);
+    // } catch (const std::exception & e) {
+    //     LOG_WRN("HF cache migration failed: %s\n", e.what());
+    // }
 
     // maybe handle remote preset
     if (!params.model.hf_repo.empty()) {
