@@ -1027,11 +1027,6 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
 
         popupUtils.reset().title("Save Options").content(contents).css("min-height", "50%").css("min-width", "50%")
             .button("Back", () => waitForLibraryAndShow())
-            .button(favoriteLabel, async () => {
-                popupUtils.reset()
-                await toggleCharacterFavorite(name)
-                waitForLibraryAndShow()
-            })
             .button("Delete autosave", async () => {
                 popupUtils.reset()
                 msgboxYesNo("Are you sure you wish to delete?", "Autosave manager", async () => {
@@ -1412,33 +1407,7 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
 
         let scenarios = await getScenariosAndLegacyServerSaves()
         let scenariosContainer = getContainerForType("Scenarios", TYPE_TOOLTIPS["Scenarios"])
-        // scenarios[0..scenario_sources.length-1] are from local scenario_sources files
-        for (let i = 0; i < scenario_sources.length && i < scenarios.length; i++) {
-            let scenario = scenarios[i]
-            if (!scenario) continue
-            let icon = createIcon(scenario.name, undefined)
-            icon.addEventListener("click", scenario.handler)
-            scenariosContainer.appendChild(icon)
-        }
-        // scenarios[scenario_sources.length..] are from scenario_db (built-in + server)
-        for (let i = scenario_sources.length; i < scenarios.length; i++) {
-            let scenario = scenarios[i]
-            if (!scenario) continue
-            if (scenario_db[i - scenario_sources.length]?.serverSaveTypeName === "Autosave") {
-                continue
-            }
-            let image = undefined
-            if (scenario?.thumbnail !== undefined) {
-                image = `url('${scenario.thumbnail}')`
-            }
-            let icon = createIcon(scenario.name, image)
-            icon.addEventListener("click", scenario.handler)
-            scenariosContainer.appendChild(icon);
-        }
-        // Custom (user-defined) scenarios stored in the Library
-        for (let i = 0; i < allCharacterNames.length; i++) {
-            let charMeta = allCharacterNames[i]
-            if (charMeta.type !== "Scenario") continue
+        let addCustomScenarioTile = (charMeta) => {
             let { name, thumbnail } = charMeta
             let icon = createIcon(name, !!thumbnail ? `url(${thumbnail})` : undefined)
             icon.onclick = async () => {
@@ -1507,6 +1476,47 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
                     .button("Close", () => popupUtils.reset()).show()
             }
             scenariosContainer.appendChild(icon)
+        }
+
+        let customScenarios = allCharacterNames.filter(data => data?.type === "Scenario" && !!data?.favorite)
+        // Favorite custom (user-defined) scenarios stored in the Library
+        for (let i = 0; i < customScenarios.length; i++) {
+            let charMeta = customScenarios[i]
+            if (charMeta.type !== "Scenario") continue
+            addCustomScenarioTile(charMeta);
+        }
+
+        // scenarios[0..scenario_sources.length-1] are from local scenario_sources files
+        for (let i = 0; i < scenario_sources.length && i < scenarios.length; i++) {
+            let scenario = scenarios[i]
+            if (!scenario) continue
+            let icon = createIcon(scenario.name, undefined)
+            icon.addEventListener("click", scenario.handler)
+            scenariosContainer.appendChild(icon)
+        }
+
+        // scenarios[scenario_sources.length..] are from scenario_db (built-in + server)
+        for (let i = scenario_sources.length; i < scenarios.length; i++) {
+            let scenario = scenarios[i]
+            if (!scenario) continue
+            if (scenario_db[i - scenario_sources.length]?.serverSaveTypeName === "Autosave") {
+                continue
+            }
+            let image = undefined
+            if (scenario?.thumbnail !== undefined) {
+                image = `url('${scenario.thumbnail}')`
+            }
+            let icon = createIcon(scenario.name, image)
+            icon.addEventListener("click", scenario.handler)
+            scenariosContainer.appendChild(icon);
+        }
+
+        customScenarios = allCharacterNames.filter(data => data?.type === "Scenario" && !data?.favorite)
+        // Custom (user-defined) scenarios stored in the Library
+        for (let i = 0; i < customScenarios.length; i++) {
+            let charMeta = customScenarios[i]
+            if (charMeta.type !== "Scenario") continue
+            addCustomScenarioTile(charMeta);
         }
     }
 
