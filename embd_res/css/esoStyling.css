@@ -286,3 +286,12 @@
 	.agent-user-input-text {
 		width: 100%;
 	}
+
+	.agent-user-input-file {
+		max-width: 100%;
+	}
+
+	.agent-user-input-status {
+		opacity: 0.85;
+		white-space: pre-wrap;
+	}

@@ -882,7 +882,7 @@ let runAgentCycle = async (agentRunState = {}) => {
 
             let promptOverview = currentOrderOfActionDescriptionsOverall.length > 0 ? currentOrderOfActionDescriptionsOverall[i - 1] : null
             if (i === 0) {
-                let planningPrompt = "The last action from the user is the instruction. If you need to ask the user for a response, the action userInput must be used and be put as the final action in the order. When handling images always use actions to get information when needed especially for descriptions. Produces a list of actions to respond to this instruction."
+                let planningPrompt = "The last action from the user is the instruction. If you need to ask the user for a response, the action userInput must be used and be put as the final action in the order. When handling images always use actions to get information when needed especially for descriptions. Use describe_clicked_image only for images the user clicks in chat, and use describe_tmpfs_image only when a tmpfs file path is available. Produces a list of actions to respond to this instruction."
                 if (!!agentRunState?.agentName) {
                     planningPrompt += ` You must respond as ${agentRunState.agentName} when using the send_message or userInput actions. Choose the person based on the user's instruction.`
                 }
@@ -1245,7 +1245,27 @@ let removeAgentUserInputPopup = () => {
     }
 }
 
-let createAgentUserInputPopup = ({ prompt, suggestions = [] }) => {
+let sanitizeAgentUploadFilename = (name = "") => {
+    let safeName = `${name || "upload.bin"}`.trim().toLowerCase()
+    if (safeName === "") {
+        safeName = "upload.bin"
+    }
+    safeName = safeName.replace(/\s+/g, "_")
+    safeName = safeName.replace(/[^a-z0-9._-]/g, "-")
+    safeName = safeName.replace(/-+/g, "-")
+    safeName = safeName.replace(/^[-_.]+/, "")
+    safeName = safeName.replace(/[-_.]+$/, "")
+    return safeName || "upload.bin"
+}
+
+let buildAgentUploadTmpfsPath = (fileName = "upload.bin") => {
+    let now = new Date()
+    let stamp = `${now.getUTCFullYear()}${`${now.getUTCMonth() + 1}`.padStart(2, "0")}${`${now.getUTCDate()}`.padStart(2, "0")}_${`${now.getUTCHours()}`.padStart(2, "0")}${`${now.getUTCMinutes()}`.padStart(2, "0")}${`${now.getUTCSeconds()}`.padStart(2, "0")}`
+    let randomSuffix = `${Math.floor(Math.random() * 1000000)}`.padStart(6, "0")
+    return `/agent_uploads/${stamp}_${randomSuffix}_${sanitizeAgentUploadFilename(fileName)}`
+}
+
+let createAgentUserInputPopup = ({ prompt, suggestions = [], enableFileUpload = true }) => {
     removeAgentUserInputPopup()
     return new Promise((resolve) => {
         let overlay = document.createElement("div")
@@ -1273,6 +1293,19 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [] }) => {
         input.placeholder = "Type your response..."
         input.classList.add("agent-user-input-text")
 
+        let capabilityText = document.createElement("div")
+        capabilityText.classList.add("agent-user-input-status")
+
+        let fileUploadRow = document.createElement("div")
+        fileUploadRow.classList.add("agent-user-input-controls")
+
+        let fileInput = document.createElement("input")
+        fileInput.type = "file"
+        fileInput.classList.add("agent-user-input-file")
+
+        let fileStatus = document.createElement("div")
+        fileStatus.classList.add("agent-user-input-status")
+
         let controls = document.createElement("div")
         controls.classList.add("agent-user-input-controls")
 
@@ -1283,6 +1316,15 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [] }) => {
         let stopLoop = document.createElement("button")
         stopLoop.classList.add("btn-primary")
         stopLoop.innerText = "Stop loop"
+
+        let selectedFile = null
+
+        let hasTmpfsWrite = typeof window?.tmpfsClient?.write === "function"
+        let canUseTmpfsUpload = !!enableFileUpload && hasTmpfsWrite && is_using_kcpp_with_tmpfs()
+
+        if (enableFileUpload && !canUseTmpfsUpload) {
+            capabilityText.innerText = "File upload is unavailable because tmpfs upload is not supported by the current endpoint."
+        }
 
         let completeOnce = (result) => {
             removeAgentUserInputPopup()
@@ -1300,8 +1342,34 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [] }) => {
             suggestionsContainer.appendChild(button)
         })
 
-        confirmAndContinue.onclick = () => {
-            completeOnce({ action: "continue", input: input.value || "" })
+        fileInput.onchange = () => {
+            selectedFile = fileInput.files?.[0] || null
+            fileStatus.innerText = selectedFile ? `Selected file: ${selectedFile.name}` : ""
+        }
+
+        confirmAndContinue.onclick = async () => {
+            confirmAndContinue.disabled = true
+            let uploadedFilePath = ""
+            try {
+                if (!!selectedFile && canUseTmpfsUpload) {
+                    fileStatus.innerText = "Uploading file to tmpfs..."
+                    let uploadPath = buildAgentUploadTmpfsPath(selectedFile.name)
+                    let bytes = new Uint8Array(await selectedFile.arrayBuffer())
+                    await window.tmpfsClient.write(uploadPath, bytes, true)
+                    uploadedFilePath = uploadPath
+                    fileStatus.innerText = `Uploaded file path: ${uploadPath}`
+                }
+                completeOnce({
+                    action: "continue",
+                    input: input.value || "",
+                    filePath: uploadedFilePath,
+                    fileName: selectedFile?.name || "",
+                })
+            }
+            catch (e) {
+                fileStatus.innerText = `File upload failed: ${e?.message || e}`
+                confirmAndContinue.disabled = false
+            }
         }
 
         stopLoop.onclick = () => {
@@ -1320,6 +1388,20 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [] }) => {
             body.appendChild(suggestionsContainer)
         }
         body.appendChild(input)
+        if (enableFileUpload) {
+            if (capabilityText.innerText.trim().length > 0) {
+                body.appendChild(capabilityText)
+            }
+            if (canUseTmpfsUpload) {
+                fileUploadRow.appendChild(fileInput)
+            }
+            if (fileUploadRow.childElementCount > 0) {
+                body.appendChild(fileUploadRow)
+            }
+            if (canUseTmpfsUpload) {
+                body.appendChild(fileStatus)
+            }
+        }
         controls.appendChild(confirmAndContinue)
         controls.appendChild(stopLoop)
         body.appendChild(controls)
@@ -1403,7 +1485,8 @@ let askUserToRetryIncompleteTask = async (agentRunState) => {
     {
         retryResult = await createAgentUserInputPopup({
             prompt: "Task may be incomplete. Do you want the agent to run again? You can add details before continuing.",
-            suggestions: []
+            suggestions: [],
+            enableFileUpload: false,
         })
     }
 

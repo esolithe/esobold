@@ -581,17 +581,24 @@ let getCommands = (agentRunState) => {
 				})
 
 				let userOverrideToStop = !response || response.action === "stop"
-				let userInput = (response?.input || "").toString().trim(), noInputFromUser = !userInput
+				let userInput = (response?.input || "").toString().trim()
+				let uploadedFilePath = (response?.filePath || "").toString().trim()
+				let noInputFromUser = !userInput && !uploadedFilePath
 				if (userOverrideToStop || noInputFromUser) {
 					agentRunState.skipTaskCompletionCheck = true
 					addThought(currentChainOfThought, createSysPrompt, "User chose to stop the loop or provided no input", true)
 					return true
 				}
 
+				let combinedUserInput = userInput
+				if (!!uploadedFilePath) {
+					combinedUserInput = `${combinedUserInput}${combinedUserInput.length > 0 ? "\n\n" : ""}File uploaded to temporary file system (tmpfs): ${uploadedFilePath}`
+				}
+
 				let isFinalAction = agentRunState.recentActions.length - (!!agentRunState?.planToUse ? 1 : 0) - 1 === agentRunState.currentOrderOfActionsOverall.length
 				if (continueWithCurrentPlan && !isFinalAction)
 				{
-					addThought(currentChainOfThought, createInstructPrompt, `Input provided by user: ${userInput}`)
+					addThought(currentChainOfThought, createInstructPrompt, `Input provided by user: ${combinedUserInput}`)
 					return false
 				}
 				else
@@ -599,7 +606,7 @@ let getCommands = (agentRunState) => {
 					agentRunState.skipTaskCompletionCheck = true
 					setTimeout(() => {
 						window.execAgentCycle(objRefAssign({}, {
-							initialPrompt: userInput,
+							initialPrompt: combinedUserInput,
 							printToConsole: !!agentRunState?.printToConsole,
 							agentName: agentRunState?.agentName,
 							systemPrompt: agentRunState?.systemPrompt,
@@ -946,8 +953,8 @@ let getCommands = (agentRunState) => {
 			}
 		},
 		{
-			"name": "describe_image",
-			"description": "Describes a user provided image. It does not provide the original prompt used to generate the image.",
+			"name": "describe_clicked_image",
+			"description": "Describe an image that the user clicks in chat. Incompatible with tmpfs file paths.",
 			"args": {
 				"question": "<question to ask about image>"
 			},
@@ -1245,8 +1252,8 @@ let getCommands = (agentRunState) => {
 			}
 		},
 		{
-			"name": "tmpfs_describe_image",
-			"description": "Describe an image in tmpfs using vision analysis.",
+			"name": "describe_tmpfs_image",
+			"description": "Describe an image from a tmpfs file path. Incompatible with click-selected chat images.",
 			"args": {
 				"path": "<tmpfs image path>",
 				"question": "<optional focus question>"
@@ -1256,7 +1263,7 @@ let getCommands = (agentRunState) => {
 				try {
 					let tmpfsPath = `${action?.args?.path || ""}`.trim()
 					if (tmpfsPath === "") {
-						addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: describe_image failed - path is required`)
+						addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: describe_tmpfs_image failed - path is required`)
 						return
 					}
 					let analysisPrompt = "Describe the image in detail. Transcribe and include any text from the image in the description."
@@ -1265,10 +1272,10 @@ let getCommands = (agentRunState) => {
 					}
 					let base64Image = await readTmpfsPathAsBase64(tmpfsPath)
 					let analysisResult = await generateAndGetTextFromPrompt(`${createInstructPrompt(analysisPrompt)}${instructendplaceholder}${!!localsettings?.inject_jailbreak_instruct ? localsettings.custom_jailbreak_text : ""}`, undefined, [base64Image])
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: describe_image result\n${analysisResult}`)
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: describe_tmpfs_image result\n${analysisResult}`)
 				}
 				catch (e) {
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: describe_image failed - ${e?.message || e}`)
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: describe_tmpfs_image failed - ${e?.message || e}`)
 				}
 			}
 		},
