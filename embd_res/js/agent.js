@@ -29,7 +29,7 @@ let generateFromPrompt = (prompt, grammar = "", images = [], bannedTokens = []) 
     let llavaImages = insertAIVisionImages.concat(images)
     llavaImages = llavaImages.filter((elem, pos, arr) => arr.indexOf(elem) === pos)
     if (is_using_kcpp_with_vision() && llavaImages.length > 0) {
-        payload.images = llavaImages;
+        payload.images = llavaImages.map(str => str.includes("base64,")?str.split("base64,")[1]:str);
     }
     let reqOpt = {
         method: 'POST', // or 'PUT'

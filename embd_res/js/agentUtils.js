@@ -977,10 +977,6 @@ let getCommands = (agentRunState) => {
 					}
 					await waitForI2ILoop()
 					if (!!i2i64) {
-						let parts = i2i64.split(',');
-						if (parts.length === 2 && parts[0].startsWith('data:image')) {
-							i2i64 = parts[1];
-						}
 						let analysisResult = await generateAndGetTextFromPrompt(`${createInstructPrompt(analysisPrompt)}${instructendplaceholder}${!!localsettings?.inject_jailbreak_instruct ? localsettings.custom_jailbreak_text : ""}`, undefined, [i2i64])
 						addThought(currentChainOfThought, createSysPrompt, `Image analysed: ${analysisResult}`)
 					}
