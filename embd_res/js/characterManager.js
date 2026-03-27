@@ -160,6 +160,7 @@ let putAllCharacterManagerData = () => {
                         waitingToast.show()
                         data.type = type
                         data.thumbnail = thumbnail
+                        data.favorite = !!c?.favorite
                         data = JSON.stringify(data)
                         if (isEncrypted) {
                             data = encrypt(password, data)
@@ -324,11 +325,11 @@ let loadAllCharacterManagerData = () => {
                                                 let handler = () => {
                                                     let data = !!isEncrypted ? decrypt(window.lastUsedSavePassword, saveData) : saveData;
                                                     data = JSON.parse(data)
-                                                    let { name, type, thumbnail } = data
+                                                    let { name, type, thumbnail, favorite } = data
 
                                                     if (name !== undefined)
                                                     {
-                                                        allCharacterNames.push({ name, type, thumbnail });
+                                                        allCharacterNames.push({ name, type, thumbnail, favorite: !!favorite });
                                                         return indexeddb_save(`character_${data.name}`, JSON.stringify(data))
                                                     }
                                                 }
@@ -818,6 +819,25 @@ let managerUploadHandler = function (result) {
 let maxLengthForSection = 500, halfMaxLengthForSection = Math.floor(maxLengthForSection / 2);
 let libraryChangesOccurred = false;
 
+let getCharacterMetaByName = (name) => {
+    return (allCharacterNames || []).find(meta => meta?.name === name)
+}
+
+let isCharacterFavorite = (name) => {
+    return !!getCharacterMetaByName(name)?.favorite
+}
+
+let toggleCharacterFavorite = async (name) => {
+    let target = getCharacterMetaByName(name)
+    if (!target) {
+        return false
+    }
+    target.favorite = !target.favorite
+    libraryChangesOccurred = true
+    await updateCharacterListFromAll()
+    return !!target.favorite
+}
+
 // Navigate back to the Library, waiting for any pending background processing to finish first
 let waitForLibraryAndShow = () => {
     setTimeout(() => {
@@ -864,7 +884,7 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
             charIcon.style.filter = filterToUse;
         }
         charIcon.title = name
-        charText.innerText = name
+        charText.innerText = isCharacterFavorite(name) ? `★ ${name}` : name
         charIcon.appendChild(charText)
         return charIcon
     }
@@ -1003,9 +1023,15 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
             console.error(e)
         }
         createButtonInputSection
+        let favoriteLabel = isCharacterFavorite(name) ? "Unfavorite" : "Favorite"
 
         popupUtils.reset().title("Save Options").content(contents).css("min-height", "50%").css("min-width", "50%")
             .button("Back", () => waitForLibraryAndShow())
+            .button(favoriteLabel, async () => {
+                popupUtils.reset()
+                await toggleCharacterFavorite(name)
+                waitForLibraryAndShow()
+            })
             .button("Delete autosave", async () => {
                 popupUtils.reset()
                 msgboxYesNo("Are you sure you wish to delete?", "Autosave manager", async () => {
@@ -1130,6 +1156,7 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
                     catch (e) {
                         console.error(e)
                     }
+                    let favoriteLabel = isCharacterFavorite(name) ? "Unfavorite" : "Favorite"
 
                     popupUtils.reset().title("Character Options").content(contents).css("min-height", "50%").css("min-width", "50%").button("Back", () => showCharacterList(undefined, false, true)).button("Load character", async () => {
                         popupUtils.reset()
@@ -1152,6 +1179,10 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
                             let { fileName, b64Url } = data
                             downloadB64URL(fileName, b64Url)
                         }
+                    }).button(favoriteLabel, async () => {
+                        popupUtils.reset()
+                        await toggleCharacterFavorite(name)
+                        showCharacterList(undefined, false, true)
                     }).button("Delete character", async () => {
                         popupUtils.reset()
                         msgboxYesNo("Are you sure you wish to delete?  This will remove the server data if it is stored there as well.", "Library", async () => {
@@ -1180,6 +1211,7 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
                     catch (e) {
                         console.error(e)
                     }
+                    let favoriteLabel = isCharacterFavorite(name) ? "Unfavorite" : "Favorite"
 
                     popupUtils.reset().title("World Info Options").content(contents).css("min-height", "50%").css("min-width", "50%").button("Back", () => showCharacterList(undefined, false, true)).button("Add to WI", async () => {
                         popupUtils.reset()
@@ -1200,6 +1232,10 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
                             let { fileName, b64Url } = data
                             downloadB64URL(fileName, b64Url)
                         }
+                    }).button(favoriteLabel, async () => {
+                        popupUtils.reset()
+                        await toggleCharacterFavorite(name)
+                        showCharacterList(undefined, false, true)
                     }).button("Delete world info", async () => {
                         popupUtils.reset()
                         msgboxYesNo("Are you sure you wish to delete?  This will remove the server data if it is stored there as well.", "Library", async () => {
@@ -1247,6 +1283,7 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
                     catch (e) {
                         console.error(e)
                     }
+                    let favoriteLabel = isCharacterFavorite(name) ? "Unfavorite" : "Favorite"
 
                     popupUtils.reset().title("Save Options").content(contents).css("min-height", "50%").css("min-width", "50%").button("Back", () => showCharacterList(undefined, false, true)).button("Load save", async () => {
                         popupUtils.reset()
@@ -1265,6 +1302,10 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
                             let { fileName, b64Url } = data
                             downloadB64URL(fileName, b64Url)
                         }
+                    }).button(favoriteLabel, async () => {
+                        popupUtils.reset()
+                        await toggleCharacterFavorite(name)
+                        showCharacterList(undefined, false, true)
                     }).button("Delete save", async () => {
                         popupUtils.reset()
                         msgboxYesNo("Are you sure you wish to delete?  This will remove the server data if it is stored there as well.", "Library", async () => {
@@ -1286,6 +1327,7 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
                     contents = createDetailsContent(name);
                     let charData = await getCharacterData(name), { extractedText } = charData;
                     createSection(contents, "Has text been extracted?", !!extractedText ? "True" : "False");
+                    let favoriteLabel = isCharacterFavorite(name) ? "Unfavorite" : "Favorite"
 
                     popupUtils.reset().title("Document Options").content(contents).css("min-height", "50%").css("min-width", "50%").button("Back", () => showCharacterList(undefined, false, true)).button("Add to TextDB", async () => {
                         popupUtils.reset()
@@ -1312,6 +1354,10 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
                             let { fileName, b64Url } = data
                             downloadB64URL(fileName, b64Url)
                         }
+                    }).button(favoriteLabel, async () => {
+                        popupUtils.reset()
+                        await toggleCharacterFavorite(name)
+                        showCharacterList(undefined, false, true)
                     }).button("Delete document", async () => {
                         popupUtils.reset()
                         msgboxYesNo("Are you sure you wish to delete?  This will remove the server data if it is stored there as well.", "Library", async () => {
@@ -1422,6 +1468,7 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
                 } catch (e) {
                     console.error(e)
                 }
+                let favoriteLabel = isCharacterFavorite(name) ? "Unfavorite" : "Favorite"
                 popupUtils.reset().title("Scenario Options").content(contents).css("min-height", "50%").css("min-width", "50%")
                     .button("Back", () => showCharacterList(undefined, false, true))
                     .button("Load scenario", async () => {
@@ -1436,6 +1483,11 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
                             let { fileName, b64Url } = data
                             downloadB64URL(fileName, b64Url)
                         }
+                    })
+                    .button(favoriteLabel, async () => {
+                        popupUtils.reset()
+                        await toggleCharacterFavorite(name)
+                        showCharacterList(undefined, false, true)
                     })
                     .button("Delete scenario", async () => {
                         popupUtils.reset()
@@ -1945,8 +1997,9 @@ function showCharacterCreator() {
             await indexeddb_save(`character_${name}`, JSON.stringify(toSave));
 
             // Update list
+            const existingMeta = (allCharacterNames || []).find(c => c?.name === name);
             allCharacterNames = (allCharacterNames || []).filter(c => c?.name !== name);
-            allCharacterNames.push({ name, thumbnail: thumbUrl, type: 'Character' });
+            allCharacterNames.push({ name, thumbnail: thumbUrl, type: 'Character', favorite: !!existingMeta?.favorite });
             await updateCharacterListFromAll();
 
             waitingToast.hide();
