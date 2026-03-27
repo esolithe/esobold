@@ -1830,7 +1830,9 @@ let getCommandsAsText = (commands = getEnabledCommands()) => {
 	return commands.map(command => {
 		let baseCommand = `Command: ${command.name} (command output is ${!!command?.outputVisibleToUser ? "visible" : "invisible"} to the user)\nDescription: ${command.description}`
 		if (!!command.args) {
-			let args = Object.keys(command.args).map(key => {
+			let args = Object.keys(command.args).filter(key => {
+				return !command.args[key]?.skip
+			}).map(key => {
 				let value = command.args[key];
 				return typeof value === "object" ? `\t${key}: ${value.description}` : `\t${key}: ${value}`
 			}).join("\n")
