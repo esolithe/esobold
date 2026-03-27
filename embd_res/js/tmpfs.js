@@ -58,6 +58,18 @@ class TmpfsClient {
         return resp.json();
     }
 
+    async _post_form(path, form_data) {
+        const resp = await fetch(this.base_url + path, {
+            method: 'POST',
+            body: form_data,
+        });
+        if (!resp.ok) {
+            const body = await resp.text().catch(() => '');
+            throw new Error(`tmpfs POST ${path} failed (${resp.status}): ${body}`);
+        }
+        return resp.json();
+    }
+
     // -------------------------------------------------------------------------
     // File listing & searching
     // -------------------------------------------------------------------------
@@ -223,6 +235,44 @@ class TmpfsClient {
      */
     async copy(source, destination) {
         return this._post('/api/extra/tmpfs/copy', { source, destination });
+    }
+
+    /**
+     * Create a directory.
+     * @param {string} path
+     * @returns {Promise<{success:boolean, path:string}>}
+     */
+    async mkdir(path) {
+        return this._post('/api/extra/tmpfs/mkdir', { path });
+    }
+
+    /**
+     * Delete a directory and all contents.
+     * @param {string} path
+     * @returns {Promise<{success:boolean, path:string, removed:number}>}
+     */
+    async rmdir(path) {
+        return this._post('/api/extra/tmpfs/rmdir', { path });
+    }
+
+    /**
+     * Extract a zip archive into a target directory.
+     * This uses the upload endpoint, which auto-extracts .zip files.
+     * @param {Blob|File|Uint8Array|ArrayBuffer} zip_data
+     * @param {string} [dir='/']
+     * @param {string} [filename='archive.zip']
+     * @returns {Promise<{success:boolean, written:string[]}>}
+     */
+    async extract_zip(zip_data, dir = '/', filename = 'archive.zip') {
+        const fd = new FormData();
+        fd.append('dir', dir || '/');
+        let zip_file = zip_data;
+        if (!(zip_data instanceof Blob || zip_data instanceof File)) {
+            const bytes = zip_data instanceof ArrayBuffer ? new Uint8Array(zip_data) : zip_data;
+            zip_file = new Blob([bytes], { type: 'application/zip' });
+        }
+        fd.append('file', zip_file, filename);
+        return this._post_form('/api/extra/tmpfs/upload', fd);
     }
 }
 

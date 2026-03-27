@@ -1522,6 +1522,73 @@ let getCommands = (agentRunState) => {
 			}
 		},
 		{
+			"name": "tmpfs_extract_zip",
+			"description": "Extract a .zip file from tmpfs into a target tmpfs directory.",
+			"args": {
+				"zip_path": "<tmpfs .zip file path>",
+				"target_dir": {
+					description: "<target directory, default />",
+					type: "string"
+				}
+			},
+			"enabled": is_using_kcpp_with_tmpfs(),
+			"executor": async (action) => {
+				try {
+					let zipPath = `${action?.args?.zip_path || ""}`.trim()
+					let targetDir = `${action?.args?.target_dir || "/"}`.trim() || "/"
+					if (zipPath === "") {
+						addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: extract_zip failed - zip_path is required`)
+						return
+					}
+					let rawResp = await window.tmpfsClient.fetch_raw(zipPath)
+					let zipBlob = await rawResp.blob()
+					let fileName = zipPath.split("/").filter(Boolean).pop() || "archive.zip"
+					if (!fileName.toLowerCase().endsWith(".zip")) {
+						fileName = `${fileName}.zip`
+					}
+					let result = await window.tmpfsClient.extract_zip(zipBlob, targetDir, fileName)
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: extract_zip result\n${objToText(result)}`)
+				}
+				catch (e) {
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: extract_zip failed - ${e?.message || e}`)
+				}
+			}
+		},
+		{
+			"name": "tmpfs_create_folder",
+			"description": "Create a tmpfs folder.",
+			"args": {
+				"path": "<folder path>"
+			},
+			"enabled": is_using_kcpp_with_tmpfs(),
+			"executor": async (action) => {
+				try {
+					let result = await window.tmpfsClient.mkdir(action?.args?.path)
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: create_folder result\n${objToText(result)}`)
+				}
+				catch (e) {
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: create_folder failed - ${e?.message || e}`)
+				}
+			}
+		},
+		{
+			"name": "tmpfs_delete_folder",
+			"description": "Delete a tmpfs folder and all files under it.",
+			"args": {
+				"path": "<folder path>"
+			},
+			"enabled": is_using_kcpp_with_tmpfs(),
+			"executor": async (action) => {
+				try {
+					let result = await window.tmpfsClient.rmdir(action?.args?.path)
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: delete_folder result\n${objToText(result)}`)
+				}
+				catch (e) {
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: delete_folder failed - ${e?.message || e}`)
+				}
+			}
+		},
+		{
 			"name": "tmpfs_open_embed",
 			"description": `Open or replace a named floating embed window for a tmpfs file URL. Position and size are clamped to the viewport and the header can be dragged to reposition. Current viewport: ${window.innerWidth}x${window.innerHeight}px.`,
 			"args": {
