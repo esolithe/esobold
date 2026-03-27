@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Tmpfs Browser</title>
+    <link rel="stylesheet" href="/static/css/tmpfs_browser.css">
+</head>
+<body>
+    <div id="app">
+        <header id="header">
+            <div id="header-left">
+                <span id="title">&#128193; Tmpfs Browser</span>
+                <nav id="breadcrumbs"></nav>
+            </div>
+            <div id="header-right">
+                <a id="btn-zip" class="btn btn-secondary" href="#">&#8659; Download ZIP</a>
+                <button id="btn-create-folder" class="btn btn-secondary" type="button">&#128193; New Folder</button>
+                <label class="btn btn-primary" id="upload-label">
+                    &#8657; Upload Files
+                    <input type="file" id="file-input" multiple>
+                </label>
+            </div>
+        </header>
+
+        <div id="dropzone" aria-label="Drop files here to upload">
+            <div id="dropzone-inner">
+                <span id="dropzone-icon">&#128229;</span>
+                <span id="dropzone-text">Drop files here to upload to this directory</span>
+                <span id="dropzone-hint">ZIP files will be automatically extracted</span>
+            </div>
+        </div>
+
+        <div id="status-bar" hidden>
+            <div id="progress-wrap">
+                <div id="progress-bar"></div>
+            </div>
+            <span id="status-msg"></span>
+        </div>
+
+        <div id="listing-container">
+            <table id="listing">
+                <thead>
+                    <tr>
+                        <th class="col-name">Name</th>
+                        <th class="col-size">Size</th>
+                        <th class="col-modified">Modified</th>
+                        <th class="col-actions">Actions</th>
+                    </tr>
+                </thead>
+                <tbody id="listing-body">
+                    <tr id="loading-row"><td colspan="4">Loading&hellip;</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div id="empty-notice" hidden>
+            <span>This directory is empty.</span>
+            <span>Upload files using the button above or drop them onto the page.</span>
+        </div>
+    </div>
+
+    <script src="/static/js/tmpfs_browser.js"></script>
+</body>
+</html>

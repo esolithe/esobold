@@ -86,6 +86,7 @@ kcpp_instance = None #global running instance
 global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "swapReqType": None, "autoswapmode": False, "tmpfs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "initialized": False}}
 using_gui_launcher = False
 tmpfs_lock = threading.Lock()
+TMPFS_DIR_MARKER_FILENAME = ".kcpp_dir_marker"
 
 handle = None
 friendlymodelname = "inactive"
@@ -4438,6 +4439,38 @@ def tmpfs_write_file(path, content, modified=None, isB64 = False):
         tmpfs_set_state(tmpfs)
     return normalized_path
 
+def tmpfs_normalize_dir_path(raw_path, allow_root=False):
+    normalized = tmpfs_normalize_path(raw_path, allow_root=allow_root)
+    if normalized != "/":
+        normalized = normalized.rstrip("/")
+    return normalized
+
+def tmpfs_create_directory(path):
+    normalized_dir = tmpfs_normalize_dir_path(path)
+    marker_path = normalized_dir + "/" + TMPFS_DIR_MARKER_FILENAME
+    tmpfs_write_file(marker_path, b"")
+    return normalized_dir
+
+def tmpfs_delete_directory(path):
+    normalized_dir = tmpfs_normalize_dir_path(path)
+    prefix = normalized_dir + "/"
+    with tmpfs_lock:
+        tmpfs = tmpfs_snapshot_state()
+        files = tmpfs["files"]
+        targets = [p for p in files.keys() if p.startswith(prefix)]
+        if not targets:
+            raise FileNotFoundError(f"Tmpfs directory not found: {normalized_dir}")
+        removed_size = 0
+        for p in targets:
+            entry = files.get(p, {})
+            removed_size += entry.get("size", len(entry.get("content", b"")))
+            if p in files:
+                del files[p]
+        tmpfs["current_size_bytes"] = max(0, tmpfs["current_size_bytes"] - removed_size)
+        tmpfs["initialized"] = True
+        tmpfs_set_state(tmpfs)
+    return normalized_dir, len(targets)
+
 def tmpfs_delete_file(path):
     normalized_path = tmpfs_normalize_path(path)
     with tmpfs_lock:
@@ -4614,7 +4647,12 @@ def tmpfs_build_zip_bytes(dir_prefix=""):
     with tmpfs_lock:
         tmpfs = tmpfs_snapshot_state()
         items = sorted(
-            ((p, e) for p, e in tmpfs["files"].items() if not prefix or p.lstrip("/").startswith(prefix)),
+            (
+                (p, e)
+                for p, e in tmpfs["files"].items()
+                if (not prefix or p.lstrip("/").startswith(prefix))
+                and posixpath.basename(p) != TMPFS_DIR_MARKER_FILENAME
+            ),
             key=lambda x: x[0],
         )
     archive_buffer = io.BytesIO()
@@ -4630,6 +4668,71 @@ def tmpfs_build_zip_bytes(dir_prefix=""):
             info.compress_type = zipfile.ZIP_DEFLATED
             zip_file.writestr(info, entry.get("content", b""))
     return archive_buffer.getvalue()
+
+def tmpfs_parse_multipart(body, content_type_header):
+    """Parse a multipart/form-data body.
+    Returns list of dicts: {'name': str, 'filename': str|None, 'content': bytes}"""
+    boundary = None
+    for param in content_type_header.split(';'):
+        param = param.strip()
+        if param.lower().startswith('boundary='):
+            boundary = param[9:].strip().strip('"')
+            break
+    if not boundary:
+        raise ValueError("No multipart boundary found in Content-Type header")
+    boundary_bytes = ('--' + boundary).encode('utf-8')
+    parts = []
+    segments = body.split(boundary_bytes)
+    for segment in segments[1:]:
+        if segment.startswith(b'\r\n'):
+            segment = segment[2:]
+        if segment.startswith(b'--') or not segment.strip():
+            continue
+        sep_idx = segment.find(b'\r\n\r\n')
+        if sep_idx == -1:
+            continue
+        header_bytes = segment[:sep_idx]
+        content = segment[sep_idx + 4:]
+        if content.endswith(b'\r\n'):
+            content = content[:-2]
+        headers = {}
+        for line in header_bytes.split(b'\r\n'):
+            if b':' in line:
+                k, v = line.split(b':', 1)
+                headers[k.strip().lower().decode('utf-8', 'replace')] = v.strip().decode('utf-8', 'replace')
+        disp = headers.get('content-disposition', '')
+        field_name = ''
+        fname = None
+        for p in disp.split(';'):
+            p = p.strip()
+            if p.lower().startswith('name='):
+                field_name = p[5:].strip('"')
+            elif p.lower().startswith('filename='):
+                fname = p[9:].strip('"')
+        parts.append({'name': field_name, 'filename': fname, 'content': content})
+    return parts
+
+def tmpfs_extract_zip(zip_bytes, target_dir):
+    """Extract a ZIP archive into the tmpfs under target_dir.
+    Returns list of written paths."""
+    target_dir = tmpfs_normalize_path(target_dir if target_dir else '/', allow_root=True)
+    written = []
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        for info in zf.infolist():
+            if info.filename.endswith('/'):
+                continue
+            member_path = info.filename.replace('\\', '/')
+            safe = posixpath.normpath(member_path)
+            if safe.startswith('..') or '/../' in safe:
+                continue
+            if target_dir == '/':
+                dest = '/' + safe.lstrip('/')
+            else:
+                dest = target_dir.rstrip('/') + '/' + safe.lstrip('/')
+            dest = posixpath.normpath(dest)
+            content = zf.read(info.filename)
+            written.append(tmpfs_write_file(dest, content))
+    return written
 
 def initialize_tmpfs_from_args():
     configured_limit = max(0, tryparseint(getattr(args, "tmpfsmaxsize", 0), 0)) * 1024 * 1024
@@ -5890,63 +5993,16 @@ Change Mode<br>
                         content_type = detected_type
                 except (FileNotFoundError, ValueError):
                     try:
-                        requested_dir = tmpfs_normalize_path(clean_path[4:], allow_root=True)
-                        dir_prefix = "" if requested_dir == "/" else (requested_dir.rstrip("/") + "/")
-                        with tmpfs_lock:
-                            tmpfs = tmpfs_snapshot_state()
-                            paths = sorted(tmpfs["files"].keys())
-
-                        child_dirs = set()
-                        child_files = []
-                        for path in paths:
-                            if requested_dir == "/":
-                                relative_path = path.lstrip("/")
-                            else:
-                                if not path.startswith(dir_prefix):
-                                    continue
-                                relative_path = path[len(dir_prefix):]
-
-                            if not relative_path:
-                                continue
-                            first_part = relative_path.split("/", 1)[0]
-                            if "/" in relative_path:
-                                child_dirs.add(first_part)
-                            else:
-                                child_files.append(first_part)
-
-                        if child_dirs or child_files:
-                            requested_dir_escaped = html.escape(requested_dir)
-                            zip_dir_param = "" if requested_dir == "/" else f"?dir={urllib.parse.quote(requested_dir, safe='/')}"
-                            zip_href = f"/tmp.zip{zip_dir_param}"
-                            directory_items = []
-
-                            if requested_dir != "/":
-                                parent_dir = posixpath.dirname(requested_dir.rstrip("/"))
-                                parent_dir = parent_dir if parent_dir else "/"
-                                parent_href = "/tmp/" if parent_dir == "/" else f"/tmp{urllib.parse.quote(parent_dir, safe='/')}/"
-                                directory_items.append(f'<li><a href="{parent_href}">..</a></li>')
-
-                            for dirname in sorted(child_dirs):
-                                target_dir = f"/{dirname}" if requested_dir == "/" else f"{requested_dir.rstrip('/')}/{dirname}"
-                                href = f"/tmp{urllib.parse.quote(target_dir, safe='/')}/"
-                                directory_items.append(f'<li><a href="{href}">{html.escape(dirname)}/</a></li>')
-
-                            for filename in sorted(child_files):
-                                target_file = f"/{filename}" if requested_dir == "/" else f"{requested_dir.rstrip('/')}/{filename}"
-                                href = f"/tmp{urllib.parse.quote(target_file, safe='/')}"
-                                directory_items.append(f'<li><a href="{href}">{html.escape(filename)}</a></li>')
-
-                            directory_html = "\n".join(directory_items)
-                            response_body = (
-                                "<!doctype html><html><head><meta charset='utf-8'><title>Tmpfs Directory</title></head>"
-                                f"<body><h3>Tmpfs Directory: {requested_dir_escaped}</h3>"
-                                f"<p>{len(child_dirs)} dirs, {len(child_files)} files</p>"
-                                f"<p><a href=\"{zip_href}\">Download this directory as zip</a></p>"
-                                f"<ul>{directory_html}</ul></body></html>"
-                            ).encode("utf-8")
-                            content_type = 'text/html'
-                        else:
-                            raise
+                        # Validate this is a reachable directory path (raises if invalid)
+                        tmpfs_normalize_path(clean_path[4:], allow_root=True)
+                        # Serve the tmpfs browser HTML page for any directory access.
+                        # The JS reads window.location.pathname to determine the current dir
+                        # and fetches the file list from /api/extra/tmpfs/files dynamically.
+                        embddir_tmp = os.path.join(os.path.abspath(os.path.dirname(os.path.realpath(__file__))), "embd_res")
+                        browser_html_path = os.path.join(embddir_tmp, "tmpfs_browser.html")
+                        with open(browser_html_path, mode='rb') as _brf:
+                            response_body = _brf.read()
+                        content_type = 'text/html'
                     except Exception as e:
                         utfprint("Error getting tmpfs resource: " + str(e))
                         response_code = 404
@@ -6544,6 +6600,38 @@ Change Mode<br>
                     response_code = 400
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
 
+        elif self.path.endswith('/api/extra/tmpfs/mkdir'):
+            if not tmpfs_is_enabled():
+                response_code = 503
+                response_body = (json.dumps({"success": False, "error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
+            else:
+                try:
+                    tempbody = json.loads(body)
+                    normalized_dir = tmpfs_create_directory(tempbody.get('path', ''))
+                    response_body = (json.dumps({"success": True, "path": normalized_dir}).encode())
+                except ValueError as e:
+                    response_code = 507 if 'size limit exceeded' in str(e).lower() else 400
+                    response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+                except Exception as e:
+                    response_code = 400
+                    response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+
+        elif self.path.endswith('/api/extra/tmpfs/rmdir'):
+            if not tmpfs_is_enabled():
+                response_code = 503
+                response_body = (json.dumps({"success": False, "error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
+            else:
+                try:
+                    tempbody = json.loads(body)
+                    normalized_dir, removed = tmpfs_delete_directory(tempbody.get('path', ''))
+                    response_body = (json.dumps({"success": True, "path": normalized_dir, "removed": removed}).encode())
+                except FileNotFoundError as e:
+                    response_code = 404
+                    response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+                except Exception as e:
+                    response_code = 400
+                    response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+
         elif self.path.endswith('/api/extra/tmpfs/delete'):
             if not tmpfs_is_enabled():
                 response_code = 503
@@ -6604,6 +6692,48 @@ Change Mode<br>
                 except FileNotFoundError as e:
                     response_code = 404
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+                except ValueError as e:
+                    response_code = 507 if 'size limit exceeded' in str(e).lower() else 400
+                    response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+                except Exception as e:
+                    response_code = 400
+                    response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+
+        elif self.path.endswith('/api/extra/tmpfs/upload'):
+            if not tmpfs_is_enabled():
+                response_code = 503
+                response_body = (json.dumps({"success": False, "error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
+            else:
+                try:
+                    ct_header = self.headers.get('Content-Type', '')
+                    parts = tmpfs_parse_multipart(body, ct_header)
+                    # Determine target directory from form field
+                    target_dir = '/'
+                    for part in parts:
+                        if part['name'] == 'dir' and part['filename'] is None:
+                            target_dir = part['content'].decode('utf-8', 'replace').strip() or '/'
+                            break
+                    written = []
+                    for part in parts:
+                        if part['name'] != 'file' or part['filename'] is None:
+                            continue
+                        filename = part['filename']
+                        if not filename:
+                            continue
+                        file_bytes = part['content']
+                        if filename.lower().endswith('.zip'):
+                            extracted = tmpfs_extract_zip(file_bytes, target_dir)
+                            written.extend(extracted)
+                        else:
+                            safe_name = posixpath.basename(filename.replace('\\', '/'))
+                            if not safe_name or safe_name in ('.', '..'):
+                                continue
+                            if target_dir == '/':
+                                dest = '/' + safe_name
+                            else:
+                                dest = target_dir.rstrip('/') + '/' + safe_name
+                            written.append(tmpfs_write_file(dest, file_bytes))
+                    response_body = (json.dumps({"success": True, "written": written}).encode())
                 except ValueError as e:
                     response_code = 507 if 'size limit exceeded' in str(e).lower() else 400
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())

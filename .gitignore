@@ -148,3 +148,8 @@ conda/
 
 # Cloudflare files
 cloudflared.*
+
+CMakeFiles/*
+cmake_install.cmake
+.gitignore
+CMakeCache.txt
