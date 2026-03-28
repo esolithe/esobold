@@ -397,7 +397,7 @@ let getWorldInfoForAgent = (agentRunState, wimatch_context, maxWILength) => {
                     if (roll < wi.probability) {
                         let tags = (wi.key || "").split(",").concat((wi.keysecondary || "").split(",")).filter(elem => elem.trim() !== "").map(elem => elem.toLowerCase()).filter((elem, pos, arr) => pos === arr.indexOf(elem))
                         let wiString = `[Additional information (tags: ${tags.join(", ")}):\n${wi.content}]\n`
-                        if (maxWILength < wistr.lengt + wiString.length) {
+                        if (maxWILength < wistr.length + wiString.length) {
                             return wistr
                         }
                         wistr += wiString;
@@ -406,7 +406,7 @@ let getWorldInfoForAgent = (agentRunState, wimatch_context, maxWILength) => {
                     //always insert
                     let tags = (wi.key || "").split(",").concat((wi.keysecondary || "").split(",")).filter(elem => elem.trim() !== "").map(elem => elem.toLowerCase()).filter((elem, pos, arr) => pos === arr.indexOf(elem))
                     let wiString = `[Additional information (tags: ${tags.join(", ")}):\n${wi.content}]\n`
-                    if (maxWILength < wistr.lengt + wiString.length) {
+                    if (maxWILength < wistr.length + wiString.length) {
                         return wistr
                     }
                     wistr += wiString;
@@ -876,7 +876,8 @@ let runAgentCycle = async (agentRunState = {}) => {
             let max_wi_len = Math.floor(max_allowed_characters * 0.5);
 
             let history = getInitialAgentPrompt(agentRunState, max_mem_len)
-            let wiToInclude = createSysPrompt(substring_to_boundary(getWorldInfoForAgent(agentRunState, truncated_context, max_wi_len) + "\n\n" + textDBResults, max_wi_len))
+            let worldInfoForAgent = getWorldInfoForAgent(agentRunState, truncated_context, max_wi_len)
+            let wiToInclude = createSysPrompt(substring_to_boundary(worldInfoForAgent + "\n\n" + textDBResults, max_wi_len))
             let anToInclude = !!current_anote ? createSysPrompt(substring_to_boundary(current_anotetemplate.replace("<|>", current_anote), max_anote_len)) : ""
 
             let promptOverview = currentOrderOfActionDescriptionsOverall.length > 0 ? currentOrderOfActionDescriptionsOverall[i - 1] : null
@@ -905,6 +906,20 @@ let runAgentCycle = async (agentRunState = {}) => {
             }
 
             let agentRequestBody = substring_to_boundary(current_temp_memory + cotAsText, maxLengthOfCot)
+
+            if (window?.contextUsage) {
+                contextUsage.reset();
+                contextUsage.setUsage("tempMemory", current_temp_memory.length);
+                contextUsage.setUsage("textDB", textDBResults.length);
+                contextUsage.setUsage("worldInfo", worldInfoForAgent.length);
+                contextUsage.calculateOverspillUsage("worldInfo", "textDB", max_wi_len);
+                contextUsage.setUsage("memory", history.length);
+                contextUsage.setUsage("authorsNote", anToInclude.length);
+                contextUsage.setUsage("systemPrompt", finalAgentPrompt.length);
+                contextUsage.setUsage("context", agentRequestBody.length);
+                contextUsage.calculateOverspillUsage("context", "tempMemory", maxLengthOfCot);
+            }
+
             if (wi_insertlocation === "0") // WI after memory
             {
                 history += wiToInclude
@@ -930,7 +945,12 @@ let runAgentCycle = async (agentRunState = {}) => {
             {
                 history = insertAuthorsNoteToContext(history, anToInclude)
             }
-            let resp = await generateAndGetTextFromPrompt(replace_placeholders(history), jsonGrammar, [], recentActions.map(JSON.stringify))
+            let finalAgentHistory = replace_placeholders(history)
+            if (window?.contextUsage) {
+                contextUsage.setUsage("context", finalAgentHistory.length);
+                contextUsage.renderContextUsage();
+            }
+            let resp = await generateAndGetTextFromPrompt(finalAgentHistory, jsonGrammar, [], recentActions.map(JSON.stringify))
 
             try {
                 if (resp.trim() == "") {
@@ -1295,12 +1315,42 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [], enableFileUpload = 
         let capabilityText = document.createElement("div")
         capabilityText.classList.add("agent-user-input-status")
 
-        let fileUploadRow = document.createElement("div")
-        fileUploadRow.classList.add("agent-user-input-controls")
+        let localFileRow = document.createElement("div")
+        localFileRow.classList.add("agent-user-input-controls")
 
         let fileInput = document.createElement("input")
         fileInput.type = "file"
         fileInput.classList.add("agent-user-input-file")
+        fileInput.multiple = true
+
+        let addLocalFilesButton = document.createElement("button")
+        addLocalFilesButton.type = "button"
+        addLocalFilesButton.classList.add("btn-primary")
+        addLocalFilesButton.innerText = "Add local files"
+
+        let tmpfsRow = document.createElement("div")
+        tmpfsRow.classList.add("agent-user-input-controls")
+
+        let tmpfsSelect = document.createElement("select")
+        tmpfsSelect.classList.add("agent-user-input-tmpfs-select")
+        tmpfsSelect.multiple = true
+        tmpfsSelect.size = 6
+
+        let addTmpfsFilesButton = document.createElement("button")
+        addTmpfsFilesButton.type = "button"
+        addTmpfsFilesButton.classList.add("btn-primary")
+        addTmpfsFilesButton.innerText = "Add TmpFS files"
+
+        let refreshTmpfsFilesButton = document.createElement("button")
+        refreshTmpfsFilesButton.type = "button"
+        refreshTmpfsFilesButton.classList.add("btn-primary")
+        refreshTmpfsFilesButton.innerText = "Refresh TmpFS list"
+
+        let selectedFilesContainer = document.createElement("div")
+        selectedFilesContainer.classList.add("agent-user-input-selected-files")
+
+        let selectedFilesStatus = document.createElement("div")
+        selectedFilesStatus.classList.add("agent-user-input-status")
 
         let fileStatus = document.createElement("div")
         fileStatus.classList.add("agent-user-input-status")
@@ -1316,19 +1366,160 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [], enableFileUpload = 
         stopLoop.classList.add("btn-primary")
         stopLoop.innerText = "Stop loop"
 
-        let selectedFile = null
-
+        let isTmpfsEnabled = is_using_kcpp_with_tmpfs()
         let hasTmpfsWrite = typeof window?.tmpfsClient?.write === "function"
-        let canUseTmpfsUpload = !!enableFileUpload && hasTmpfsWrite && is_using_kcpp_with_tmpfs()
+        let hasTmpfsList = typeof window?.tmpfsClient?.list === "function"
+        let canUseTmpfsUpload = !!enableFileUpload && hasTmpfsWrite && isTmpfsEnabled
+        let canSelectTmpfsFiles = !!enableFileUpload && hasTmpfsList && isTmpfsEnabled
+        let selectedFiles = []
 
-        if (enableFileUpload && !canUseTmpfsUpload) {
-            capabilityText.innerText = "File upload is unavailable because tmpfs upload is not supported by the current endpoint."
+        if (enableFileUpload) {
+            let unavailableCapabilities = []
+            if (!canUseTmpfsUpload) {
+                unavailableCapabilities.push("local file upload")
+            }
+            if (!canSelectTmpfsFiles) {
+                unavailableCapabilities.push("TmpFS file selection")
+            }
+            if (unavailableCapabilities.length > 0) {
+                capabilityText.innerText = `${unavailableCapabilities.join(" and ")} ${unavailableCapabilities.length === 1 ? "is" : "are"} unavailable because tmpfs access is not supported by the current endpoint.`
+            }
         }
 
         let completeOnce = (result) => {
             removeAgentUserInputPopup()
             resolve(result)
         }
+
+        let getSelectedFileKey = (entry) => {
+            if (entry.source === "tmpfs") {
+                return `tmpfs:${entry.path}`
+            }
+            return `local:${entry.fileName}:${entry.fileSize}:${entry.fileLastModified}`
+        }
+
+        let renderSelectedFiles = () => {
+            selectedFilesContainer.innerHTML = ""
+            if (selectedFiles.length === 0) {
+                selectedFilesStatus.innerText = "No files selected."
+                return
+            }
+
+            selectedFilesStatus.innerText = `${selectedFiles.length} file${selectedFiles.length === 1 ? "" : "s"} selected.`
+            selectedFiles.forEach((entry, index) => {
+                let item = document.createElement("div")
+                item.classList.add("agent-user-input-selected-file")
+
+                let label = document.createElement("div")
+                label.classList.add("agent-user-input-selected-file-label")
+                if (entry.source === "tmpfs") {
+                    label.innerText = `TmpFS: ${entry.path}`
+                }
+                else {
+                    label.innerText = `Local: ${entry.fileName}`
+                }
+
+                let removeButton = document.createElement("button")
+                removeButton.type = "button"
+                removeButton.classList.add("agent-user-input-remove-file")
+                removeButton.innerText = "x"
+                removeButton.onclick = () => {
+                    selectedFiles.splice(index, 1)
+                    renderSelectedFiles()
+                }
+
+                item.appendChild(label)
+                item.appendChild(removeButton)
+                selectedFilesContainer.appendChild(item)
+            })
+        }
+
+        let addSelectedFiles = (entries = []) => {
+            let existingKeys = selectedFiles.map(getSelectedFileKey)
+            let addedCount = 0
+            entries.forEach(entry => {
+                let key = getSelectedFileKey(entry)
+                if (!existingKeys.includes(key)) {
+                    selectedFiles.push(entry)
+                    existingKeys.push(key)
+                    addedCount++
+                }
+            })
+            renderSelectedFiles()
+            return addedCount
+        }
+
+        let normalizeTmpfsSelectablePath = (rawPath = "") => {
+            let path = `${rawPath || ""}`.trim()
+            let isDirectory = false
+            if (!path) {
+                return null
+            }
+            if (path === ".kcpp_dir_marker") {
+                path = "/"
+                isDirectory = true
+            }
+
+            if (path.endsWith("/.kcpp_dir_marker")) {
+                path = path.substring(0, path.length - "/.kcpp_dir_marker".length)
+                isDirectory = true
+            }
+
+            if (path.length > 1 && path.endsWith("/")) {
+                path = path.substring(0, path.length - 1)
+            }
+            if (!path) {
+                path = "/"
+            }
+            return {
+                path,
+                isDirectory,
+                displayPath: `${path}${isDirectory ? " (directory)" : ""}`
+            }
+        }
+
+        let loadTmpfsFiles = async () => {
+            if (!canSelectTmpfsFiles) {
+                return
+            }
+
+            tmpfsSelect.innerHTML = ""
+            fileStatus.innerText = "Loading TmpFS files..."
+            try {
+                let tmpfsPaths = await window.tmpfsClient.list("*")
+                let normalizedEntries = Array.isArray(tmpfsPaths)
+                    ? tmpfsPaths.map(String).map(normalizeTmpfsSelectablePath).filter(entry => entry !== null)
+                    : []
+                let uniqueEntries = []
+                let seenDisplayPaths = []
+                normalizedEntries.forEach(entry => {
+                    if (!seenDisplayPaths.includes(entry.displayPath)) {
+                        seenDisplayPaths.push(entry.displayPath)
+                        uniqueEntries.push(entry)
+                    }
+                })
+                uniqueEntries.sort((a, b) => a.displayPath.localeCompare(b.displayPath))
+
+                if (uniqueEntries.length === 0) {
+                    fileStatus.innerText = "No files are currently available in TmpFS."
+                    return
+                }
+
+                uniqueEntries.forEach(entry => {
+                    let option = document.createElement("option")
+                    option.value = entry.path
+                    option.dataset.isDirectory = entry.isDirectory ? "true" : "false"
+                    option.innerText = entry.displayPath
+                    tmpfsSelect.appendChild(option)
+                })
+                fileStatus.innerText = `Loaded ${uniqueEntries.length} TmpFS path${uniqueEntries.length === 1 ? "" : "s"}.`
+            }
+            catch (e) {
+                fileStatus.innerText = `Failed to load TmpFS files: ${e?.message || e}`
+            }
+        }
+
+        renderSelectedFiles()
 
         suggestions.forEach(suggestion => {
             let button = document.createElement("button")
@@ -1341,28 +1532,86 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [], enableFileUpload = 
             suggestionsContainer.appendChild(button)
         })
 
-        fileInput.onchange = () => {
-            selectedFile = fileInput.files?.[0] || null
-            fileStatus.innerText = selectedFile ? `Selected file: ${selectedFile.name}` : ""
+        addLocalFilesButton.onclick = () => {
+            fileInput.click()
         }
+
+        fileInput.onchange = () => {
+            let filesToAdd = Array.from(fileInput.files || []).map(file => ({
+                source: "local",
+                fileName: file.name,
+                fileSize: file.size,
+                fileLastModified: file.lastModified,
+                localFile: file,
+            }))
+            let addedCount = addSelectedFiles(filesToAdd)
+            fileStatus.innerText = addedCount > 0 ? `Added ${addedCount} local file${addedCount === 1 ? "" : "s"}.` : "Selected local files were already in the list."
+            fileInput.value = ""
+        }
+
+        addTmpfsFilesButton.onclick = () => {
+            let selectedTmpfsPaths = Array.from(tmpfsSelect.selectedOptions || []).map(option => {
+                let normalized = normalizeTmpfsSelectablePath(option.value || "")
+                if (normalized === null) {
+                    return null
+                }
+                let isDirectory = option.dataset.isDirectory === "true"
+                normalized.isDirectory = isDirectory
+                normalized.displayPath = `${normalized.path}${isDirectory ? " (directory)" : ""}`
+                return normalized
+            }).filter(entry => entry !== null)
+            let addedCount = addSelectedFiles(selectedTmpfsPaths.map(entry => ({
+                source: "tmpfs",
+                isDirectory: entry.isDirectory,
+                path: entry.displayPath,
+                fileName: entry.path.split("/").filter(part => part.length > 0).slice(-1)[0] || entry.path,
+            })))
+            fileStatus.innerText = addedCount > 0 ? `Added ${addedCount} TmpFS file${addedCount === 1 ? "" : "s"}.` : "Selected TmpFS files were already in the list."
+        }
+
+        refreshTmpfsFilesButton.onclick = loadTmpfsFiles
 
         confirmAndContinue.onclick = async () => {
             confirmAndContinue.disabled = true
-            let uploadedFilePath = ""
             try {
-                if (!!selectedFile && canUseTmpfsUpload) {
-                    fileStatus.innerText = "Uploading file to tmpfs..."
-                    let uploadPath = buildAgentUploadTmpfsPath(selectedFile.name)
-                    let bytes = new Uint8Array(await selectedFile.arrayBuffer())
+                let preparedFiles = []
+                for (let i = 0; i < selectedFiles.length; i++) {
+                    let currentFile = selectedFiles[i]
+                    if (currentFile.source === "tmpfs") {
+                        preparedFiles.push({
+                            source: "tmpfs",
+                            fileName: currentFile.fileName,
+                            path: currentFile.path,
+                        })
+                        continue
+                    }
+
+                    if (!canUseTmpfsUpload) {
+                        throw new Error("Local file upload is unavailable because tmpfs upload is not supported by the current endpoint.")
+                    }
+
+                    fileStatus.innerText = `Uploading file ${i + 1}/${selectedFiles.length}: ${currentFile.fileName}`
+                    let uploadPath = buildAgentUploadTmpfsPath(currentFile.fileName)
+                    let bytes = new Uint8Array(await currentFile.localFile.arrayBuffer())
                     await window.tmpfsClient.write(uploadPath, bytes, true)
-                    uploadedFilePath = uploadPath
-                    fileStatus.innerText = `Uploaded file path: ${uploadPath}`
+                    preparedFiles.push({
+                        source: "local",
+                        fileName: currentFile.fileName,
+                        path: uploadPath,
+                    })
                 }
+
+                if (preparedFiles.length > 0) {
+                    fileStatus.innerText = `Prepared file path${preparedFiles.length === 1 ? "" : "s"}:\n${preparedFiles.map(file => file.path).join("\n")}`
+                }
+
                 completeOnce({
                     action: "continue",
                     input: input.value || "",
-                    filePath: uploadedFilePath,
-                    fileName: selectedFile?.name || "",
+                    files: preparedFiles,
+                    filePaths: preparedFiles.map(file => file.path),
+                    filePath: preparedFiles[0]?.path || "",
+                    fileName: preparedFiles[0]?.fileName || "",
                 })
             }
             catch (e) {
@@ -1392,12 +1641,21 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [], enableFileUpload = 
                 body.appendChild(capabilityText)
             }
             if (canUseTmpfsUpload) {
-                fileUploadRow.appendChild(fileInput)
+                localFileRow.appendChild(addLocalFilesButton)
+                localFileRow.appendChild(fileInput)
             }
-            if (fileUploadRow.childElementCount > 0) {
-                body.appendChild(fileUploadRow)
+            if (localFileRow.childElementCount > 0) {
+                body.appendChild(localFileRow)
             }
-            if (canUseTmpfsUpload) {
+            if (canSelectTmpfsFiles) {
+                tmpfsRow.appendChild(addTmpfsFilesButton)
+                tmpfsRow.appendChild(refreshTmpfsFilesButton)
+                body.appendChild(tmpfsSelect)
+                body.appendChild(tmpfsRow)
+            }
+            body.appendChild(selectedFilesContainer)
+            body.appendChild(selectedFilesStatus)
+            if (canUseTmpfsUpload || canSelectTmpfsFiles) {
                 body.appendChild(fileStatus)
             }
         }
@@ -1408,6 +1666,9 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [], enableFileUpload = 
         card.appendChild(body)
         overlay.appendChild(card)
         document.body.appendChild(overlay)
+        if (canSelectTmpfsFiles) {
+            loadTmpfsFiles()
+        }
         input.focus()
     })
 }
