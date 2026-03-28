@@ -29,7 +29,7 @@ let generateFromPrompt = (prompt, grammar = "", images = [], bannedTokens = []) 
     let llavaImages = insertAIVisionImages.concat(images)
     llavaImages = llavaImages.filter((elem, pos, arr) => arr.indexOf(elem) === pos)
     if (is_using_kcpp_with_vision() && llavaImages.length > 0) {
-        payload.images = llavaImages;
+        payload.images = llavaImages.map(str => str.includes("base64,")?str.split("base64,")[1]:str);
     }
     let reqOpt = {
         method: 'POST', // or 'PUT'
@@ -85,13 +85,12 @@ let split = (input, ...delimiters) => {
     return output.filter(text => text.length > 0)
 }
 
-let listOfExclusions = ["Action taken:", "Action taken (words =", "History search performed:", "Chain of thought complete", "Stop thinking action confirmed",
+let listOfExclusions = ["Action taken:", "Action taken (words =", "History search performed:", "Semantic search performed:", "Chain of thought complete",
     "Web search results:", "Text has been added to history", "Formula evaluation result:", "Formula evaluation could not be completed as no formula was provided",
     "Text has been added to history", "Text was empty - nothing added to history", "Search string was empty, no search performed", "Word count is", "Image analysed:",
     "TMPFS_TOOL:",
     "Image generated", "No prompt provided, image not generated", "Text has been spoken", "No text provided, nothing has been said", "Setting overview has been overwritten",
-    "No setting overview provided, nothing has been overwritten", "Current state has been overwritten", "No state provided, nothing has been overwritten", "Current order of actions has been cleared",
-    "Current order of actions has been overwritten", "No order of actions provided, nothing has been overwritten", "Error - Empty response instead of action. Ensure all responses are valid JSON.",
+    "No setting overview provided, nothing has been overwritten", "Current state has been overwritten", "No state provided, nothing has been overwritten", "Error - Empty response instead of action. Ensure all responses are valid JSON.",
     "Current state format has been overwritten", "No valid state format provided, nothing has been overwritten", 
     `Text has been added to world info:`, `Text was empty - nothing added to world info`, `Chain of thought had an exception`, "Tool call response (hidden from user):", "Tool call response error (hidden from user):",
     "Unique identifer does not exist in world information", "World information search performed:", "Unique identifier was empty - no world information found"]
@@ -882,7 +881,7 @@ let runAgentCycle = async (agentRunState = {}) => {
 
             let promptOverview = currentOrderOfActionDescriptionsOverall.length > 0 ? currentOrderOfActionDescriptionsOverall[i - 1] : null
             if (i === 0) {
-                let planningPrompt = "The last action from the user is the instruction. If you need to ask the user for a response, the action userInput must be used and be put as the final action in the order. When handling images always use actions to get information when needed especially for descriptions. Produces a list of actions to respond to this instruction."
+                let planningPrompt = "The last action from the user is the instruction. If you need to ask the user for a response, the action userInput must be used and be put as the final action in the order. When handling images always use actions to get information when needed especially for descriptions. Use describe_clicked_image only for images the user clicks in chat, and use describe_tmpfs_image only when a tmpfs file path is available. Produces a list of actions to respond to this instruction."
                 if (!!agentRunState?.agentName) {
                     planningPrompt += ` You must respond as ${agentRunState.agentName} when using the send_message or userInput actions. Choose the person based on the user's instruction.`
                 }
@@ -1245,7 +1244,27 @@ let removeAgentUserInputPopup = () => {
     }
 }
 
-let createAgentUserInputPopup = ({ prompt, suggestions = [] }) => {
+let sanitizeAgentUploadFilename = (name = "") => {
+    let safeName = `${name || "upload.bin"}`.trim().toLowerCase()
+    if (safeName === "") {
+        safeName = "upload.bin"
+    }
+    safeName = safeName.replace(/\s+/g, "_")
+    safeName = safeName.replace(/[^a-z0-9._-]/g, "-")
+    safeName = safeName.replace(/-+/g, "-")
+    safeName = safeName.replace(/^[-_.]+/, "")
+    safeName = safeName.replace(/[-_.]+$/, "")
+    return safeName || "upload.bin"
+}
+
+let buildAgentUploadTmpfsPath = (fileName = "upload.bin") => {
+    let now = new Date()
+    let stamp = `${now.getUTCFullYear()}${`${now.getUTCMonth() + 1}`.padStart(2, "0")}${`${now.getUTCDate()}`.padStart(2, "0")}_${`${now.getUTCHours()}`.padStart(2, "0")}${`${now.getUTCMinutes()}`.padStart(2, "0")}${`${now.getUTCSeconds()}`.padStart(2, "0")}`
+    let randomSuffix = `${Math.floor(Math.random() * 1000000)}`.padStart(6, "0")
+    return `/agent_uploads/${stamp}_${randomSuffix}_${sanitizeAgentUploadFilename(fileName)}`
+}
+
+let createAgentUserInputPopup = ({ prompt, suggestions = [], enableFileUpload = true }) => {
     removeAgentUserInputPopup()
     return new Promise((resolve) => {
         let overlay = document.createElement("div")
@@ -1273,6 +1292,19 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [] }) => {
         input.placeholder = "Type your response..."
         input.classList.add("agent-user-input-text")
 
+        let capabilityText = document.createElement("div")
+        capabilityText.classList.add("agent-user-input-status")
+
+        let fileUploadRow = document.createElement("div")
+        fileUploadRow.classList.add("agent-user-input-controls")
+
+        let fileInput = document.createElement("input")
+        fileInput.type = "file"
+        fileInput.classList.add("agent-user-input-file")
+
+        let fileStatus = document.createElement("div")
+        fileStatus.classList.add("agent-user-input-status")
+
         let controls = document.createElement("div")
         controls.classList.add("agent-user-input-controls")
 
@@ -1283,6 +1315,15 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [] }) => {
         let stopLoop = document.createElement("button")
         stopLoop.classList.add("btn-primary")
         stopLoop.innerText = "Stop loop"
+
+        let selectedFile = null
+
+        let hasTmpfsWrite = typeof window?.tmpfsClient?.write === "function"
+        let canUseTmpfsUpload = !!enableFileUpload && hasTmpfsWrite && is_using_kcpp_with_tmpfs()
+
+        if (enableFileUpload && !canUseTmpfsUpload) {
+            capabilityText.innerText = "File upload is unavailable because tmpfs upload is not supported by the current endpoint."
+        }
 
         let completeOnce = (result) => {
             removeAgentUserInputPopup()
@@ -1300,8 +1341,34 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [] }) => {
             suggestionsContainer.appendChild(button)
         })
 
-        confirmAndContinue.onclick = () => {
-            completeOnce({ action: "continue", input: input.value || "" })
+        fileInput.onchange = () => {
+            selectedFile = fileInput.files?.[0] || null
+            fileStatus.innerText = selectedFile ? `Selected file: ${selectedFile.name}` : ""
+        }
+
+        confirmAndContinue.onclick = async () => {
+            confirmAndContinue.disabled = true
+            let uploadedFilePath = ""
+            try {
+                if (!!selectedFile && canUseTmpfsUpload) {
+                    fileStatus.innerText = "Uploading file to tmpfs..."
+                    let uploadPath = buildAgentUploadTmpfsPath(selectedFile.name)
+                    let bytes = new Uint8Array(await selectedFile.arrayBuffer())
+                    await window.tmpfsClient.write(uploadPath, bytes, true)
+                    uploadedFilePath = uploadPath
+                    fileStatus.innerText = `Uploaded file path: ${uploadPath}`
+                }
+                completeOnce({
+                    action: "continue",
+                    input: input.value || "",
+                    filePath: uploadedFilePath,
+                    fileName: selectedFile?.name || "",
+                })
+            }
+            catch (e) {
+                fileStatus.innerText = `File upload failed: ${e?.message || e}`
+                confirmAndContinue.disabled = false
+            }
         }
 
         stopLoop.onclick = () => {
@@ -1320,6 +1387,20 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [] }) => {
             body.appendChild(suggestionsContainer)
         }
         body.appendChild(input)
+        if (enableFileUpload) {
+            if (capabilityText.innerText.trim().length > 0) {
+                body.appendChild(capabilityText)
+            }
+            if (canUseTmpfsUpload) {
+                fileUploadRow.appendChild(fileInput)
+            }
+            if (fileUploadRow.childElementCount > 0) {
+                body.appendChild(fileUploadRow)
+            }
+            if (canUseTmpfsUpload) {
+                body.appendChild(fileStatus)
+            }
+        }
         controls.appendChild(confirmAndContinue)
         controls.appendChild(stopLoop)
         body.appendChild(controls)
@@ -1403,7 +1484,8 @@ let askUserToRetryIncompleteTask = async (agentRunState) => {
     {
         retryResult = await createAgentUserInputPopup({
             prompt: "Task may be incomplete. Do you want the agent to run again? You can add details before continuing.",
-            suggestions: []
+            suggestions: [],
+            enableFileUpload: false,
         })
     }
 
@@ -1510,14 +1592,141 @@ merge_edit_field = () => {
 
 let originalBtnBack = btn_back, originalBtnRedo = btn_redo, originalBtnRetry = btn_retry;
 
+let isAgentEditModeActive = () => {
+    let allowEditingToggle = document.getElementById("allowediting")
+    let isLegacyEditMode = !!window?.inEditMode || !!allowEditingToggle?.checked
+    let isWysiwygEditMode = document.getElementById("gametext")?.contentEditable === "true"
+    return isLegacyEditMode || isWysiwygEditMode
+}
+
+let shouldSkipHiddenCotOnBackRedo = () => {
+    return isAgentModeEnabledAndSetCorrectly() && !!localsettings?.agentHideCOT && !isAgentEditModeActive()
+}
+
+let unwrapAgentHistorySegment = (segment = "") => {
+    let value = `${segment || ""}`
+    let wrappers = [
+        [instructstartplaceholder, instructstartplaceholder_end],
+        [instructendplaceholder, instructendplaceholder_end],
+        [instructsysplaceholder, instructsysplaceholder_end],
+    ]
+    for (let i = 0; i < wrappers.length; i++) {
+        let [startTag, endTag] = wrappers[i]
+        if (value.indexOf(startTag) === 0 && value.endsWith(endTag)) {
+            return value.substring(startTag.length, value.length - endTag.length)
+        }
+    }
+    return value
+}
+
+let shouldHideAgentTurnFromVisibleHistory = (message = "") => {
+    let trimmedMessage = `${message || ""}`.trim()
+    return !!listOfExclusions.find(excludedStart => trimmedMessage.indexOf(excludedStart) === 0)
+}
+
+let deriveVisibleHistorySegments = (historySegments = []) => {
+    return historySegments.reduce((segments, segment) => {
+        let unwrapped = unwrapAgentHistorySegment(segment)
+        if (shouldHideAgentTurnFromVisibleHistory(unwrapped)) {
+            return segments
+        }
+        if (unwrapped.indexOf("Request for user input:") === 0) {
+            unwrapped = unwrapped.replace("Request for user input:", "").trim()
+        }
+        segments.push(unwrapped)
+        return segments
+    }, [])
+}
+
+let buildHistorySignature = (segments = []) => {
+    return JSON.stringify(segments)
+}
+
+let getHistorySignatures = () => {
+    let fullSegments = Array.isArray(gametext_arr) ? [...gametext_arr] : []
+    let visibleSegments = deriveVisibleHistorySegments(fullSegments)
+    return {
+        full: buildHistorySignature(fullSegments),
+        visible: buildHistorySignature(visibleSegments)
+    }
+}
+
+let isTopHistorySegmentHiddenCot = () => {
+    if (!Array.isArray(gametext_arr) || gametext_arr.length === 0) {
+        return false
+    }
+    let topSegment = gametext_arr[gametext_arr.length - 1]
+    let unwrapped = unwrapAgentHistorySegment(topSegment)
+    return shouldHideAgentTurnFromVisibleHistory(unwrapped)
+}
+
+let runUndoRedoSkippingHiddenCot = (singleStepHandler, isUndo = false) => {
+    // Outside agent hide-COT mode (or while editing), preserve native single-step behavior.
+    if (!shouldSkipHiddenCotOnBackRedo()) {
+        singleStepHandler()
+        return
+    }
+
+    // Snapshot history before first step so we can determine what changed.
+    let before = getHistorySignatures()
+    singleStepHandler()
+    let after = getHistorySignatures()
+
+    // If the underlying history did not move, stop immediately.
+    let historyChanged = after.full !== before.full
+    if (!historyChanged) {
+        return
+    }
+
+    // Visible history changed after the first step:
+    // - redo: this is the intended target, stop
+    // - undo: continue clearing newly exposed hidden COT at the top in one click
+    if (after.visible !== before.visible) {
+        if (!isUndo) {
+            return
+        }
+        // For undo, also clear any now-exposed hidden COT turns so one click is enough.
+        let cleanupSteps = 200
+        while (cleanupSteps > 0 && isTopHistorySegmentHiddenCot()) {
+            cleanupSteps--
+            before = after
+            singleStepHandler()
+            after = getHistorySignatures()
+            historyChanged = after.full !== before.full
+            // Stop if another step cannot move history further.
+            if (!historyChanged) {
+                break
+            }
+        }
+        return
+    }
+
+    // First step changed only hidden history.
+    // Keep stepping until we hit a visible boundary or history no longer changes.
+    let maxSteps = 200
+    for (let i = 0; i < maxSteps; i++) {
+        before = after
+        singleStepHandler()
+        after = getHistorySignatures()
+        historyChanged = after.full !== before.full
+        if (!historyChanged) {
+            break
+        }
+        let visibleChanged = after.visible !== before.visible
+        if (visibleChanged) {
+            break
+        }
+    }
+}
+
 btn_back = () => {
     clearSuggestions()
-    originalBtnBack()
+    runUndoRedoSkippingHiddenCot(originalBtnBack, true)
 }
 
 btn_redo = () => {
     clearSuggestions()
-    originalBtnRedo()
+    runUndoRedoSkippingHiddenCot(originalBtnRedo, false)
 }
 
 btn_retry = () => {

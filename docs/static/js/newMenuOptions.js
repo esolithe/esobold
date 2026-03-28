@@ -21,6 +21,56 @@ render_gametext = (...args) => {
 
 let originalDisplaySettings = display_settings, originalConfirmSettings = confirm_settings;
 
+let getEsoboldAgentCommands = () => {
+    if (typeof window?.eso?.originalGetCommands !== "function") {
+        return []
+    }
+
+    try {
+        return window.eso.originalGetCommands({})
+    }
+    catch (e)
+    {
+        console.error("Failed to build Esobold agent tools list", e)
+        return []
+    }
+}
+
+let renderEsoboldAgentTools = () => {
+    let toolsContainer = document.getElementById("esobold_agent_tools_list_container")
+    if (!toolsContainer) {
+        return
+    }
+
+    let disabledTools = Array.isArray(localsettings?.disabled_agent_tools) ? localsettings.disabled_agent_tools : []
+    let commands = getEsoboldAgentCommands()
+    let toolsHtml = `<table class="tools-table"><thead><tr><th>Tool</th><th>Allowed</th></tr></thead><tbody>`
+
+    if (commands.length === 0) {
+        toolsContainer.innerHTML = "<p>No Esobold agent tools are currently available.</p>"
+        return
+    }
+
+    commands.forEach((command) => {
+        let enabledStatus = command?.enabled ? "enabled" : "disabled"
+        let description = command?.description ? command.description.substr(0, 180) : "No description"
+        toolsHtml += `
+            <tr>
+                <td class="tools-info">
+                    <div class="tool-title">${command.name} (${enabledStatus})</div>
+                    <div class="tool-description">${description}</div>
+                </td>
+                <td class="tools-checkbox">
+                    <input type="checkbox" id="agenttool_${command.name}" value="${command.name}" ${disabledTools.includes(command.name) ? "" : "checked"}/>
+                </td>
+            </tr>
+        `
+    })
+
+    toolsHtml += `</tbody></table>`
+    toolsContainer.innerHTML = toolsHtml
+}
+
 display_settings = () => {
     originalDisplaySettings()
     document.getElementById("agentBehaviour").checked = localsettings.agentBehaviour;
@@ -41,6 +91,7 @@ display_settings = () => {
     document.getElementById("fullScreenEditorForInputs").checked = localsettings.fullScreenEditorForInputs;
     document.getElementById("corpoHideLeftPanel").checked = localsettings.corpoHideLeftPanel;
     document.getElementById("agentSavedMacros").value = JSON.stringify(localsettings?.agentSavedMacros || window.eso.agentMacros, null, 2)
+    renderEsoboldAgentTools()
 }
 
 updateLegacySaveButtonState = () => {
@@ -71,6 +122,8 @@ confirm_settings = () => {
     localsettings.corpoHideLeftPanel = (document.getElementById("corpoHideLeftPanel").checked ? true : false);
     try
     {
+        localsettings.disabled_agent_tools = [...document.querySelectorAll("#esobold_agent_tools_list_container input[type='checkbox']")].filter(elem => !elem.checked).map(elem => elem.value)
+
         if (document.getElementById("agentSavedMacros").value === "")
         {
             localsettings.agentSavedMacros = JSON.parse(JSON.stringify(window.eso.agentMacros))
@@ -143,6 +196,9 @@ window.addEventListener('load', () => {
     }
     if (localsettings?.agentSavedMacros == undefined) {
         localsettings.agentSavedMacros = window.eso.agentMacros
+    }
+    if (!Array.isArray(localsettings?.disabled_agent_tools)) {
+        localsettings.disabled_agent_tools = []
     }
 
     // Overwrite the switching to handle new dynamically added menus
@@ -373,6 +429,7 @@ window.addEventListener('load', () => {
     lastSettingContainer.before(createNewSubSection("Chat name settings"))
 
     lastSettingContainer = document.querySelector("#settingsmenuadvanced > .settingitem")
+    let toolsSettingsBox = document.querySelector("#settingsmenutools > .settingitem")
 
     let { settingsBox } = createNewSettingsSection("esobold", "Esobold")
 
@@ -413,6 +470,18 @@ window.addEventListener('load', () => {
 
     settingLabelElem = createSettingElemButton("libraryMods", "Mods", "Open the third-party mods manager to browse and apply community mods.", () => modManager.showModListWarning())
     settingsBox.append(settingLabelElem)
+
+    toolsSettingsBox.appendChild(createNewSubSection("Esobold Agent Tools"))
+
+    let esoboldAgentToolsDescription = document.createElement("div")
+    esoboldAgentToolsDescription.classList.add("settingsdesctxt")
+    esoboldAgentToolsDescription.innerText = "Untick tools here to hard-block them from agent usage even if they would otherwise be enabled or have overrides."
+    toolsSettingsBox.append(esoboldAgentToolsDescription)
+
+    let esoboldAgentToolsContainer = document.createElement("div")
+    esoboldAgentToolsContainer.id = "esobold_agent_tools_list_container"
+    esoboldAgentToolsContainer.classList.add("tools_list_container")
+    toolsSettingsBox.append(esoboldAgentToolsContainer)
 
     settingsBox = document.querySelector("#settingsmenuappearance > .settingitem")
     settingsBox.appendChild(createNewSubSection("Esobold theme settings"))

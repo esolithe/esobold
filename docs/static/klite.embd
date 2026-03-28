@@ -5837,7 +5837,21 @@ Current version indicated by LITEVER below.
 
 	function updateCharacterListFromAll()
 	{
-		allCharacterNames = allCharacterNames.filter((elem, pos, arr) => arr.findIndex(searchElem => searchElem.name === elem.name) === pos).sort((a, b) => a.name > b.name ? 1 : -1)
+		let mergedByName = new Map();
+		(allCharacterNames || []).forEach((elem) => {
+			if (!elem || !elem.name) {
+				return;
+			}
+			let previous = mergedByName.get(elem.name) || {};
+			let merged = Object.assign({}, previous, elem, { name: elem.name, favorite: !!elem.favorite });
+			mergedByName.set(elem.name, merged);
+		});
+		allCharacterNames = [...mergedByName.values()].sort((a, b) => {
+			if (!!a.favorite !== !!b.favorite) {
+				return !!a.favorite ? -1 : 1;
+			}
+			return a.name > b.name ? 1 : -1;
+		})
 		indexeddb_save("characterList", JSON.stringify(allCharacterNames)).then(() => {
 			waitingToast.hide()
 		})
@@ -27902,6 +27916,8 @@ Current version indicated by LITEVER below.
 	let allCharacterNames = []
 	window.addEventListener("load", async () => {
 		allCharacterNames = JSON.parse(await indexeddb_load("characterList", "[]"))
+		allCharacterNames = (allCharacterNames || []).map((entry) => Object.assign({}, entry, { favorite: !!entry?.favorite }))
+		updateCharacterListFromAll()
 	})
 	
 	function getCharacterData(characterName, skipServer = false)
@@ -32353,6 +32369,7 @@ Current version indicated by LITEVER below.
 <link rel="stylesheet" type="text/css" href="static/css/agent.css" />
 <script src="static/js/agent.js"></script>
 <script src="static/js/newMenuOptions.js"></script>
+<script src="static/js/tmpfsMediaMenu.js"></script>
 <link rel="stylesheet" type="text/css" href="static/css/esoStyling.css" />
 <script src="static/js/april.js"></script>
 <link rel="stylesheet" type="text/css" href="static/css/waitingToast.css" />
