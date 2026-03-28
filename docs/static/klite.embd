@@ -19659,6 +19659,8 @@ Current version indicated by LITEVER below.
 
 	const submit_generation = asyncRunner(function* (senttext)
 	{
+		contextUsage.reset();
+
 		warn_unsaved = true;
 		let newgen = senttext;
 		let img_gen_trigger_prompt = "";
@@ -19833,6 +19835,8 @@ Current version indicated by LITEVER below.
 
 			let truncated_context = `${current_temp_memory}${concat_gametext(true, "","","",false,true)}`; //no need to truncate if memory is empty
 			truncated_context = truncated_context.replace(/\xA0/g,' '); //replace non breaking space nbsp
+
+			contextUsage.setUsage("tempMemory", current_temp_memory.length);
 
 			//remove past thoughts
 			if(get_thinking_regex()!="") //removal of cot
@@ -20289,11 +20293,15 @@ Current version indicated by LITEVER below.
 							{
 								ltmContent += getInfoSnippet(ltmSnippets[i]);
 							}
+
+							contextUsage.setUsage("textDB", ltmContent.length);
 							wistr = ltmContent + wistr;
 						}
 					}
 				}
 			}
+			contextUsage.setUsage("worldInfo", wistr.length);
+			contextUsage.calculateOverspillUsage("worldInfo", "textDB", max_wi_len);
 
 			//limit wi size
 			if(wistr!="")
@@ -20304,6 +20312,7 @@ Current version indicated by LITEVER below.
 			//we clip the authors note if its too long
 			let truncated_anote = current_anotetemplate.replace("<|>", current_anote);
 			truncated_anote = substring_to_boundary(truncated_anote, max_anote_len);
+			contextUsage.setUsage("authorsNote", truncated_anote.length);
 
 			if (current_anote.length == 0) {
 				//if there's no authors note at all, don't include the template
@@ -20313,16 +20322,22 @@ Current version indicated by LITEVER below.
 			if(wi_insertlocation>0)
 			{
 				truncated_anote = wistr + truncated_anote;
+				contextUsage.calculateOverspillUsage("authorsNote", "worldInfo", max_anote_len);
 				truncated_anote = substring_to_boundary(truncated_anote, max_anote_len);
 			}
 			else
 			{
+				contextUsage.setUsage("memory", truncated_memory.length);
+				contextUsage.calculateOverspillUsage("memory", "worldInfo", max_mem_len);
 				truncated_memory += wistr;
 			}
 
+			contextUsage.setUsage("systemPrompt", appendedsysprompt.length);
 			truncated_memory = appendedsysprompt + truncate_memory(truncated_memory, max_mem_len, true);
 
 			//now we resize the context such that the memory and authors note can fit inside
+			contextUsage.setUsage("context", truncated_context.length);
+			contextUsage.calculateOverspillUsage("context", "tempMemory", max_allowed_characters);
 			truncated_context = substring_to_boundary(truncated_context, max_allowed_characters);
 
 			//append memory to the start of the context, clipping excess space if needed
@@ -20331,12 +20346,15 @@ Current version indicated by LITEVER below.
 			{
 				truncated_memory = replace_placeholders(truncated_memory,false,false,true);
 				truncated_anote = replace_placeholders(truncated_anote,false,false,false);
+				contextUsage.setUsage("memory", truncated_memory.length);
+				contextUsage.setUsage("authorsNote", truncated_anote.length);
 				if(!is_using_kcpp_with_added_memory())
 				{
 					let augmented_len = truncated_memory.length + truncated_context.length + truncated_anote.length;
 					let excess_len = augmented_len - max_allowed_characters; //if > 0, then we exceeded context window
 					excess_len = excess_len < 0 ? 0 : excess_len;
 					let newlimit = (max_allowed_characters-excess_len) < 32 ? 32 : (max_allowed_characters-excess_len);
+					contextUsage.calculateOverspillUsage("context", "tempMemory", newlimit);
 					truncated_context = substring_to_boundary(truncated_context, newlimit); //must always have at least 32 chars from main context
 				}
 
@@ -20382,6 +20400,9 @@ Current version indicated by LITEVER below.
 			}
 
 			truncated_context = replace_placeholders(truncated_context,false,false,true);
+			contextUsage.setUsage("context", truncated_context.length);
+			contextUsage.renderContextUsage();
+
 
 			if(is_using_kcpp_with_added_memory())
 			{
@@ -32398,5 +32419,6 @@ Current version indicated by LITEVER below.
 <script src="static/js/MCPUtils.js"></script>
 <script src="static/js/esoWelcome.js"></script>
 <script src="static/js/enableAllEndpointsLocally.js"></script>
+<script src="static/js/contextUsage.js"></script>
 <!-- EsoLite modifications end -->
 </html>
