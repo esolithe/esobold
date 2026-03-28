@@ -20401,6 +20401,7 @@ Current version indicated by LITEVER below.
 
 			truncated_context = replace_placeholders(truncated_context,false,false,true);
 			contextUsage.setUsage("context", truncated_context.length);
+			contextUsage.renderContextUsage();
 
 
 			if(is_using_kcpp_with_added_memory())
