@@ -1167,7 +1167,7 @@ restart_new_game = (save = true, keep_memory = false) => {
 let toggleAgent = () => {
     populate_regex_replacers()
 
-    // display_settings()
+    display_settings();
     document.getElementById("agentBehaviour").checked = !document.getElementById("agentBehaviour").checked
     if (!document.getElementById("agentBehaviour").checked) {
         stopAgentThinking()
@@ -1176,7 +1176,7 @@ let toggleAgent = () => {
         // document.getElementById("separate_end_tags").checked = true
         // toggle_separate_end_tags()
     }
-    // confirm_settings()
+    confirm_settings();
     updateAgentButtonVisibility();
     render_gametext();
 }
