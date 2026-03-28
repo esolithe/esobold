@@ -487,16 +487,6 @@ let getCommands = (agentRunState) => {
 	let { currentChainOfThought } = agentRunState
 	return [
 		{
-			"name": "do_nothing",
-			"description": "Do nothing. End the current plan.",
-			"args": null,
-			"enabled": false,
-			"outputVisibleToUser": false,
-			"executor": () => {
-				return true;
-			}
-		},
-		{
 			"name": "send_message",
 			"description": "Sends text to the user.",
 			"args": {
@@ -620,16 +610,6 @@ let getCommands = (agentRunState) => {
 					}, 10)
 					return true
 				}
-			}
-		},
-		{
-			"name": "stop_thinking",
-			"description": "Ends the current chain of thought. Can only be used after a \"send_message\" action.",
-			"args": null,
-			"enabled": false,
-			"executor": (action) => {
-				addThought(currentChainOfThought, createSysPrompt, `Stop thinking action confirmed`)
-				return true
 			}
 		},
 		{
@@ -873,35 +853,6 @@ let getCommands = (agentRunState) => {
 				catch (e) {
 					addThought(currentChainOfThought, createSysPrompt, `No valid state format provided, nothing has been overwritten`)
 					// Surpress error
-				}
-			}
-		},
-		{
-			"name": "overwrite_current_action_chain",
-			"description": "Overwrites the existing order of actions. After a user input, the order of actions will be enforced if it is set. Actions must be provided as an array in the order they should be taken. If there are multiple actions which can be taken (an OR), use a '|' delimiter between the options in the string. Provide an empty array to allow free actions.",
-			"args": {
-				"orderOfActions": {
-					description: "<an array of actions to take after a user input>",
-					type: "array"
-				}
-			},
-			"enabled": false,
-			"executor": (action) => {
-				let orderOfActions = action?.args?.orderOfActions
-				if (!!orderOfActions && Array.isArray(orderOfActions)) {
-					if (orderOfActions.length === 0) {
-						replaceDocumentFromTextDB('Order of actions', "")
-						addThought(currentChainOfThought, createSysPrompt, `Current order of actions has been cleared`)
-					}
-					else {
-						replaceDocumentFromTextDB('Order of actions', [...orderOfActions.filter(acts => acts.split("|").find(act => getCommands(agentRunState).map(command => command.name).includes(act))), "stop_thinking"].join(","))
-						addThought(currentChainOfThought, createSysPrompt, `Current order of actions has been overwritten`)
-
-					}
-					return true
-				}
-				else {
-					addThought(currentChainOfThought, createSysPrompt, `No order of actions provided, nothing has been overwritten`)
 				}
 			}
 		},
