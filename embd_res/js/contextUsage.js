@@ -5,6 +5,8 @@ class ContextUsage {
     popupChartId = "contextUsageChart";
     popupHeaderId = "contextUsageHeader";
     popupStatusId = "contextUsageStatus";
+    popupControlsId = "contextUsageControls";
+    includeFreeCheckboxId = "contextUsageIncludeFree";
     popupInitialised = false;
     currentRenderToken = 0;
 
@@ -81,6 +83,34 @@ class ContextUsage {
         return flatPercentages;
     }
 
+    getFlatStatsOfTotal(scalingPercentage = 100, scalingTokensTotal = Math.ceil(this.getAllUsage() / 3)) {
+        let usageStats = this.getFlatPercentagesOfTotal();
+        Object.keys(usageStats).forEach(key => {
+            if (usageStats[key] < 0.00001) {
+                delete usageStats[key];
+            }
+            else {
+                usageStats[key] = {
+                    percentage: usageStats[key] * scalingPercentage,
+                    tokens: usageStats[key] * scalingTokensTotal
+                }
+            }
+        })
+        return usageStats;
+    }
+
+    getFlatStatsOfTotalIncludingFree() {
+        let maxTokens = localsettings.max_context_length;
+        let usedTokens = Math.ceil(this.getAllUsage() / 3), usedPercentage = usedTokens / maxTokens;
+        let usageStats = this.getFlatStatsOfTotal(usedPercentage * 100, usedTokens);
+        let freeTokens = Math.max(0, maxTokens - usedTokens);
+        usageStats["Free"] = {
+            percentage: freeTokens / maxTokens * 100,
+            tokens: freeTokens
+        };
+        return usageStats;
+    }
+
     calculateOverspillUsage(mainType, overspillType, maxLength) {
         let mainTypeLength = this.getUsage(mainType), overspillTypeLength = this.getUsage(overspillType);
         if (mainTypeLength > maxLength) {
@@ -107,6 +137,11 @@ class ContextUsage {
         return !!localsettings?.showContextUsageChart;
     }
 
+    shouldIncludeFreeContext() {
+        let checkbox = document.getElementById(this.includeFreeCheckboxId);
+        return !!checkbox?.checked;
+    }
+
     createPopupIfNeeded() {
         let existing = document.getElementById(this.popupId);
         if (existing) {
@@ -129,15 +164,35 @@ class ContextUsage {
         status.id = this.popupStatusId;
         status.classList.add("context-usage-popup-status");
 
+        let controls = document.createElement("label");
+        controls.id = this.popupControlsId;
+        controls.classList.add("context-usage-popup-controls");
+
+        let includeFreeCheckbox = document.createElement("input");
+        includeFreeCheckbox.id = this.includeFreeCheckboxId;
+        includeFreeCheckbox.type = "checkbox";
+        includeFreeCheckbox.checked = false;
+
+        let includeFreeLabel = document.createElement("span");
+        includeFreeLabel.innerText = "Include free context";
+
+        controls.appendChild(includeFreeCheckbox);
+        controls.appendChild(includeFreeLabel);
+
         let chart = document.createElement("div");
         chart.id = this.popupChartId;
         chart.classList.add("context-usage-popup-chart");
 
         body.appendChild(status);
+        body.appendChild(controls);
         body.appendChild(chart);
         popup.appendChild(header);
         popup.appendChild(body);
         document.body.appendChild(popup);
+
+        includeFreeCheckbox.addEventListener("change", () => {
+            this.renderContextUsage();
+        });
 
         this.enablePopupDrag(popup, header);
         this.popupInitialised = true;
@@ -209,11 +264,10 @@ class ContextUsage {
     }
 
     getMermaidPieText() {
-        let percentages = this.getFlatPercentagesOfTotal();
-        let totalUsage = this.getAllUsage();
-        let entries = Object.entries(percentages)
-            .map(([name, value]) => [name, Number(value) * 100])
-            .filter(([, value]) => Number.isFinite(value) && value > 0.00001)
+        let usageStats = this.shouldIncludeFreeContext() ? this.getFlatStatsOfTotalIncludingFree() : this.getFlatStatsOfTotal();
+        let entries = Object.entries(usageStats)
+            .map(([name, stats]) => [name, Number(stats?.percentage), Number(stats?.tokens)])
+            .filter(([, percentage]) => Number.isFinite(percentage) && percentage > 0.00001)
             .sort((a, b) => b[1] - a[1]);
 
         if (entries.length === 0) {
@@ -221,11 +275,10 @@ class ContextUsage {
         }
 
         let lines = ["pie showData", "title Context usage"]; 
-        entries.forEach(([name, value]) => {
+        entries.forEach(([name, percentage, tokens]) => {
             let safeName = `${name || "Unknown"}`.replace(/"/g, "\\\"");
-            let percentageAsFraction = value / 100;
-            let estimatedTokens = Math.round((totalUsage * percentageAsFraction) / 3);
-            lines.push(`\"${safeName} ${value.toFixed(2)}% (~${estimatedTokens} tokens)\" : ${value.toFixed(2)}`);
+            let estimatedTokens = Math.round(tokens);
+            lines.push(`\"${safeName} ${percentage.toFixed(2)}% (~${estimatedTokens} tokens)\" : ${percentage.toFixed(2)}`);
         });
 
         return lines.join("\n");

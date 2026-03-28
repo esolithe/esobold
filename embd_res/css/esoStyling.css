@@ -383,6 +383,19 @@
 		opacity: 0.85;
 	}
 
+	.context-usage-popup-controls {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		margin: 0;
+		font-size: var(--theme_font_size_medium);
+		font-weight: normal;
+	}
+
+	.context-usage-popup-controls input[type="checkbox"] {
+		margin: 0;
+	}
+
 	.context-usage-popup-chart {
 		flex: 1;
 		min-height: 0;
