@@ -1593,14 +1593,72 @@ merge_edit_field = () => {
 
 let originalBtnBack = btn_back, originalBtnRedo = btn_redo, originalBtnRetry = btn_retry;
 
+let isAgentEditModeActive = () => {
+    let allowEditingToggle = document.getElementById("allowediting")
+    let isLegacyEditMode = !!window?.inEditMode || !!allowEditingToggle?.checked
+    let isWysiwygEditMode = document.getElementById("gametext")?.contentEditable === "true"
+    return isLegacyEditMode || isWysiwygEditMode
+}
+
+let shouldSkipHiddenCotOnBackRedo = () => {
+    return isAgentModeEnabledAndSetCorrectly() && !!localsettings?.agentHideCOT && !isAgentEditModeActive()
+}
+
+let buildHistorySignature = (turns = []) => {
+    return turns.map(turn => `${turn?.source || ""}\u241f${!!turn?.myturn ? "1" : "0"}\u241f${turn?.msg || ""}`).join("\u241e")
+}
+
+let getHistorySignatures = () => {
+    let inputTag = `{{[INPUT]}}`
+    let outputTag = `{{[OUTPUT]}}`
+    let systemTag = `{{[SYSTEM]}}`
+    let gameText = concat_gametext(true)
+    let fullTurns = repack_instruct_turns(gameText, inputTag, outputTag, systemTag, true, false)
+    let visibleTurns = repack_instruct_turns(gameText, inputTag, outputTag, systemTag, true, true)
+    return {
+        full: buildHistorySignature(fullTurns),
+        visible: buildHistorySignature(visibleTurns)
+    }
+}
+
+let runUndoRedoSkippingHiddenCot = (singleStepHandler) => {
+    let before = getHistorySignatures()
+    singleStepHandler()
+    if (!shouldSkipHiddenCotOnBackRedo()) {
+        return
+    }
+    let after = getHistorySignatures()
+    let historyChanged = after.full !== before.full
+    if (!historyChanged) {
+        return
+    }
+    if (after.visible !== before.visible) {
+        return
+    }
+    let maxSteps = 200
+    for (let i = 0; i < maxSteps; i++) {
+        before = after
+        singleStepHandler()
+        after = getHistorySignatures()
+        historyChanged = after.full !== before.full
+        if (!historyChanged) {
+            break
+        }
+        let visibleChanged = after.visible !== before.visible
+        if (visibleChanged) {
+            break
+        }
+    }
+}
+
 btn_back = () => {
     clearSuggestions()
-    originalBtnBack()
+    runUndoRedoSkippingHiddenCot(originalBtnBack)
 }
 
 btn_redo = () => {
     clearSuggestions()
-    originalBtnRedo()
+    runUndoRedoSkippingHiddenCot(originalBtnRedo)
 }
 
 btn_retry = () => {
