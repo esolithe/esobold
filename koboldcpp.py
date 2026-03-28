@@ -397,7 +397,8 @@ class sd_generation_outputs(ctypes.Structure):
     _fields_ = [("status", ctypes.c_int),
                 ("animated", ctypes.c_int),
                 ("data", ctypes.c_char_p),
-                ("data_extra", ctypes.c_char_p)]
+                ("data_extra", ctypes.c_char_p),
+                ("info", ctypes.c_char_p)]
 
 class sd_upscale_inputs(ctypes.Structure):
     _fields_ = [("init_images", ctypes.c_char_p),
@@ -1800,7 +1801,7 @@ def load_model(model_filename):
     if args.quantkv>0:
         if args.noflashattention:
             inputs.quant_k = args.quantkv
-            inputs.quant_v = 0
+            inputs.quant_v = 0 if args.quantkv!=3 else args.quantkv
             print("\nWarning: Quantized KV was used without flash attention! This is NOT RECOMMENDED!\nOnly K cache can be quantized, and performance can suffer.\nIn some cases, it might even use more VRAM when doing a full offload.\nYou are strongly encouraged to use flash attention if you want to use quantkv.")
         else:
             inputs.quant_k = inputs.quant_v = args.quantkv
@@ -2504,12 +2505,14 @@ def sd_generate(genparams):
     ret = handle.sd_generate(inputs)
     data_main = ""
     data_extra = ""
+    info = {}
     animated = False
     if ret.status==1:
         data_main = ret.data.decode("UTF-8","ignore")
         data_extra = ret.data_extra.decode("UTF-8","ignore")
+        info = json.loads(ret.info.decode("UTF-8","ignore"))
         animated = True if ret.animated else False
-    return {"animated": animated, "data":data_main, "data_extra":data_extra}
+    return {"animated": animated, "data":data_main, "data_extra":data_extra, "info": info}
 
 
 def whisper_load_model(model_filename):
@@ -3502,6 +3505,7 @@ def websearch(query):
 def is_port_in_use(portNum):
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(1)
             return s.connect_ex(('localhost', portNum)) == 0
     except Exception:
         return True
@@ -4239,6 +4243,20 @@ ws ::= | " " | "\n" [ \t]{0,20}
         genparams["ollamasysprompt"] = ollamasysprompt
         genparams["ollamabodyprompt"] = ollamabodyprompt
         genparams["prompt"] = ollamasysprompt + ollamabodyprompt
+    elif api_format==8: # OpenAI Responses API, oai-responses
+        raw_input = genparams.get('input', '')
+        raw_instructions = genparams.get('instructions', '')
+        if isinstance(raw_input, str):
+            genparams['messages'] = [{"role": "user", "content": raw_input}]
+        elif isinstance(raw_input, list):
+            genparams['messages'] = raw_input
+        else:
+            genparams['messages'] = []
+        if raw_instructions and isinstance(raw_instructions, str) and raw_instructions!="":
+            genparams['messages'].insert(0, {"role": "system", "content": raw_instructions})
+        genparams['stream'] = False
+        transform_genparams(genparams, 4, use_jinja) # Delegate to the chat-completions transform by re-running as format 4
+        return genparams
 
     #final transformations (universal template replace)
     replace_instruct_placeholders = genparams.get('replace_instruct_placeholders', True)
@@ -4984,7 +5002,7 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
         is_chat_completions_path = (self.path.endswith('/v1/chat/completions') or self.path=='/chat/completions')
 
         #any requests to the following endpoints is capable of waking the server
-        wake_requests = ["/api/extra/generate/stream","/api/extra/tokencount","/api/v1/generate","/sdapi/v1/interrogate","/v1/completions","/v1/chat/completions","/api/extra/transcribe","/v1/audio/transcriptions","/api/extra/tts","/v1/audio/speech","/api/extra/embeddings","/v1/embeddings","/api/extra/music/prepare","/api/extra/music/generate","/sdapi/v1/txt2img","/sdapi/v1/img2img","/sdapi/v1/upscale"]
+        wake_requests = ["/api/extra/generate/stream","/api/extra/tokencount","/api/v1/generate","/sdapi/v1/interrogate","/v1/completions","/v1/chat/completions","/v1/responses","/api/extra/transcribe","/v1/audio/transcriptions","/api/extra/tts","/v1/audio/speech","/api/extra/embeddings","/v1/embeddings","/api/extra/music/prepare","/api/extra/music/generate","/sdapi/v1/txt2img","/sdapi/v1/img2img","/sdapi/v1/upscale"]
         is_wake_request = self.path in wake_requests
 
         autoswapEnabled = global_memory["autoswapmode"] is not None and global_memory["autoswapmode"]
@@ -5598,6 +5616,9 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             res = {"model": modelNameToReturn,"created_at": str(datetime.now(timezone.utc).isoformat()),"response":recvtxt,"done": True,"done_reason":currfinishreason,"context": tokarr,"total_duration": 1,"load_duration": 1,"prompt_eval_count": prompttokens,"prompt_eval_duration": 1,"eval_count": comptokens,"eval_duration": 1}
         elif api_format == 7:
             res = {"model": modelNameToReturn,"created_at": str(datetime.now(timezone.utc).isoformat()),"message":{"role":"assistant","content":recvtxt},"done": True,"done_reason":currfinishreason,"total_duration": 1,"load_duration": 1,"prompt_eval_count": prompttokens,"prompt_eval_duration": 1,"eval_count": comptokens,"eval_duration": 1}
+        elif api_format == 8:
+            resp_id = f"resp-A{genparams.get('oai_uniqueid', 1)}"
+            res = {"id": resp_id, "object": "response", "created_at": int(time.time()), "model": modelNameToReturn, "output": [ { "type": "message", "role": "assistant", "content": [ {"type": "output_text", "text": recvtxt} ] } ], "usage": { "input_tokens": prompttokens, "output_tokens": comptokens, "total_tokens": prompttokens + comptokens } }
         else: #kcpp format
             res = {"results": [{"text": recvtxt, "tool_calls": tool_calls, "finish_reason": currfinishreason, "logprobs":logprobsdict, "prompt_tokens": prompttokens, "completion_tokens": comptokens}]}
 
@@ -7459,7 +7480,7 @@ Change Mode<br>
         # handle endpoints that require mutex locking and handle actual gens
         try:
             sse_stream_flag = False
-            api_format = 0 #1=basic,2=kai,3=oai,4=oai-chat,5=interrogate,6=ollama,7=ollamachat
+            api_format = 0 #1=basic,2=kai,3=oai,4=oai-chat,5=interrogate,6=ollama,7=ollamachat,8=oai-responses
             is_imggen = False
             is_comfyui_imggen = False
             is_oai_imggen = False
@@ -7556,6 +7577,8 @@ Change Mode<br>
                 api_format = 6
             elif self.path.endswith('/api/chat'): #ollama
                 api_format = 7
+            elif self.path.endswith('/v1/responses') or self.path=='/responses': #oai-responses
+                api_format = 8
             elif self.path.endswith('/sdapi/v1/extra-single-image') or self.path.endswith('/sdapi/v1/upscale'):
                 is_img_upscale = True
             elif self.path=="/prompt" or self.path=="/images/generations" or self.path.endswith('/v1/images/generations') or self.path.endswith('/sdapi/v1/txt2img') or self.path.endswith('/sdapi/v1/img2img'):
@@ -7832,6 +7855,7 @@ Change Mode<br>
                         gendat = gen["data"]
                         genanim = gen["animated"]
                         gendatextra = gen["data_extra"]
+                        geninfo = json.dumps(gen["info"]) # sdapi really expects a stringified JSON
                         genresp = None
                         if is_comfyui_imggen:
                             if gendat:
@@ -7842,7 +7866,7 @@ Change Mode<br>
                         elif is_oai_imggen:
                             genresp = (json.dumps({"created":int(time.time()),"data":[{"b64_json":gendat}],"background":"opaque","output_format":"png","size":"1024x1024","quality":"medium"}).encode())
                         else:
-                            genresp = (json.dumps({"images":[gendat],"parameters":{},"info":"","animated":genanim,"extra_data":gendatextra}).encode())
+                            genresp = (json.dumps({"images":[gendat],"parameters":{},"info":geninfo,"animated":genanim,"extra_data":gendatextra}).encode())
                         self.send_response(200)
                         self.send_header('content-length', str(len(genresp)))
                         self.end_headers(content_type='application/json')
@@ -8457,7 +8481,7 @@ def show_gui():
     batchsize_values = ["-1","16","32","64","128","256","512","1024","2048","4096"]
     batchsize_text = ["Don't Batch","16","32","64","128","256","512","1024","2048","4096"]
     contextsize_text = ["256", "512", "1024", "2048", "3072", "4096", "6144", "8192", "10240", "12288", "14336", "16384", "20480", "24576", "28672", "32768", "40960", "49152", "57344", "65536", "81920", "98304", "114688", "131072"]
-    quantkv_text = ["F16 (Off)","8-Bit","4-Bit"]
+    quantkv_text = ["F16 (Off)","8-Bit","4-Bit","BF16"]
 
     if not any(runopts):
         exitcounter = 999
@@ -9004,7 +9028,7 @@ def show_gui():
             smartcontextbox.grid_remove()
         qkvslider.grid()
         qkvlabel.grid()
-        if flashattention_var.get()==0 and quantkv_var.get()>0:
+        if flashattention_var.get()==0 and (quantkv_var.get()>0 and quantkv_var.get()!=3):
             noqkvlabel.grid()
         else:
             noqkvlabel.grid_remove()
@@ -9013,7 +9037,7 @@ def show_gui():
     def toggleflashattn(a,b,c):
         qkvslider.grid()
         qkvlabel.grid()
-        if flashattention_var.get()==0 and quantkv_var.get()>0:
+        if flashattention_var.get()==0 and (quantkv_var.get()>0 and quantkv_var.get()!=3):
             noqkvlabel.grid()
         else:
             noqkvlabel.grid_remove()
@@ -9251,7 +9275,7 @@ def show_gui():
     makecheckbox(context_tab, "Custom RoPE Config", variable=customrope_var, row=22, command=togglerope,tooltiptxt="Override the default RoPE configuration with custom RoPE scaling.")
     noqkvlabel = makelabel(context_tab,"(Note: QuantKV works best with flash attention)",30,0,"Only K cache can be quantized, and performance can suffer.\nIn some cases, it might even use more VRAM when doing a full offload.",padx=160)
     noqkvlabel.configure(text_color="#ff5555")
-    qkvslider,qkvlabel,qkvtitle = makeslider(context_tab, "Quantize KV Cache:", quantkv_text, quantkv_var, 0, 2, 30, set=0,tooltip="Enable quantization of KV cache.\nRequires Flash Attention for full effect, otherwise only K cache is quantized.")
+    qkvslider,qkvlabel,qkvtitle = makeslider(context_tab, "Quantize KV Cache:", quantkv_text, quantkv_var, 0, 3, 30, set=0,tooltip="Enable quantization of KV cache.\nRequires Flash Attention for full effect, otherwise only K cache is quantized.")
     quantkv_var.trace_add("write", toggleflashattn)
     makecheckbox(context_tab, "No BOS Token", nobostoken_var, 43, tooltiptxt="Prevents BOS token from being added at the start of any prompt. Usually NOT recommended for most models.")
     makecheckbox(context_tab, "Enable Guidance", enableguidance_var, 43,padx=(140), tooltiptxt="Enables the use of Classifier-Free-Guidance, which allows the use of negative prompts. Has performance and memory impact.")
@@ -12428,7 +12452,7 @@ if __name__ == '__main__':
     advparser.add_argument("--jinja_kwargs","--jinja-kwargs","--jinjakwargs","--chat-template-kwargs", metavar=('{"parameter":"value",...}'), help="Set additiona fields for Jinja JSON template parser, must be a valid JSON object.", default="")
     advparser.add_argument("--noflashattention","--no-flash-attn","-nofa", help="Disables flash attention.", action='store_true')
     advparser.add_argument("--lowvram","-nkvo","--no-kv-offload", help="If supported by the backend, do not offload KV to GPU (lowvram mode). Not recommended, will be slow.", action='store_true')
-    advparser.add_argument("--quantkv", help="Sets the KV cache data type quantization, 0=f16, 1=q8, 2=q4. Requires Flash Attention for full effect, otherwise only K cache is quantized.",metavar=('[quantization level 0/1/2]'), type=int, choices=[0,1,2], default=0)
+    advparser.add_argument("--quantkv", help="Sets the KV cache data type quantization, 0=f16, 1=q8, 2=q4, 3=bf16. Requires Flash Attention for full effect, otherwise only K cache is quantized.",metavar=('[quantization level 0/1/2]'), type=int, choices=[0,1,2,3], default=0)
     advparser.add_argument("--smartcontext", help="Reserving a portion of context to try processing less frequently. Outdated. Not recommended.", action='store_true')
     advparser.add_argument("--unpack", help="Extracts the file contents of the KoboldCpp binary into a target directory.", metavar=('destination'), type=str, default="")
     advparser.add_argument("--exportconfig", help="Exports the current selected arguments as a .kcpps settings file", metavar=('[filename]'), type=str, default="")
