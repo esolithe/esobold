@@ -1604,29 +1604,61 @@ let shouldSkipHiddenCotOnBackRedo = () => {
     return isAgentModeEnabledAndSetCorrectly() && !!localsettings?.agentHideCOT && !isAgentEditModeActive()
 }
 
-let buildHistorySignature = (turns = []) => {
-    return turns.map(turn => `${turn?.source || ""}\u241f${!!turn?.myturn ? "1" : "0"}\u241f${turn?.msg || ""}`).join("\u241e")
+let unwrapAgentHistorySegment = (segment = "") => {
+    let value = `${segment || ""}`
+    let wrappers = [
+        [instructstartplaceholder, instructstartplaceholder_end],
+        [instructendplaceholder, instructendplaceholder_end],
+        [instructsysplaceholder, instructsysplaceholder_end],
+    ]
+    for (let i = 0; i < wrappers.length; i++) {
+        let [startTag, endTag] = wrappers[i]
+        if (value.indexOf(startTag) === 0 && value.endsWith(endTag)) {
+            return value.substring(startTag.length, value.length - endTag.length)
+        }
+    }
+    return value
+}
+
+let shouldHideAgentTurnFromVisibleHistory = (message = "") => {
+    let trimmedMessage = `${message || ""}`.trim()
+    return !!listOfExclusions.find(excludedStart => trimmedMessage.indexOf(excludedStart) === 0)
+}
+
+let deriveVisibleHistorySegments = (historySegments = []) => {
+    return historySegments.reduce((segments, segment) => {
+        let unwrapped = unwrapAgentHistorySegment(segment)
+        if (shouldHideAgentTurnFromVisibleHistory(unwrapped)) {
+            return segments
+        }
+        if (unwrapped.indexOf("Request for user input:") === 0) {
+            unwrapped = unwrapped.replace("Request for user input:", "").trim()
+        }
+        segments.push(unwrapped)
+        return segments
+    }, [])
+}
+
+let buildHistorySignature = (segments = []) => {
+    return JSON.stringify(segments)
 }
 
 let getHistorySignatures = () => {
-    let inputTag = `{{[INPUT]}}`
-    let outputTag = `{{[OUTPUT]}}`
-    let systemTag = `{{[SYSTEM]}}`
-    let gameText = concat_gametext(true)
-    let fullTurns = repack_instruct_turns(gameText, inputTag, outputTag, systemTag, true, false)
-    let visibleTurns = repack_instruct_turns(gameText, inputTag, outputTag, systemTag, true, true)
+    let fullSegments = Array.isArray(gametext_arr) ? [...gametext_arr] : []
+    let visibleSegments = deriveVisibleHistorySegments(fullSegments)
     return {
-        full: buildHistorySignature(fullTurns),
-        visible: buildHistorySignature(visibleTurns)
+        full: buildHistorySignature(fullSegments),
+        visible: buildHistorySignature(visibleSegments)
     }
 }
 
 let runUndoRedoSkippingHiddenCot = (singleStepHandler) => {
-    let before = getHistorySignatures()
-    singleStepHandler()
     if (!shouldSkipHiddenCotOnBackRedo()) {
+        singleStepHandler()
         return
     }
+    let before = getHistorySignatures()
+    singleStepHandler()
     let after = getHistorySignatures()
     let historyChanged = after.full !== before.full
     if (!historyChanged) {
