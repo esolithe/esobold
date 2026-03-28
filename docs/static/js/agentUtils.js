@@ -483,6 +483,158 @@ let openTmpfsEmbedByName = async (args = {}) => {
 window.openTmpfsEmbedByName = openTmpfsEmbedByName;
 window.closeTmpfsEmbedByName = closeTmpfsEmbedByName;
 
+let isPlainObject = (value) => {
+	if (value === null || typeof value !== "object") {
+		return false
+	}
+	if (Array.isArray(value)) {
+		return false
+	}
+	let prototype = Object.getPrototypeOf(value)
+	return prototype === Object.prototype || prototype === null
+}
+
+let cloneAgentMacroObject = (value) => {
+	if (Array.isArray(value)) {
+		return value.map(item => cloneAgentMacroObject(item))
+	}
+	if (isPlainObject(value)) {
+		let clone = {}
+		Object.keys(value).forEach((key) => {
+			clone[key] = cloneAgentMacroObject(value[key])
+		})
+		return clone
+	}
+	return value
+}
+
+let getAvailableAgentMacros = () => {
+	if (!isPlainObject(localsettings.agentSavedMacros)) {
+		let defaultMacros = isPlainObject(window?.eso?.agentMacros) ? cloneAgentMacroObject(window.eso.agentMacros) : {}
+		localsettings.agentSavedMacros = defaultMacros
+	}
+	if (!isPlainObject(localsettings.agentSavedMacros)) {
+		localsettings.agentSavedMacros = {}
+	}
+	return localsettings.agentSavedMacros
+}
+
+let getCommandNamesForMacroValidation = (agentRunState) => {
+	if (window.eso?.isBuildingMacroValidationCommandNames === true) {
+		return []
+	}
+	window.eso = window.eso || {}
+	window.eso.isBuildingMacroValidationCommandNames = true
+	try {
+	let allCommands = getCommands(agentRunState)
+	if (!Array.isArray(allCommands)) {
+		return []
+	}
+	let commandNames = allCommands.map(command => `${command?.name || ""}`.trim()).filter(name => name.length > 0)
+	return [...new Set(commandNames)]
+	}
+	finally {
+		window.eso.isBuildingMacroValidationCommandNames = false
+	}
+}
+
+let validateAgentMacroDefinition = (macroName, macroDefinition, agentRunState) => {
+	let normalizedMacroName = `${macroName || ""}`.trim()
+	if (!/^[A-Za-z0-9_]+$/.test(normalizedMacroName)) {
+		return { valid: false, error: "Macro name must match ^[A-Za-z0-9_]+$." }
+	}
+	if (!isPlainObject(macroDefinition)) {
+		return { valid: false, error: "Macro definition must be a plain object." }
+	}
+	if (!isPlainObject(macroDefinition.planToUse)) {
+		return { valid: false, error: "Macro definition must include a planToUse object." }
+	}
+	let responsePlanOverview = `${macroDefinition.planToUse.responsePlanOverview || ""}`.trim()
+	if (responsePlanOverview.length === 0) {
+		return { valid: false, error: "Macro planToUse.responsePlanOverview must be a non-empty string." }
+	}
+	let orderOfActions = macroDefinition.planToUse.orderOfActions
+	if (!Array.isArray(orderOfActions) || orderOfActions.length === 0) {
+		return { valid: false, error: "Macro planToUse.orderOfActions must be a non-empty array." }
+	}
+	let availableCommandNames = getCommandNamesForMacroValidation(agentRunState)
+	let availableCommandNameSet = new Set(availableCommandNames)
+	if (macroDefinition.planToUse.whoToRespondAs !== undefined && typeof macroDefinition.planToUse.whoToRespondAs !== "string") {
+		return { valid: false, error: "Macro planToUse.whoToRespondAs must be a string when provided." }
+	}
+	for (let index = 0; index < orderOfActions.length; index++) {
+		let actionDefinition = orderOfActions[index]
+		if (!isPlainObject(actionDefinition)) {
+			return { valid: false, error: `Macro orderOfActions[${index}] must be a plain object.` }
+		}
+		let actionName = `${actionDefinition.action || ""}`.trim()
+		let objective = `${actionDefinition.objective || ""}`.trim()
+		if (actionName.length === 0 || objective.length === 0) {
+			return { valid: false, error: `Macro orderOfActions[${index}] must include non-empty action and objective strings.` }
+		}
+		if (!availableCommandNameSet.has(actionName)) {
+			return { valid: false, error: `Macro action '${actionName}' is not a recognized command.` }
+		}
+	}
+	if (macroDefinition.agentPrompt != null && typeof macroDefinition.agentPrompt !== "string") {
+		return { valid: false, error: "Macro agentPrompt must be a string when provided." }
+	}
+	if (macroDefinition.agentName != null && typeof macroDefinition.agentName !== "string") {
+		return { valid: false, error: "Macro agentName must be a string when provided." }
+	}
+	if (macroDefinition.printToConsole != null && typeof macroDefinition.printToConsole !== "boolean") {
+		return { valid: false, error: "Macro printToConsole must be a boolean when provided." }
+	}
+	if (macroDefinition.surpressMessagesToUser != null && typeof macroDefinition.surpressMessagesToUser !== "boolean") {
+		return { valid: false, error: "Macro surpressMessagesToUser must be a boolean when provided." }
+	}
+	if (macroDefinition.isUsingWhitelist != null && typeof macroDefinition.isUsingWhitelist !== "boolean") {
+		return { valid: false, error: "Macro isUsingWhitelist must be a boolean when provided." }
+	}
+	if (macroDefinition.configOverrides != null) {
+		if (!isPlainObject(macroDefinition.configOverrides)) {
+			return { valid: false, error: "Macro configOverrides must be an object when provided." }
+		}
+		let configOverrideKeys = Object.keys(macroDefinition.configOverrides)
+		for (let index = 0; index < configOverrideKeys.length; index++) {
+			let actionName = configOverrideKeys[index]
+			if (!availableCommandNameSet.has(actionName)) {
+				return { valid: false, error: `Macro configOverrides contains unknown action '${actionName}'.` }
+			}
+			let overrideEntry = macroDefinition.configOverrides[actionName]
+			if (!isPlainObject(overrideEntry)) {
+				return { valid: false, error: `Macro configOverrides['${actionName}'] must be an object.` }
+			}
+			if (overrideEntry.config !== undefined && typeof overrideEntry.config !== "string") {
+				return { valid: false, error: `Macro configOverrides['${actionName}'].config must be a string when provided.` }
+			}
+			if (overrideEntry.model !== undefined && typeof overrideEntry.model !== "string") {
+				return { valid: false, error: `Macro configOverrides['${actionName}'].model must be a string when provided.` }
+			}
+		}
+	}
+	return { valid: true }
+}
+
+let saveAgentMacroDefinition = (macroName, macroDefinition, overwrite = false) => {
+	let normalizedMacroName = `${macroName || ""}`.trim()
+	if (!/^[A-Za-z0-9_]+$/.test(normalizedMacroName)) {
+		return { success: false, error: "Macro name must match ^[A-Za-z0-9_]+$." }
+	}
+	let availableMacros = getAvailableAgentMacros()
+	if (!!availableMacros[normalizedMacroName] && !overwrite) {
+		return { success: false, error: `Macro '${normalizedMacroName}' already exists. Set overwrite to true to replace it.` }
+	}
+	availableMacros[normalizedMacroName] = cloneAgentMacroObject(macroDefinition)
+	return { success: true, macroName: normalizedMacroName }
+}
+
+let formatMacroMessage = (macroName, message) => {
+	let normalizedMacroName = `${macroName || ""}`.trim()
+	let normalizedMessage = `${message || ""}`.trim()
+	return normalizedMacroName.length > 0 ? `Macro: ${normalizedMacroName}: ${normalizedMessage}` : `Macro: ${normalizedMessage}`
+}
+
 let getCommands = (agentRunState) => {
 	let { currentChainOfThought } = agentRunState
 	return [
@@ -618,6 +770,275 @@ let getCommands = (agentRunState) => {
 					}, 10)
 					return true
 				}
+			}
+		},
+		{
+			"name": "create_macro",
+			"description": "Creates or updates a saved macro definition for later execution.",
+			"args": {
+				"macroName": {
+					description: "<macro name>",
+					type: "string",
+					pattern: "^[A-Za-z0-9_]+$"
+				},
+				"overwrite": {
+					description: "<set true to overwrite an existing macro>",
+					type: "boolean",
+					optional: true
+				},
+				"macroDefinition": {
+					description: "<macro definition object. Required: planToUse.responsePlanOverview and planToUse.orderOfActions. Optional: planToUse.whoToRespondAs, agentPrompt, agentName, configOverrides, printToConsole, surpressMessagesToUser, isUsingWhitelist>",
+					format: {
+						type: "object",
+						properties: {
+							"planToUse": {
+								description: "Planning payload used when the macro is executed.",
+								type: "object",
+								properties: {
+									"whoToRespondAs": {
+										description: "Optional explicit speaking persona for the macro response.",
+										type: "string"
+									},
+									"responsePlanOverview": {
+										description: "Short concrete overview of what the macro intends to do.",
+										type: "string"
+									},
+									"orderOfActions": {
+										description: "Ordered action list executed by the macro.",
+										type: "array",
+										items: {
+											type: "object",
+											properties: {
+												"action": {
+													description: "Command name to run.",
+													type: "string"
+												},
+												"objective": {
+													description: "Why this action is needed in the macro.",
+													type: "string"
+												}
+											},
+											required: ["action", "objective"]
+										},
+										minItems: 1
+									}
+								},
+								required: ["responsePlanOverview", "orderOfActions"]
+							},
+							"agentPrompt": {
+								description: "Optional system-level instruction override while the macro runs.",
+								type: "string"
+							},
+							"agentName": {
+								description: "Optional speaker name/persona override used for assistant responses.",
+								type: "string"
+							},
+							"configOverrides": {
+								description: "Optional per-action config/model overrides. Keys are command names.",
+								type: "object",
+								additionalProperties: {
+									type: "object",
+									properties: {
+										"config": {
+											type: "string"
+										},
+										"model": {
+											type: "string"
+										}
+									}
+								}
+							},
+							"printToConsole": {
+								description: "Optional boolean to print internal logs to console for this macro.",
+								type: "boolean"
+							},
+							"surpressMessagesToUser": {
+								description: "Optional boolean to suppress visible user messages for this macro run.",
+								type: "boolean"
+							},
+							"isUsingWhitelist": {
+								description: "Optional boolean. true = only explicitly whitelisted commands can run; false = normal enabled commands.",
+								type: "boolean"
+							}
+						}
+					}
+				}
+			},
+			"enabled": true,
+			"executor": async (action) => {
+				let macroName = `${action?.args?.macroName || ""}`.trim()
+				let macroDefinition = action?.args?.macroDefinition
+				let overwrite = !!action?.args?.overwrite
+
+				let validationResult = validateAgentMacroDefinition(macroName, macroDefinition, agentRunState)
+				if (!validationResult.valid) {
+					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, `create failed: ${validationResult.error}`))
+					return false
+				}
+
+				let macroSaveBody = {
+					macroName,
+					macroDefinition,
+					overwrite,
+				}
+				let shouldSaveMacro = !!localsettings?.tools_auto_exec ? true : await new Promise(resolve => msgboxYesNo(`Macro creation details:${JSON.stringify(macroSaveBody)}`, "Save macro", () => resolve(true), () => resolve(false)))
+				if (!shouldSaveMacro) {
+					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "create cancelled by confirmation dialog."))
+					return false
+				}
+
+				let saveMacroResult = saveAgentMacroDefinition(macroName, macroDefinition, overwrite)
+				if (!saveMacroResult.success) {
+					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, `create failed: ${saveMacroResult.error}`))
+					return false
+				}
+
+				addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "saved successfully."))
+				return false
+			}
+		},
+		{
+			"name": "run_macro",
+			"description": "Loads and executes a saved macro by name, optionally with additional agent input.",
+			"args": {
+				"macroName": {
+					description: "<macro name>",
+					type: "string",
+					pattern: "^[A-Za-z0-9_]+$"
+				},
+				"prompt": {
+					description: "<optional additional instruction for this macro execution. It will be added as 'Agent input: ...'>",
+					type: "string",
+					optional: true
+				}
+			},
+			"enabled": true,
+			"executor": async (action) => {
+				let macroName = `${action?.args?.macroName || ""}`.trim()
+				let macroExecutionPrompt = `${action?.args?.prompt || ""}`.trim()
+				let availableMacros = getAvailableAgentMacros()
+				let macroDefinition = availableMacros[macroName]
+				if (!isPlainObject(macroDefinition)) {
+					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "run failed: macro was not found."))
+					return false
+				}
+
+				let validationResult = validateAgentMacroDefinition(macroName, macroDefinition, agentRunState)
+				if (!validationResult.valid) {
+					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, `run failed: ${validationResult.error}`))
+					return false
+				}
+
+				if (!isPlainObject(agentRunState._executedMacroNames)) {
+					agentRunState._executedMacroNames = {}
+				}
+				agentRunState._executedMacroNames[macroName] = (agentRunState._executedMacroNames[macroName] || 0) + 1
+				if (agentRunState._executedMacroNames[macroName] > 3) {
+					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "run failed: exceeded recursion limit."))
+					return false
+				}
+
+				let subAgentRunState = {
+					planToUse: macroDefinition.planToUse,
+					systemPrompt: agentRunState.systemPrompt,
+					agentVisualiser: agentRunState.agentVisualiser,
+					agentInitialiser: agentRunState.agentInitialiser,
+					agentFinaliser: agentRunState.agentFinaliser,
+					skipTaskCompletionCheck: true,
+					_executedMacroNames: { ...agentRunState._executedMacroNames },
+					configOverrides: {
+						...(isPlainObject(agentRunState.configOverrides) ? agentRunState.configOverrides : {}),
+						...(isPlainObject(macroDefinition.configOverrides) ? macroDefinition.configOverrides : {})
+					}
+				}
+
+				if (macroExecutionPrompt.length > 0) {
+					subAgentRunState.agentInputPrompt = macroExecutionPrompt
+					subAgentRunState.initialPrompt = ""
+				} else if (agentRunState.initialPrompt) {
+					subAgentRunState.initialPrompt = agentRunState.initialPrompt
+				}
+
+				if (typeof macroDefinition.agentPrompt === "string" && macroDefinition.agentPrompt.trim().length > 0) {
+					subAgentRunState.agentPrompt = macroDefinition.agentPrompt
+				} else if (agentRunState.agentPrompt) {
+					subAgentRunState.agentPrompt = agentRunState.agentPrompt
+				}
+
+				if (typeof macroDefinition.agentName === "string" && macroDefinition.agentName.trim().length > 0) {
+					subAgentRunState.agentName = macroDefinition.agentName
+				} else if (agentRunState.agentName) {
+					subAgentRunState.agentName = agentRunState.agentName
+				}
+
+				if (typeof macroDefinition.printToConsole === "boolean") {
+					subAgentRunState.printToConsole = macroDefinition.printToConsole
+				} else {
+					subAgentRunState.printToConsole = agentRunState.printToConsole
+				}
+
+				if (typeof macroDefinition.surpressMessagesToUser === "boolean") {
+					subAgentRunState.surpressMessagesToUser = macroDefinition.surpressMessagesToUser
+				} else {
+					subAgentRunState.surpressMessagesToUser = agentRunState.surpressMessagesToUser
+				}
+
+				if (typeof macroDefinition.isUsingWhitelist === "boolean") {
+					subAgentRunState.isUsingWhitelist = macroDefinition.isUsingWhitelist
+				} else {
+					subAgentRunState.isUsingWhitelist = agentRunState.isUsingWhitelist
+				}
+
+				addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "executing as sub-agent loop."))
+				await window.execAgentCycle(subAgentRunState)
+				addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "sub-agent loop complete."))
+				return false
+			}
+		},
+		{
+			"name": "get_macro_info",
+			"description": "Gets information about saved macros. If macroName is omitted or empty, this lists all available macro names.",
+			"args": {
+				"macroName": {
+					description: "<optional macro name. Leave empty to list all available macros>",
+					type: "string",
+					optional: true
+				}
+			},
+			"enabled": true,
+			"executor": (action) => {
+				let macroName = `${action?.args?.macroName || ""}`.trim()
+				let availableMacros = getAvailableAgentMacros()
+
+				if (macroName.length === 0) {
+					let names = Object.keys(availableMacros)
+					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage("", `available macros: ${names.length > 0 ? names.join(", ") : "none"}`))
+					return false
+				}
+
+				let macroDefinition = availableMacros[macroName]
+				if (!isPlainObject(macroDefinition)) {
+					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "info failed: macro was not found."))
+					return false
+				}
+
+				let validationResult = validateAgentMacroDefinition(macroName, macroDefinition, agentRunState)
+				if (!validationResult.valid) {
+					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, `info failed: ${validationResult.error}`))
+					return false
+				}
+
+				let configOverrideKeys = isPlainObject(macroDefinition.configOverrides) ? Object.keys(macroDefinition.configOverrides) : []
+				let summary = {
+					macroName,
+					responsePlanOverview: macroDefinition.planToUse.responsePlanOverview,
+					orderOfActions: macroDefinition.planToUse.orderOfActions,
+					hasAgentPrompt: typeof macroDefinition.agentPrompt === "string" && macroDefinition.agentPrompt.trim().length > 0,
+					hasConfigOverrides: configOverrideKeys.length > 0,
+					configOverrideKeys,
+				}
+				addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, `info:\n${JSON.stringify(summary, null, 2)}`))
+				return false
 			}
 		},
 		{
@@ -1942,33 +2363,5 @@ let getCommandsAsText = (commands = getEnabledCommands()) => {
 		return baseCommand
 	}).join("\n\n").trim();
 }
-
-let agentConstraints = `Constraints:
-1. Only use commands defined below - no other actions are available.
-2. No user assistance unless absolutely necessary.
-3. Keep thoughts concise and action - focused.
-4. Don't over-analyze simple decisions.
-5. Start with simple questions / actions before complex ones.
-6. Never repeat recent questions or actions.
-7. Check recent history before asking questions.`,
-	agentResources = `Resources:
-1. Use "userInput" to ask the user for additional information when needed. Do not use userInput unless absolutely necessary.
-2. When responding with None, use null, as otherwise the JSON cannot be parsed.
-3. Use "overwrite_current_state" to keep current information.
-4. Use "add_to_history" to store background information which may be needed in future.
-4. Use "search_history" if the user has an instruction which requires more information.
-5. The current date is: ${new Date().toUTCString()}
-6. The user may have provided an image for analysis. If the user asks for details about the image, image generation is forbidden.`,
-	agentEvaluation = `Performance Evaluation:
-1. Continuously assess your actions.
-2. Constructively self - criticize your big - picture behavior.
-3. Every command has a cost, so be smart and efficient. Aim to complete tasks in the least number of steps, but never sacrifice quality.`,
-	json_schema = `RESPOND WITH ONLY VALID JSON CONFORMING TO THE FOLLOWING SCHEMA:
-{
-	"command": {
-		"name": { "type": "string" },
-		"args": { "type": "object" }
-	}
-} `;
 
 let checkFinalThoughtsPrompt = `Action: {"command":{"name":"thought","args":{"message":"I must make sure that I respond to the user with \"send_message\""}}}`
