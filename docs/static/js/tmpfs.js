@@ -58,6 +58,211 @@ class TmpfsClient {
         return resp.json();
     }
 
+    async _post_form(path, form_data) {
+        const resp = await fetch(this.base_url + path, {
+            method: 'POST',
+            body: form_data,
+        });
+        if (!resp.ok) {
+            const body = await resp.text().catch(() => '');
+            throw new Error(`tmpfs POST ${path} failed (${resp.status}): ${body}`);
+        }
+        return resp.json();
+    }
+
+    _normalize_path(path, allowRoot = false) {
+        let normalized = `/${`${path || ''}`.replace(/\\/g, '/').replace(/^\/+/, '')}`.replace(/\/+/g, '/');
+        normalized = normalized.replace(/\/\.\//g, '/');
+        while (normalized.includes('/../')) {
+            normalized = normalized.replace(/\/[^/]+\/\.\.\//, '/');
+        }
+        if (!allowRoot && normalized === '/') {
+            throw new Error('Tmpfs path must target a file.');
+        }
+        return normalized;
+    }
+
+    async _path_exists(path) {
+        try {
+            await this.metadata(path);
+            return true;
+        }
+        catch {
+            return false;
+        }
+    }
+
+    async _read_text_file(path) {
+        const resp = await this.fetch_raw(path);
+        return await resp.text();
+    }
+
+    _prepare_search_text(text) {
+        let prepared = `${text || ''}`;
+        if (typeof replace_search_placeholders === 'function') {
+            return replace_search_placeholders(prepared);
+        }
+        return prepared;
+    }
+
+    _get_embedding_preset(modelName) {
+        if (typeof embeddingPresets !== 'object' || !embeddingPresets) {
+            return { query_prompt: '', document_prompt: '' };
+        }
+        const resolvedModelName = `${modelName || ''}`;
+        const presetName = Object.keys(embeddingPresets).find((name) => resolvedModelName.includes(name));
+        const preset = presetName ? embeddingPresets[presetName] : null;
+        return {
+            query_prompt: `${preset?.query_prompt || ''}`,
+            document_prompt: `${preset?.document_prompt || ''}`,
+        };
+    }
+
+    _get_chunking_settings() {
+        let chunkSize = parseInt(documentdb_chunksize, 10);
+        if (!Number.isFinite(chunkSize) || chunkSize <= 0) {
+            chunkSize = 1024;
+        }
+        return {
+            chunkSize,
+            chunkOverlap: Math.min(chunkSize * 0.5, 500),
+        };
+    }
+
+    _derive_semantic_cache_paths(sourcePath) {
+        const normalizedSourcePath = this._normalize_path(sourcePath);
+        const sourceName = normalizedSourcePath.split('/').pop() || 'document.txt';
+        const dotIndex = sourceName.lastIndexOf('.');
+        const baseName = dotIndex > 0 ? sourceName.slice(0, dotIndex) : sourceName;
+        const dirPath = normalizedSourcePath.slice(0, normalizedSourcePath.length - sourceName.length).replace(/\/$/, '') || '/';
+        return {
+            sourcePath: normalizedSourcePath,
+            dirPath,
+            sourceName,
+            baseName,
+            rawTextPath: `${dirPath === '/' ? '' : dirPath}/${baseName}_rawtext.txt` || `/${baseName}_rawtext.txt`,
+            cachePath: `${dirPath === '/' ? '' : dirPath}/${baseName}_embeddings.json` || `/${baseName}_embeddings.json`,
+        };
+    }
+
+    async _extract_text_from_data_url(dataUrl) {
+        const reqOpt = {
+            method: 'POST',
+            headers: get_kobold_header(),
+            body: JSON.stringify({ docData: dataUrl }),
+        };
+        if (globalabortcontroller) {
+            reqOpt.signal = globalabortcontroller.signal;
+        }
+        const sub_endpt = apply_proxy_url(`${custom_kobold_endpoint}/api/extra/extractText`);
+        const response = await fetch(sub_endpt, reqOpt);
+        const data = await response.json();
+        return `${data?.text || ''}`;
+    }
+
+    async _extract_source_text(sourcePath, sourceExt) {
+        if (sourceExt === '.txt') {
+            return await this._read_text_file(sourcePath);
+        }
+        const rawResp = await this.fetch_raw(sourcePath);
+        const bytes = new Uint8Array(await rawResp.arrayBuffer());
+        const mimeType = sourceExt === '.pdf' ? 'application/pdf' : 'text/plain';
+        const dataUrl = `data:${mimeType};base64,${bytesToB64(bytes)}`;
+        if (window.documentParser && typeof window.documentParser.extractTextFromB64 === 'function') {
+            return `${await window.documentParser.extractTextFromB64(dataUrl) || ''}`;
+        }
+        return await this._extract_text_from_data_url(dataUrl);
+    }
+
+    _chunk_raw_text(rawText, defaultDocumentName, documentPrefix) {
+        const preparedText = this._prepare_search_text(rawText);
+        const { chunkSize, chunkOverlap } = this._get_chunking_settings();
+        const chunks = [];
+        let docs = preparedText.split('[DOCUMENT BREAK]');
+        if (docs.length === 0) {
+            docs = [preparedText];
+        }
+        for (const rawDoc of docs) {
+            let doc = `${rawDoc || ''}`.trim();
+            if (!doc) {
+                continue;
+            }
+            let startLoc = 0;
+            while (startLoc < doc.length) {
+                const actualChunkStart = Math.max(0, startLoc - chunkOverlap);
+                const actualChunkEnd = Math.min(doc.length, actualChunkStart + chunkSize);
+                const currentSnippet = doc.substring(actualChunkStart, actualChunkEnd).replace(/\n\n/g, '\n').trim();
+                if (currentSnippet !== '') {
+                    const embeddingInput = `${documentPrefix || ''}${currentSnippet}`;
+                    chunks.push({
+                        hash: cyrb_hash(`${embeddingInput || ''}`, 0, 8),
+                        snippet: currentSnippet,
+                        embeddingInput,
+                        document: defaultDocumentName,
+                    });
+                }
+                startLoc = actualChunkEnd;
+            }
+        }
+        return chunks;
+    }
+
+    async _load_tmpfs_json(path) {
+        if (!(await this._path_exists(path))) {
+            return {};
+        }
+        try {
+            return JSON.parse(await this._read_text_file(path));
+        }
+        catch {
+            return {};
+        }
+    }
+
+    async _generate_embeddings_for_chunks(chunks, modelName) {
+        const generated = [];
+        for (let index = 0; index < chunks.length; index += 100) {
+            const currentBatch = chunks.slice(index, index + 100);
+            if (typeof showToast === 'function') {
+                showToast(`Generating ${index + 1} / ${chunks.length} embeddings...`, 15000);
+            }
+            const reqOpt = {
+                method: 'POST',
+                headers: get_kobold_header(),
+                body: JSON.stringify({
+                    input: currentBatch.map((chunk) => chunk.embeddingInput),
+                    truncate: true,
+                }),
+            };
+            if (globalabortcontroller) {
+                reqOpt.signal = globalabortcontroller.signal;
+            }
+            const sub_endpt = apply_proxy_url(`${custom_kobold_endpoint}/api/extra/embeddings`);
+            const response = await fetch(sub_endpt, reqOpt);
+            if (!response.ok) {
+                throw new Error(`Embedding request failed (${response.status})`);
+            }
+            const payload = await response.json();
+            const responseModelName = `${payload?.model || modelName || ''}`.trim() || modelName;
+            for (let batchIndex = 0; batchIndex < currentBatch.length; batchIndex++) {
+                if (!Array.isArray(payload?.data) || !Array.isArray(payload.data[batchIndex]?.embedding)) {
+                    throw new Error('Embedding response was missing expected vectors.');
+                }
+                generated.push({
+                    hash: currentBatch[batchIndex].hash,
+                    snippet: currentBatch[batchIndex].snippet,
+                    document: currentBatch[batchIndex].document,
+                    embedding: payload.data[batchIndex].embedding,
+                    modelUsed: responseModelName,
+                });
+            }
+        }
+        if (typeof showToast === 'function') {
+            showToast('');
+        }
+        return generated;
+    }
+
     // -------------------------------------------------------------------------
     // File listing & searching
     // -------------------------------------------------------------------------
@@ -82,6 +287,128 @@ class TmpfsClient {
     async search(pattern, path_pattern, max_results, case_insensitive) {
         const data = await this._get('/api/extra/tmpfs/search', { pattern, path_pattern, max_results, case_insensitive });
         return data.matches;
+    }
+
+    /**
+     * Semantic-search a tmpfs .txt or .pdf file using cached embeddings.
+     * @param {string} path
+     * @param {string} search_query
+     * @param {number} [max_results=5]
+     * @returns {Promise<Array<{snippet:string, document:string|null, similarity:number}>>}
+     */
+    async semantic_search(path, search_query, max_results = 5) {
+        const sourcePath = this._normalize_path(path);
+        const queryText = `${search_query || ''}`.trim();
+        const maxResults = Math.max(1, Math.min(20, parseInt(max_results, 10) || 5));
+        if (queryText === '') {
+            throw new Error('Search query cannot be empty.');
+        }
+        if (typeof is_using_kcpp_with_embeddings === 'function' && !is_using_kcpp_with_embeddings()) {
+            throw new Error('Embeddings are not available for the current endpoint.');
+        }
+
+        const sourceMetadata = await this.metadata(sourcePath);
+        const lowerPath = sourcePath.toLowerCase();
+        const sourceExt = lowerPath.endsWith('.pdf') ? '.pdf' : (lowerPath.endsWith('.txt') ? '.txt' : '');
+        if (!['.txt', '.pdf'].includes(sourceExt)) {
+            throw new Error('Tmpfs semantic search only supports .txt and .pdf files.');
+        }
+        if (sourceExt === '.txt' && sourceMetadata?.binary) {
+            throw new Error('Tmpfs semantic search requires a text-readable .txt file.');
+        }
+
+        const modelName = `${(typeof get_kcpp_embedding_model === 'function' ? get_kcpp_embedding_model() : '') || ''}`.trim();
+        if (modelName === '') {
+            throw new Error('No active embedding model is available.');
+        }
+
+        const semanticPaths = this._derive_semantic_cache_paths(sourcePath);
+        const rawTextExists = await this._path_exists(semanticPaths.rawTextPath);
+        let rawText = rawTextExists
+            ? await this._read_text_file(semanticPaths.rawTextPath)
+            : await this._extract_source_text(sourcePath, sourceExt);
+        rawText = `${rawText || ''}`.trim();
+        if (rawText === '') {
+            throw new Error('No text could be extracted from the selected tmpfs file.');
+        }
+        if (!rawTextExists) {
+            await this.write(semanticPaths.rawTextPath, rawText);
+        }
+
+        const preset = this._get_embedding_preset(modelName);
+        const rawTextHash = cyrb_hash(`${this._prepare_search_text(rawText) || ''}`, 0, 8);
+        const chunks = this._chunk_raw_text(rawText, semanticPaths.sourceName, preset.document_prompt);
+        if (chunks.length === 0) {
+            return [];
+        }
+
+        const cacheObject = await this._load_tmpfs_json(semanticPaths.cachePath);
+        const models = typeof cacheObject.models === 'object' && cacheObject.models ? cacheObject.models : {};
+        let modelCache = typeof models[modelName] === 'object' && models[modelName]
+            ? models[modelName]
+            : {};
+        const shouldInvalidateModelCache = modelCache.rawtext_hash !== rawTextHash
+            || `${modelCache.query_prefix || ''}` !== `${preset.query_prompt || ''}`
+            || `${modelCache.document_prefix || ''}` !== `${preset.document_prompt || ''}`;
+        if (shouldInvalidateModelCache) {
+            modelCache = {};
+        }
+
+        const existingItems = typeof modelCache.items === 'object' && modelCache.items ? modelCache.items : {};
+        const nextItems = {};
+        const missingChunks = [];
+        for (const chunk of chunks) {
+            const cachedItem = existingItems[chunk.hash];
+            if (cachedItem && Array.isArray(cachedItem.embedding) && cachedItem.embedding.length > 0
+                && `${cachedItem.snippet || ''}` === chunk.snippet
+                && `${cachedItem.document || ''}` === `${chunk.document || ''}`) {
+                nextItems[chunk.hash] = cachedItem;
+            }
+            else {
+                missingChunks.push(chunk);
+            }
+        }
+
+        let resolvedModelName = modelName;
+        if (missingChunks.length > 0) {
+            const generatedItems = await this._generate_embeddings_for_chunks(missingChunks, modelName);
+            for (const generatedItem of generatedItems) {
+                resolvedModelName = `${generatedItem.modelUsed || resolvedModelName}`.trim() || resolvedModelName;
+                nextItems[generatedItem.hash] = generatedItem;
+            }
+        }
+        else if (`${modelCache.model_name || ''}`.trim() !== '') {
+            resolvedModelName = `${modelCache.model_name}`.trim();
+        }
+
+        const mergedCache = {
+            version: 1,
+            source_path: semanticPaths.sourcePath,
+            rawtext_path: semanticPaths.rawTextPath,
+            rawtext_hash: rawTextHash,
+            updated_at: new Date().toISOString(),
+            models: {
+                ...models,
+                [modelName]: {
+                    model_name: resolvedModelName,
+                    query_prefix: `${preset.query_prompt || ''}`,
+                    document_prefix: `${preset.document_prompt || ''}`,
+                    rawtext_hash: rawTextHash,
+                    chunk_size: this._get_chunking_settings().chunkSize,
+                    chunk_overlap: this._get_chunking_settings().chunkOverlap,
+                    updated_at: new Date().toISOString(),
+                    items: nextItems,
+                },
+            },
+        };
+        await this.write(semanticPaths.cachePath, JSON.stringify(mergedCache));
+
+        const semanticResult = await this._post('/api/extra/tmpfs/semantic_search', {
+            embeddings_cache_path: semanticPaths.cachePath,
+            search_query: this._prepare_search_text(queryText),
+            max_results: maxResults,
+        });
+        return Array.isArray(semanticResult?.snippets) ? semanticResult.snippets : [];
     }
 
     // -------------------------------------------------------------------------
@@ -223,6 +550,44 @@ class TmpfsClient {
      */
     async copy(source, destination) {
         return this._post('/api/extra/tmpfs/copy', { source, destination });
+    }
+
+    /**
+     * Create a directory.
+     * @param {string} path
+     * @returns {Promise<{success:boolean, path:string}>}
+     */
+    async mkdir(path) {
+        return this._post('/api/extra/tmpfs/mkdir', { path });
+    }
+
+    /**
+     * Delete a directory and all contents.
+     * @param {string} path
+     * @returns {Promise<{success:boolean, path:string, removed:number}>}
+     */
+    async rmdir(path) {
+        return this._post('/api/extra/tmpfs/rmdir', { path });
+    }
+
+    /**
+     * Extract a zip archive into a target directory.
+     * This uses the upload endpoint, which auto-extracts .zip files.
+     * @param {Blob|File|Uint8Array|ArrayBuffer} zip_data
+     * @param {string} [dir='/']
+     * @param {string} [filename='archive.zip']
+     * @returns {Promise<{success:boolean, written:string[]}>}
+     */
+    async extract_zip(zip_data, dir = '/', filename = 'archive.zip') {
+        const fd = new FormData();
+        fd.append('dir', dir || '/');
+        let zip_file = zip_data;
+        if (!(zip_data instanceof Blob || zip_data instanceof File)) {
+            const bytes = zip_data instanceof ArrayBuffer ? new Uint8Array(zip_data) : zip_data;
+            zip_file = new Blob([bytes], { type: 'application/zip' });
+        }
+        fd.append('file', zip_file, filename);
+        return this._post_form('/api/extra/tmpfs/upload', fd);
     }
 }
 

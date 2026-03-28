@@ -487,16 +487,6 @@ let getCommands = (agentRunState) => {
 	let { currentChainOfThought } = agentRunState
 	return [
 		{
-			"name": "do_nothing",
-			"description": "Do nothing. End the current plan.",
-			"args": null,
-			"enabled": false,
-			"outputVisibleToUser": false,
-			"executor": () => {
-				return true;
-			}
-		},
-		{
 			"name": "send_message",
 			"description": "Sends text to the user.",
 			"args": {
@@ -581,17 +571,24 @@ let getCommands = (agentRunState) => {
 				})
 
 				let userOverrideToStop = !response || response.action === "stop"
-				let userInput = (response?.input || "").toString().trim(), noInputFromUser = !userInput
+				let userInput = (response?.input || "").toString().trim()
+				let uploadedFilePath = (response?.filePath || "").toString().trim()
+				let noInputFromUser = !userInput && !uploadedFilePath
 				if (userOverrideToStop || noInputFromUser) {
 					agentRunState.skipTaskCompletionCheck = true
 					addThought(currentChainOfThought, createSysPrompt, "User chose to stop the loop or provided no input", true)
 					return true
 				}
 
+				let combinedUserInput = userInput
+				if (!!uploadedFilePath) {
+					combinedUserInput = `${combinedUserInput}${combinedUserInput.length > 0 ? "\n\n" : ""}File uploaded to temporary file system (tmpfs): ${uploadedFilePath}`
+				}
+
 				let isFinalAction = agentRunState.recentActions.length - (!!agentRunState?.planToUse ? 1 : 0) - 1 === agentRunState.currentOrderOfActionsOverall.length
 				if (continueWithCurrentPlan && !isFinalAction)
 				{
-					addThought(currentChainOfThought, createInstructPrompt, `Input provided by user: ${userInput}`)
+					addThought(currentChainOfThought, createInstructPrompt, `Input provided by user: ${combinedUserInput}`)
 					return false
 				}
 				else
@@ -599,7 +596,7 @@ let getCommands = (agentRunState) => {
 					agentRunState.skipTaskCompletionCheck = true
 					setTimeout(() => {
 						window.execAgentCycle(objRefAssign({}, {
-							initialPrompt: userInput,
+							initialPrompt: combinedUserInput,
 							printToConsole: !!agentRunState?.printToConsole,
 							agentName: agentRunState?.agentName,
 							systemPrompt: agentRunState?.systemPrompt,
@@ -613,16 +610,6 @@ let getCommands = (agentRunState) => {
 					}, 10)
 					return true
 				}
-			}
-		},
-		{
-			"name": "stop_thinking",
-			"description": "Ends the current chain of thought. Can only be used after a \"send_message\" action.",
-			"args": null,
-			"enabled": false,
-			"executor": (action) => {
-				addThought(currentChainOfThought, createSysPrompt, `Stop thinking action confirmed`)
-				return true
 			}
 		},
 		{
@@ -870,35 +857,6 @@ let getCommands = (agentRunState) => {
 			}
 		},
 		{
-			"name": "overwrite_current_action_chain",
-			"description": "Overwrites the existing order of actions. After a user input, the order of actions will be enforced if it is set. Actions must be provided as an array in the order they should be taken. If there are multiple actions which can be taken (an OR), use a '|' delimiter between the options in the string. Provide an empty array to allow free actions.",
-			"args": {
-				"orderOfActions": {
-					description: "<an array of actions to take after a user input>",
-					type: "array"
-				}
-			},
-			"enabled": false,
-			"executor": (action) => {
-				let orderOfActions = action?.args?.orderOfActions
-				if (!!orderOfActions && Array.isArray(orderOfActions)) {
-					if (orderOfActions.length === 0) {
-						replaceDocumentFromTextDB('Order of actions', "")
-						addThought(currentChainOfThought, createSysPrompt, `Current order of actions has been cleared`)
-					}
-					else {
-						replaceDocumentFromTextDB('Order of actions', [...orderOfActions.filter(acts => acts.split("|").find(act => getCommands(agentRunState).map(command => command.name).includes(act))), "stop_thinking"].join(","))
-						addThought(currentChainOfThought, createSysPrompt, `Current order of actions has been overwritten`)
-
-					}
-					return true
-				}
-				else {
-					addThought(currentChainOfThought, createSysPrompt, `No order of actions provided, nothing has been overwritten`)
-				}
-			}
-		},
-		{
 			"name": "search_history",
 			"description": "Searches history for a series of keywords.",
 			"args": {
@@ -946,8 +904,8 @@ let getCommands = (agentRunState) => {
 			}
 		},
 		{
-			"name": "describe_image",
-			"description": "Describes a user provided image. It does not provide the original prompt used to generate the image.",
+			"name": "describe_clicked_image",
+			"description": "Describe an image that the user clicks in chat. Incompatible with tmpfs file paths.",
 			"args": {
 				"question": "<question to ask about image>"
 			},
@@ -977,10 +935,6 @@ let getCommands = (agentRunState) => {
 					}
 					await waitForI2ILoop()
 					if (!!i2i64) {
-						let parts = i2i64.split(',');
-						if (parts.length === 2 && parts[0].startsWith('data:image')) {
-							i2i64 = parts[1];
-						}
 						let analysisResult = await generateAndGetTextFromPrompt(`${createInstructPrompt(analysisPrompt)}${instructendplaceholder}${!!localsettings?.inject_jailbreak_instruct ? localsettings.custom_jailbreak_text : ""}`, undefined, [i2i64])
 						addThought(currentChainOfThought, createSysPrompt, `Image analysed: ${analysisResult}`)
 					}
@@ -1249,8 +1203,8 @@ let getCommands = (agentRunState) => {
 			}
 		},
 		{
-			"name": "tmpfs_describe_image",
-			"description": "Describe an image in tmpfs using vision analysis.",
+			"name": "describe_tmpfs_image",
+			"description": "Describe an image from a tmpfs file path. Incompatible with click-selected chat images.",
 			"args": {
 				"path": "<tmpfs image path>",
 				"question": "<optional focus question>"
@@ -1260,7 +1214,7 @@ let getCommands = (agentRunState) => {
 				try {
 					let tmpfsPath = `${action?.args?.path || ""}`.trim()
 					if (tmpfsPath === "") {
-						addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: describe_image failed - path is required`)
+						addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: describe_tmpfs_image failed - path is required`)
 						return
 					}
 					let analysisPrompt = "Describe the image in detail. Transcribe and include any text from the image in the description."
@@ -1269,10 +1223,10 @@ let getCommands = (agentRunState) => {
 					}
 					let base64Image = await readTmpfsPathAsBase64(tmpfsPath)
 					let analysisResult = await generateAndGetTextFromPrompt(`${createInstructPrompt(analysisPrompt)}${instructendplaceholder}${!!localsettings?.inject_jailbreak_instruct ? localsettings.custom_jailbreak_text : ""}`, undefined, [base64Image])
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: describe_image result\n${analysisResult}`)
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: describe_tmpfs_image result\n${analysisResult}`)
 				}
 				catch (e) {
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: describe_image failed - ${e?.message || e}`)
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: describe_tmpfs_image failed - ${e?.message || e}`)
 				}
 			}
 		},
@@ -1330,6 +1284,40 @@ let getCommands = (agentRunState) => {
 				}
 				catch (e) {
 					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: search failed - ${e?.message || e}`)
+				}
+			}
+		},
+		{
+			"name": "tmpfs_semantic_search",
+			"description": "Semantic-search a tmpfs .txt or .pdf document using cached embeddings.",
+			"args": {
+				"path": "<tmpfs path to a .txt or .pdf file>",
+				"search_query": {
+					description: "<semantic search query>",
+					type: "string"
+				},
+				"max_results": {
+					description: "<max result count, up to 20>",
+					type: "integer"
+				}
+			},
+			"enabled": is_using_kcpp_with_tmpfs() && is_using_kcpp_with_embeddings(),
+			"executor": async (action) => {
+				try {
+					let result = await window.tmpfsClient.semantic_search(action?.args?.path, action?.args?.search_query, action?.args?.max_results)
+					if (!Array.isArray(result) || result.length === 0) {
+						addThought(currentChainOfThought, createSysPrompt, `Semantic search performed: Nothing found`)
+					}
+					else {
+						let ltmContent = "Semantic search performed:";
+						for (let i = 0; i < result.length; ++i) {
+							ltmContent += getInfoSnippet(result[i]);
+						}
+						addThought(currentChainOfThought, createSysPrompt, ltmContent)
+					}
+				}
+				catch (e) {
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: semantic search failed - ${e?.message || e}`)
 				}
 			}
 		},
@@ -1519,6 +1507,73 @@ let getCommands = (agentRunState) => {
 			}
 		},
 		{
+			"name": "tmpfs_extract_zip",
+			"description": "Extract a .zip file from tmpfs into a target tmpfs directory.",
+			"args": {
+				"zip_path": "<tmpfs .zip file path>",
+				"target_dir": {
+					description: "<target directory, default />",
+					type: "string"
+				}
+			},
+			"enabled": is_using_kcpp_with_tmpfs(),
+			"executor": async (action) => {
+				try {
+					let zipPath = `${action?.args?.zip_path || ""}`.trim()
+					let targetDir = `${action?.args?.target_dir || "/"}`.trim() || "/"
+					if (zipPath === "") {
+						addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: extract_zip failed - zip_path is required`)
+						return
+					}
+					let rawResp = await window.tmpfsClient.fetch_raw(zipPath)
+					let zipBlob = await rawResp.blob()
+					let fileName = zipPath.split("/").filter(Boolean).pop() || "archive.zip"
+					if (!fileName.toLowerCase().endsWith(".zip")) {
+						fileName = `${fileName}.zip`
+					}
+					let result = await window.tmpfsClient.extract_zip(zipBlob, targetDir, fileName)
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: extract_zip result\n${objToText(result)}`)
+				}
+				catch (e) {
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: extract_zip failed - ${e?.message || e}`)
+				}
+			}
+		},
+		{
+			"name": "tmpfs_create_folder",
+			"description": "Create a tmpfs folder.",
+			"args": {
+				"path": "<folder path>"
+			},
+			"enabled": is_using_kcpp_with_tmpfs(),
+			"executor": async (action) => {
+				try {
+					let result = await window.tmpfsClient.mkdir(action?.args?.path)
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: create_folder result\n${objToText(result)}`)
+				}
+				catch (e) {
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: create_folder failed - ${e?.message || e}`)
+				}
+			}
+		},
+		{
+			"name": "tmpfs_delete_folder",
+			"description": "Delete a tmpfs folder and all files under it.",
+			"args": {
+				"path": "<folder path>"
+			},
+			"enabled": is_using_kcpp_with_tmpfs(),
+			"executor": async (action) => {
+				try {
+					let result = await window.tmpfsClient.rmdir(action?.args?.path)
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: delete_folder result\n${objToText(result)}`)
+				}
+				catch (e) {
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: delete_folder failed - ${e?.message || e}`)
+				}
+			}
+		},
+		{
 			"name": "tmpfs_open_embed",
 			"description": `Open or replace a named floating embed window for a tmpfs file URL. Position and size are clamped to the viewport and the header can be dragged to reposition. Current viewport: ${window.innerWidth}x${window.innerHeight}px.`,
 			"args": {
@@ -1636,8 +1691,11 @@ let getCommands = (agentRunState) => {
 	]
 }
 
+window.eso.originalGetCommands = getCommands;
+
 let getEnabledCommands = (agentRunState, overrides = [], isUsingWhitelist = false) => {
-	let enabledCommands = getCommands(agentRunState).filter(command => (!isUsingWhitelist && !!command?.enabled) || overrides.includes(command.name))
+	let disabledAgentTools = Array.isArray(localsettings?.disabled_agent_tools) ? localsettings.disabled_agent_tools : []
+	let enabledCommands = getCommands(agentRunState).filter(command => (((!isUsingWhitelist && !!command?.enabled) || overrides.includes(command.name)) && !disabledAgentTools.includes(command.name)))
 	let forbiddenAgentCommands = getDocumentFromTextDB('Forbidden agent commands')
 	if (!isUsingWhitelist && forbiddenAgentCommands !== null) {
 		let commandsToExclude = forbiddenAgentCommands.split("|")
@@ -1834,7 +1892,9 @@ let getCommandsAsText = (commands = getEnabledCommands()) => {
 	return commands.map(command => {
 		let baseCommand = `Command: ${command.name} (command output is ${!!command?.outputVisibleToUser ? "visible" : "invisible"} to the user)\nDescription: ${command.description}`
 		if (!!command.args) {
-			let args = Object.keys(command.args).map(key => {
+			let args = Object.keys(command.args).filter(key => {
+				return !command.args[key]?.skip
+			}).map(key => {
 				let value = command.args[key];
 				return typeof value === "object" ? `\t${key}: ${value.description}` : `\t${key}: ${value}`
 			}).join("\n")
