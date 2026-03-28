@@ -1322,14 +1322,13 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [], enableFileUpload = 
         fileInput.type = "file"
         fileInput.classList.add("agent-user-input-file")
         fileInput.multiple = true
+        fileInput.style.display = "none"
+        fileInput.setAttribute("aria-hidden", "true")
 
         let addLocalFilesButton = document.createElement("button")
         addLocalFilesButton.type = "button"
         addLocalFilesButton.classList.add("btn-primary")
         addLocalFilesButton.innerText = "Add local files"
-
-        let tmpfsRow = document.createElement("div")
-        tmpfsRow.classList.add("agent-user-input-controls")
 
         let tmpfsSelect = document.createElement("select")
         tmpfsSelect.classList.add("agent-user-input-tmpfs-select")
@@ -1644,14 +1643,15 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [], enableFileUpload = 
                 localFileRow.appendChild(addLocalFilesButton)
                 localFileRow.appendChild(fileInput)
             }
+            if (canSelectTmpfsFiles) {
+                localFileRow.appendChild(addTmpfsFilesButton)
+                localFileRow.appendChild(refreshTmpfsFilesButton)
+            }
             if (localFileRow.childElementCount > 0) {
                 body.appendChild(localFileRow)
             }
             if (canSelectTmpfsFiles) {
-                tmpfsRow.appendChild(addTmpfsFilesButton)
-                tmpfsRow.appendChild(refreshTmpfsFilesButton)
                 body.appendChild(tmpfsSelect)
-                body.appendChild(tmpfsRow)
             }
             body.appendChild(selectedFilesContainer)
             body.appendChild(selectedFilesStatus)
