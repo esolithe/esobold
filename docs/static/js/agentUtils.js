@@ -572,8 +572,15 @@ let getCommands = (agentRunState) => {
 
 				let userOverrideToStop = !response || response.action === "stop"
 				let userInput = (response?.input || "").toString().trim()
-				let uploadedFilePath = (response?.filePath || "").toString().trim()
-				let noInputFromUser = !userInput && !uploadedFilePath
+				let selectedFiles = Array.isArray(response?.files) ? response.files : []
+				let uploadedFilePaths = selectedFiles.map(file => `${file?.path || ""}`.trim()).filter(path => path.length > 0)
+				if (uploadedFilePaths.length === 0) {
+					let legacyUploadedFilePath = (response?.filePath || "").toString().trim()
+					if (!!legacyUploadedFilePath) {
+						uploadedFilePaths.push(legacyUploadedFilePath)
+					}
+				}
+				let noInputFromUser = !userInput && uploadedFilePaths.length === 0
 				if (userOverrideToStop || noInputFromUser) {
 					agentRunState.skipTaskCompletionCheck = true
 					addThought(currentChainOfThought, createSysPrompt, "User chose to stop the loop or provided no input", true)
@@ -581,8 +588,9 @@ let getCommands = (agentRunState) => {
 				}
 
 				let combinedUserInput = userInput
-				if (!!uploadedFilePath) {
-					combinedUserInput = `${combinedUserInput}${combinedUserInput.length > 0 ? "\n\n" : ""}File uploaded to temporary file system (tmpfs): ${uploadedFilePath}`
+				if (uploadedFilePaths.length > 0) {
+					let fileLines = selectedFiles.length > 0 ? selectedFiles.map(file => `- ${file.path}${file?.source === "tmpfs" ? " (selected from TmpFS)" : " (uploaded from local device)"}`) : uploadedFilePaths.map(path => `- ${path}`)
+					combinedUserInput = `${combinedUserInput}${combinedUserInput.length > 0 ? "\n\n" : ""}Files available in temporary file system (tmpfs):\n${fileLines.join("\n")}`
 				}
 
 				let isFinalAction = agentRunState.recentActions.length - (!!agentRunState?.planToUse ? 1 : 0) - 1 === agentRunState.currentOrderOfActionsOverall.length
@@ -1246,8 +1254,36 @@ let getCommands = (agentRunState) => {
 			"enabled": is_using_kcpp_with_tmpfs(),
 			"executor": async (action) => {
 				try {
+					let normalizeTmpfsListPath = (rawPath = "") => {
+						let path = `${rawPath || ""}`.trim()
+						let isDirectory = false
+						if (!path) {
+							return null
+						}
+						if (path === ".kcpp_dir_marker") {
+							path = "/"
+							isDirectory = true
+						}
+						if (path.endsWith("/.kcpp_dir_marker")) {
+							path = path.substring(0, path.length - "/.kcpp_dir_marker".length)
+							isDirectory = true
+						}
+						if (path.length > 1 && path.endsWith("/")) {
+							path = path.substring(0, path.length - 1)
+						}
+						if (!path) {
+							path = "/"
+						}
+						return {
+							path,
+							isDirectory
+						}
+					}
+
 					let pattern = action?.args?.pattern
 					let result = await window.tmpfsClient.list(pattern, action?.args?.case_insensitive)
+					let normalizedEntries = (Array.isArray(result) ? result : []).map(normalizeTmpfsListPath).filter(entry => entry !== null)
+					result = Array.from(new Set(normalizedEntries.map(entry => `${entry.path}${entry.isDirectory ? " (directory)" : ""}`))).sort((a, b) => a.localeCompare(b))
 					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: list result\n${objToText(result)}`)
 				}
 				catch (e) {

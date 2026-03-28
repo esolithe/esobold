@@ -88,6 +88,7 @@ display_settings = () => {
     document.getElementById("worldTreeShowAll").checked = localsettings.worldTreeShowAll;
     document.getElementById("useNewEditor").checked = localsettings.useNewEditor;
     document.getElementById("legacySaveMechanisms").checked = localsettings.legacySaveMechanisms;
+    document.getElementById("showContextUsageChart").checked = localsettings.showContextUsageChart;
     document.getElementById("fullScreenEditorForInputs").checked = localsettings.fullScreenEditorForInputs;
     document.getElementById("corpoHideLeftPanel").checked = localsettings.corpoHideLeftPanel;
     document.getElementById("agentSavedMacros").value = JSON.stringify(localsettings?.agentSavedMacros || window.eso.agentMacros, null, 2)
@@ -118,6 +119,7 @@ confirm_settings = () => {
     localsettings.worldTreeShowAll = (document.getElementById("worldTreeShowAll").checked ? true : false);
     localsettings.useNewEditor = (document.getElementById("useNewEditor").checked ? true : false);
     localsettings.legacySaveMechanisms = (document.getElementById("legacySaveMechanisms").checked ? true : false);
+    localsettings.showContextUsageChart = (document.getElementById("showContextUsageChart").checked ? true : false);
     localsettings.fullScreenEditorForInputs = (document.getElementById("fullScreenEditorForInputs").checked ? true : false);
     localsettings.corpoHideLeftPanel = (document.getElementById("corpoHideLeftPanel").checked ? true : false);
     try
@@ -137,6 +139,9 @@ confirm_settings = () => {
         updateEditorState();
         originalConfirmSettings();
         updateLegacySaveButtonState();
+        if (window?.contextUsage?.renderContextUsage) {
+            window.contextUsage.renderContextUsage();
+        }
     }
     catch (e)
     {
@@ -187,7 +192,10 @@ window.addEventListener('load', () => {
     }
     if (localsettings?.legacySaveMechanisms == undefined) {
         localsettings.legacySaveMechanisms = false
-    }    
+    }
+    if (localsettings?.showContextUsageChart == undefined) {
+        localsettings.showContextUsageChart = false
+    }
     if (localsettings?.customThemeColours == undefined) {
         localsettings.customThemeColours = {}
     }
@@ -461,6 +469,9 @@ window.addEventListener('load', () => {
     settingsBox.append(settingLabelElem)
 
     settingLabelElem = createSettingElemBool("legacySaveMechanisms", "Save options (legacy)", "Shows buttons for saving to slots and server using the non-data manager UI (legacy)")
+    settingsBox.append(settingLabelElem)
+
+    settingLabelElem = createSettingElemBool("showContextUsageChart", "Show context usage chart", "Shows a floating chart of context usage percentages in the top-right corner.")
     settingsBox.append(settingLabelElem)
 
     settingsBox.appendChild(createNewSubSection("Misc settings"))
