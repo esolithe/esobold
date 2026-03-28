@@ -141,15 +141,15 @@ audio{width:100%;margin-top:6px;}
 /* Message Box */
 #messageBox{
   position:fixed;
-  bottom:20px;
-  right:20px;
-  background:#1e293b;
-  padding:12px 16px;
+  bottom:26px;
+  right:26px;
+  background:#31486f;
+  padding:16px 20px;
   border-radius:12px;
   box-shadow:0 10px 30px rgba(0,0,0,.5);
   display:none;
-  max-width:300px;
-  font-size:13px;
+  max-width:340px;
+  font-size:14px;
 }
 
 input[type="checkbox"] {
@@ -242,6 +242,7 @@ select{
       <div><label>Save as MP3</label><input id="use_mp3" type="checkbox"></div>
       <div><label>Stereo</label><input id="stereo" type="checkbox" checked></div>
       <div><label>Gen Codes</label><input id="gen_codes" type="checkbox"></div>
+      <div><label>Plan with LLM</label><input id="plan_with_main_llm" type="checkbox"></div>
     </div>
     <div>
       <div><label>AudioCodes</label><textarea id="audio_codes"></textarea></div>
@@ -542,7 +543,18 @@ function deriveTitle(caption){
   return output;
 }
 
-async function planSong(){
+async function planSong()
+{
+  const useLLM = document.getElementById("plan_with_main_llm").checked;
+  if(useLLM)
+  {
+    planSongWithLLM();
+  }else{
+    planSongNative();
+  }
+}
+
+async function planSongNative(){
   try{
     currentController=new AbortController();
     setLoading(true);
@@ -561,8 +573,57 @@ async function planSong(){
 
     if(!res.ok) throw new Error();
     const data=await res.json();
-    updateForm(data);
-    showMessage("Plan generated.");
+    if(data && data.error && data.error != "")
+    {
+      showMessage(`Plan failed! Error: ${data.error}`);
+    }else{
+      updateForm(data);
+      showMessage("Plan generated.");
+    }
+
+  }catch(e){
+    if(e.name!=="AbortError")
+      showMessage("⚠ Unable to connect to server.");
+  }finally{
+    currentController=null;
+    setLoading(false);
+  }
+}
+
+async function planSongWithLLM(){
+  try{
+    currentController=new AbortController();
+    setLoading(true);
+
+    const seedInput = document.getElementById("seed");
+    if(seedInput.value === "-1" || seedInput.value === ""){
+      randomizeSeed();
+    }
+
+    let origPayload = getFormData();
+    let origCaption = (origPayload["caption"] ? origPayload["caption"] : "an interesting song");
+    let payload = {"temperature":1.0, "messages":[{"role":"system","content":"Please use the music generation tool to generate the caption and full song lyrics based on the request information provided by the user, with outputs wrapped in a JSON format."},{"role":"user","content":origCaption}],"tool_choice":{"type":"function","function":{"name":"generate_music"}},"tools":[{"type":"function","function":{"name":"generate_music","description":"Generates a new song based on provided request. All output fields are mandatory.","parameters":{"type":"object","properties":{"caption":{"type":"string","description":"Acoustically relevant and detailed description of the song such as the genre and iconic elements."},"lyrics":{"type":"string","description":"The complete full song lyrics, suitably long for its genre. Each line should be on a newline, with double newlines between verses, and stanza headings in square brackets e.g. [Verse 1]"},"bpm":{"type":"integer","description":"The appropriate BPM (beats per minute) of the generated song. Valid range 30 to 200"},"duration":{"type":"integer","description":"Total projected song duration in seconds. Valid range 30 to 300"},"keyscale":{"type":"string","description":"Keyscale to use for the song. A/B/C/D/E/F/G Major/Minor/Dorian/Pentatonic etc."},"timesignature":{"type":"integer","description":"Time signature to use for the song, as a single integer. Valid values 2,3,4,6"},"vocal_language":{"type":"string","description":"Language code for this song lyrics, e.g. en"}},"required":["caption","lyrics","bpm","duration","keyscale","timesignature","vocal_language"]}}}]};
+
+    const res=await fetch(buildUrl("/v1/chat/completions"),{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify(payload),
+      signal:currentController.signal
+    });
+
+    if(!res.ok) throw new Error();
+    const data=await res.json();
+
+    try
+    {
+      let toolres = data.choices[0].message.tool_calls[0].function.arguments;
+      toolres = JSON.parse(toolres);
+      updateForm(toolres);
+      showMessage("Plan generated.");
+    }catch(e){
+      console.error(e);
+      showMessage(`LLM Plan failed! Ensure it is loaded.`);
+    }
 
   }catch(e){
     if(e.name!=="AbortError")
