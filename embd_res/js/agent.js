@@ -638,10 +638,51 @@ let getActionSummaryText = (command, promptOverview, wordCountEnabled) => {
     return actionSummary.join("\n\n")
 }
 
+let removeTrailingEmptyAiStartTags = () => {
+    if (!Array.isArray(gametext_arr) || gametext_arr.length === 0) {
+        return false
+    }
+
+    let aiStartOnly = `${instructendplaceholder || ""}`
+    let aiEmptyWrapped = `${instructendplaceholder || ""}${instructendplaceholder_end || ""}`
+    let lastIndex = gametext_arr.length - 1
+    let lastEntry = `${gametext_arr[lastIndex] || ""}`
+
+    if (lastEntry.trim().length === 0 || lastEntry.trim() === aiStartOnly.trim() || lastEntry.trim() === aiEmptyWrapped.trim()) {
+        gametext_arr.pop()
+        return true
+    }
+
+    if (aiEmptyWrapped.length > 0 && lastEntry.endsWith(aiEmptyWrapped)) {
+        let updatedEntry = lastEntry.slice(0, -aiEmptyWrapped.length).trimEnd()
+        if (updatedEntry.length === 0) {
+            gametext_arr.pop()
+        } else {
+            gametext_arr[lastIndex] = updatedEntry
+        }
+        return true
+    }
+
+    if (aiStartOnly.length > 0 && lastEntry.endsWith(aiStartOnly)) {
+        let updatedEntry = lastEntry.slice(0, -aiStartOnly.length).trimEnd()
+        if (updatedEntry.length === 0) {
+            gametext_arr.pop()
+        } else {
+            gametext_arr[lastIndex] = updatedEntry
+        }
+        return true
+    }
+
+    return false
+}
+
 let runAgentCycle = async (agentRunState = {}) => {
     try
     {
         clearSuggestions()
+        if (removeTrailingEmptyAiStartTags()) {
+            render_gametext(false)
+        }
         let textToCheckForMacro = ""
         if (!!agentRunState?.initialPrompt) {
             textToCheckForMacro = agentRunState.initialPrompt
