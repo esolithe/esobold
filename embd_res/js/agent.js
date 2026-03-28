@@ -747,6 +747,10 @@ let runAgentCycle = async (agentRunState = {}) => {
                 initialPrompt = macroFreePrompt
             }
         }
+        if (typeof agentRunState?.agentInputPrompt === "string" && agentRunState.agentInputPrompt.trim().length > 0) {
+            addThought(currentChainOfThought, createInstructPrompt, `Agent input: ${agentRunState.agentInputPrompt.trim()}`)
+        }
+
         objRefOverride(agentRunState, { initialPrompt })
         if (!!initialPrompt && documentdb_provider != "0") {
             let contentToSearch = documentdb_data

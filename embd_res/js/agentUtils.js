@@ -953,7 +953,8 @@ let getCommands = (agentRunState) => {
 				}
 
 				if (macroExecutionPrompt.length > 0) {
-					subAgentRunState.initialPrompt = macroExecutionPrompt
+					subAgentRunState.agentInputPrompt = macroExecutionPrompt
+					subAgentRunState.initialPrompt = ""
 				} else if (agentRunState.initialPrompt) {
 					subAgentRunState.initialPrompt = agentRunState.initialPrompt
 				}
