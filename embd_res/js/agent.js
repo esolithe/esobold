@@ -85,7 +85,7 @@ let split = (input, ...delimiters) => {
     return output.filter(text => text.length > 0)
 }
 
-let listOfExclusions = ["Action taken:", "Action taken (words =", "History search performed:", "Chain of thought complete", "Stop thinking action confirmed",
+let listOfExclusions = ["Action taken:", "Action taken (words =", "History search performed:", "Semantic search performed:", "Chain of thought complete", "Stop thinking action confirmed",
     "Web search results:", "Text has been added to history", "Formula evaluation result:", "Formula evaluation could not be completed as no formula was provided",
     "Text has been added to history", "Text was empty - nothing added to history", "Search string was empty, no search performed", "Word count is", "Image analysed:",
     "TMPFS_TOOL:",

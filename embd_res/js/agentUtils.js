@@ -1337,6 +1337,40 @@ let getCommands = (agentRunState) => {
 			}
 		},
 		{
+			"name": "tmpfs_semantic_search",
+			"description": "Semantic-search a tmpfs .txt or .pdf document using cached embeddings.",
+			"args": {
+				"path": "<tmpfs path to a .txt or .pdf file>",
+				"search_query": {
+					description: "<semantic search query>",
+					type: "string"
+				},
+				"max_results": {
+					description: "<max result count, up to 20>",
+					type: "integer"
+				}
+			},
+			"enabled": is_using_kcpp_with_tmpfs() && is_using_kcpp_with_embeddings(),
+			"executor": async (action) => {
+				try {
+					let result = await window.tmpfsClient.semantic_search(action?.args?.path, action?.args?.search_query, action?.args?.max_results)
+					if (!Array.isArray(result) || result.length === 0) {
+						addThought(currentChainOfThought, createSysPrompt, `Semantic search performed: Nothing found`)
+					}
+					else {
+						let ltmContent = "Semantic search performed:";
+						for (let i = 0; i < result.length; ++i) {
+							ltmContent += getInfoSnippet(result[i]);
+						}
+						addThought(currentChainOfThought, createSysPrompt, ltmContent)
+					}
+				}
+				catch (e) {
+					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: semantic search failed - ${e?.message || e}`)
+				}
+			}
+		},
+		{
 			"name": "tmpfs_metadata",
 			"description": "Get metadata for a tmpfs file.",
 			"args": {

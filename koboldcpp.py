@@ -4642,6 +4642,139 @@ def tmpfs_metadata(path):
         "binary": tmpfs_is_binary(content_bytes),
     }
 
+def tmpfs_get_active_embedding_model_name():
+    model_name = friendlyembeddingsmodelname
+    if autoswapmode and embedName is not None:
+        model_name = embedName
+    return str(model_name or "").strip()
+
+def tmpfs_load_json_file(path):
+    normalized_path, entry = tmpfs_get_file(path)
+    content_bytes = entry.get("content", b"")
+    if tmpfs_is_binary(content_bytes):
+        raise ValueError(f"Tmpfs file is binary and cannot be parsed as JSON: {normalized_path}")
+    raw_text = tmpfs_decode_text(content_bytes).strip()
+    if raw_text == "":
+        return normalized_path, {}
+    parsed = json.loads(raw_text)
+    if not isinstance(parsed, dict):
+        raise ValueError(f"Tmpfs JSON file must contain an object: {normalized_path}")
+    return normalized_path, parsed
+
+def tmpfs_cosine_similarity(vec_a, vec_b):
+    if not isinstance(vec_a, list) or not isinstance(vec_b, list):
+        return 0.0
+    if len(vec_a) == 0 or len(vec_b) == 0 or len(vec_a) != len(vec_b):
+        return 0.0
+    dot_product = 0.0
+    mag_a = 0.0
+    mag_b = 0.0
+    for aval, bval in zip(vec_a, vec_b):
+        aval = float(aval)
+        bval = float(bval)
+        dot_product += aval * bval
+        mag_a += aval * aval
+        mag_b += bval * bval
+    if mag_a <= 0.0 or mag_b <= 0.0:
+        return 0.0
+    return dot_product / (math.sqrt(mag_a) * math.sqrt(mag_b))
+
+def tmpfs_select_embedding_cache(cache_obj, active_model_name):
+    models = cache_obj.get("models", {}) if isinstance(cache_obj, dict) else {}
+    if not isinstance(models, dict) or len(models) == 0:
+        raise ValueError("Embedding cache does not contain any model entries.")
+
+    normalized_name = str(active_model_name or "").strip()
+    if normalized_name and normalized_name in models and isinstance(models[normalized_name], dict):
+        return normalized_name, models[normalized_name]
+
+    for model_key, model_cache in models.items():
+        if isinstance(model_cache, dict) and str(model_cache.get("model_name", "")).strip() == normalized_name:
+            return model_key, model_cache
+
+    for model_key, model_cache in models.items():
+        stored_name = str(model_cache.get("model_name", "")).strip() if isinstance(model_cache, dict) else ""
+        if normalized_name and stored_name and (normalized_name in stored_name or stored_name in normalized_name):
+            return model_key, model_cache
+
+    if len(models) == 1:
+        model_key = next(iter(models.keys()))
+        model_cache = models[model_key]
+        if isinstance(model_cache, dict):
+            return model_key, model_cache
+
+    raise ValueError(f"No embedding cache found for active model: {normalized_name or 'unknown'}")
+
+def tmpfs_semantic_search_cache(embeddings_cache_path, search_query, max_results=5):
+    normalized_cache_path, cache_obj = tmpfs_load_json_file(embeddings_cache_path)
+    query_text = str(search_query or "").strip()
+    if query_text == "":
+        raise ValueError("Search query cannot be empty.")
+
+    active_model_name = tmpfs_get_active_embedding_model_name()
+    _, model_cache = tmpfs_select_embedding_cache(cache_obj, active_model_name)
+    query_prefix = str(model_cache.get("query_prefix", "") or "")
+    items = model_cache.get("items", {})
+    if not isinstance(items, dict) or len(items) == 0:
+        return {
+            "cache_path": normalized_cache_path,
+            "model": str(model_cache.get("model_name", active_model_name) or active_model_name),
+            "snippets": [],
+        }
+
+    query_embedding_resp = embeddings_generate({
+        "input": f"{query_prefix}{query_text}",
+        "truncate": True,
+    })
+    query_embeddings = query_embedding_resp.get("data", []) if isinstance(query_embedding_resp, dict) else []
+    if not query_embeddings or not isinstance(query_embeddings[0], list) or len(query_embeddings[0]) == 0:
+        raise ValueError("Could not generate search query embedding.")
+    query_embedding = query_embeddings[0]
+
+    candidates = []
+    for item in items.values():
+        if not isinstance(item, dict):
+            continue
+        embedding = item.get("embedding", [])
+        snippet = str(item.get("snippet", "") or "")
+        if not isinstance(embedding, list) or len(embedding) == 0 or snippet == "":
+            continue
+        candidates.append({
+            "snippet": snippet,
+            "document": item.get("document"),
+            "embedding": embedding,
+        })
+
+    if len(candidates) == 0:
+        return {
+            "cache_path": normalized_cache_path,
+            "model": str(model_cache.get("model_name", active_model_name) or active_model_name),
+            "snippets": [],
+        }
+
+    max_hits = max(1, min(20, tryparseint(max_results, 5)))
+
+    def score_candidate(candidate):
+        return {
+            "snippet": candidate["snippet"],
+            "document": candidate.get("document"),
+            "similarity": tmpfs_cosine_similarity(query_embedding, candidate["embedding"]),
+        }
+
+    worker_count = min(len(candidates), max(1, min(32, os.cpu_count() or 1)))
+    if worker_count > 1:
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            scored_candidates = list(executor.map(score_candidate, candidates))
+    else:
+        scored_candidates = [score_candidate(candidate) for candidate in candidates]
+
+    scored_candidates.sort(key=lambda item: item.get("similarity", 0.0), reverse=True)
+    return {
+        "cache_path": normalized_cache_path,
+        "model": str(model_cache.get("model_name", active_model_name) or active_model_name),
+        "snippets": scored_candidates[:max_hits],
+    }
+
 def tmpfs_build_zip_bytes(dir_prefix=""):
     prefix = (tmpfs_normalize_path(dir_prefix) + "/").lstrip("/") if dir_prefix and dir_prefix.strip("/") else ""
     with tmpfs_lock:
@@ -4894,7 +5027,7 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
             textReqs = ["/api/extra/generate/stream","/api/extra/tokencount","/api/v1/generate","/sdapi/v1/interrogate","/v1/completions","/v1/chat/completions"]
             sttReqs = ["/api/extra/transcribe","/v1/audio/transcriptions"]
             ttsReqs = ["/api/extra/tts", "/v1/audio/speech"]
-            embedReqs = ["/api/extra/embeddings", "/v1/embeddings"]
+            embedReqs = ["/api/extra/embeddings", "/v1/embeddings", "/api/extra/tmpfs/semantic_search"]
             musicReqs = ["/api/extra/music/prepare","/api/extra/music/generate"]
             imageReqs = ["/sdapi/v1/txt2img", "/sdapi/v1/img2img", "/sdapi/v1/upscale"] # "/sdapi/v1/sd-models", "/sdapi/v1/options", "/sdapi/v1/samplers"
 
@@ -6694,6 +6827,30 @@ Change Mode<br>
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
                 except ValueError as e:
                     response_code = 507 if 'size limit exceeded' in str(e).lower() else 400
+                    response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+                except Exception as e:
+                    response_code = 400
+                    response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+
+        elif self.path.endswith('/api/extra/tmpfs/semantic_search'):
+            if not tmpfs_is_enabled():
+                response_code = 503
+                response_body = (json.dumps({"success": False, "error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
+            else:
+                try:
+                    tempbody = json.loads(body)
+                    result = tmpfs_semantic_search_cache(
+                        tempbody.get('embeddings_cache_path', ''),
+                        tempbody.get('search_query', ''),
+                        tempbody.get('max_results', 5),
+                    )
+                    result["success"] = True
+                    response_body = (json.dumps(result).encode())
+                except FileNotFoundError as e:
+                    response_code = 404
+                    response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+                except ValueError as e:
+                    response_code = 400
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
                 except Exception as e:
                     response_code = 400
