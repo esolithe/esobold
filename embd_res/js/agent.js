@@ -1652,21 +1652,58 @@ let getHistorySignatures = () => {
     }
 }
 
-let runUndoRedoSkippingHiddenCot = (singleStepHandler) => {
+let isTopHistorySegmentHiddenCot = () => {
+    if (!Array.isArray(gametext_arr) || gametext_arr.length === 0) {
+        return false
+    }
+    let topSegment = gametext_arr[gametext_arr.length - 1]
+    let unwrapped = unwrapAgentHistorySegment(topSegment)
+    return shouldHideAgentTurnFromVisibleHistory(unwrapped)
+}
+
+let runUndoRedoSkippingHiddenCot = (singleStepHandler, isUndo = false) => {
+    // Outside agent hide-COT mode (or while editing), preserve native single-step behavior.
     if (!shouldSkipHiddenCotOnBackRedo()) {
         singleStepHandler()
         return
     }
+
+    // Snapshot history before first step so we can determine what changed.
     let before = getHistorySignatures()
     singleStepHandler()
     let after = getHistorySignatures()
+
+    // If the underlying history did not move, stop immediately.
     let historyChanged = after.full !== before.full
     if (!historyChanged) {
         return
     }
+
+    // Visible history changed after the first step:
+    // - redo: this is the intended target, stop
+    // - undo: continue clearing newly exposed hidden COT at the top in one click
     if (after.visible !== before.visible) {
+        if (!isUndo) {
+            return
+        }
+        // For undo, also clear any now-exposed hidden COT turns so one click is enough.
+        let cleanupSteps = 200
+        while (cleanupSteps > 0 && isTopHistorySegmentHiddenCot()) {
+            cleanupSteps--
+            before = after
+            singleStepHandler()
+            after = getHistorySignatures()
+            historyChanged = after.full !== before.full
+            // Stop if another step cannot move history further.
+            if (!historyChanged) {
+                break
+            }
+        }
         return
     }
+
+    // First step changed only hidden history.
+    // Keep stepping until we hit a visible boundary or history no longer changes.
     let maxSteps = 200
     for (let i = 0; i < maxSteps; i++) {
         before = after
@@ -1685,12 +1722,12 @@ let runUndoRedoSkippingHiddenCot = (singleStepHandler) => {
 
 btn_back = () => {
     clearSuggestions()
-    runUndoRedoSkippingHiddenCot(originalBtnBack)
+    runUndoRedoSkippingHiddenCot(originalBtnBack, true)
 }
 
 btn_redo = () => {
     clearSuggestions()
-    runUndoRedoSkippingHiddenCot(originalBtnRedo)
+    runUndoRedoSkippingHiddenCot(originalBtnRedo, false)
 }
 
 btn_retry = () => {
