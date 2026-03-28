@@ -210,6 +210,7 @@ class ContextUsage {
 
     getMermaidPieText() {
         let percentages = this.getFlatPercentagesOfTotal();
+        let totalUsage = this.getAllUsage();
         let entries = Object.entries(percentages)
             .map(([name, value]) => [name, Number(value) * 100])
             .filter(([, value]) => Number.isFinite(value) && value > 0.00001)
@@ -222,7 +223,9 @@ class ContextUsage {
         let lines = ["pie showData", "title Context usage"]; 
         entries.forEach(([name, value]) => {
             let safeName = `${name || "Unknown"}`.replace(/"/g, "\\\"");
-            lines.push(`\"${safeName}\" : ${value.toFixed(2)}`);
+            let percentageAsFraction = value / 100;
+            let estimatedTokens = Math.round((totalUsage * percentageAsFraction) / 3);
+            lines.push(`\"${safeName} ${value.toFixed(2)}% (~${estimatedTokens} tokens)\" : ${value.toFixed(2)}`);
         });
 
         return lines.join("\n");
