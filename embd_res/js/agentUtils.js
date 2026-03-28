@@ -1740,8 +1740,11 @@ let getCommands = (agentRunState) => {
 	]
 }
 
+window.eso.originalGetCommands = getCommands;
+
 let getEnabledCommands = (agentRunState, overrides = [], isUsingWhitelist = false) => {
-	let enabledCommands = getCommands(agentRunState).filter(command => (!isUsingWhitelist && !!command?.enabled) || overrides.includes(command.name))
+	let disabledAgentTools = Array.isArray(localsettings?.disabled_agent_tools) ? localsettings.disabled_agent_tools : []
+	let enabledCommands = getCommands(agentRunState).filter(command => (((!isUsingWhitelist && !!command?.enabled) || overrides.includes(command.name)) && !disabledAgentTools.includes(command.name)))
 	let forbiddenAgentCommands = getDocumentFromTextDB('Forbidden agent commands')
 	if (!isUsingWhitelist && forbiddenAgentCommands !== null) {
 		let commandsToExclude = forbiddenAgentCommands.split("|")
