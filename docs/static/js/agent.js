@@ -88,7 +88,7 @@ let split = (input, ...delimiters) => {
 let listOfExclusions = ["Action taken:", "Action taken (words =", "History search performed:", "Semantic search performed:", "Chain of thought complete",
     "Web search results:", "Text has been added to history", "Formula evaluation result:", "Formula evaluation could not be completed as no formula was provided",
     "Text has been added to history", "Text was empty - nothing added to history", "Search string was empty, no search performed", "Word count is", "Image analysed:",
-    "TMPFS_TOOL:",
+    "FS_TOOL:",
     "Image generated", "No prompt provided, image not generated", "Text has been spoken", "No text provided, nothing has been said", "Setting overview has been overwritten",
     "No setting overview provided, nothing has been overwritten", "Current state has been overwritten", "No state provided, nothing has been overwritten", "Error - Empty response instead of action. Ensure all responses are valid JSON.",
     "Current state format has been overwritten", "No valid state format provided, nothing has been overwritten", 
@@ -928,7 +928,7 @@ let runAgentCycle = async (agentRunState = {}) => {
 
             let promptOverview = currentOrderOfActionDescriptionsOverall.length > 0 ? currentOrderOfActionDescriptionsOverall[i - 1] : null
             if (i === 0) {
-                let planningPrompt = "The last action from the user is the instruction. If you need to ask the user for a response, the action userInput must be used and be put as the final action in the order. When handling images always use actions to get information when needed especially for descriptions. Use describe_clicked_image only for images the user clicks in chat, and use describe_tmpfs_image only when a tmpfs file path is available. Produces a list of actions to respond to this instruction."
+                let planningPrompt = "The last action from the user is the instruction. If you need to ask the user for a response, the action userInput must be used and be put as the final action in the order. When handling images always use actions to get information when needed especially for descriptions. Use describe_clicked_image only for images the user clicks in chat, and use describe_fs_image only when a fs file path is available. Produces a list of actions to respond to this instruction."
                 if (!!agentRunState?.agentName) {
                     planningPrompt += ` You must respond as ${agentRunState.agentName} when using the send_message or userInput actions. Choose the person based on the user's instruction.`
                 }
@@ -1322,7 +1322,7 @@ let sanitizeAgentUploadFilename = (name = "") => {
     return safeName || "upload.bin"
 }
 
-let buildAgentUploadTmpfsPath = (fileName = "upload.bin") => {
+let buildAgentUploadFsPath = (fileName = "upload.bin") => {
     let now = new Date()
     let stamp = `${now.getUTCFullYear()}${`${now.getUTCMonth() + 1}`.padStart(2, "0")}${`${now.getUTCDate()}`.padStart(2, "0")}_${`${now.getUTCHours()}`.padStart(2, "0")}${`${now.getUTCMinutes()}`.padStart(2, "0")}${`${now.getUTCSeconds()}`.padStart(2, "0")}`
     let randomSuffix = `${Math.floor(Math.random() * 1000000)}`.padStart(6, "0")
@@ -1375,20 +1375,20 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [], enableFileUpload = 
         addLocalFilesButton.classList.add("btn-primary")
         addLocalFilesButton.innerText = "Add local files"
 
-        let tmpfsSelect = document.createElement("select")
-        tmpfsSelect.classList.add("agent-user-input-tmpfs-select")
-        tmpfsSelect.multiple = true
-        tmpfsSelect.size = 6
+        let fsSelect = document.createElement("select")
+        fsSelect.classList.add("agent-user-input-fs-select")
+        fsSelect.multiple = true
+        fsSelect.size = 6
 
-        let addTmpfsFilesButton = document.createElement("button")
-        addTmpfsFilesButton.type = "button"
-        addTmpfsFilesButton.classList.add("btn-primary")
-        addTmpfsFilesButton.innerText = "Add TmpFS files"
+        let addFsFilesButton = document.createElement("button")
+        addFsFilesButton.type = "button"
+        addFsFilesButton.classList.add("btn-primary")
+        addFsFilesButton.innerText = "Add FS files"
 
-        let refreshTmpfsFilesButton = document.createElement("button")
-        refreshTmpfsFilesButton.type = "button"
-        refreshTmpfsFilesButton.classList.add("btn-primary")
-        refreshTmpfsFilesButton.innerText = "Refresh TmpFS list"
+        let refreshFsFilesButton = document.createElement("button")
+        refreshFsFilesButton.type = "button"
+        refreshFsFilesButton.classList.add("btn-primary")
+        refreshFsFilesButton.innerText = "Refresh FS list"
 
         let selectedFilesContainer = document.createElement("div")
         selectedFilesContainer.classList.add("agent-user-input-selected-files")
@@ -1410,23 +1410,23 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [], enableFileUpload = 
         stopLoop.classList.add("btn-primary")
         stopLoop.innerText = "Stop loop"
 
-        let isTmpfsEnabled = is_using_kcpp_with_tmpfs()
-        let hasTmpfsWrite = typeof window?.tmpfsClient?.write === "function"
-        let hasTmpfsList = typeof window?.tmpfsClient?.list === "function"
-        let canUseTmpfsUpload = !!enableFileUpload && hasTmpfsWrite && isTmpfsEnabled
-        let canSelectTmpfsFiles = !!enableFileUpload && hasTmpfsList && isTmpfsEnabled
+        let isFsEnabled = is_using_kcpp_with_fs()
+        let hasFsWrite = typeof window?.fsClient?.write === "function"
+        let hasFsList = typeof window?.fsClient?.listEntries === "function"
+        let canUseFsUpload = !!enableFileUpload && hasFsWrite && isFsEnabled
+        let canSelectFsFiles = !!enableFileUpload && hasFsList && isFsEnabled
         let selectedFiles = []
 
         if (enableFileUpload) {
             let unavailableCapabilities = []
-            if (!canUseTmpfsUpload) {
+            if (!canUseFsUpload) {
                 unavailableCapabilities.push("local file upload")
             }
-            if (!canSelectTmpfsFiles) {
-                unavailableCapabilities.push("TmpFS file selection")
+            if (!canSelectFsFiles) {
+                unavailableCapabilities.push("FS file selection")
             }
             if (unavailableCapabilities.length > 0) {
-                capabilityText.innerText = `${unavailableCapabilities.join(" and ")} ${unavailableCapabilities.length === 1 ? "is" : "are"} unavailable because tmpfs access is not supported by the current endpoint.`
+                capabilityText.innerText = `${unavailableCapabilities.join(" and ")} ${unavailableCapabilities.length === 1 ? "is" : "are"} unavailable because filesystem access is not supported by the current endpoint.`
             }
         }
 
@@ -1436,8 +1436,8 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [], enableFileUpload = 
         }
 
         let getSelectedFileKey = (entry) => {
-            if (entry.source === "tmpfs") {
-                return `tmpfs:${entry.path}`
+            if (entry.source === "fs") {
+                return `fs:${entry.path}`
             }
             return `local:${entry.fileName}:${entry.fileSize}:${entry.fileLastModified}`
         }
@@ -1456,8 +1456,8 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [], enableFileUpload = 
 
                 let label = document.createElement("div")
                 label.classList.add("agent-user-input-selected-file-label")
-                if (entry.source === "tmpfs") {
-                    label.innerText = `TmpFS: ${entry.path}`
+                if (entry.source === "fs") {
+                    label.innerText = `FS: ${entry.path}`
                 }
                 else {
                     label.innerText = `Local: ${entry.fileName}`
@@ -1493,7 +1493,7 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [], enableFileUpload = 
             return addedCount
         }
 
-        let normalizeTmpfsSelectablePath = (rawPath = "") => {
+        let normalizeFsSelectablePath = (rawPath = "") => {
             let path = `${rawPath || ""}`.trim()
             let isDirectory = false
             if (!path) {
@@ -1522,18 +1522,36 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [], enableFileUpload = 
             }
         }
 
-        let loadTmpfsFiles = async () => {
-            if (!canSelectTmpfsFiles) {
+        let loadFsFiles = async () => {
+            if (!canSelectFsFiles) {
                 return
             }
 
-            tmpfsSelect.innerHTML = ""
-            fileStatus.innerText = "Loading TmpFS files..."
+            fsSelect.innerHTML = ""
+            fileStatus.innerText = "Loading FS files..."
             try {
-                let tmpfsPaths = await window.tmpfsClient.list("*")
-                let normalizedEntries = Array.isArray(tmpfsPaths)
-                    ? tmpfsPaths.map(String).map(normalizeTmpfsSelectablePath).filter(entry => entry !== null)
-                    : []
+                let normalizedEntries = []
+                let listing = await window.fsClient.listEntries("*")
+                if (Array.isArray(listing?.directories)) {
+                    normalizedEntries.push(...listing.directories.map(path => ({
+                        path: `${path || ""}`.trim() || "/",
+                        isDirectory: true,
+                        displayPath: `${(`${path || ""}`.trim() || "/")} (directory)`
+                    })))
+                }
+                if (Array.isArray(listing?.files)) {
+                    normalizedEntries.push(...listing.files.map(path => ({
+                        path: `${path || ""}`.trim(),
+                        isDirectory: false,
+                        displayPath: `${`${path || ""}`.trim()}`
+                    })).filter(entry => !!entry.path))
+                }
+                if (normalizedEntries.length === 0) {
+                    let fsPaths = await window.fsClient.list("*")
+                    normalizedEntries = Array.isArray(fsPaths)
+                        ? fsPaths.map(String).map(normalizeFsSelectablePath).filter(entry => entry !== null)
+                        : []
+                }
                 let uniqueEntries = []
                 let seenDisplayPaths = []
                 normalizedEntries.forEach(entry => {
@@ -1545,7 +1563,7 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [], enableFileUpload = 
                 uniqueEntries.sort((a, b) => a.displayPath.localeCompare(b.displayPath))
 
                 if (uniqueEntries.length === 0) {
-                    fileStatus.innerText = "No files are currently available in TmpFS."
+                    fileStatus.innerText = "No files are currently available in FS."
                     return
                 }
 
@@ -1554,12 +1572,12 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [], enableFileUpload = 
                     option.value = entry.path
                     option.dataset.isDirectory = entry.isDirectory ? "true" : "false"
                     option.innerText = entry.displayPath
-                    tmpfsSelect.appendChild(option)
+                    fsSelect.appendChild(option)
                 })
-                fileStatus.innerText = `Loaded ${uniqueEntries.length} TmpFS path${uniqueEntries.length === 1 ? "" : "s"}.`
+                fileStatus.innerText = `Loaded ${uniqueEntries.length} FS path${uniqueEntries.length === 1 ? "" : "s"}.`
             }
             catch (e) {
-                fileStatus.innerText = `Failed to load TmpFS files: ${e?.message || e}`
+                fileStatus.innerText = `Failed to load FS files: ${e?.message || e}`
             }
         }
 
@@ -1593,9 +1611,9 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [], enableFileUpload = 
             fileInput.value = ""
         }
 
-        addTmpfsFilesButton.onclick = () => {
-            let selectedTmpfsPaths = Array.from(tmpfsSelect.selectedOptions || []).map(option => {
-                let normalized = normalizeTmpfsSelectablePath(option.value || "")
+        addFsFilesButton.onclick = () => {
+            let selectedFsPaths = Array.from(fsSelect.selectedOptions || []).map(option => {
+                let normalized = normalizeFsSelectablePath(option.value || "")
                 if (normalized === null) {
                     return null
                 }
@@ -1604,16 +1622,16 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [], enableFileUpload = 
                 normalized.displayPath = `${normalized.path}${isDirectory ? " (directory)" : ""}`
                 return normalized
             }).filter(entry => entry !== null)
-            let addedCount = addSelectedFiles(selectedTmpfsPaths.map(entry => ({
-                source: "tmpfs",
+            let addedCount = addSelectedFiles(selectedFsPaths.map(entry => ({
+                source: "fs",
                 isDirectory: entry.isDirectory,
                 path: entry.displayPath,
                 fileName: entry.path.split("/").filter(part => part.length > 0).slice(-1)[0] || entry.path,
             })))
-            fileStatus.innerText = addedCount > 0 ? `Added ${addedCount} TmpFS file${addedCount === 1 ? "" : "s"}.` : "Selected TmpFS files were already in the list."
+            fileStatus.innerText = addedCount > 0 ? `Added ${addedCount} FS file${addedCount === 1 ? "" : "s"}.` : "Selected FS files were already in the list."
         }
 
-        refreshTmpfsFilesButton.onclick = loadTmpfsFiles
+        refreshFsFilesButton.onclick = loadFsFiles
 
         confirmAndContinue.onclick = async () => {
             confirmAndContinue.disabled = true
@@ -1621,23 +1639,23 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [], enableFileUpload = 
                 let preparedFiles = []
                 for (let i = 0; i < selectedFiles.length; i++) {
                     let currentFile = selectedFiles[i]
-                    if (currentFile.source === "tmpfs") {
+                    if (currentFile.source === "fs") {
                         preparedFiles.push({
-                            source: "tmpfs",
+                            source: "fs",
                             fileName: currentFile.fileName,
                             path: currentFile.path,
                         })
                         continue
                     }
 
-                    if (!canUseTmpfsUpload) {
-                        throw new Error("Local file upload is unavailable because tmpfs upload is not supported by the current endpoint.")
+                    if (!canUseFsUpload) {
+                        throw new Error("Local file upload is unavailable because filesystem upload is not supported by the current endpoint.")
                     }
 
                     fileStatus.innerText = `Uploading file ${i + 1}/${selectedFiles.length}: ${currentFile.fileName}`
-                    let uploadPath = buildAgentUploadTmpfsPath(currentFile.fileName)
+                    let uploadPath = buildAgentUploadFsPath(currentFile.fileName)
                     let bytes = new Uint8Array(await currentFile.localFile.arrayBuffer())
-                    await window.tmpfsClient.write(uploadPath, bytes, true)
+                    await window.fsClient.write(uploadPath, bytes, true)
                     preparedFiles.push({
                         source: "local",
                         fileName: currentFile.fileName,
@@ -1684,23 +1702,23 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [], enableFileUpload = 
             if (capabilityText.innerText.trim().length > 0) {
                 body.appendChild(capabilityText)
             }
-            if (canUseTmpfsUpload) {
+            if (canUseFsUpload) {
                 localFileRow.appendChild(addLocalFilesButton)
                 localFileRow.appendChild(fileInput)
             }
-            if (canSelectTmpfsFiles) {
-                localFileRow.appendChild(addTmpfsFilesButton)
-                localFileRow.appendChild(refreshTmpfsFilesButton)
+            if (canSelectFsFiles) {
+                localFileRow.appendChild(addFsFilesButton)
+                localFileRow.appendChild(refreshFsFilesButton)
             }
             if (localFileRow.childElementCount > 0) {
                 body.appendChild(localFileRow)
             }
-            if (canSelectTmpfsFiles) {
-                body.appendChild(tmpfsSelect)
+            if (canSelectFsFiles) {
+                body.appendChild(fsSelect)
             }
             body.appendChild(selectedFilesContainer)
             body.appendChild(selectedFilesStatus)
-            if (canUseTmpfsUpload || canSelectTmpfsFiles) {
+            if (canUseFsUpload || canSelectFsFiles) {
                 body.appendChild(fileStatus)
             }
         }
@@ -1711,8 +1729,8 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [], enableFileUpload = 
         card.appendChild(body)
         overlay.appendChild(card)
         document.body.appendChild(overlay)
-        if (canSelectTmpfsFiles) {
-            loadTmpfsFiles()
+        if (canSelectFsFiles) {
+            loadFsFiles()
         }
         input.focus()
     })
