@@ -269,13 +269,26 @@ class FsClient {
     // -------------------------------------------------------------------------
 
     /**
-     * List all paths in the tmpfs, optionally filtered by a fnmatch glob pattern.
+     * List filesystem entries, optionally filtered by a fnmatch glob pattern.
+     * @param {string} [pattern='*']
+     * @returns {Promise<{files:string[], directories:string[]}>}
+     */
+    async listEntries(pattern, case_insensitive) {
+        const data = await this._get('/api/extra/fs/files', { pattern, case_insensitive });
+        return {
+            files: Array.isArray(data?.files) ? data.files : (Array.isArray(data?.paths) ? data.paths : []),
+            directories: Array.isArray(data?.directories) ? data.directories : [],
+        };
+    }
+
+    /**
+     * Legacy file-only listing helper used by older callers.
      * @param {string} [pattern='*']
      * @returns {Promise<string[]>}
      */
     async list(pattern, case_insensitive) {
-        const data = await this._get('/api/extra/fs/files', { pattern, case_insensitive });
-        return data.paths;
+        const data = await this.listEntries(pattern, case_insensitive);
+        return data.files;
     }
 
     /**
@@ -291,7 +304,7 @@ class FsClient {
     }
 
     /**
-     * Semantic-search a tmpfs .txt or .pdf file using cached embeddings.
+     * Semantic-search a filesystem .txt or .pdf file using cached embeddings.
      * @param {string} path
      * @param {string} search_query
      * @param {number} [max_results=5]
@@ -312,10 +325,10 @@ class FsClient {
         const lowerPath = sourcePath.toLowerCase();
         const sourceExt = lowerPath.endsWith('.pdf') ? '.pdf' : (lowerPath.endsWith('.txt') ? '.txt' : '');
         if (!['.txt', '.pdf'].includes(sourceExt)) {
-            throw new Error('Tmpfs semantic search only supports .txt and .pdf files.');
+            throw new Error('Filesystem semantic search only supports .txt and .pdf files.');
         }
         if (sourceExt === '.txt' && sourceMetadata?.binary) {
-            throw new Error('Tmpfs semantic search requires a text-readable .txt file.');
+            throw new Error('Filesystem semantic search requires a text-readable .txt file.');
         }
 
         const modelName = `${(typeof get_kcpp_embedding_model === 'function' ? get_kcpp_embedding_model() : '') || ''}`.trim();
@@ -330,7 +343,7 @@ class FsClient {
             : await this._extract_source_text(sourcePath, sourceExt);
         rawText = `${rawText || ''}`.trim();
         if (rawText === '') {
-            throw new Error('No text could be extracted from the selected tmpfs file.');
+            throw new Error('No text could be extracted from the selected filesystem file.');
         }
         if (!rawTextExists) {
             await this.write(semanticPaths.rawTextPath, rawText);
@@ -417,7 +430,7 @@ class FsClient {
     // -------------------------------------------------------------------------
 
     /**
-     * Get metadata for a single file or overall tmpfs stats (pass empty path).
+     * Get metadata for a single file or overall filesystem stats (pass empty path).
      * @param {string} [path='']
      * @returns {Promise<object>}
      */
@@ -452,7 +465,7 @@ class FsClient {
     // -------------------------------------------------------------------------
 
     /**
-     * Get the public URL for a file stored in the tmpfs.
+     * Get the public URL for a file stored in the filesystem.
      * @param {string} path
      * @returns {Promise<{path:string, url:string}>}
      */
@@ -486,7 +499,7 @@ class FsClient {
     }
 
     /**
-     * Download the entire tmpfs (or a sub-directory) as a zip file.
+     * Download the entire filesystem (or a sub-directory) as a zip file.
      * @param {string} [dir=''] - Optional virtual directory to zip, e.g. "/docs".
      * @returns {Promise<{url:string, file_count:number, size_bytes:number}>}
      */

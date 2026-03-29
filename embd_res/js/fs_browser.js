@@ -110,13 +110,27 @@
     // ── Directory listing ──────────────────────────────────────────────
 
     /**
-     * Extract direct children of `currentDir` from a flat list of all
-     * fs paths. Returns { dirs: string[], files: string[] }.
+     * Extract direct children of `currentDir` from explicit directory + file lists.
+     * Returns { dirs: string[], files: string[] }.
      */
-    function getChildren(allPaths, currentDir) {
+    function getChildren(allPaths, allDirectories, currentDir) {
         const prefix = currentDir === '/' ? '/' : currentDir; // e.g. "/foo/"
         const childDirs = new Set();
         const childFiles = [];
+
+        for (const p of allDirectories) {
+            if (!p) continue;
+            let relDir;
+            if (currentDir === '/') {
+                relDir = p.replace(/^\/+/, '');
+            } else {
+                if (!p.startsWith(prefix)) continue;
+                relDir = p.slice(prefix.length);
+            }
+            if (!relDir) continue;
+            const slashIdx = relDir.indexOf('/');
+            childDirs.add(slashIdx === -1 ? relDir : relDir.slice(0, slashIdx));
+        }
 
         for (const p of allPaths) {
             let relative;
@@ -155,20 +169,22 @@
 
         tbody.innerHTML = '<tr id="loading-row"><td colspan="4">Loading\u2026</td></tr>';
 
-        // Fetch all paths (flat list)
+        // Fetch all files/directories
         let allPaths = [];
+        let allDirectories = [];
         try {
             const r = await fetch('/api/extra/fs/files');
             if (r.ok) {
                 const data = await r.json();
-                allPaths = data.paths || [];
+                allPaths = Array.isArray(data.files) ? data.files : (Array.isArray(data.paths) ? data.paths : []);
+                allDirectories = Array.isArray(data.directories) ? data.directories : [];
             }
         } catch (e) {
             tbody.innerHTML = `<tr><td colspan="4" style="color:var(--danger)">Failed to load file list: ${esc(String(e))}</td></tr>`;
             return;
         }
 
-        const { dirs, files } = getChildren(allPaths, dir);
+        const { dirs, files } = getChildren(allPaths, allDirectories, dir);
         const parent = parentOf(dir);
 
         if (dirs.length === 0 && files.length === 0 && dir === '/') {

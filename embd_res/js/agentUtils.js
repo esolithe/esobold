@@ -58,19 +58,19 @@ let blobToDataUrl = async (blob) => {
 	})
 }
 
-let readFsPathAsDataUrl = async (tmpfsPath) => {
-	let rawResp = await window.fsClient.fetch_raw(tmpfsPath)
+let readFsPathAsDataUrl = async (fsPath) => {
+	let rawResp = await window.fsClient.fetch_raw(fsPath)
 	let blob = await rawResp.blob()
 	return await blobToDataUrl(blob)
 }
 
-let readFsPathAsBase64 = async (tmpfsPath) => {
-	return normalizeBase64ImageData(await readFsPathAsDataUrl(tmpfsPath))
+let readFsPathAsBase64 = async (fsPath) => {
+	return normalizeBase64ImageData(await readFsPathAsDataUrl(fsPath))
 }
 
-let writeBase64ToFs = async (tmpfsPath, base64Data) => {
+let writeBase64ToFs = async (fsPath, base64Data) => {
 	let bytes = base64ToUint8Array(base64Data)
-	return await window.fsClient.write(tmpfsPath, bytes, true)
+	return await window.fsClient.write(fsPath, bytes, true)
 }
 
 let waitForUserImageSelection = async () => {
@@ -289,10 +289,10 @@ let objToText = (obj, depth = 0) => {
 
 let wordCountEnabled = false
 let getFsEmbedRegistry = () => {
-	if (!window.kcppTmpfsEmbeds) {
-		window.kcppTmpfsEmbeds = {}
+	if (!window.kcppFsEmbeds) {
+		window.kcppFsEmbeds = {}
 	}
-	return window.kcppTmpfsEmbeds
+	return window.kcppFsEmbeds
 }
 
 let clampFsEmbedLayout = (layout = {}) => {
@@ -308,8 +308,8 @@ let clampFsEmbedLayout = (layout = {}) => {
 }
 
 let raiseFsEmbed = (container) => {
-	window.kcppTmpfsEmbedZ = (window.kcppTmpfsEmbedZ || 4000) + 1
-	container.style.zIndex = `${window.kcppTmpfsEmbedZ}`
+	window.kcppFsEmbedZ = (window.kcppFsEmbedZ || 4000) + 1
+	container.style.zIndex = `${window.kcppFsEmbedZ}`
 }
 
 let closeFsEmbedByName = (name) => {
@@ -346,25 +346,25 @@ let getFsMediaKindByUrl = (url = "") => {
 let createFsEmbedContentElement = (kind) => {
 	if (kind === "image") {
 		let imageElem = document.createElement("img")
-		imageElem.className = "kcpp-tmpfs-embed-content kcpp-tmpfs-embed-media"
+		imageElem.className = "kcpp-fs-embed-content kcpp-fs-embed-media"
 		imageElem.loading = "lazy"
 		imageElem.decoding = "async"
 		return imageElem
 	}
 	if (kind === "video") {
 		let videoElem = document.createElement("video")
-		videoElem.className = "kcpp-tmpfs-embed-content kcpp-tmpfs-embed-media"
+		videoElem.className = "kcpp-fs-embed-content kcpp-fs-embed-media"
 		videoElem.controls = true
 		return videoElem
 	}
 	if (kind === "audio") {
 		let audioElem = document.createElement("audio")
-		audioElem.className = "kcpp-tmpfs-embed-content kcpp-tmpfs-embed-audio"
+		audioElem.className = "kcpp-fs-embed-content kcpp-fs-embed-audio"
 		audioElem.controls = true
 		return audioElem
 	}
 	let embedElem = document.createElement("embed")
-	embedElem.className = "kcpp-tmpfs-embed-content"
+	embedElem.className = "kcpp-fs-embed-content"
 	embedElem.type = "text/html"
 	return embedElem
 }
@@ -391,14 +391,14 @@ let openFsEmbedByName = async (args = {}) => {
 
 	if (!container) {
 		container = document.createElement("div")
-		container.className = "kcpp-tmpfs-embed-window"
+		container.className = "kcpp-fs-embed-window"
 		container.onmousedown = () => raiseFsEmbed(container)
 
 		titleElem = document.createElement("div")
-		titleElem.className = "kcpp-tmpfs-embed-title"
+		titleElem.className = "kcpp-fs-embed-title"
 
 		let header = document.createElement("div")
-		header.className = "kcpp-tmpfs-embed-header"
+		header.className = "kcpp-fs-embed-header"
 		header.addEventListener("mousedown", (e) => {
 			if (e.target.closest("button")) return
 			e.preventDefault()
@@ -421,11 +421,11 @@ let openFsEmbedByName = async (args = {}) => {
 
 		let expandBtn = document.createElement("button")
 		expandBtn.type = "button"
-		expandBtn.className = "kcpp-tmpfs-embed-button"
+		expandBtn.className = "kcpp-fs-embed-button"
 		expandBtn.innerText = "↗"
 		expandBtn.title = "Open in new tab"
 		expandBtn.onclick = () => {
-			let srcUrl = container?.querySelector(".kcpp-tmpfs-embed-content")?.src
+			let srcUrl = container?.querySelector(".kcpp-fs-embed-content")?.src
 			if (!!srcUrl) {
 				window.open(srcUrl, "_blank", "noopener,noreferrer")
 			}
@@ -433,7 +433,7 @@ let openFsEmbedByName = async (args = {}) => {
 
 		let closeBtn = document.createElement("button")
 		closeBtn.type = "button"
-		closeBtn.className = "kcpp-tmpfs-embed-button"
+		closeBtn.className = "kcpp-fs-embed-button"
 		closeBtn.innerText = "✕"
 		closeBtn.title = "Close"
 		closeBtn.onclick = () => closeFsEmbedByName(normalizedName)
@@ -752,7 +752,7 @@ let getCommands = (agentRunState) => {
 
 				let combinedUserInput = userInput
 				if (uploadedFilePaths.length > 0) {
-					let fileLines = selectedFiles.length > 0 ? selectedFiles.map(file => `- ${file.path}${file?.source === "tmpfs" ? " (selected from FS)" : " (uploaded from local device)"}`) : uploadedFilePaths.map(path => `- ${path}`)
+					let fileLines = selectedFiles.length > 0 ? selectedFiles.map(file => `- ${file.path}${file?.source === "fs" ? " (selected from FS)" : " (uploaded from local device)"}`) : uploadedFilePaths.map(path => `- ${path}`)
 					combinedUserInput = `${combinedUserInput}${combinedUserInput.length > 0 ? "\n\n" : ""}Files available in filesystem:\n${fileLines.join("\n")}`
 				}
 
@@ -1507,7 +1507,7 @@ let getCommands = (agentRunState) => {
 				"fs_input_path": "<optional filesystem reference audio path>",
 				"fs_output_path": "<filesystem output path for generated audio (.wav/.mp3)>"
 			},
-			"enabled": is_using_kcpp_with_musicgen() && is_using_kcpp_with_tmpfs(),
+			"enabled": is_using_kcpp_with_musicgen() && is_using_kcpp_with_fs(),
 			"executor": async (action) => {
 				try {
 					let args = action?.args || {}
@@ -1555,9 +1555,9 @@ let getCommands = (agentRunState) => {
 		},
 		{
 			"name": "fs_transcribe",
-			"description": "Transcribe a .wav audio file from tmpfs using KoboldCpp transcribe endpoint.",
+			"description": "Transcribe a .wav audio file from the filesystem using KoboldCpp transcribe endpoint.",
 			"args": {
-				"path": "<tmpfs path to .wav file>",
+				"path": "<filesystem path to .wav file>",
 				"prompt": "<optional transcription prompt>",
 				"langcode": "<language code or auto>",
 				"suppress_non_speech": {
@@ -1565,15 +1565,15 @@ let getCommands = (agentRunState) => {
 					type: "boolean"
 				}
 			},
-			"enabled": is_using_kcpp_with_whisper() && is_using_kcpp_with_tmpfs(),
+			"enabled": is_using_kcpp_with_whisper() && is_using_kcpp_with_fs(),
 			"executor": async (action) => {
 				try {
-					let tmpfsPath = `${action?.args?.path || ""}`.trim()
-					if (!tmpfsPath.toLowerCase().endsWith(".wav")) {
+					let fsPath = `${action?.args?.path || ""}`.trim()
+					if (!fsPath.toLowerCase().endsWith(".wav")) {
 						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: transcribe failed - only .wav files are supported`)
 						return
 					}
-					let dataUrl = await readFsPathAsDataUrl(tmpfsPath)
+					let dataUrl = await readFsPathAsDataUrl(fsPath)
 					let response = await postKcppJson(koboldcpp_transcribe_endpoint, {
 						audio_data: dataUrl,
 						prompt: `${action?.args?.prompt || ""}`,
@@ -1608,7 +1608,7 @@ let getCommands = (agentRunState) => {
 				},
 				"fs_output_path": "<filesystem output path for generated image>"
 			},
-			"enabled": (localsettings.generate_images_mode == 2) && is_using_kcpp_with_tmpfs(),
+			"enabled": (localsettings.generate_images_mode == 2) && is_using_kcpp_with_fs(),
 			"executor": async (action) => {
 				try {
 					let args = action?.args || {}
@@ -1632,7 +1632,7 @@ let getCommands = (agentRunState) => {
 						}
 					}
 					if (!!args.prompt_user_for_image) {
-						addThought(currentChainOfThought, createSysPrompt, `Please click an image as an additional source for tmpfs image generation`, true)
+						addThought(currentChainOfThought, createSysPrompt, `Please click an image as an additional source for filesystem image generation`, true)
 						let { agentVisualiser } = agentRunState;
 						if (typeof agentVisualiser === "function") {
 							await agentVisualiser(objRefAssign({}, agentRunState, { agentRunState }))
@@ -1656,14 +1656,14 @@ let getCommands = (agentRunState) => {
 			"name": "describe_fs_image",
 			"description": "Describe an image from a filesystem file path. Incompatible with click-selected chat images.",
 			"args": {
-				"path": "<tmpfs image path>",
+				"path": "<filesystem image path>",
 				"question": "<optional focus question>"
 			},
-			"enabled": is_using_kcpp_with_tmpfs() && is_using_kcpp_with_vision(),
+			"enabled": is_using_kcpp_with_fs() && is_using_kcpp_with_vision(),
 			"executor": async (action) => {
 				try {
-					let tmpfsPath = `${action?.args?.path || ""}`.trim()
-					if (tmpfsPath === "") {
+					let fsPath = `${action?.args?.path || ""}`.trim()
+					if (fsPath === "") {
 						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: describe_fs_image failed - path is required`)
 						return
 					}
@@ -1671,7 +1671,7 @@ let getCommands = (agentRunState) => {
 					if (!!action?.args?.question) {
 						analysisPrompt += ` Specifically please focus on:\n\n${action?.args?.question}`
 					}
-					let base64Image = await readFsPathAsBase64(tmpfsPath)
+					let base64Image = await readFsPathAsBase64(fsPath)
 					let analysisResult = await generateAndGetTextFromPrompt(`${createInstructPrompt(analysisPrompt)}${instructendplaceholder}${!!localsettings?.inject_jailbreak_instruct ? localsettings.custom_jailbreak_text : ""}`, undefined, [base64Image])
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: describe_fs_image result\n${analysisResult}`)
 				}
@@ -1693,15 +1693,15 @@ let getCommands = (agentRunState) => {
 					type: "boolean"
 				}
 			},
-			"enabled": is_using_kcpp_with_tmpfs(),
+			"enabled": is_using_kcpp_with_fs(),
 			"executor": async (action) => {
 				try {
 					let normalizeFsListPath = (rawPath = "") => {
 						let path = `${rawPath || ""}`.trim()
-						let isDirectory = false
 						if (!path) {
 							return null
 						}
+						let isDirectory = false
 						if (path === ".kcpp_dir_marker") {
 							path = "/"
 							isDirectory = true
@@ -1723,9 +1723,19 @@ let getCommands = (agentRunState) => {
 					}
 
 					let pattern = action?.args?.pattern
-					let result = await window.fsClient.list(pattern, action?.args?.case_insensitive)
-					let normalizedEntries = (Array.isArray(result) ? result : []).map(normalizeFsListPath).filter(entry => entry !== null)
-					result = Array.from(new Set(normalizedEntries.map(entry => `${entry.path}${entry.isDirectory ? " (directory)" : ""}`))).sort((a, b) => a.localeCompare(b))
+					let listing = await window.fsClient.listEntries(pattern, action?.args?.case_insensitive)
+					let normalizedEntries = []
+					if (Array.isArray(listing?.directories)) {
+						normalizedEntries.push(...listing.directories.map(path => ({ path: `${path || ""}`.trim() || "/", isDirectory: true })))
+					}
+					if (Array.isArray(listing?.files)) {
+						normalizedEntries.push(...listing.files.map(path => ({ path: `${path || ""}`.trim(), isDirectory: false })).filter(entry => !!entry.path))
+					}
+					if (normalizedEntries.length === 0) {
+						let legacyPaths = await window.fsClient.list(pattern, action?.args?.case_insensitive)
+						normalizedEntries = (Array.isArray(legacyPaths) ? legacyPaths : []).map(normalizeFsListPath).filter(entry => entry !== null)
+					}
+					let result = Array.from(new Set(normalizedEntries.map(entry => `${entry.path}${entry.isDirectory ? " (directory)" : ""}`))).sort((a, b) => a.localeCompare(b))
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: list result\n${objToText(result)}`)
 				}
 				catch (e) {
@@ -1754,7 +1764,7 @@ let getCommands = (agentRunState) => {
 					type: "boolean"
 				}
 			},
-			"enabled": is_using_kcpp_with_tmpfs(),
+			"enabled": is_using_kcpp_with_fs(),
 			"executor": async (action) => {
 				try {
 					let result = await window.fsClient.search(action?.args?.pattern, action?.args?.path_pattern, action?.args?.max_results, action?.args?.case_insensitive)
@@ -1767,9 +1777,9 @@ let getCommands = (agentRunState) => {
 		},
 		{
 			"name": "fs_semantic_search",
-			"description": "Semantic-search a tmpfs .txt or .pdf document using cached embeddings.",
+			"description": "Semantic-search a filesystem .txt or .pdf document using cached embeddings.",
 			"args": {
-				"path": "<tmpfs path to a .txt or .pdf file>",
+				"path": "<filesystem path to a .txt or .pdf file>",
 				"search_query": {
 					description: "<semantic search query>",
 					type: "string"
@@ -1779,7 +1789,7 @@ let getCommands = (agentRunState) => {
 					type: "integer"
 				}
 			},
-			"enabled": is_using_kcpp_with_tmpfs() && is_using_kcpp_with_embeddings(),
+			"enabled": is_using_kcpp_with_fs() && is_using_kcpp_with_embeddings(),
 			"executor": async (action) => {
 				try {
 					let approved = await confirmFsMutation("fs_semantic_search", {
@@ -1813,7 +1823,7 @@ let getCommands = (agentRunState) => {
 			"args": {
 				"path": "<file path>"
 			},
-			"enabled": is_using_kcpp_with_tmpfs(),
+			"enabled": is_using_kcpp_with_fs(),
 			"executor": async (action) => {
 				try {
 					let result = await window.fsClient.metadata(action?.args?.path)
@@ -1830,7 +1840,7 @@ let getCommands = (agentRunState) => {
 			"args": {
 				"path": "<file path>"
 			},
-			"enabled": is_using_kcpp_with_tmpfs(),
+			"enabled": is_using_kcpp_with_fs(),
 			"executor": async (action) => {
 				try {
 					let result = await window.fsClient.url(action?.args?.path)
@@ -1855,7 +1865,7 @@ let getCommands = (agentRunState) => {
 					type: "integer"
 				}
 			},
-			"enabled": is_using_kcpp_with_tmpfs(),
+			"enabled": is_using_kcpp_with_fs(),
 			"executor": async (action) => {
 				try {
 					let result = await window.fsClient.content(action?.args?.path, action?.args?.start, action?.args?.end)
@@ -1868,14 +1878,14 @@ let getCommands = (agentRunState) => {
 		},
 		{
 			"name": "fs_download_info",
-			"description": "Get filesystem download information for full tmpfs or one subdirectory.",
+			"description": "Get filesystem download information for the full filesystem or one subdirectory.",
 			"args": {
 				"dir": {
 					description: "<optional directory prefix>",
 					type: "string"
 				}
 			},
-			"enabled": is_using_kcpp_with_tmpfs(),
+			"enabled": is_using_kcpp_with_fs(),
 			"executor": async (action) => {
 				try {
 					let result = await window.fsClient.download_info(action?.args?.dir)
@@ -1893,7 +1903,7 @@ let getCommands = (agentRunState) => {
 				"path": "<file path>",
 				"content": "<text content>"
 			},
-			"enabled": is_using_kcpp_with_tmpfs(),
+			"enabled": is_using_kcpp_with_fs(),
 			"executor": async (action) => {
 				try {
 					let content = action?.args?.content
@@ -1933,7 +1943,7 @@ let getCommands = (agentRunState) => {
 					type: "boolean"
 				}
 			},
-			"enabled": is_using_kcpp_with_tmpfs(),
+			"enabled": is_using_kcpp_with_fs(),
 			"executor": async (action) => {
 				try {
 					let approved = await confirmFsMutation("fs_write_lines", { path: action?.args?.path })
@@ -1955,7 +1965,7 @@ let getCommands = (agentRunState) => {
 			"args": {
 				"path": "<file path>"
 			},
-			"enabled": is_using_kcpp_with_tmpfs(),
+			"enabled": is_using_kcpp_with_fs(),
 			"executor": async (action) => {
 				try {
 					let approved = await confirmFsMutation("fs_delete", { path: action?.args?.path })
@@ -1978,7 +1988,7 @@ let getCommands = (agentRunState) => {
 				"source": "<source path>",
 				"destination": "<destination path>"
 			},
-			"enabled": is_using_kcpp_with_tmpfs(),
+			"enabled": is_using_kcpp_with_fs(),
 			"executor": async (action) => {
 				try {
 					let approved = await confirmFsMutation("fs_move", { source: action?.args?.source, destination: action?.args?.destination })
@@ -2001,7 +2011,7 @@ let getCommands = (agentRunState) => {
 				"source": "<source path>",
 				"destination": "<destination path>"
 			},
-			"enabled": is_using_kcpp_with_tmpfs(),
+			"enabled": is_using_kcpp_with_fs(),
 			"executor": async (action) => {
 				try {
 					let approved = await confirmFsMutation("fs_copy", { source: action?.args?.source, destination: action?.args?.destination })
@@ -2019,15 +2029,15 @@ let getCommands = (agentRunState) => {
 		},
 		{
 			"name": "fs_extract_zip",
-			"description": "Extract a .zip file from tmpfs into a target tmpfs directory.",
+			"description": "Extract a .zip file from the filesystem into a target filesystem directory.",
 			"args": {
-				"zip_path": "<tmpfs .zip file path>",
+				"zip_path": "<filesystem .zip file path>",
 				"target_dir": {
 					description: "<target directory, default />",
 					type: "string"
 				}
 			},
-			"enabled": is_using_kcpp_with_tmpfs(),
+			"enabled": is_using_kcpp_with_fs(),
 			"executor": async (action) => {
 				try {
 					let zipPath = `${action?.args?.zip_path || ""}`.trim()
@@ -2061,7 +2071,7 @@ let getCommands = (agentRunState) => {
 			"args": {
 				"path": "<folder path>"
 			},
-			"enabled": is_using_kcpp_with_tmpfs(),
+			"enabled": is_using_kcpp_with_fs(),
 			"executor": async (action) => {
 				try {
 					let approved = await confirmFsMutation("fs_create_folder", { path: action?.args?.path })
@@ -2083,7 +2093,7 @@ let getCommands = (agentRunState) => {
 			"args": {
 				"path": "<folder path>"
 			},
-			"enabled": is_using_kcpp_with_tmpfs(),
+			"enabled": is_using_kcpp_with_fs(),
 			"executor": async (action) => {
 				try {
 					let approved = await confirmFsMutation("fs_delete_folder", { path: action?.args?.path })
@@ -2122,7 +2132,7 @@ let getCommands = (agentRunState) => {
 					type: "integer"
 				}
 			},
-			"enabled": is_using_kcpp_with_tmpfs(),
+			"enabled": is_using_kcpp_with_fs(),
 			"executor": async (action) => {
 				try {
 					let result = await openFsEmbedByName(action?.args || {})
@@ -2139,7 +2149,7 @@ let getCommands = (agentRunState) => {
 			"args": {
 				"name": "<embed name to close>"
 			},
-			"enabled": is_using_kcpp_with_tmpfs(),
+			"enabled": is_using_kcpp_with_fs(),
 			"executor": async (action) => {
 				try {
 					let result = closeFsEmbedByName(action?.args?.name)
@@ -2187,7 +2197,7 @@ let getCommands = (agentRunState) => {
 				},
 				"fs_output_path": "<filesystem output path for generated audio (.wav)>"
 			},
-			"enabled": (localsettings.tts_mode == KCPP_TTS_ID) && is_using_kcpp_with_tmpfs(),
+			"enabled": (localsettings.tts_mode == KCPP_TTS_ID) && is_using_kcpp_with_fs(),
 			"executor": async (action) => {
 				try {
 					let textToSay = `${action?.args?.textToSay || ""}`.trim()

@@ -83,10 +83,11 @@ extra_images_max = 4 # for kontext/qwen img
 KcppVersion = "1.111"
 showdebug = True
 kcpp_instance = None #global running instance
-global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "swapReqType": None, "autoswapmode": False, "tmpfs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}}
+global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "swapReqType": None, "autoswapmode": False, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}}
 using_gui_launcher = False
-tmpfs_lock = threading.Lock()
-TMPFS_DIR_MARKER_FILENAME = ".kcpp_dir_marker"
+fs_lock = threading.Lock()
+# Used only by in-memory filesystem mode to represent empty directories.
+FS_DIR_MARKER_FILENAME = ".kcpp_dir_marker"
 
 handle = None
 friendlymodelname = "inactive"
@@ -1273,18 +1274,18 @@ def get_capabilities():
     has_guidance = True if args.enableguidance else False
     has_jinja = True if args.jinja else False
     has_mcp = True if (args.mcpfile and mcp_connections and len(mcp_connections) > 0) else False
-    has_tmpfs = tmpfs_is_enabled()
-    tmpfs_mode = "memory"
+    has_fs = fs_is_enabled()
+    fs_mode = "memory"
     try:
-        with tmpfs_lock:
-            tmpfs_mode = tmpfs_get_mode(tmpfs_snapshot_state())
+        with fs_lock:
+            fs_mode = fs_get_mode(fs_snapshot_state())
     except Exception:
-        tmpfs_mode = "memory"
+        fs_mode = "memory"
     has_server_saving = args.admin and not (args.admindatadir == "")
     had_admin_with_hf = args.adminallowhf
     admin_type = (2 if args.admin and args.admindir and args.adminpassword else (1 if args.admin and args.admindir else 0))
     has_router = True if args.routermode else False
-    return {"result":"KoboldCpp", "version":KcppVersion, "protected":has_password, "llm":has_llm, "txt2img":has_txt2img,"vision":visionSupport,"audio":audioSupport,"transcribe":has_whisper,"multiplayer":has_multiplayer,"websearch":has_search,"tts":has_tts, "embeddings":has_embeddings, "music":has_music, "tmpfs":has_tmpfs, "tmpfsMode":tmpfs_mode, "savedata":(savedata_obj is not None), "admin": admin_type, "router":has_router, "guidance": has_guidance, "jinja": has_jinja, "mcp":has_mcp, "hasServerSaving": has_server_saving, "hasAdminWithHF": had_admin_with_hf, "embeddingModel": embeddingModel}
+    return {"result":"KoboldCpp", "version":KcppVersion, "protected":has_password, "llm":has_llm, "txt2img":has_txt2img,"vision":visionSupport,"audio":audioSupport,"transcribe":has_whisper,"multiplayer":has_multiplayer,"websearch":has_search,"tts":has_tts, "embeddings":has_embeddings, "music":has_music, "fs":has_fs, "fsMode":fs_mode, "savedata":(savedata_obj is not None), "admin": admin_type, "router":has_router, "guidance": has_guidance, "jinja": has_jinja, "mcp":has_mcp, "hasServerSaving": has_server_saving, "hasAdminWithHF": had_admin_with_hf, "embeddingModel": embeddingModel}
 
 
 def scan_directory(dirpath, valid_exts, depth):
@@ -4355,7 +4356,7 @@ def get_my_epurl():
         epurl = f"{httpsaffix}://{args.host}:{displayedport}"
     return epurl
 
-def tmpfs_make_state(max_size_bytes=0, source_dir="", initialized=False, mode="memory"):
+def fs_make_state(max_size_bytes=0, source_dir="", initialized=False, mode="memory"):
     return {
         "files": {},
         "current_size_bytes": 0,
@@ -4365,7 +4366,7 @@ def tmpfs_make_state(max_size_bytes=0, source_dir="", initialized=False, mode="m
         "initialized": initialized,
     }
 
-def tmpfs_to_bytes(content, isB64 = False):
+def fs_to_bytes(content, isB64 = False):
     if isinstance(content, bytes):
         return content
     if content is None:
@@ -4374,14 +4375,14 @@ def tmpfs_to_bytes(content, isB64 = False):
         return base64.b64decode(content)
     return str(content).encode("utf-8")
 
-def tmpfs_snapshot_state():
-    tmpfs = global_memory.get("tmpfs", {}) if global_memory else {}
+def fs_snapshot_state():
+    fs = global_memory.get("fs", {}) if global_memory else {}
     files = {}
-    if isinstance(tmpfs, dict):
-        for path, entry in dict(tmpfs.get("files", {})).items():
+    if isinstance(fs, dict):
+        for path, entry in dict(fs.get("files", {})).items():
             if not isinstance(entry, dict):
                 continue
-            content_bytes = tmpfs_to_bytes(entry.get("content", b""))
+            content_bytes = fs_to_bytes(entry.get("content", b""))
             files[path] = {
                 "content": content_bytes,
                 "modified": entry.get("modified", ""),
@@ -4389,81 +4390,81 @@ def tmpfs_snapshot_state():
             }
     return {
         "files": files,
-        "current_size_bytes": tryparseint(tmpfs.get("current_size_bytes", 0), 0) if isinstance(tmpfs, dict) else 0,
-        "max_size_bytes": tryparseint(tmpfs.get("max_size_bytes", 0), 0) if isinstance(tmpfs, dict) else 0,
-        "source_dir": tmpfs.get("source_dir", "") if isinstance(tmpfs, dict) else "",
-        "mode": ("disk" if (isinstance(tmpfs, dict) and str(tmpfs.get("mode", "memory")).lower() == "disk") else "memory"),
-        "initialized": bool(tmpfs.get("initialized", False)) if isinstance(tmpfs, dict) else False,
+        "current_size_bytes": tryparseint(fs.get("current_size_bytes", 0), 0) if isinstance(fs, dict) else 0,
+        "max_size_bytes": tryparseint(fs.get("max_size_bytes", 0), 0) if isinstance(fs, dict) else 0,
+        "source_dir": fs.get("source_dir", "") if isinstance(fs, dict) else "",
+        "mode": ("disk" if (isinstance(fs, dict) and str(fs.get("mode", "memory")).lower() == "disk") else "memory"),
+        "initialized": bool(fs.get("initialized", False)) if isinstance(fs, dict) else False,
     }
 
-def tmpfs_get_mode(tmpfs_state=None):
-    state = tmpfs_state if isinstance(tmpfs_state, dict) else tmpfs_snapshot_state()
+def fs_get_mode(fs_state=None):
+    state = fs_state if isinstance(fs_state, dict) else fs_snapshot_state()
     return "disk" if str(state.get("mode", "memory")).lower() == "disk" else "memory"
 
-def tmpfs_is_disk_mode(tmpfs_state=None):
-    return tmpfs_get_mode(tmpfs_state) == "disk"
+def fs_is_disk_mode(fs_state=None):
+    return fs_get_mode(fs_state) == "disk"
 
-def tmpfs_get_disk_root(tmpfs_state=None):
-    state = tmpfs_state if isinstance(tmpfs_state, dict) else tmpfs_snapshot_state()
+def fs_get_disk_root(fs_state=None):
+    state = fs_state if isinstance(fs_state, dict) else fs_snapshot_state()
     source_dir = str(state.get("source_dir", "") or "").strip()
     if source_dir == "":
         raise ValueError("Disk filesystem mode requires a configured root directory.")
     return os.path.realpath(os.path.abspath(source_dir))
 
-def tmpfs_resolve_disk_path(path, allow_root=False, tmpfs_state=None):
-    normalized_path = tmpfs_normalize_path(path, allow_root=allow_root)
-    state = tmpfs_state if isinstance(tmpfs_state, dict) else tmpfs_snapshot_state()
-    root_dir = tmpfs_get_disk_root(state)
+def fs_resolve_disk_path(path, allow_root=False, fs_state=None):
+    normalized_path = fs_normalize_path(path, allow_root=allow_root)
+    state = fs_state if isinstance(fs_state, dict) else fs_snapshot_state()
+    root_dir = fs_get_disk_root(state)
     rel_path = normalized_path.lstrip("/")
     abs_path = os.path.abspath(os.path.join(root_dir, rel_path))
     real_abs_path = os.path.realpath(abs_path)
     if real_abs_path != root_dir and not real_abs_path.startswith(root_dir + os.sep):
-        raise ValueError("Invalid tmpfs path.")
+        raise ValueError("Invalid filesystem path.")
     return normalized_path, real_abs_path, root_dir
 
-def tmpfs_is_enabled():
+def fs_is_enabled():
     parsed_args = globals().get("args", None)
-    configured_max_mb = max(0, tryparseint(getattr(parsed_args, "tmpfsmaxsize", 0), 0))
+    configured_max_mb = max(0, tryparseint(getattr(parsed_args, "fsmaxsize", 0), 0))
     if configured_max_mb <= 0:
         return False
-    with tmpfs_lock:
-        tmpfs = tmpfs_snapshot_state()
-    return tryparseint(tmpfs.get("max_size_bytes", 0), 0) > 0
+    with fs_lock:
+        fs = fs_snapshot_state()
+    return tryparseint(fs.get("max_size_bytes", 0), 0) > 0
 
-def tmpfs_normalize_path(raw_path, allow_root=False):
+def fs_normalize_path(raw_path, allow_root=False):
     if raw_path is None:
-        raise ValueError("Missing tmpfs path.")
+        raise ValueError("Missing filesystem path.")
     path = urllib.parse.unquote(str(raw_path)).replace("\\", "/")
     normalized = posixpath.normpath("/" + path.lstrip("/"))
     if normalized in ("/..", "..") or normalized.startswith("/../"):
-        raise ValueError("Invalid tmpfs path.")
+        raise ValueError("Invalid filesystem path.")
     if not allow_root and normalized == "/":
-        raise ValueError("Tmpfs path must target a file.")
+        raise ValueError("Filesystem path must target a file.")
     return normalized
 
-def tmpfs_is_binary(content_bytes):
+def fs_is_binary(content_bytes):
     return b"\x00" in content_bytes
 
-def tmpfs_decode_text(content_bytes):
-    return tmpfs_to_bytes(content_bytes).decode("utf-8", "replace")
+def fs_decode_text(content_bytes):
+    return fs_to_bytes(content_bytes).decode("utf-8", "replace")
 
-def tmpfs_count_lines(content_bytes):
-    if tmpfs_is_binary(content_bytes):
+def fs_count_lines(content_bytes):
+    if fs_is_binary(content_bytes):
         return 0
-    return len(tmpfs_decode_text(content_bytes).splitlines())
+    return len(fs_decode_text(content_bytes).splitlines())
 
-def tmpfs_set_state(tmpfs_state):
+def fs_set_state(fs_state):
     if global_memory is not None:
-        global_memory["tmpfs"] = tmpfs_state
+        global_memory["fs"] = fs_state
 
-def tmpfs_get_file(path):
-    normalized_path = tmpfs_normalize_path(path)
-    with tmpfs_lock:
-        tmpfs = tmpfs_snapshot_state()
-    if tmpfs_is_disk_mode(tmpfs):
-        _, abs_path, _ = tmpfs_resolve_disk_path(normalized_path, tmpfs_state=tmpfs)
+def fs_get_file(path):
+    normalized_path = fs_normalize_path(path)
+    with fs_lock:
+        fs = fs_snapshot_state()
+    if fs_is_disk_mode(fs):
+        _, abs_path, _ = fs_resolve_disk_path(normalized_path, fs_state=fs)
         if not os.path.isfile(abs_path):
-            raise FileNotFoundError(f"Tmpfs file not found: {normalized_path}")
+            raise FileNotFoundError(f"Filesystem file not found: {normalized_path}")
         with open(abs_path, mode="rb") as file_handle:
             content_bytes = file_handle.read()
         return normalized_path, {
@@ -4471,181 +4472,179 @@ def tmpfs_get_file(path):
             "modified": datetime.fromtimestamp(os.path.getmtime(abs_path), timezone.utc).isoformat(),
             "size": len(content_bytes),
         }
-    with tmpfs_lock:
-        entry = tmpfs["files"].get(normalized_path)
+    with fs_lock:
+        entry = fs["files"].get(normalized_path)
     if entry is None:
-        raise FileNotFoundError(f"Tmpfs file not found: {normalized_path}")
+        raise FileNotFoundError(f"Filesystem file not found: {normalized_path}")
     return normalized_path, entry
 
-def tmpfs_write_file(path, content, modified=None, isB64 = False):
-    normalized_path = tmpfs_normalize_path(path)
-    content_bytes = tmpfs_to_bytes(content, isB64)
-    with tmpfs_lock:
-        tmpfs = tmpfs_snapshot_state()
-    if tmpfs_is_disk_mode(tmpfs):
-        _, abs_path, _ = tmpfs_resolve_disk_path(normalized_path, tmpfs_state=tmpfs)
+def fs_write_file(path, content, modified=None, isB64 = False):
+    normalized_path = fs_normalize_path(path)
+    content_bytes = fs_to_bytes(content, isB64)
+    with fs_lock:
+        fs = fs_snapshot_state()
+    if fs_is_disk_mode(fs):
+        _, abs_path, _ = fs_resolve_disk_path(normalized_path, fs_state=fs)
         os.makedirs(os.path.dirname(abs_path), exist_ok=True)
         with open(abs_path, mode="wb") as file_handle:
             file_handle.write(content_bytes)
         return normalized_path
-    with tmpfs_lock:
-        files = tmpfs["files"]
+    with fs_lock:
+        files = fs["files"]
         old_size = files.get(normalized_path, {}).get("size", 0)
-        new_total = tmpfs["current_size_bytes"] - old_size + len(content_bytes)
-        max_size = tmpfs["max_size_bytes"]
+        new_total = fs["current_size_bytes"] - old_size + len(content_bytes)
+        max_size = fs["max_size_bytes"]
         if max_size > 0 and new_total > max_size:
-            raise ValueError(f"Tmpfs size limit exceeded ({new_total} > {max_size} bytes).")
+            raise ValueError(f"Filesystem size limit exceeded ({new_total} > {max_size} bytes).")
         files[normalized_path] = {
             "content": content_bytes,
             "modified": modified or datetime.now(timezone.utc).isoformat(),
             "size": len(content_bytes),
         }
-        tmpfs["current_size_bytes"] = new_total
-        tmpfs["initialized"] = True
-        tmpfs_set_state(tmpfs)
+        fs["current_size_bytes"] = new_total
+        fs["initialized"] = True
+        fs_set_state(fs)
     return normalized_path
 
-def tmpfs_normalize_dir_path(raw_path, allow_root=False):
-    normalized = tmpfs_normalize_path(raw_path, allow_root=allow_root)
+def fs_normalize_dir_path(raw_path, allow_root=False):
+    normalized = fs_normalize_path(raw_path, allow_root=allow_root)
     if normalized != "/":
         normalized = normalized.rstrip("/")
     return normalized
 
-def tmpfs_create_directory(path):
-    normalized_dir = tmpfs_normalize_dir_path(path)
-    with tmpfs_lock:
-        tmpfs = tmpfs_snapshot_state()
-    if tmpfs_is_disk_mode(tmpfs):
-        _, abs_dir, _ = tmpfs_resolve_disk_path(normalized_dir, allow_root=True, tmpfs_state=tmpfs)
+def fs_create_directory(path):
+    normalized_dir = fs_normalize_dir_path(path)
+    with fs_lock:
+        fs = fs_snapshot_state()
+    if fs_is_disk_mode(fs):
+        _, abs_dir, _ = fs_resolve_disk_path(normalized_dir, allow_root=True, fs_state=fs)
         os.makedirs(abs_dir, exist_ok=True)
-        marker_path = normalized_dir + "/" + TMPFS_DIR_MARKER_FILENAME
-        tmpfs_write_file(marker_path, b"")
         return normalized_dir
-    marker_path = normalized_dir + "/" + TMPFS_DIR_MARKER_FILENAME
-    tmpfs_write_file(marker_path, b"")
+    marker_path = normalized_dir + "/" + FS_DIR_MARKER_FILENAME
+    fs_write_file(marker_path, b"")
     return normalized_dir
 
-def tmpfs_delete_directory(path):
-    normalized_dir = tmpfs_normalize_dir_path(path)
-    with tmpfs_lock:
-        tmpfs = tmpfs_snapshot_state()
-    if tmpfs_is_disk_mode(tmpfs):
-        _, abs_dir, root_dir = tmpfs_resolve_disk_path(normalized_dir, allow_root=True, tmpfs_state=tmpfs)
+def fs_delete_directory(path):
+    normalized_dir = fs_normalize_dir_path(path)
+    with fs_lock:
+        fs = fs_snapshot_state()
+    if fs_is_disk_mode(fs):
+        _, abs_dir, root_dir = fs_resolve_disk_path(normalized_dir, allow_root=True, fs_state=fs)
         if abs_dir == root_dir:
-            raise ValueError("Refusing to delete tmpfs root directory.")
+            raise ValueError("Refusing to delete filesystem root directory.")
         if not os.path.isdir(abs_dir):
-            raise FileNotFoundError(f"Tmpfs directory not found: {normalized_dir}")
+            raise FileNotFoundError(f"Filesystem directory not found: {normalized_dir}")
         removed = 0
         for _, _, filenames in os.walk(abs_dir):
             removed += len(filenames)
         shutil.rmtree(abs_dir)
         return normalized_dir, removed
     prefix = normalized_dir + "/"
-    with tmpfs_lock:
-        files = tmpfs["files"]
+    with fs_lock:
+        files = fs["files"]
         targets = [p for p in files.keys() if p.startswith(prefix)]
         if not targets:
-            raise FileNotFoundError(f"Tmpfs directory not found: {normalized_dir}")
+            raise FileNotFoundError(f"Filesystem directory not found: {normalized_dir}")
         removed_size = 0
         for p in targets:
             entry = files.get(p, {})
             removed_size += entry.get("size", len(entry.get("content", b"")))
             if p in files:
                 del files[p]
-        tmpfs["current_size_bytes"] = max(0, tmpfs["current_size_bytes"] - removed_size)
-        tmpfs["initialized"] = True
-        tmpfs_set_state(tmpfs)
+        fs["current_size_bytes"] = max(0, fs["current_size_bytes"] - removed_size)
+        fs["initialized"] = True
+        fs_set_state(fs)
     return normalized_dir, len(targets)
 
-def tmpfs_delete_file(path):
-    normalized_path = tmpfs_normalize_path(path)
-    with tmpfs_lock:
-        tmpfs = tmpfs_snapshot_state()
-    if tmpfs_is_disk_mode(tmpfs):
-        _, abs_path, _ = tmpfs_resolve_disk_path(normalized_path, tmpfs_state=tmpfs)
+def fs_delete_file(path):
+    normalized_path = fs_normalize_path(path)
+    with fs_lock:
+        fs = fs_snapshot_state()
+    if fs_is_disk_mode(fs):
+        _, abs_path, _ = fs_resolve_disk_path(normalized_path, fs_state=fs)
         if not os.path.isfile(abs_path):
-            raise FileNotFoundError(f"Tmpfs file not found: {normalized_path}")
+            raise FileNotFoundError(f"Filesystem file not found: {normalized_path}")
         os.remove(abs_path)
         return normalized_path
-    with tmpfs_lock:
-        files = tmpfs["files"]
+    with fs_lock:
+        files = fs["files"]
         if normalized_path not in files:
-            raise FileNotFoundError(f"Tmpfs file not found: {normalized_path}")
+            raise FileNotFoundError(f"Filesystem file not found: {normalized_path}")
         removed_size = files[normalized_path].get("size", len(files[normalized_path].get("content", b"")))
         del files[normalized_path]
-        tmpfs["current_size_bytes"] = max(0, tmpfs["current_size_bytes"] - removed_size)
-        tmpfs["initialized"] = True
-        tmpfs_set_state(tmpfs)
+        fs["current_size_bytes"] = max(0, fs["current_size_bytes"] - removed_size)
+        fs["initialized"] = True
+        fs_set_state(fs)
     return normalized_path
 
-def tmpfs_copy_file(source_path, destination_path):
-    normalized_source = tmpfs_normalize_path(source_path)
-    normalized_destination = tmpfs_normalize_path(destination_path)
-    with tmpfs_lock:
-        tmpfs = tmpfs_snapshot_state()
-    if tmpfs_is_disk_mode(tmpfs):
-        _, source_abs, _ = tmpfs_resolve_disk_path(normalized_source, tmpfs_state=tmpfs)
-        _, destination_abs, _ = tmpfs_resolve_disk_path(normalized_destination, tmpfs_state=tmpfs)
+def fs_copy_file(source_path, destination_path):
+    normalized_source = fs_normalize_path(source_path)
+    normalized_destination = fs_normalize_path(destination_path)
+    with fs_lock:
+        fs = fs_snapshot_state()
+    if fs_is_disk_mode(fs):
+        _, source_abs, _ = fs_resolve_disk_path(normalized_source, fs_state=fs)
+        _, destination_abs, _ = fs_resolve_disk_path(normalized_destination, fs_state=fs)
         if not os.path.isfile(source_abs):
-            raise FileNotFoundError(f"Tmpfs file not found: {normalized_source}")
+            raise FileNotFoundError(f"Filesystem file not found: {normalized_source}")
         os.makedirs(os.path.dirname(destination_abs), exist_ok=True)
         shutil.copy2(source_abs, destination_abs)
         return normalized_source, normalized_destination
-    with tmpfs_lock:
-        files = tmpfs["files"]
+    with fs_lock:
+        files = fs["files"]
         if normalized_source not in files:
-            raise FileNotFoundError(f"Tmpfs file not found: {normalized_source}")
+            raise FileNotFoundError(f"Filesystem file not found: {normalized_source}")
         source_entry = files[normalized_source]
         destination_size = files.get(normalized_destination, {}).get("size", 0)
-        new_total = tmpfs["current_size_bytes"] - destination_size + source_entry["size"]
-        max_size = tmpfs["max_size_bytes"]
+        new_total = fs["current_size_bytes"] - destination_size + source_entry["size"]
+        max_size = fs["max_size_bytes"]
         if max_size > 0 and new_total > max_size:
-            raise ValueError(f"Tmpfs size limit exceeded ({new_total} > {max_size} bytes).")
+            raise ValueError(f"Filesystem size limit exceeded ({new_total} > {max_size} bytes).")
         files[normalized_destination] = {
             "content": source_entry["content"],
             "modified": datetime.now(timezone.utc).isoformat(),
             "size": source_entry["size"],
         }
-        tmpfs["current_size_bytes"] = new_total
-        tmpfs["initialized"] = True
-        tmpfs_set_state(tmpfs)
+        fs["current_size_bytes"] = new_total
+        fs["initialized"] = True
+        fs_set_state(fs)
     return normalized_source, normalized_destination
 
-def tmpfs_move_file(source_path, destination_path):
-    normalized_source = tmpfs_normalize_path(source_path)
-    normalized_destination = tmpfs_normalize_path(destination_path)
-    with tmpfs_lock:
-        tmpfs = tmpfs_snapshot_state()
-    if tmpfs_is_disk_mode(tmpfs):
-        _, source_abs, _ = tmpfs_resolve_disk_path(normalized_source, tmpfs_state=tmpfs)
-        _, destination_abs, _ = tmpfs_resolve_disk_path(normalized_destination, tmpfs_state=tmpfs)
+def fs_move_file(source_path, destination_path):
+    normalized_source = fs_normalize_path(source_path)
+    normalized_destination = fs_normalize_path(destination_path)
+    with fs_lock:
+        fs = fs_snapshot_state()
+    if fs_is_disk_mode(fs):
+        _, source_abs, _ = fs_resolve_disk_path(normalized_source, fs_state=fs)
+        _, destination_abs, _ = fs_resolve_disk_path(normalized_destination, fs_state=fs)
         if not os.path.isfile(source_abs):
-            raise FileNotFoundError(f"Tmpfs file not found: {normalized_source}")
+            raise FileNotFoundError(f"Filesystem file not found: {normalized_source}")
         os.makedirs(os.path.dirname(destination_abs), exist_ok=True)
         shutil.move(source_abs, destination_abs)
         return normalized_source, normalized_destination
-    with tmpfs_lock:
-        files = tmpfs["files"]
+    with fs_lock:
+        files = fs["files"]
         if normalized_source not in files:
-            raise FileNotFoundError(f"Tmpfs file not found: {normalized_source}")
+            raise FileNotFoundError(f"Filesystem file not found: {normalized_source}")
         source_entry = files[normalized_source]
         destination_size = files.get(normalized_destination, {}).get("size", 0)
         if normalized_destination != normalized_source:
             del files[normalized_source]
-            new_total = tmpfs["current_size_bytes"] - destination_size
+            new_total = fs["current_size_bytes"] - destination_size
         else:
-            new_total = tmpfs["current_size_bytes"]
+            new_total = fs["current_size_bytes"]
         files[normalized_destination] = {
             "content": source_entry["content"],
             "modified": datetime.now(timezone.utc).isoformat(),
             "size": source_entry["size"],
         }
-        tmpfs["current_size_bytes"] = max(0, new_total)
-        tmpfs["initialized"] = True
-        tmpfs_set_state(tmpfs)
+        fs["current_size_bytes"] = max(0, new_total)
+        fs["initialized"] = True
+        fs_set_state(fs)
     return normalized_source, normalized_destination
 
-def tmpfs_match_glob(value, wildcard, case_insensitive=False):
+def fs_match_glob(value, wildcard, case_insensitive=False):
     value_text = str(value or "")
     wildcard_text = str(wildcard or "*")
     if case_insensitive:
@@ -4653,37 +4652,68 @@ def tmpfs_match_glob(value, wildcard, case_insensitive=False):
         wildcard_text = wildcard_text.lower()
     return fnmatch.fnmatchcase(value_text, wildcard_text)
 
-def tmpfs_list_paths(pattern="*", case_insensitive=False):
+def fs_list_entries(pattern="*", case_insensitive=False):
     wildcard = pattern or "*"
-    with tmpfs_lock:
-        tmpfs = tmpfs_snapshot_state()
-    if tmpfs_is_disk_mode(tmpfs):
-        root_dir = tmpfs_get_disk_root(tmpfs)
-        paths = []
-        for root, _, filenames in os.walk(root_dir):
+    with fs_lock:
+        fs = fs_snapshot_state()
+    file_paths = []
+    dir_paths = set()
+    if fs_is_disk_mode(fs):
+        root_dir = fs_get_disk_root(fs)
+        for root, dirnames, filenames in os.walk(root_dir):
+            for dirname in dirnames:
+                rel_dir = os.path.relpath(os.path.join(root, dirname), root_dir).replace("\\", "/")
+                dir_paths.add("/" + rel_dir.lstrip("/"))
             for filename in filenames:
+                if filename == FS_DIR_MARKER_FILENAME:
+                    continue
                 rel_path = os.path.relpath(os.path.join(root, filename), root_dir).replace("\\", "/")
-                paths.append("/" + rel_path.lstrip("/"))
-        paths.sort()
+                file_paths.append("/" + rel_path.lstrip("/"))
     else:
-        paths = sorted(tmpfs["files"].keys())
-    return [
-        path
-        for path in paths
-        if tmpfs_match_glob(path, wildcard, case_insensitive) or tmpfs_match_glob(path.lstrip("/"), wildcard, case_insensitive)
-    ]
+        paths = sorted(fs["files"].keys())
+        for path in paths:
+            if posixpath.basename(path) == FS_DIR_MARKER_FILENAME:
+                parent_dir = posixpath.dirname(path) or "/"
+                if parent_dir and parent_dir != "/":
+                    dir_paths.add(parent_dir)
+                continue
+            file_paths.append(path)
+            parent_dir = posixpath.dirname(path) or "/"
+            while parent_dir and parent_dir != "/":
+                dir_paths.add(parent_dir)
+                parent_dir = posixpath.dirname(parent_dir) or "/"
 
-def tmpfs_search_content(pattern="*", path_pattern="*", max_results=100, case_insensitive=False):
+    file_paths.sort()
+    directory_paths = sorted(dir_paths)
+    return {
+        "files": [
+            path
+            for path in file_paths
+            if fs_match_glob(path, wildcard, case_insensitive) or fs_match_glob(path.lstrip("/"), wildcard, case_insensitive)
+        ],
+        "directories": [
+            path
+            for path in directory_paths
+            if fs_match_glob(path, wildcard, case_insensitive) or fs_match_glob(path.lstrip("/"), wildcard, case_insensitive)
+        ],
+    }
+
+def fs_list_paths(pattern="*", case_insensitive=False):
+    return fs_list_entries(pattern, case_insensitive).get("files", [])
+
+def fs_search_content(pattern="*", path_pattern="*", max_results=100, case_insensitive=False):
     wildcard = pattern or "*"
     path_glob = path_pattern or "*"
     max_hits = max(1, tryparseint(max_results, 100))
-    with tmpfs_lock:
-        tmpfs = tmpfs_snapshot_state()
-    if tmpfs_is_disk_mode(tmpfs):
+    with fs_lock:
+        fs = fs_snapshot_state()
+    if fs_is_disk_mode(fs):
         items = []
-        root_dir = tmpfs_get_disk_root(tmpfs)
+        root_dir = fs_get_disk_root(fs)
         for root, _, filenames in os.walk(root_dir):
             for filename in filenames:
+                if filename == FS_DIR_MARKER_FILENAME:
+                    continue
                 abs_path = os.path.join(root, filename)
                 rel_path = "/" + os.path.relpath(abs_path, root_dir).replace("\\", "/").lstrip("/")
                 try:
@@ -4694,16 +4724,18 @@ def tmpfs_search_content(pattern="*", path_pattern="*", max_results=100, case_in
                 items.append((rel_path, {"content": content_bytes}))
         items.sort(key=lambda item: item[0])
     else:
-        items = sorted(tmpfs["files"].items())
+        items = sorted(fs["files"].items())
     matches = []
     for path, entry in items:
-        if not (tmpfs_match_glob(path, path_glob, case_insensitive) or tmpfs_match_glob(path.lstrip("/"), path_glob, case_insensitive)):
+        if posixpath.basename(path) == FS_DIR_MARKER_FILENAME:
+            continue
+        if not (fs_match_glob(path, path_glob, case_insensitive) or fs_match_glob(path.lstrip("/"), path_glob, case_insensitive)):
             continue
         content_bytes = entry.get("content", b"")
-        if tmpfs_is_binary(content_bytes):
+        if fs_is_binary(content_bytes):
             continue
-        for line_number, line_content in enumerate(tmpfs_decode_text(content_bytes).splitlines(), start=1):
-            if tmpfs_match_glob(line_content, wildcard, case_insensitive):
+        for line_number, line_content in enumerate(fs_decode_text(content_bytes).splitlines(), start=1):
+            if fs_match_glob(line_content, wildcard, case_insensitive):
                 matches.append({
                     "path": path,
                     "line_start": line_number,
@@ -4714,12 +4746,12 @@ def tmpfs_search_content(pattern="*", path_pattern="*", max_results=100, case_in
                     return matches
     return matches
 
-def tmpfs_read_lines(path, start_line=1, end_line=None):
-    normalized_path, entry = tmpfs_get_file(path)
+def fs_read_lines(path, start_line=1, end_line=None):
+    normalized_path, entry = fs_get_file(path)
     content_bytes = entry.get("content", b"")
-    if tmpfs_is_binary(content_bytes):
-        raise ValueError(f"Tmpfs file is binary and cannot be read as lines: {normalized_path}")
-    lines = tmpfs_decode_text(content_bytes).splitlines()
+    if fs_is_binary(content_bytes):
+        raise ValueError(f"Filesystem file is binary and cannot be read as lines: {normalized_path}")
+    lines = fs_decode_text(content_bytes).splitlines()
     start_idx = max(1, tryparseint(start_line, 1))
     end_idx = len(lines) if end_line is None else max(start_idx, tryparseint(end_line, start_idx))
     selected = []
@@ -4727,16 +4759,16 @@ def tmpfs_read_lines(path, start_line=1, end_line=None):
         selected.append({"line": line_number, "content": lines[line_number - 1]})
     return normalized_path, lines, selected
 
-def tmpfs_apply_line_updates(path, line_updates, start_line=1, append=False):
-    normalized_path = tmpfs_normalize_path(path)
+def fs_apply_line_updates(path, line_updates, start_line=1, append=False):
+    normalized_path = fs_normalize_path(path)
     try:
-        _, entry = tmpfs_get_file(normalized_path)
+        _, entry = fs_get_file(normalized_path)
         existing_bytes = entry.get("content", b"")
     except FileNotFoundError:
         existing_bytes = b""
-    if tmpfs_is_binary(existing_bytes):
-        raise ValueError(f"Tmpfs file is binary and cannot be modified by line: {normalized_path}")
-    existing_lines = tmpfs_decode_text(existing_bytes).splitlines()
+    if fs_is_binary(existing_bytes):
+        raise ValueError(f"Filesystem file is binary and cannot be modified by line: {normalized_path}")
+    existing_lines = fs_decode_text(existing_bytes).splitlines()
     resolved_updates = []
     next_line = max(1, tryparseint(start_line, 1))
     if append:
@@ -4763,40 +4795,40 @@ def tmpfs_apply_line_updates(path, line_updates, start_line=1, append=False):
             existing_lines.append(content)
         else:
             existing_lines[line_number - 1] = content
-    tmpfs_write_file(normalized_path, "\n".join(existing_lines))
+    fs_write_file(normalized_path, "\n".join(existing_lines))
     return normalized_path
 
-def tmpfs_metadata(path):
-    normalized_path, entry = tmpfs_get_file(path)
+def fs_metadata(path):
+    normalized_path, entry = fs_get_file(path)
     content_bytes = entry.get("content", b"")
     return {
         "path": normalized_path,
         "last_modified": entry.get("modified", ""),
         "size_bytes": entry.get("size", len(content_bytes)),
-        "total_lines": tmpfs_count_lines(content_bytes),
-        "binary": tmpfs_is_binary(content_bytes),
+        "total_lines": fs_count_lines(content_bytes),
+        "binary": fs_is_binary(content_bytes),
     }
 
-def tmpfs_get_active_embedding_model_name():
+def fs_get_active_embedding_model_name():
     model_name = friendlyembeddingsmodelname
     if autoswapmode and embedName is not None:
         model_name = embedName
     return str(model_name or "").strip()
 
-def tmpfs_load_json_file(path):
-    normalized_path, entry = tmpfs_get_file(path)
+def fs_load_json_file(path):
+    normalized_path, entry = fs_get_file(path)
     content_bytes = entry.get("content", b"")
-    if tmpfs_is_binary(content_bytes):
-        raise ValueError(f"Tmpfs file is binary and cannot be parsed as JSON: {normalized_path}")
-    raw_text = tmpfs_decode_text(content_bytes).strip()
+    if fs_is_binary(content_bytes):
+        raise ValueError(f"Filesystem file is binary and cannot be parsed as JSON: {normalized_path}")
+    raw_text = fs_decode_text(content_bytes).strip()
     if raw_text == "":
         return normalized_path, {}
     parsed = json.loads(raw_text)
     if not isinstance(parsed, dict):
-        raise ValueError(f"Tmpfs JSON file must contain an object: {normalized_path}")
+        raise ValueError(f"Filesystem JSON file must contain an object: {normalized_path}")
     return normalized_path, parsed
 
-def tmpfs_cosine_similarity(vec_a, vec_b):
+def fs_cosine_similarity(vec_a, vec_b):
     if not isinstance(vec_a, list) or not isinstance(vec_b, list):
         return 0.0
     if len(vec_a) == 0 or len(vec_b) == 0 or len(vec_a) != len(vec_b):
@@ -4814,7 +4846,7 @@ def tmpfs_cosine_similarity(vec_a, vec_b):
         return 0.0
     return dot_product / (math.sqrt(mag_a) * math.sqrt(mag_b))
 
-def tmpfs_select_embedding_cache(cache_obj, active_model_name):
+def fs_select_embedding_cache(cache_obj, active_model_name):
     models = cache_obj.get("models", {}) if isinstance(cache_obj, dict) else {}
     if not isinstance(models, dict) or len(models) == 0:
         raise ValueError("Embedding cache does not contain any model entries.")
@@ -4840,14 +4872,14 @@ def tmpfs_select_embedding_cache(cache_obj, active_model_name):
 
     raise ValueError(f"No embedding cache found for active model: {normalized_name or 'unknown'}")
 
-def tmpfs_semantic_search_cache(embeddings_cache_path, search_query, max_results=5):
-    normalized_cache_path, cache_obj = tmpfs_load_json_file(embeddings_cache_path)
+def fs_semantic_search_cache(embeddings_cache_path, search_query, max_results=5):
+    normalized_cache_path, cache_obj = fs_load_json_file(embeddings_cache_path)
     query_text = str(search_query or "").strip()
     if query_text == "":
         raise ValueError("Search query cannot be empty.")
 
-    active_model_name = tmpfs_get_active_embedding_model_name()
-    _, model_cache = tmpfs_select_embedding_cache(cache_obj, active_model_name)
+    active_model_name = fs_get_active_embedding_model_name()
+    _, model_cache = fs_select_embedding_cache(cache_obj, active_model_name)
     query_prefix = str(model_cache.get("query_prefix", "") or "")
     items = model_cache.get("items", {})
     if not isinstance(items, dict) or len(items) == 0:
@@ -4893,7 +4925,7 @@ def tmpfs_semantic_search_cache(embeddings_cache_path, search_query, max_results
         return {
             "snippet": candidate["snippet"],
             "document": candidate.get("document"),
-            "similarity": tmpfs_cosine_similarity(query_embedding, candidate["embedding"]),
+            "similarity": fs_cosine_similarity(query_embedding, candidate["embedding"]),
         }
 
     worker_count = min(len(candidates), max(1, min(32, os.cpu_count() or 1)))
@@ -4910,18 +4942,18 @@ def tmpfs_semantic_search_cache(embeddings_cache_path, search_query, max_results
         "snippets": scored_candidates[:max_hits],
     }
 
-def tmpfs_build_zip_bytes(dir_prefix=""):
-    prefix = (tmpfs_normalize_path(dir_prefix) + "/").lstrip("/") if dir_prefix and dir_prefix.strip("/") else ""
-    with tmpfs_lock:
-        tmpfs = tmpfs_snapshot_state()
-    if tmpfs_is_disk_mode(tmpfs):
-        root_dir = tmpfs_get_disk_root(tmpfs)
+def fs_build_zip_bytes(dir_prefix=""):
+    prefix = (fs_normalize_path(dir_prefix) + "/").lstrip("/") if dir_prefix and dir_prefix.strip("/") else ""
+    with fs_lock:
+        fs = fs_snapshot_state()
+    if fs_is_disk_mode(fs):
+        root_dir = fs_get_disk_root(fs)
         items = []
         for root, _, filenames in os.walk(root_dir):
             for filename in filenames:
                 rel_path = os.path.relpath(os.path.join(root, filename), root_dir).replace("\\", "/")
                 virtual_path = "/" + rel_path.lstrip("/")
-                if posixpath.basename(virtual_path) == TMPFS_DIR_MARKER_FILENAME:
+                if posixpath.basename(virtual_path) == FS_DIR_MARKER_FILENAME:
                     continue
                 if prefix and not virtual_path.lstrip("/").startswith(prefix):
                     continue
@@ -4937,9 +4969,9 @@ def tmpfs_build_zip_bytes(dir_prefix=""):
         items = sorted(
             (
                 (p, e)
-                for p, e in tmpfs["files"].items()
+                for p, e in fs["files"].items()
                 if (not prefix or p.lstrip("/").startswith(prefix))
-                and posixpath.basename(p) != TMPFS_DIR_MARKER_FILENAME
+                and posixpath.basename(p) != FS_DIR_MARKER_FILENAME
             ),
             key=lambda x: x[0],
         )
@@ -4957,7 +4989,7 @@ def tmpfs_build_zip_bytes(dir_prefix=""):
             zip_file.writestr(info, entry.get("content", b""))
     return archive_buffer.getvalue()
 
-def tmpfs_parse_multipart(body, content_type_header):
+def fs_parse_multipart(body, content_type_header):
     """Parse a multipart/form-data body.
     Returns list of dicts: {'name': str, 'filename': str|None, 'content': bytes}"""
     boundary = None
@@ -5000,10 +5032,10 @@ def tmpfs_parse_multipart(body, content_type_header):
         parts.append({'name': field_name, 'filename': fname, 'content': content})
     return parts
 
-def tmpfs_extract_zip(zip_bytes, target_dir):
-    """Extract a ZIP archive into the tmpfs under target_dir.
+def fs_extract_zip(zip_bytes, target_dir):
+    """Extract a ZIP archive into the filesystem under target_dir.
     Returns list of written paths."""
-    target_dir = tmpfs_normalize_path(target_dir if target_dir else '/', allow_root=True)
+    target_dir = fs_normalize_path(target_dir if target_dir else '/', allow_root=True)
     written = []
     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
         for info in zf.infolist():
@@ -5019,61 +5051,61 @@ def tmpfs_extract_zip(zip_bytes, target_dir):
                 dest = target_dir.rstrip('/') + '/' + safe.lstrip('/')
             dest = posixpath.normpath(dest)
             content = zf.read(info.filename)
-            written.append(tmpfs_write_file(dest, content))
+            written.append(fs_write_file(dest, content))
     return written
 
-def initialize_tmpfs_from_args():
-    configured_limit = max(0, tryparseint(getattr(args, "tmpfsmaxsize", 0), 0)) * 1024 * 1024
-    configured_source = getattr(args, "tmpfsdir", "") or ""
-    configured_direct_disk = bool(getattr(args, "tmpfsdirect", False))
+def initialize_fs_from_args():
+    configured_limit = max(0, tryparseint(getattr(args, "fsmaxsize", 0), 0)) * 1024 * 1024
+    configured_source = getattr(args, "fsdir", "") or ""
+    configured_direct_disk = bool(getattr(args, "fsdirect", False))
     configured_mode = "disk" if configured_direct_disk else "memory"
     source_dir = os.path.abspath(configured_source) if configured_source else ""
-    with tmpfs_lock:
-        current_tmpfs = tmpfs_snapshot_state()
-        if current_tmpfs["initialized"]:
+    with fs_lock:
+        current_fs = fs_snapshot_state()
+        if current_fs["initialized"]:
             if configured_limit <= 0:
-                if current_tmpfs["current_size_bytes"] > 0:
-                    utfprint("Warning: Tmpfs disabled because --tmpfsmaxsize is not set (> 0 required).")
-                tmpfs_set_state(tmpfs_make_state(0, "", initialized=True))
+                if current_fs["current_size_bytes"] > 0:
+                    utfprint("Warning: Filesystem disabled because --fsmaxsize is not set (> 0 required).")
+                fs_set_state(fs_make_state(0, "", initialized=True))
                 return
             if configured_limit > 0:
-                current_tmpfs["max_size_bytes"] = configured_limit
-            current_tmpfs["mode"] = configured_mode
-            if source_dir and not current_tmpfs["source_dir"]:
-                current_tmpfs["source_dir"] = source_dir
-            if configured_mode == "disk" and not current_tmpfs["source_dir"]:
-                utfprint("Warning: Disk tmpfs mode requires --tmpfsdir. Falling back to memory mode.")
-                current_tmpfs["mode"] = "memory"
-            if current_tmpfs["max_size_bytes"] > 0 and current_tmpfs["current_size_bytes"] > current_tmpfs["max_size_bytes"]:
-                utfprint("Warning: Existing tmpfs contents exceed the configured size limit – limit ignored.")
-            tmpfs_set_state(current_tmpfs)
+                current_fs["max_size_bytes"] = configured_limit
+            current_fs["mode"] = configured_mode
+            if source_dir and not current_fs["source_dir"]:
+                current_fs["source_dir"] = source_dir
+            if configured_mode == "disk" and not current_fs["source_dir"]:
+                utfprint("Warning: Disk filesystem mode requires --fsdir. Falling back to memory mode.")
+                current_fs["mode"] = "memory"
+            if current_fs["max_size_bytes"] > 0 and current_fs["current_size_bytes"] > current_fs["max_size_bytes"]:
+                utfprint("Warning: Existing filesystem contents exceed the configured size limit – limit ignored.")
+            fs_set_state(current_fs)
             return
 
         if configured_limit <= 0:
             if source_dir:
-                utfprint("Warning: Ignoring --tmpfsdir because --tmpfsmaxsize is not set (> 0 required to enable tmpfs).")
-            tmpfs_set_state(tmpfs_make_state(0, "", initialized=True))
+                utfprint("Warning: Ignoring --fsdir because --fsmaxsize is not set (> 0 required to enable filesystem).")
+            fs_set_state(fs_make_state(0, "", initialized=True))
             return
 
-        tmpfs = tmpfs_make_state(configured_limit, source_dir, initialized=True, mode=configured_mode)
+        fs = fs_make_state(configured_limit, source_dir, initialized=True, mode=configured_mode)
         if configured_mode == "disk":
             if source_dir == "":
-                utfprint("Warning: Disk tmpfs mode requires --tmpfsdir. Falling back to memory mode.")
-                tmpfs["mode"] = "memory"
+                utfprint("Warning: Disk filesystem mode requires --fsdir. Falling back to memory mode.")
+                fs["mode"] = "memory"
             else:
                 try:
                     os.makedirs(source_dir, exist_ok=True)
                 except Exception as create_err:
-                    utfprint(f"Warning: Could not initialize tmpfs disk root {source_dir}: {create_err} – falling back to memory mode.")
-                    tmpfs["mode"] = "memory"
-                    tmpfs["source_dir"] = ""
+                    utfprint(f"Warning: Could not initialize filesystem disk root {source_dir}: {create_err} – falling back to memory mode.")
+                    fs["mode"] = "memory"
+                    fs["source_dir"] = ""
         if source_dir:
-            if tmpfs_is_disk_mode(tmpfs):
-                tmpfs_set_state(tmpfs)
+            if fs_is_disk_mode(fs):
+                fs_set_state(fs)
                 return
             if not os.path.isdir(source_dir):
-                utfprint(f"Warning: Tmpfs source directory does not exist: {source_dir} – starting with empty tmpfs.")
-                tmpfs_set_state(tmpfs)
+                utfprint(f"Warning: Filesystem source directory does not exist: {source_dir} – starting with empty filesystem.")
+                fs_set_state(fs)
                 return
             for root, _, filenames in os.walk(source_dir):
                 for filename in filenames:
@@ -5082,22 +5114,22 @@ def initialize_tmpfs_from_args():
                         continue
                     try:
                         relative_path = os.path.relpath(disk_path, source_dir).replace("\\", "/")
-                        virtual_path = tmpfs_normalize_path(relative_path)
+                        virtual_path = fs_normalize_path(relative_path)
                         with open(disk_path, mode="rb") as file_handle:
                             content_bytes = file_handle.read()
-                        new_total = tmpfs["current_size_bytes"] + len(content_bytes)
-                        if tmpfs["max_size_bytes"] > 0 and new_total > tmpfs["max_size_bytes"]:
-                            utfprint(f"Warning: Tmpfs size limit reached while loading {disk_path} – skipping remaining files.")
+                        new_total = fs["current_size_bytes"] + len(content_bytes)
+                        if fs["max_size_bytes"] > 0 and new_total > fs["max_size_bytes"]:
+                            utfprint(f"Warning: Filesystem size limit reached while loading {disk_path} – skipping remaining files.")
                             break
-                        tmpfs["files"][virtual_path] = {
+                        fs["files"][virtual_path] = {
                             "content": content_bytes,
                             "modified": datetime.fromtimestamp(os.path.getmtime(disk_path), timezone.utc).isoformat(),
                             "size": len(content_bytes),
                         }
-                        tmpfs["current_size_bytes"] += len(content_bytes)
+                        fs["current_size_bytes"] += len(content_bytes)
                     except Exception as load_err:
-                        utfprint(f"Warning: Could not load tmpfs file {disk_path}: {load_err} – skipping.")
-        tmpfs_set_state(tmpfs)
+                        utfprint(f"Warning: Could not load filesystem file {disk_path}: {load_err} – skipping.")
+        fs_set_state(fs)
 
 proxy_reload_lock = threading.Lock()
 ###########################################################
@@ -6264,19 +6296,19 @@ Change Mode<br>
                     response_body = (f"Resource not found").encode()
 
         elif clean_path == "/fs.zip":
-            if not tmpfs_is_enabled():
+            if not fs_is_enabled():
                 response_code = 503
-                response_body = ("Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it.").encode()
+                response_body = ("Filesystem is disabled. Set --fsmaxsize > 0 to enable it.").encode()
                 content_type = 'text/plain'
             else:
                 parsed_url = urllib.parse.urlparse(self.path)
                 parsed_dict = urllib.parse.parse_qs(parsed_url.query)
                 zip_dir = str(parsed_dict.get('dir', [''])[0])
-                zip_body = tmpfs_build_zip_bytes(zip_dir)
-                zip_filename = "tmpfs.zip"
+                zip_body = fs_build_zip_bytes(zip_dir)
+                zip_filename = "filesystem.zip"
                 try:
-                    normalized_dir = tmpfs_normalize_path(zip_dir, allow_root=True)
-                    dir_name = posixpath.basename(normalized_dir.rstrip('/')) if normalized_dir != '/' else 'tmpfs'
+                    normalized_dir = fs_normalize_path(zip_dir, allow_root=True)
+                    dir_name = posixpath.basename(normalized_dir.rstrip('/')) if normalized_dir != '/' else 'filesystem'
                     if dir_name:
                         zip_filename = f"{dir_name}.zip"
                 except Exception:
@@ -6290,23 +6322,23 @@ Change Mode<br>
 
         elif clean_path == '/fs' or clean_path.startswith('/fs/'):
             content_type = 'application/octet-stream'
-            if not tmpfs_is_enabled():
+            if not fs_is_enabled():
                 response_code = 503
-                response_body = ("Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it.").encode()
+                response_body = ("Filesystem is disabled. Set --fsmaxsize > 0 to enable it.").encode()
                 content_type = 'text/plain'
             else:
                 try:
-                    tmpfs_path = tmpfs_normalize_path(clean_path[3:])
-                    _, tmpfs_entry = tmpfs_get_file(tmpfs_path)
-                    response_body = tmpfs_entry.get("content", b"")
-                    detected_type = mimetypes.guess_type(tmpfs_path)[0]
+                    fs_path = fs_normalize_path(clean_path[3:])
+                    _, fs_entry = fs_get_file(fs_path)
+                    response_body = fs_entry.get("content", b"")
+                    detected_type = mimetypes.guess_type(fs_path)[0]
                     if detected_type:
                         content_type = detected_type
                 except (FileNotFoundError, ValueError):
                     try:
                         # Validate this is a reachable directory path (raises if invalid)
-                        tmpfs_normalize_path(clean_path[3:], allow_root=True)
-                        # Serve the tmpfs browser HTML page for any directory access.
+                        fs_normalize_path(clean_path[3:], allow_root=True)
+                        # Serve the filesystem browser HTML page for any directory access.
                         # The JS reads window.location.pathname to determine the current dir
                         # and fetches the file list from /api/extra/fs/files dynamically.
                         embddir_tmp = os.path.join(os.path.abspath(os.path.dirname(os.path.realpath(__file__))), "embd_res")
@@ -6315,40 +6347,45 @@ Change Mode<br>
                             response_body = _brf.read()
                         content_type = 'text/html'
                     except Exception as e:
-                        utfprint("Error getting tmpfs resource: " + str(e))
+                        utfprint("Error getting filesystem resource: " + str(e))
                         response_code = 404
                         response_body = (f"Resource not found").encode()
                         content_type = 'text/plain'
                 except Exception as e:
-                    utfprint("Error getting tmpfs resource: " + str(e))
+                    utfprint("Error getting filesystem resource: " + str(e))
                     response_code = 404
                     response_body = (f"Resource not found").encode()
                     content_type = 'text/plain'
 
         elif clean_path.endswith('/api/extra/fs/mode'):
-            with tmpfs_lock:
-                tmpfs = tmpfs_snapshot_state()
+            with fs_lock:
+                fs = fs_snapshot_state()
             response_body = (json.dumps({
-                "enabled": tmpfs_is_enabled(),
-                "mode": tmpfs_get_mode(tmpfs),
-                "source_dir": tmpfs.get("source_dir", ""),
+                "enabled": fs_is_enabled(),
+                "mode": fs_get_mode(fs),
+                "source_dir": fs.get("source_dir", ""),
             }).encode())
 
         elif clean_path.endswith('/api/extra/fs/files'):
-            if not tmpfs_is_enabled():
+            if not fs_is_enabled():
                 response_code = 503
-                response_body = (json.dumps({"error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
+                response_body = (json.dumps({"error": "Filesystem is disabled. Set --fsmaxsize > 0 to enable it."}).encode())
             else:
                 parsed_url = urllib.parse.urlparse(self.path)
                 parsed_dict = urllib.parse.parse_qs(parsed_url.query)
                 pattern = str(parsed_dict.get('pattern', ['*'])[0])
                 case_insensitive_flag = str(parsed_dict.get('case_insensitive', ['0'])[0]).strip().lower() in ['1', 'true', 'yes', 'on']
-                response_body = (json.dumps({"paths": tmpfs_list_paths(pattern, case_insensitive_flag)}).encode())
+                entries = fs_list_entries(pattern, case_insensitive_flag)
+                response_body = (json.dumps({
+                    "paths": entries.get("files", []),
+                    "files": entries.get("files", []),
+                    "directories": entries.get("directories", []),
+                }).encode())
 
         elif clean_path.endswith('/api/extra/fs/search'):
-            if not tmpfs_is_enabled():
+            if not fs_is_enabled():
                 response_code = 503
-                response_body = (json.dumps({"error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
+                response_body = (json.dumps({"error": "Filesystem is disabled. Set --fsmaxsize > 0 to enable it."}).encode())
             else:
                 parsed_url = urllib.parse.urlparse(self.path)
                 parsed_dict = urllib.parse.parse_qs(parsed_url.query)
@@ -6356,17 +6393,17 @@ Change Mode<br>
                 path_pattern = str(parsed_dict.get('path_pattern', ['*'])[0])
                 max_results = tryparseint(parsed_dict.get('max_results', [100])[0], 100)
                 case_insensitive_flag = str(parsed_dict.get('case_insensitive', ['0'])[0]).strip().lower() in ['1', 'true', 'yes', 'on']
-                response_body = (json.dumps({"matches": tmpfs_search_content(pattern, path_pattern, max_results, case_insensitive_flag)}).encode())
+                response_body = (json.dumps({"matches": fs_search_content(pattern, path_pattern, max_results, case_insensitive_flag)}).encode())
 
         elif clean_path.endswith('/api/extra/fs/metadata'):
-            if not tmpfs_is_enabled():
+            if not fs_is_enabled():
                 response_code = 503
-                response_body = (json.dumps({"error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
+                response_body = (json.dumps({"error": "Filesystem is disabled. Set --fsmaxsize > 0 to enable it."}).encode())
             else:
                 parsed_url = urllib.parse.urlparse(self.path)
                 parsed_dict = urllib.parse.parse_qs(parsed_url.query)
                 try:
-                    response_body = (json.dumps(tmpfs_metadata(parsed_dict.get('path', [''])[0])).encode())
+                    response_body = (json.dumps(fs_metadata(parsed_dict.get('path', [''])[0])).encode())
                 except FileNotFoundError as e:
                     response_code = 404
                     response_body = (json.dumps({"error": str(e)}).encode())
@@ -6375,14 +6412,14 @@ Change Mode<br>
                     response_body = (json.dumps({"error": str(e)}).encode())
 
         elif clean_path.endswith('/api/extra/fs/content'):
-            if not tmpfs_is_enabled():
+            if not fs_is_enabled():
                 response_code = 503
-                response_body = (json.dumps({"error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
+                response_body = (json.dumps({"error": "Filesystem is disabled. Set --fsmaxsize > 0 to enable it."}).encode())
             else:
                 parsed_url = urllib.parse.urlparse(self.path)
                 parsed_dict = urllib.parse.parse_qs(parsed_url.query)
                 try:
-                    normalized_path, all_lines, selected_lines = tmpfs_read_lines(
+                    normalized_path, all_lines, selected_lines = fs_read_lines(
                         parsed_dict.get('path', [''])[0],
                         parsed_dict.get('start', [1])[0],
                         parsed_dict.get('end', [None])[0],
@@ -6402,15 +6439,15 @@ Change Mode<br>
                     response_body = (json.dumps({"error": str(e)}).encode())
 
         elif clean_path.endswith('/api/extra/fs/url'):
-            if not tmpfs_is_enabled():
+            if not fs_is_enabled():
                 response_code = 503
-                response_body = (json.dumps({"error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
+                response_body = (json.dumps({"error": "Filesystem is disabled. Set --fsmaxsize > 0 to enable it."}).encode())
             else:
                 parsed_url = urllib.parse.urlparse(self.path)
                 parsed_dict = urllib.parse.parse_qs(parsed_url.query)
                 try:
-                    normalized_path = tmpfs_normalize_path(parsed_dict.get('path', [''])[0])
-                    tmpfs_get_file(normalized_path)
+                    normalized_path = fs_normalize_path(parsed_dict.get('path', [''])[0])
+                    fs_get_file(normalized_path)
                     response_body = (json.dumps({
                         "path": normalized_path,
                         "url": self.build_external_url(f"/fs{normalized_path}"),
@@ -6423,20 +6460,20 @@ Change Mode<br>
                     response_body = (json.dumps({"error": str(e)}).encode())
 
         elif clean_path.endswith('/api/extra/fs/download'):
-            if not tmpfs_is_enabled():
+            if not fs_is_enabled():
                 response_code = 503
-                response_body = (json.dumps({"error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
+                response_body = (json.dumps({"error": "Filesystem is disabled. Set --fsmaxsize > 0 to enable it."}).encode())
             else:
-                with tmpfs_lock:
-                    tmpfs = tmpfs_snapshot_state()
+                with fs_lock:
+                    fs = fs_snapshot_state()
                 parsed_url = urllib.parse.urlparse(self.path)
                 parsed_dict = urllib.parse.parse_qs(parsed_url.query)
                 zip_dir = str(parsed_dict.get('dir', [''])[0])
                 zip_url = self.build_external_url('/fs.zip' + (f'?dir={urllib.parse.quote(zip_dir)}' if zip_dir else ''))
                 response_body = (json.dumps({
                     "url": zip_url,
-                    "file_count": len(tmpfs["files"]),
-                    "size_bytes": tmpfs["current_size_bytes"],
+                    "file_count": len(fs["files"]),
+                    "size_bytes": fs["current_size_bytes"],
                 }).encode())
 
         elif clean_path in ["/noscript","noscript"]: #noscript webui
@@ -6897,19 +6934,19 @@ Change Mode<br>
                 response_body = (json.dumps({"value": -1}).encode())
 
         elif self.path.endswith('/api/extra/fs/write_lines'):
-            if not tmpfs_is_enabled():
+            if not fs_is_enabled():
                 response_code = 503
-                response_body = (json.dumps({"success": False, "error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
+                response_body = (json.dumps({"success": False, "error": "Filesystem is disabled. Set --fsmaxsize > 0 to enable it."}).encode())
             else:
                 try:
                     tempbody = json.loads(body)
-                    normalized_path = tmpfs_apply_line_updates(
+                    normalized_path = fs_apply_line_updates(
                         tempbody.get('path', ''),
                         tempbody.get('lines', []),
                         tempbody.get('start_line', 1),
                         tempbody.get('append', False),
                     )
-                    response_body = (json.dumps({"success": True, "path": normalized_path, "metadata": tmpfs_metadata(normalized_path)}).encode())
+                    response_body = (json.dumps({"success": True, "path": normalized_path, "metadata": fs_metadata(normalized_path)}).encode())
                 except FileNotFoundError as e:
                     response_code = 404
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
@@ -6921,13 +6958,13 @@ Change Mode<br>
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
 
         elif self.path.endswith('/api/extra/fs/mkdir'):
-            if not tmpfs_is_enabled():
+            if not fs_is_enabled():
                 response_code = 503
-                response_body = (json.dumps({"success": False, "error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
+                response_body = (json.dumps({"success": False, "error": "Filesystem is disabled. Set --fsmaxsize > 0 to enable it."}).encode())
             else:
                 try:
                     tempbody = json.loads(body)
-                    normalized_dir = tmpfs_create_directory(tempbody.get('path', ''))
+                    normalized_dir = fs_create_directory(tempbody.get('path', ''))
                     response_body = (json.dumps({"success": True, "path": normalized_dir}).encode())
                 except ValueError as e:
                     response_code = 507 if 'size limit exceeded' in str(e).lower() else 400
@@ -6937,13 +6974,13 @@ Change Mode<br>
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
 
         elif self.path.endswith('/api/extra/fs/rmdir'):
-            if not tmpfs_is_enabled():
+            if not fs_is_enabled():
                 response_code = 503
-                response_body = (json.dumps({"success": False, "error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
+                response_body = (json.dumps({"success": False, "error": "Filesystem is disabled. Set --fsmaxsize > 0 to enable it."}).encode())
             else:
                 try:
                     tempbody = json.loads(body)
-                    normalized_dir, removed = tmpfs_delete_directory(tempbody.get('path', ''))
+                    normalized_dir, removed = fs_delete_directory(tempbody.get('path', ''))
                     response_body = (json.dumps({"success": True, "path": normalized_dir, "removed": removed}).encode())
                 except FileNotFoundError as e:
                     response_code = 404
@@ -6953,13 +6990,13 @@ Change Mode<br>
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
 
         elif self.path.endswith('/api/extra/fs/delete'):
-            if not tmpfs_is_enabled():
+            if not fs_is_enabled():
                 response_code = 503
-                response_body = (json.dumps({"success": False, "error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
+                response_body = (json.dumps({"success": False, "error": "Filesystem is disabled. Set --fsmaxsize > 0 to enable it."}).encode())
             else:
                 try:
                     tempbody = json.loads(body)
-                    normalized_path = tmpfs_delete_file(tempbody.get('path', ''))
+                    normalized_path = fs_delete_file(tempbody.get('path', ''))
                     response_body = (json.dumps({"success": True, "path": normalized_path}).encode())
                 except FileNotFoundError as e:
                     response_code = 404
@@ -6969,14 +7006,14 @@ Change Mode<br>
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
 
         elif self.path.endswith('/api/extra/fs/write'):
-            if not tmpfs_is_enabled():
+            if not fs_is_enabled():
                 response_code = 503
-                response_body = (json.dumps({"success": False, "error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
+                response_body = (json.dumps({"success": False, "error": "Filesystem is disabled. Set --fsmaxsize > 0 to enable it."}).encode())
             else:
                 try:
                     tempbody = json.loads(body)
-                    normalized_path = tmpfs_write_file(tempbody.get('path', ''), tempbody.get('content', ''), None, tempbody.get('isB64', False))
-                    response_body = (json.dumps({"success": True, "path": normalized_path, "metadata": tmpfs_metadata(normalized_path)}).encode())
+                    normalized_path = fs_write_file(tempbody.get('path', ''), tempbody.get('content', ''), None, tempbody.get('isB64', False))
+                    response_body = (json.dumps({"success": True, "path": normalized_path, "metadata": fs_metadata(normalized_path)}).encode())
                 except ValueError as e:
                     response_code = 507 if 'size limit exceeded' in str(e).lower() else 400
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
@@ -6985,14 +7022,14 @@ Change Mode<br>
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
 
         elif self.path.endswith('/api/extra/fs/move'):
-            if not tmpfs_is_enabled():
+            if not fs_is_enabled():
                 response_code = 503
-                response_body = (json.dumps({"success": False, "error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
+                response_body = (json.dumps({"success": False, "error": "Filesystem is disabled. Set --fsmaxsize > 0 to enable it."}).encode())
             else:
                 try:
                     tempbody = json.loads(body)
-                    source_path, destination_path = tmpfs_move_file(tempbody.get('source', ''), tempbody.get('destination', ''))
-                    response_body = (json.dumps({"success": True, "source": source_path, "destination": destination_path, "metadata": tmpfs_metadata(destination_path)}).encode())
+                    source_path, destination_path = fs_move_file(tempbody.get('source', ''), tempbody.get('destination', ''))
+                    response_body = (json.dumps({"success": True, "source": source_path, "destination": destination_path, "metadata": fs_metadata(destination_path)}).encode())
                 except FileNotFoundError as e:
                     response_code = 404
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
@@ -7001,14 +7038,14 @@ Change Mode<br>
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
 
         elif self.path.endswith('/api/extra/fs/copy'):
-            if not tmpfs_is_enabled():
+            if not fs_is_enabled():
                 response_code = 503
-                response_body = (json.dumps({"success": False, "error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
+                response_body = (json.dumps({"success": False, "error": "Filesystem is disabled. Set --fsmaxsize > 0 to enable it."}).encode())
             else:
                 try:
                     tempbody = json.loads(body)
-                    source_path, destination_path = tmpfs_copy_file(tempbody.get('source', ''), tempbody.get('destination', ''))
-                    response_body = (json.dumps({"success": True, "source": source_path, "destination": destination_path, "metadata": tmpfs_metadata(destination_path)}).encode())
+                    source_path, destination_path = fs_copy_file(tempbody.get('source', ''), tempbody.get('destination', ''))
+                    response_body = (json.dumps({"success": True, "source": source_path, "destination": destination_path, "metadata": fs_metadata(destination_path)}).encode())
                 except FileNotFoundError as e:
                     response_code = 404
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
@@ -7020,13 +7057,13 @@ Change Mode<br>
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
 
         elif self.path.endswith('/api/extra/fs/semantic_search'):
-            if not tmpfs_is_enabled():
+            if not fs_is_enabled():
                 response_code = 503
-                response_body = (json.dumps({"success": False, "error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
+                response_body = (json.dumps({"success": False, "error": "Filesystem is disabled. Set --fsmaxsize > 0 to enable it."}).encode())
             else:
                 try:
                     tempbody = json.loads(body)
-                    result = tmpfs_semantic_search_cache(
+                    result = fs_semantic_search_cache(
                         tempbody.get('embeddings_cache_path', ''),
                         tempbody.get('search_query', ''),
                         tempbody.get('max_results', 5),
@@ -7044,13 +7081,13 @@ Change Mode<br>
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
 
         elif self.path.endswith('/api/extra/fs/upload'):
-            if not tmpfs_is_enabled():
+            if not fs_is_enabled():
                 response_code = 503
-                response_body = (json.dumps({"success": False, "error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
+                response_body = (json.dumps({"success": False, "error": "Filesystem is disabled. Set --fsmaxsize > 0 to enable it."}).encode())
             else:
                 try:
                     ct_header = self.headers.get('Content-Type', '')
-                    parts = tmpfs_parse_multipart(body, ct_header)
+                    parts = fs_parse_multipart(body, ct_header)
                     # Determine target directory from form field
                     target_dir = '/'
                     for part in parts:
@@ -7066,7 +7103,7 @@ Change Mode<br>
                             continue
                         file_bytes = part['content']
                         if filename.lower().endswith('.zip'):
-                            extracted = tmpfs_extract_zip(file_bytes, target_dir)
+                            extracted = fs_extract_zip(file_bytes, target_dir)
                             written.extend(extracted)
                         else:
                             safe_name = posixpath.basename(filename.replace('\\', '/'))
@@ -7076,7 +7113,7 @@ Change Mode<br>
                                 dest = '/' + safe_name
                             else:
                                 dest = target_dir.rstrip('/') + '/' + safe_name
-                            written.append(tmpfs_write_file(dest, file_bytes))
+                            written.append(fs_write_file(dest, file_bytes))
                     response_body = (json.dumps({"success": True, "written": written}).encode())
                 except ValueError as e:
                     response_code = 507 if 'size limit exceeded' in str(e).lower() else 400
@@ -8632,7 +8669,7 @@ def show_gui():
 
     tabs = ctk.CTkFrame(root, corner_radius = 0, width=windowwidth, height=windowheight-50)
     tabs.grid(row=0, stick="nsew")
-    tabnames= ["Quick Launch", "Hardware", "Context", "Loaded Files", "Network", "Horde Worker","Image Gen","Audio","Admin","Temp FS","Extra"]
+    tabnames= ["Quick Launch", "Hardware", "Context", "Loaded Files", "Network", "Horde Worker","Image Gen","Audio","Admin","Filesystem","Extra"]
     navbuttons = {}
     navbuttonframe = ctk.CTkFrame(tabs, width=int(104), height=int(tabs.cget("height")))
     navbuttonframe.grid(row=0, column=0, padx=2,pady=2)
@@ -8796,9 +8833,9 @@ def show_gui():
     admin_unload_timeout_var = ctk.StringVar(value=str(0))
     admin_allow_hf_var = ctk.IntVar(value=0)
 
-    tmpfs_maxsize_var = ctk.StringVar(value="0")
-    tmpfs_dir_var = ctk.StringVar(value="")
-    tmpfs_direct_var = ctk.IntVar(value=0)
+    fs_maxsize_var = ctk.StringVar(value="0")
+    fs_dir_var = ctk.StringVar(value="")
+    fs_direct_var = ctk.IntVar(value=0)
 
     nozenity_var = ctk.IntVar(value=0)
 
@@ -9641,21 +9678,21 @@ def show_gui():
     router_mode_box = makecheckbox(admin_tab, "Router Mode", router_mode_var, 17, 0, command=togglerouter, tooltiptxt="Router mode uses a reverse proxy router, allowing you to easily hotswap models and configs within a single request. Requires admin mode.")
     autoswap_mode_box = makecheckbox(admin_tab, "Autoswap Mode", autoswap_mode_var, 19, 0,tooltiptxt="Autoswap mode builds on router mode to allow switching of model types within the same config automatically. Requires admin mode and router mode. All models desired must be defined within the same config.")
 
-    tempfs_tab = tabcontent["Temp FS"]
-    def toggletmpfsdiskmode(a,b,c):
-        if tryparseint(tmpfs_maxsize_var.get(), 0) > 0 and str(tmpfs_dir_var.get() or "").strip() != "":
-            tmpfs_direct_mode_box.grid()
+    tempfs_tab = tabcontent["Filesystem"]
+    def togglefsdiskmode(a,b,c):
+        if tryparseint(fs_maxsize_var.get(), 0) > 0 and str(fs_dir_var.get() or "").strip() != "":
+            fs_direct_mode_box.grid()
         else:
-            tmpfs_direct_mode_box.grid_remove()
-            tmpfs_direct_var.set(0)
+            fs_direct_mode_box.grid_remove()
+            fs_direct_var.set(0)
 
-    makelabel(tempfs_tab, "Max TempFS Size (MB):", 1, 0, "Maximum total size for the in-memory temp filesystem. Set 0 for unlimited.")
-    ctk.CTkEntry(tempfs_tab, width=100, textvariable=tmpfs_maxsize_var).grid(row=2, column=0, padx=8, pady=2, stick="nw")
-    makefileentry(tempfs_tab, "Initial TempFS Directory:", "Select directory to preload into TempFS", tmpfs_dir_var, 4, width=280, singlerow=False, dialog_type=2, tooltiptxt="Optional directory to preload into TempFS on startup.")
-    tmpfs_direct_mode_box = makecheckbox(tempfs_tab, "Use Direct Filesystem Mode (sandboxed to Initial TempFS Directory)", tmpfs_direct_var, 6, 0, tooltiptxt="When enabled, /api/extra/fs operations read/write directly to disk under the selected tempfs directory.")
-    tmpfs_direct_mode_box.grid_remove()
-    tmpfs_maxsize_var.trace_add("write", toggletmpfsdiskmode)
-    tmpfs_dir_var.trace_add("write", toggletmpfsdiskmode)
+    makelabel(tempfs_tab, "Filesystem Enable / Memory Limit (MB):", 1, 0, "Set > 0 to enable filesystem endpoints. In-memory mode uses this as a hard size limit; direct disk mode does not enforce it as an on-disk quota.")
+    ctk.CTkEntry(tempfs_tab, width=100, textvariable=fs_maxsize_var).grid(row=2, column=0, padx=8, pady=2, stick="nw")
+    makefileentry(tempfs_tab, "Filesystem Root Directory:", "Select managed filesystem root directory", fs_dir_var, 4, width=280, singlerow=False, dialog_type=2, tooltiptxt="Optional root directory for filesystem operations. In memory mode, this directory is preloaded. In direct mode, this is the disk sandbox root.")
+    fs_direct_mode_box = makecheckbox(tempfs_tab, "Use Direct Disk Mode (sandboxed to Filesystem Root Directory)", fs_direct_var, 6, 0, tooltiptxt="When enabled, /api/extra/fs operations read/write directly to disk under the selected filesystem root directory. --fsmaxsize must still be > 0 to enable filesystem endpoints, but is not enforced as a disk quota in this mode.")
+    fs_direct_mode_box.grid_remove()
+    fs_maxsize_var.trace_add("write", togglefsdiskmode)
+    fs_dir_var.trace_add("write", togglefsdiskmode)
 
     def kcpp_export_template():
         nonlocal kcpp_exporting_template
@@ -9979,9 +10016,9 @@ def show_gui():
         args.routermode = router_mode_var.get()==1
         args.autoswapmode = autoswap_mode_var.get()==1
         args.adminunloadtimeout = (0 if admin_unload_timeout_var.get()=="" else int(admin_unload_timeout_var.get()))
-        args.tmpfsmaxsize = max(0, tryparseint(tmpfs_maxsize_var.get(), 0))
-        args.tmpfsdir = tmpfs_dir_var.get()
-        args.tmpfsdirect = (tmpfs_direct_var.get()==1)
+        args.fsmaxsize = max(0, tryparseint(fs_maxsize_var.get(), 0))
+        args.fsdir = fs_dir_var.get()
+        args.fsdirect = (fs_direct_var.get()==1)
         args.showgui = False #prevent showgui from leaking into configs, its cli only
         args.adminallowhf = (admin_allow_hf_var.get()==1 and not args.cli)
 
@@ -10249,10 +10286,10 @@ def show_gui():
         singleinstance_var.set(dict["singleinstance"] if ("singleinstance" in dict) else 0)
         admin_allow_hf_var.set(dict["adminallowhf"] if ("adminallowhf" in dict) else 0)
 
-        tmpfs_maxsize_var.set(str(dict["tmpfsmaxsize"]) if ("tmpfsmaxsize" in dict and dict["tmpfsmaxsize"] is not None) else "0")
-        tmpfs_dir_var.set(dict["tmpfsdir"] if ("tmpfsdir" in dict and dict["tmpfsdir"]) else "")
-        tmpfs_direct_var.set(dict["tmpfsdirect"] if ("tmpfsdirect" in dict) else 0)
-        toggletmpfsdiskmode(None,None,None)
+        fs_maxsize_var.set(str(dict["fsmaxsize"]) if ("fsmaxsize" in dict and dict["fsmaxsize"] is not None) else "0")
+        fs_dir_var.set(dict["fsdir"] if ("fsdir" in dict and dict["fsdir"]) else "")
+        fs_direct_var.set(dict["fsdirect"] if ("fsdirect" in dict) else 0)
+        togglefsdiskmode(None,None,None)
 
         importvars_in_progress = False
         gui_changed_modelfile()
@@ -10642,6 +10679,18 @@ def convert_invalid_args(args):
     dict = args
     if isinstance(args, argparse.Namespace):
         dict = vars(args)
+    if "tmpfsmaxsize" in dict and "fsmaxsize" not in dict:
+        dict["fsmaxsize"] = dict["tmpfsmaxsize"]
+    if "tmpfsdir" in dict and "fsdir" not in dict:
+        dict["fsdir"] = dict["tmpfsdir"]
+    if "tmpfsdirect" in dict and "fsdirect" not in dict:
+        dict["fsdirect"] = dict["tmpfsdirect"]
+    if "tmpfsmaxsize" in dict:
+        del dict["tmpfsmaxsize"]
+    if "tmpfsdir" in dict:
+        del dict["tmpfsdir"]
+    if "tmpfsdirect" in dict:
+        del dict["tmpfsdirect"]
     if "usecuda" not in dict and "usecublas" in dict and dict["usecublas"]:
         dict["usecuda"] = dict["usecublas"]
     if "usecuda" in dict and dict["usecuda"] and "lowvram" in dict["usecuda"]:
@@ -10797,7 +10846,7 @@ def reload_from_new_args(newargs):
         args.istemplate = False
         newargs = convert_invalid_args(newargs)
         for key, value in newargs.items(): #do not overwrite certain values
-            if key not in ["remotetunnel","showgui","port","host","port_param","admin","adminpassword","password","adminunloadtimeout","routermode","admindir","admintextmodelsdir","admindatadir","adminallowhf","developerMode","tmpfsmaxsize","tmpfsdir","tmpfsdirect","ssl","nocertify","benchmark","prompt","config","downloaddir"]:
+            if key not in ["remotetunnel","showgui","port","host","port_param","admin","adminpassword","password","adminunloadtimeout","routermode","admindir","admintextmodelsdir","admindatadir","adminallowhf","developerMode","fsmaxsize","fsdir","fsdirect","ssl","nocertify","benchmark","prompt","config","downloaddir"]:
                 setattr(args, key, value)
         setattr(args,"showgui",False)
         setattr(args,"benchmark",False)
@@ -11344,7 +11393,7 @@ def main(launch_args, default_args):
             input()
     else:  # manager command queue for admin mode
         with multiprocessing.Manager() as mp_manager:
-            global_memory = mp_manager.dict({"tunnel_url": "", "restart_target": "", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "swapReqType": None, "autoswapmode": False, "tmpfs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}})
+            global_memory = mp_manager.dict({"tunnel_url": "", "restart_target": "", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "swapReqType": None, "autoswapmode": False, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}})
 
             if args.remotetunnel and not args.prompt and not args.benchmark and not args.cli:
                 setuptunnel(global_memory, True if args.sdmodel else False)
@@ -11588,7 +11637,7 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
     using_gui_launcher = gui_launcher
     start_time = time.time()
 
-    initialize_tmpfs_from_args()
+    initialize_fs_from_args()
 
     if args.model_param and (args.prompt and not args.cli) and not args.benchmark and not (args.debugmode >= 1):
         suppress_stdout()
@@ -12645,9 +12694,9 @@ if __name__ == '__main__':
     advparser.add_argument("--nobostoken", help="Prevents BOS token from being added at the start of any prompt. Usually NOT recommended for most models.", action='store_true')
     advparser.add_argument("--enableguidance", help="Enables the use of Classifier-Free-Guidance, which allows the use of negative prompts. Has performance and memory impact.", action='store_true')
     advparser.add_argument("--maxrequestsize", metavar=('[size in MB]'), help="Specify a max request payload size. Any requests to the server larger than this size will be dropped. Do not change if unsure.", type=int, default=32)
-    advparser.add_argument("--tmpfsmaxsize", metavar=('[size in MB]'), help="Maximum total size of the in-memory tmp file system. Set to 0 for unlimited.", type=int, default=0)
-    advparser.add_argument("--tmpfsdir", metavar=('[directory]'), help="Load an initial on-disk directory into the in-memory tmp file system at startup.", default="")
-    advparser.add_argument("--tmpfsdirect", help="Use direct on-disk filesystem mode sandboxed to --tmpfsdir instead of in-memory tmpfs storage.", action='store_true')
+    advparser.add_argument("--fsmaxsize", "--tmpfsmaxsize", dest="fsmaxsize", metavar=('[size in MB]'), help="Enable managed filesystem endpoints when > 0. In memory mode this is a hard size limit; in direct disk mode this is currently enable-gating only (not a disk quota).", type=int, default=0)
+    advparser.add_argument("--fsdir", "--tmpfsdir", dest="fsdir", metavar=('[directory]'), help="Filesystem root directory. In memory mode it preloads files from disk; in direct mode it is the sandbox root.", default="")
+    advparser.add_argument("--fsdirect", "--tmpfsdirect", dest="fsdirect", help="Use direct on-disk filesystem mode sandboxed to --fsdir instead of in-memory storage. Requires --fsmaxsize > 0 to enable filesystem endpoints.", action='store_true')
     advparser.add_argument("--overridekv","--override-kv", metavar=('[name=type:value]'), help="Override metadata value by key. Separate multiple values with commas. Format is name=type:value. Types: int, float, bool, str", default="")
     advparser.add_argument("--overridetensors","--override-tensor","-ot", metavar=('[tensor name pattern=buffer type]'), help="Override selected backend for specific tensors matching tensor_name_regex_pattern=buffer_type, same as in llama.cpp.", default="")
     advparser.add_argument("--developerMode", help="Enables developer utilities, such as hot reloading of Kobold Lite.", default=False, type=bool)
