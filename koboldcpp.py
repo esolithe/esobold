@@ -74,7 +74,7 @@ extra_images_max = 4 # for kontext/qwen img
 KcppVersion = "1.111"
 showdebug = True
 kcpp_instance = None #global running instance
-global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_override_config_target":"", "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "swapReqType": None, "autoswapmode": False, "modelOverride": None}
+global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_override_config_target":"", "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "swapReqType": None, "autoswapmode": False}
 using_gui_launcher = False
 
 handle = None
@@ -9253,7 +9253,7 @@ def main(launch_args, default_args):
             input()
     else:  # manager command queue for admin mode
         with multiprocessing.Manager() as mp_manager:
-            global_memory = mp_manager.dict({"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_override_config_target":"", "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "swapReqType": None, "autoswapmode": False, "modelOverride": None})
+            global_memory = mp_manager.dict({"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_override_config_target":"", "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "swapReqType": None, "autoswapmode": False})
 
             if args.remotetunnel and not args.prompt and not args.benchmark and not args.cli:
                 setuptunnel(global_memory, True if args.sdmodel else False)
@@ -9304,6 +9304,7 @@ def main(launch_args, default_args):
                                 if global_memory["swapReqType"] is not None and global_memory["swapReqType"] != "nomodel":
                                     print(f"[Unload Timeout] Inactive for over {time_since_last_active}s, unloading models via autoswap...")
                                     global_memory["swapReqType"] = "nomodel"
+                                    global_memory["triggered_sleeping"] = True
                             elif global_memory["current_model"]!="unload_model":
                                 print(f"[Unload Timeout] Inactive for over {time_since_last_active}s, unloading models...")
                                 restart_target = "unload_model"
@@ -9348,17 +9349,6 @@ def main(launch_args, default_args):
                                     args.model_param = targetfilepath
                                 else:
                                     reload_new_config(targetfilepath,defaultargs)
-                                global_memory["modelOverride"] = None
-                                if (args.admin and hasattr(args, 'admintextmodelsdir') and args.admintextmodelsdir and restart_model != ""):
-                                    dirpath = os.path.abspath(args.admintextmodelsdir)
-                                    modelFilepath = os.path.join(dirpath, restart_model)
-                                    if os.path.exists(modelFilepath):
-                                        print(f"Setting model to {restart_model}")
-                                        global_memory["modelOverride"] = modelFilepath
-                                    elif hasattr(args, 'adminallowhf') and args.adminallowhf and re.search(r'^https://huggingface\.co/.*?/resolve/main/.*\.gguf$', restart_model):
-                                        print(f"Setting model to {restart_model}")
-                                        global_memory["modelOverride"] = restart_model
-
                                 global_memory["autoswapmode"] = args.autoswapmode
                                 kcpp_instance = multiprocessing.Process(target=kcpp_main_process,kwargs={"launch_args": args, "g_memory": global_memory, "gui_launcher": False})
                                 kcpp_instance.daemon = True
@@ -9502,9 +9492,6 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
     if args.model_param and (args.prompt and not args.cli) and not args.benchmark and not (args.debugmode >= 1):
         suppress_stdout()
 
-
-    if global_memory["modelOverride"] is not None:
-        args.model_param = global_memory["modelOverride"]
 
     global autoswapmode, textName, sttName, ttsName, embedName, musicName, imageName, mmprojName
     autoswapmode = False
