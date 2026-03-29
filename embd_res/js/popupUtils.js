@@ -158,6 +158,83 @@ class PopupUtils {
 
 window.addEventListener("load", () => {
     window.popupUtils = new PopupUtils()
+
+    window.showCommandExecutionConfirmation = (title, message, content) => {
+        if (!!localsettings?.tools_auto_exec) {
+            return true
+        }
+
+        if (!window.popupUtils) {
+            return new Promise(resolve => msgboxYesNo(`${message}\n\n${content}`, title, () => resolve(true), () => resolve(false)))
+        }
+
+        return new Promise(resolve => {
+            let didResolve = false
+            let finalize = (approved) => {
+                if (didResolve) {
+                    return
+                }
+                didResolve = true
+                document.removeEventListener("keydown", onKeyDown)
+                popupUtils.reset()
+                resolve(approved)
+            }
+
+            let onKeyDown = (event) => {
+                if (event.key === "Escape") {
+                    event.preventDefault()
+                    finalize(false)
+                }
+            }
+
+            let body = document.createElement("div")
+
+            let info = document.createElement("div")
+            info.classList.add("menutext")
+            info.style.marginBottom = "10px"
+            info.style.whiteSpace = "pre-wrap"
+            info.innerText = `${message || "Please review this command before continuing."}`
+
+            let commandContent = ""
+            if (typeof content === "string") {
+                commandContent = content
+            }
+            else {
+                try {
+                    commandContent = JSON.stringify(content, null, 2)
+                }
+                catch (e) {
+                    commandContent = `${content}`
+                }
+            }
+
+            let textArea = document.createElement("textarea")
+            textArea.classList.add("form-control")
+            textArea.readOnly = true
+            textArea.spellcheck = false
+            textArea.wrap = "off"
+            textArea.value = commandContent
+            textArea.style.width = "100%"
+            textArea.style.minHeight = "220px"
+            textArea.style.maxHeight = "60vh"
+            textArea.style.overflow = "auto"
+            textArea.style.resize = "vertical"
+            textArea.style.fontFamily = "monospace"
+
+            body.append(info, textArea)
+
+            popupUtils.reset()
+                .title(`${title || "Confirm action"}`)
+                .content(body)
+                .css("min-width", "min(900px, 95vw)")
+                .button("Confirm", () => finalize(true))
+                .button("Cancel", () => finalize(false))
+                .show()
+
+            document.addEventListener("keydown", onKeyDown)
+            setTimeout(() => textArea.focus(), 0)
+        })
+    }
 })
 
 let autoSizeDe = debounce(() => popupUtils.autoSize(), 50);

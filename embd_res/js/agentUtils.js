@@ -638,15 +638,16 @@ let formatMacroMessage = (macroName, message) => {
 let getCommands = (agentRunState) => {
 	let { currentChainOfThought } = agentRunState
 	let confirmFsMutation = async (mutationName, payload = {}) => {
-		if (!!localsettings?.tools_auto_exec) {
-			return true
-		}
 		let mode = await window.fsClient.getFsMode()
 		if (mode === "memory") {
 			return true
 		}
 		let details = { mutation: mutationName, mode, payload }
-		return await new Promise(resolve => msgboxYesNo(`Filesystem action details:${JSON.stringify(details)}`, "Allow filesystem write action", () => resolve(true), () => resolve(false)))
+		return await window.showCommandExecutionConfirmation(
+			"Allow filesystem write action",
+			"Please review filesystem action details before continuing.",
+			JSON.stringify(details, null, 2)
+		)
 	}
 	return [
 		{
@@ -892,7 +893,11 @@ let getCommands = (agentRunState) => {
 					macroDefinition,
 					overwrite,
 				}
-				let shouldSaveMacro = !!localsettings?.tools_auto_exec ? true : await new Promise(resolve => msgboxYesNo(`Macro creation details:${JSON.stringify(macroSaveBody)}`, "Save macro", () => resolve(true), () => resolve(false)))
+				let shouldSaveMacro = await window.showCommandExecutionConfirmation(
+					"Save macro",
+					"Please review macro details before saving.",
+					JSON.stringify(macroSaveBody, null, 2)
+				)
 				if (!shouldSaveMacro) {
 					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "create cancelled by confirmation dialog."))
 					return false
