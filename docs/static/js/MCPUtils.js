@@ -30,7 +30,11 @@ window.addEventListener("load", async () => {
                 "name": tool.name,
                 "arguments": action?.args?.toolCallArgs || null
               }
-              let runCall = !!localsettings?.tools_auto_exec ? true : await new Promise(resolve => msgboxYesNo(`Tool call details:${JSON.stringify(bodyToExec)}`, "Run external tool call", () => resolve(true), () => resolve(false)));
+              let runCall = await window.showCommandExecutionConfirmation(
+                "Run external tool call",
+                "Please review tool call details before continuing.",
+                JSON.stringify(bodyToExec, null, 2)
+              );
               if (runCall) {
                 let mcpURL = GetMCPUrlOfTool("get_cpu_info")
                 let customHeaders = localsettings.cached_mcp_tools[mcpURL].apikey ? { 'Authorization': `Bearer ${localsettings.cached_mcp_tools[mcpURL].apikey}` } : {};
