@@ -1353,6 +1353,16 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [], enableFileUpload = 
         let suggestionsContainer = document.createElement("div")
         suggestionsContainer.classList.add("agent-user-input-suggestions")
 
+        let fileSection = document.createElement("details")
+        fileSection.classList.add("agent-user-input-file-section")
+
+        let fileSectionSummary = document.createElement("summary")
+        fileSectionSummary.classList.add("agent-user-input-file-section-summary")
+        fileSectionSummary.innerText = "Files (optional)"
+
+        let fileSectionBody = document.createElement("div")
+        fileSectionBody.classList.add("agent-user-input-file-section-body")
+
         let input = document.createElement("input")
         input.type = "text"
         input.placeholder = "Type your response..."
@@ -1443,10 +1453,23 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [], enableFileUpload = 
             return `local:${entry.fileName}:${entry.fileSize}:${entry.fileLastModified}`
         }
 
+        let updateFileSectionSummary = () => {
+            if (!enableFileUpload) {
+                return
+            }
+
+            let summaryText = "Files (optional)"
+            if (selectedFiles.length > 0) {
+                summaryText = `Files (${selectedFiles.length} selected)`
+            }
+            fileSectionSummary.innerText = summaryText
+        }
+
         let renderSelectedFiles = () => {
             selectedFilesContainer.innerHTML = ""
             if (selectedFiles.length === 0) {
                 selectedFilesStatus.innerText = "No files selected."
+                updateFileSectionSummary()
                 return
             }
 
@@ -1477,6 +1500,7 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [], enableFileUpload = 
                 item.appendChild(removeButton)
                 selectedFilesContainer.appendChild(item)
             })
+            updateFileSectionSummary()
         }
 
         let addSelectedFiles = (entries = []) => {
@@ -1701,7 +1725,7 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [], enableFileUpload = 
         body.appendChild(input)
         if (enableFileUpload) {
             if (capabilityText.innerText.trim().length > 0) {
-                body.appendChild(capabilityText)
+                fileSectionBody.appendChild(capabilityText)
             }
             if (canUseFsUpload) {
                 localFileRow.appendChild(addLocalFilesButton)
@@ -1712,16 +1736,19 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [], enableFileUpload = 
                 localFileRow.appendChild(refreshFsFilesButton)
             }
             if (localFileRow.childElementCount > 0) {
-                body.appendChild(localFileRow)
+                fileSectionBody.appendChild(localFileRow)
             }
             if (canSelectFsFiles) {
-                body.appendChild(fsSelect)
+                fileSectionBody.appendChild(fsSelect)
             }
-            body.appendChild(selectedFilesContainer)
-            body.appendChild(selectedFilesStatus)
+            fileSectionBody.appendChild(selectedFilesContainer)
+            fileSectionBody.appendChild(selectedFilesStatus)
             if (canUseFsUpload || canSelectFsFiles) {
-                body.appendChild(fileStatus)
+                fileSectionBody.appendChild(fileStatus)
             }
+            fileSection.appendChild(fileSectionSummary)
+            fileSection.appendChild(fileSectionBody)
+            body.appendChild(fileSection)
         }
         controls.appendChild(confirmAndContinue)
         controls.appendChild(stopLoop)
@@ -1917,7 +1944,7 @@ merge_edit_field = () => {
 
 let originalBtnBack = btn_back, originalBtnRedo = btn_redo, originalBtnRetry = btn_retry;
 
-let isAgentEditModeActive = () => {
+let isEditModeActive = () => {
     let allowEditingToggle = document.getElementById("allowediting")
     let isLegacyEditMode = !!window?.inEditMode || !!allowEditingToggle?.checked
     let isWysiwygEditMode = document.getElementById("gametext")?.contentEditable === "true"
@@ -1925,7 +1952,7 @@ let isAgentEditModeActive = () => {
 }
 
 let shouldSkipHiddenCotOnBackRedo = () => {
-    return isAgentModeEnabledAndSetCorrectly() && !!localsettings?.agentHideCOT && !isAgentEditModeActive()
+    return isAgentModeEnabledAndSetCorrectly() && !!localsettings?.agentHideCOT && !isEditModeActive()
 }
 
 let unwrapAgentHistorySegment = (segment = "") => {
