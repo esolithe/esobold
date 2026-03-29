@@ -165,7 +165,7 @@
 	}
 
 	/* TmpFS embed */
-	.kcpp-tmpfs-embed-window {
+	.kcpp-fs-embed-window {
 		position: fixed;
 		background-color: var(--theme_color_bg_popups);
 		border: 1px solid var(--theme_color_border);
@@ -180,7 +180,7 @@
 		backdrop-filter: blur(3px);
 	}
 
-	.kcpp-tmpfs-embed-header {
+	.kcpp-fs-embed-header {
 		display: flex;
 		align-items: center;
 		gap: 8px;
@@ -191,7 +191,7 @@
 		cursor: move;
 	}
 
-	.kcpp-tmpfs-embed-title {
+	.kcpp-fs-embed-title {
 		flex: 1;
 		white-space: nowrap;
 		overflow: hidden;
@@ -199,7 +199,7 @@
 		font-weight: bold;
 	}
 
-	.kcpp-tmpfs-embed-button {
+	.kcpp-fs-embed-button {
 		cursor: pointer;
 		border: none;
 		background: transparent;
@@ -207,14 +207,14 @@
 		font-size: 16px;
 	}
 
-	.kcpp-tmpfs-embed-content {
+	.kcpp-fs-embed-content {
 		width: 100%;
 		height: 100%;
 		flex: 1;
 		border: none;
 	}
 
-	.kcpp-tmpfs-embed-media {
+	.kcpp-fs-embed-media {
 		width: 100%;
 		height: 100%;
 		flex: 1;
@@ -222,7 +222,7 @@
 		object-fit: contain;
 	}
 
-	.kcpp-tmpfs-embed-audio {
+	.kcpp-fs-embed-audio {
 		width: 100%;
 		height: auto;
 		flex: 0 0 auto;
@@ -292,7 +292,7 @@
 		display: none;
 	}
 
-	.agent-user-input-tmpfs-select {
+	.agent-user-input-fs-select {
 		width: 100%;
 		min-height: 140px;
 	}
