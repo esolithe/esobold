@@ -928,7 +928,7 @@ let runAgentCycle = async (agentRunState = {}) => {
 
             let promptOverview = currentOrderOfActionDescriptionsOverall.length > 0 ? currentOrderOfActionDescriptionsOverall[i - 1] : null
             if (i === 0) {
-                let planningPrompt = "The last action from the user is the instruction. If you need to ask the user for a response, the action userInput must be used and be put as the final action in the order. When handling images always use actions to get information when needed especially for descriptions. Use describe_clicked_image only for images the user clicks in chat, and use describe_tmpfs_image only when a tmpfs file path is available. Produces a list of actions to respond to this instruction."
+                let planningPrompt = "The last action from the user is the instruction. If you need to ask the user for a response, the action userInput must be used and be put as the final action in the order. When handling images always use actions to get information when needed especially for descriptions. Use describe_clicked_image only for images the user clicks in chat, and use describe_fs_image only when a fs file path is available. Produces a list of actions to respond to this instruction."
                 if (!!agentRunState?.agentName) {
                     planningPrompt += ` You must respond as ${agentRunState.agentName} when using the send_message or userInput actions. Choose the person based on the user's instruction.`
                 }
@@ -1383,12 +1383,12 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [], enableFileUpload = 
         let addTmpfsFilesButton = document.createElement("button")
         addTmpfsFilesButton.type = "button"
         addTmpfsFilesButton.classList.add("btn-primary")
-        addTmpfsFilesButton.innerText = "Add TmpFS files"
+        addTmpfsFilesButton.innerText = "Add FS files"
 
         let refreshTmpfsFilesButton = document.createElement("button")
         refreshTmpfsFilesButton.type = "button"
         refreshTmpfsFilesButton.classList.add("btn-primary")
-        refreshTmpfsFilesButton.innerText = "Refresh TmpFS list"
+        refreshTmpfsFilesButton.innerText = "Refresh FS list"
 
         let selectedFilesContainer = document.createElement("div")
         selectedFilesContainer.classList.add("agent-user-input-selected-files")
@@ -1423,7 +1423,7 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [], enableFileUpload = 
                 unavailableCapabilities.push("local file upload")
             }
             if (!canSelectTmpfsFiles) {
-                unavailableCapabilities.push("TmpFS file selection")
+                unavailableCapabilities.push("FS file selection")
             }
             if (unavailableCapabilities.length > 0) {
                 capabilityText.innerText = `${unavailableCapabilities.join(" and ")} ${unavailableCapabilities.length === 1 ? "is" : "are"} unavailable because tmpfs access is not supported by the current endpoint.`
@@ -1457,7 +1457,7 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [], enableFileUpload = 
                 let label = document.createElement("div")
                 label.classList.add("agent-user-input-selected-file-label")
                 if (entry.source === "tmpfs") {
-                    label.innerText = `TmpFS: ${entry.path}`
+                    label.innerText = `FS: ${entry.path}`
                 }
                 else {
                     label.innerText = `Local: ${entry.fileName}`
@@ -1528,9 +1528,9 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [], enableFileUpload = 
             }
 
             tmpfsSelect.innerHTML = ""
-            fileStatus.innerText = "Loading TmpFS files..."
+            fileStatus.innerText = "Loading FS files..."
             try {
-                let tmpfsPaths = await window.tmpfsClient.list("*")
+                let tmpfsPaths = await window.fsClient.list("*")
                 let normalizedEntries = Array.isArray(tmpfsPaths)
                     ? tmpfsPaths.map(String).map(normalizeTmpfsSelectablePath).filter(entry => entry !== null)
                     : []
@@ -1545,7 +1545,7 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [], enableFileUpload = 
                 uniqueEntries.sort((a, b) => a.displayPath.localeCompare(b.displayPath))
 
                 if (uniqueEntries.length === 0) {
-                    fileStatus.innerText = "No files are currently available in TmpFS."
+                    fileStatus.innerText = "No files are currently available in FS."
                     return
                 }
 
@@ -1556,10 +1556,10 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [], enableFileUpload = 
                     option.innerText = entry.displayPath
                     tmpfsSelect.appendChild(option)
                 })
-                fileStatus.innerText = `Loaded ${uniqueEntries.length} TmpFS path${uniqueEntries.length === 1 ? "" : "s"}.`
+                fileStatus.innerText = `Loaded ${uniqueEntries.length} FS path${uniqueEntries.length === 1 ? "" : "s"}.`
             }
             catch (e) {
-                fileStatus.innerText = `Failed to load TmpFS files: ${e?.message || e}`
+                fileStatus.innerText = `Failed to load FS files: ${e?.message || e}`
             }
         }
 
@@ -1610,7 +1610,7 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [], enableFileUpload = 
                 path: entry.displayPath,
                 fileName: entry.path.split("/").filter(part => part.length > 0).slice(-1)[0] || entry.path,
             })))
-            fileStatus.innerText = addedCount > 0 ? `Added ${addedCount} TmpFS file${addedCount === 1 ? "" : "s"}.` : "Selected TmpFS files were already in the list."
+            fileStatus.innerText = addedCount > 0 ? `Added ${addedCount} FS file${addedCount === 1 ? "" : "s"}.` : "Selected FS files were already in the list."
         }
 
         refreshTmpfsFilesButton.onclick = loadTmpfsFiles
@@ -1637,7 +1637,7 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [], enableFileUpload = 
                     fileStatus.innerText = `Uploading file ${i + 1}/${selectedFiles.length}: ${currentFile.fileName}`
                     let uploadPath = buildAgentUploadTmpfsPath(currentFile.fileName)
                     let bytes = new Uint8Array(await currentFile.localFile.arrayBuffer())
-                    await window.tmpfsClient.write(uploadPath, bytes, true)
+                    await window.fsClient.write(uploadPath, bytes, true)
                     preparedFiles.push({
                         source: "local",
                         fileName: currentFile.fileName,

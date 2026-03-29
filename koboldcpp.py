@@ -83,7 +83,7 @@ extra_images_max = 4 # for kontext/qwen img
 KcppVersion = "1.111"
 showdebug = True
 kcpp_instance = None #global running instance
-global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "swapReqType": None, "autoswapmode": False, "tmpfs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "initialized": False}}
+global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "swapReqType": None, "autoswapmode": False, "tmpfs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}}
 using_gui_launcher = False
 tmpfs_lock = threading.Lock()
 TMPFS_DIR_MARKER_FILENAME = ".kcpp_dir_marker"
@@ -1274,11 +1274,17 @@ def get_capabilities():
     has_jinja = True if args.jinja else False
     has_mcp = True if (args.mcpfile and mcp_connections and len(mcp_connections) > 0) else False
     has_tmpfs = tmpfs_is_enabled()
+    tmpfs_mode = "memory"
+    try:
+        with tmpfs_lock:
+            tmpfs_mode = tmpfs_get_mode(tmpfs_snapshot_state())
+    except Exception:
+        tmpfs_mode = "memory"
     has_server_saving = args.admin and not (args.admindatadir == "")
     had_admin_with_hf = args.adminallowhf
     admin_type = (2 if args.admin and args.admindir and args.adminpassword else (1 if args.admin and args.admindir else 0))
     has_router = True if args.routermode else False
-    return {"result":"KoboldCpp", "version":KcppVersion, "protected":has_password, "llm":has_llm, "txt2img":has_txt2img,"vision":visionSupport,"audio":audioSupport,"transcribe":has_whisper,"multiplayer":has_multiplayer,"websearch":has_search,"tts":has_tts, "embeddings":has_embeddings, "music":has_music, "tmpfs":has_tmpfs, "savedata":(savedata_obj is not None), "admin": admin_type, "router":has_router, "guidance": has_guidance, "jinja": has_jinja, "mcp":has_mcp, "hasServerSaving": has_server_saving, "hasAdminWithHF": had_admin_with_hf, "embeddingModel": embeddingModel}
+    return {"result":"KoboldCpp", "version":KcppVersion, "protected":has_password, "llm":has_llm, "txt2img":has_txt2img,"vision":visionSupport,"audio":audioSupport,"transcribe":has_whisper,"multiplayer":has_multiplayer,"websearch":has_search,"tts":has_tts, "embeddings":has_embeddings, "music":has_music, "tmpfs":has_tmpfs, "tmpfsMode":tmpfs_mode, "savedata":(savedata_obj is not None), "admin": admin_type, "router":has_router, "guidance": has_guidance, "jinja": has_jinja, "mcp":has_mcp, "hasServerSaving": has_server_saving, "hasAdminWithHF": had_admin_with_hf, "embeddingModel": embeddingModel}
 
 
 def scan_directory(dirpath, valid_exts, depth):
@@ -4349,12 +4355,13 @@ def get_my_epurl():
         epurl = f"{httpsaffix}://{args.host}:{displayedport}"
     return epurl
 
-def tmpfs_make_state(max_size_bytes=0, source_dir="", initialized=False):
+def tmpfs_make_state(max_size_bytes=0, source_dir="", initialized=False, mode="memory"):
     return {
         "files": {},
         "current_size_bytes": 0,
         "max_size_bytes": max(0, tryparseint(max_size_bytes, 0)),
         "source_dir": source_dir or "",
+        "mode": ("disk" if str(mode).lower() == "disk" else "memory"),
         "initialized": initialized,
     }
 
@@ -4385,8 +4392,34 @@ def tmpfs_snapshot_state():
         "current_size_bytes": tryparseint(tmpfs.get("current_size_bytes", 0), 0) if isinstance(tmpfs, dict) else 0,
         "max_size_bytes": tryparseint(tmpfs.get("max_size_bytes", 0), 0) if isinstance(tmpfs, dict) else 0,
         "source_dir": tmpfs.get("source_dir", "") if isinstance(tmpfs, dict) else "",
+        "mode": ("disk" if (isinstance(tmpfs, dict) and str(tmpfs.get("mode", "memory")).lower() == "disk") else "memory"),
         "initialized": bool(tmpfs.get("initialized", False)) if isinstance(tmpfs, dict) else False,
     }
+
+def tmpfs_get_mode(tmpfs_state=None):
+    state = tmpfs_state if isinstance(tmpfs_state, dict) else tmpfs_snapshot_state()
+    return "disk" if str(state.get("mode", "memory")).lower() == "disk" else "memory"
+
+def tmpfs_is_disk_mode(tmpfs_state=None):
+    return tmpfs_get_mode(tmpfs_state) == "disk"
+
+def tmpfs_get_disk_root(tmpfs_state=None):
+    state = tmpfs_state if isinstance(tmpfs_state, dict) else tmpfs_snapshot_state()
+    source_dir = str(state.get("source_dir", "") or "").strip()
+    if source_dir == "":
+        raise ValueError("Disk filesystem mode requires a configured root directory.")
+    return os.path.realpath(os.path.abspath(source_dir))
+
+def tmpfs_resolve_disk_path(path, allow_root=False, tmpfs_state=None):
+    normalized_path = tmpfs_normalize_path(path, allow_root=allow_root)
+    state = tmpfs_state if isinstance(tmpfs_state, dict) else tmpfs_snapshot_state()
+    root_dir = tmpfs_get_disk_root(state)
+    rel_path = normalized_path.lstrip("/")
+    abs_path = os.path.abspath(os.path.join(root_dir, rel_path))
+    real_abs_path = os.path.realpath(abs_path)
+    if real_abs_path != root_dir and not real_abs_path.startswith(root_dir + os.sep):
+        raise ValueError("Invalid tmpfs path.")
+    return normalized_path, real_abs_path, root_dir
 
 def tmpfs_is_enabled():
     parsed_args = globals().get("args", None)
@@ -4401,10 +4434,6 @@ def tmpfs_normalize_path(raw_path, allow_root=False):
     if raw_path is None:
         raise ValueError("Missing tmpfs path.")
     path = urllib.parse.unquote(str(raw_path)).replace("\\", "/")
-    if path.startswith("/tmp/"):
-        path = path[4:]
-    elif path == "/tmp":
-        path = "/"
     normalized = posixpath.normpath("/" + path.lstrip("/"))
     if normalized in ("/..", "..") or normalized.startswith("/../"):
         raise ValueError("Invalid tmpfs path.")
@@ -4431,6 +4460,18 @@ def tmpfs_get_file(path):
     normalized_path = tmpfs_normalize_path(path)
     with tmpfs_lock:
         tmpfs = tmpfs_snapshot_state()
+    if tmpfs_is_disk_mode(tmpfs):
+        _, abs_path, _ = tmpfs_resolve_disk_path(normalized_path, tmpfs_state=tmpfs)
+        if not os.path.isfile(abs_path):
+            raise FileNotFoundError(f"Tmpfs file not found: {normalized_path}")
+        with open(abs_path, mode="rb") as file_handle:
+            content_bytes = file_handle.read()
+        return normalized_path, {
+            "content": content_bytes,
+            "modified": datetime.fromtimestamp(os.path.getmtime(abs_path), timezone.utc).isoformat(),
+            "size": len(content_bytes),
+        }
+    with tmpfs_lock:
         entry = tmpfs["files"].get(normalized_path)
     if entry is None:
         raise FileNotFoundError(f"Tmpfs file not found: {normalized_path}")
@@ -4441,6 +4482,13 @@ def tmpfs_write_file(path, content, modified=None, isB64 = False):
     content_bytes = tmpfs_to_bytes(content, isB64)
     with tmpfs_lock:
         tmpfs = tmpfs_snapshot_state()
+    if tmpfs_is_disk_mode(tmpfs):
+        _, abs_path, _ = tmpfs_resolve_disk_path(normalized_path, tmpfs_state=tmpfs)
+        os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+        with open(abs_path, mode="wb") as file_handle:
+            file_handle.write(content_bytes)
+        return normalized_path
+    with tmpfs_lock:
         files = tmpfs["files"]
         old_size = files.get(normalized_path, {}).get("size", 0)
         new_total = tmpfs["current_size_bytes"] - old_size + len(content_bytes)
@@ -4465,15 +4513,35 @@ def tmpfs_normalize_dir_path(raw_path, allow_root=False):
 
 def tmpfs_create_directory(path):
     normalized_dir = tmpfs_normalize_dir_path(path)
+    with tmpfs_lock:
+        tmpfs = tmpfs_snapshot_state()
+    if tmpfs_is_disk_mode(tmpfs):
+        _, abs_dir, _ = tmpfs_resolve_disk_path(normalized_dir, allow_root=True, tmpfs_state=tmpfs)
+        os.makedirs(abs_dir, exist_ok=True)
+        marker_path = normalized_dir + "/" + TMPFS_DIR_MARKER_FILENAME
+        tmpfs_write_file(marker_path, b"")
+        return normalized_dir
     marker_path = normalized_dir + "/" + TMPFS_DIR_MARKER_FILENAME
     tmpfs_write_file(marker_path, b"")
     return normalized_dir
 
 def tmpfs_delete_directory(path):
     normalized_dir = tmpfs_normalize_dir_path(path)
-    prefix = normalized_dir + "/"
     with tmpfs_lock:
         tmpfs = tmpfs_snapshot_state()
+    if tmpfs_is_disk_mode(tmpfs):
+        _, abs_dir, root_dir = tmpfs_resolve_disk_path(normalized_dir, allow_root=True, tmpfs_state=tmpfs)
+        if abs_dir == root_dir:
+            raise ValueError("Refusing to delete tmpfs root directory.")
+        if not os.path.isdir(abs_dir):
+            raise FileNotFoundError(f"Tmpfs directory not found: {normalized_dir}")
+        removed = 0
+        for _, _, filenames in os.walk(abs_dir):
+            removed += len(filenames)
+        shutil.rmtree(abs_dir)
+        return normalized_dir, removed
+    prefix = normalized_dir + "/"
+    with tmpfs_lock:
         files = tmpfs["files"]
         targets = [p for p in files.keys() if p.startswith(prefix)]
         if not targets:
@@ -4493,6 +4561,13 @@ def tmpfs_delete_file(path):
     normalized_path = tmpfs_normalize_path(path)
     with tmpfs_lock:
         tmpfs = tmpfs_snapshot_state()
+    if tmpfs_is_disk_mode(tmpfs):
+        _, abs_path, _ = tmpfs_resolve_disk_path(normalized_path, tmpfs_state=tmpfs)
+        if not os.path.isfile(abs_path):
+            raise FileNotFoundError(f"Tmpfs file not found: {normalized_path}")
+        os.remove(abs_path)
+        return normalized_path
+    with tmpfs_lock:
         files = tmpfs["files"]
         if normalized_path not in files:
             raise FileNotFoundError(f"Tmpfs file not found: {normalized_path}")
@@ -4508,6 +4583,15 @@ def tmpfs_copy_file(source_path, destination_path):
     normalized_destination = tmpfs_normalize_path(destination_path)
     with tmpfs_lock:
         tmpfs = tmpfs_snapshot_state()
+    if tmpfs_is_disk_mode(tmpfs):
+        _, source_abs, _ = tmpfs_resolve_disk_path(normalized_source, tmpfs_state=tmpfs)
+        _, destination_abs, _ = tmpfs_resolve_disk_path(normalized_destination, tmpfs_state=tmpfs)
+        if not os.path.isfile(source_abs):
+            raise FileNotFoundError(f"Tmpfs file not found: {normalized_source}")
+        os.makedirs(os.path.dirname(destination_abs), exist_ok=True)
+        shutil.copy2(source_abs, destination_abs)
+        return normalized_source, normalized_destination
+    with tmpfs_lock:
         files = tmpfs["files"]
         if normalized_source not in files:
             raise FileNotFoundError(f"Tmpfs file not found: {normalized_source}")
@@ -4532,6 +4616,15 @@ def tmpfs_move_file(source_path, destination_path):
     normalized_destination = tmpfs_normalize_path(destination_path)
     with tmpfs_lock:
         tmpfs = tmpfs_snapshot_state()
+    if tmpfs_is_disk_mode(tmpfs):
+        _, source_abs, _ = tmpfs_resolve_disk_path(normalized_source, tmpfs_state=tmpfs)
+        _, destination_abs, _ = tmpfs_resolve_disk_path(normalized_destination, tmpfs_state=tmpfs)
+        if not os.path.isfile(source_abs):
+            raise FileNotFoundError(f"Tmpfs file not found: {normalized_source}")
+        os.makedirs(os.path.dirname(destination_abs), exist_ok=True)
+        shutil.move(source_abs, destination_abs)
+        return normalized_source, normalized_destination
+    with tmpfs_lock:
         files = tmpfs["files"]
         if normalized_source not in files:
             raise FileNotFoundError(f"Tmpfs file not found: {normalized_source}")
@@ -4564,6 +4657,15 @@ def tmpfs_list_paths(pattern="*", case_insensitive=False):
     wildcard = pattern or "*"
     with tmpfs_lock:
         tmpfs = tmpfs_snapshot_state()
+    if tmpfs_is_disk_mode(tmpfs):
+        root_dir = tmpfs_get_disk_root(tmpfs)
+        paths = []
+        for root, _, filenames in os.walk(root_dir):
+            for filename in filenames:
+                rel_path = os.path.relpath(os.path.join(root, filename), root_dir).replace("\\", "/")
+                paths.append("/" + rel_path.lstrip("/"))
+        paths.sort()
+    else:
         paths = sorted(tmpfs["files"].keys())
     return [
         path
@@ -4577,6 +4679,21 @@ def tmpfs_search_content(pattern="*", path_pattern="*", max_results=100, case_in
     max_hits = max(1, tryparseint(max_results, 100))
     with tmpfs_lock:
         tmpfs = tmpfs_snapshot_state()
+    if tmpfs_is_disk_mode(tmpfs):
+        items = []
+        root_dir = tmpfs_get_disk_root(tmpfs)
+        for root, _, filenames in os.walk(root_dir):
+            for filename in filenames:
+                abs_path = os.path.join(root, filename)
+                rel_path = "/" + os.path.relpath(abs_path, root_dir).replace("\\", "/").lstrip("/")
+                try:
+                    with open(abs_path, mode="rb") as file_handle:
+                        content_bytes = file_handle.read()
+                except Exception:
+                    continue
+                items.append((rel_path, {"content": content_bytes}))
+        items.sort(key=lambda item: item[0])
+    else:
         items = sorted(tmpfs["files"].items())
     matches = []
     for path, entry in items:
@@ -4797,6 +4914,26 @@ def tmpfs_build_zip_bytes(dir_prefix=""):
     prefix = (tmpfs_normalize_path(dir_prefix) + "/").lstrip("/") if dir_prefix and dir_prefix.strip("/") else ""
     with tmpfs_lock:
         tmpfs = tmpfs_snapshot_state()
+    if tmpfs_is_disk_mode(tmpfs):
+        root_dir = tmpfs_get_disk_root(tmpfs)
+        items = []
+        for root, _, filenames in os.walk(root_dir):
+            for filename in filenames:
+                rel_path = os.path.relpath(os.path.join(root, filename), root_dir).replace("\\", "/")
+                virtual_path = "/" + rel_path.lstrip("/")
+                if posixpath.basename(virtual_path) == TMPFS_DIR_MARKER_FILENAME:
+                    continue
+                if prefix and not virtual_path.lstrip("/").startswith(prefix):
+                    continue
+                try:
+                    with open(os.path.join(root, filename), mode="rb") as file_handle:
+                        content_bytes = file_handle.read()
+                    modified = datetime.fromtimestamp(os.path.getmtime(os.path.join(root, filename)), timezone.utc).isoformat()
+                except Exception:
+                    continue
+                items.append((virtual_path, {"content": content_bytes, "modified": modified}))
+        items.sort(key=lambda x: x[0])
+    else:
         items = sorted(
             (
                 (p, e)
@@ -4888,6 +5025,8 @@ def tmpfs_extract_zip(zip_bytes, target_dir):
 def initialize_tmpfs_from_args():
     configured_limit = max(0, tryparseint(getattr(args, "tmpfsmaxsize", 0), 0)) * 1024 * 1024
     configured_source = getattr(args, "tmpfsdir", "") or ""
+    configured_direct_disk = bool(getattr(args, "tmpfsdirect", False))
+    configured_mode = "disk" if configured_direct_disk else "memory"
     source_dir = os.path.abspath(configured_source) if configured_source else ""
     with tmpfs_lock:
         current_tmpfs = tmpfs_snapshot_state()
@@ -4899,8 +5038,12 @@ def initialize_tmpfs_from_args():
                 return
             if configured_limit > 0:
                 current_tmpfs["max_size_bytes"] = configured_limit
+            current_tmpfs["mode"] = configured_mode
             if source_dir and not current_tmpfs["source_dir"]:
                 current_tmpfs["source_dir"] = source_dir
+            if configured_mode == "disk" and not current_tmpfs["source_dir"]:
+                utfprint("Warning: Disk tmpfs mode requires --tmpfsdir. Falling back to memory mode.")
+                current_tmpfs["mode"] = "memory"
             if current_tmpfs["max_size_bytes"] > 0 and current_tmpfs["current_size_bytes"] > current_tmpfs["max_size_bytes"]:
                 utfprint("Warning: Existing tmpfs contents exceed the configured size limit – limit ignored.")
             tmpfs_set_state(current_tmpfs)
@@ -4912,8 +5055,22 @@ def initialize_tmpfs_from_args():
             tmpfs_set_state(tmpfs_make_state(0, "", initialized=True))
             return
 
-        tmpfs = tmpfs_make_state(configured_limit, source_dir, initialized=True)
+        tmpfs = tmpfs_make_state(configured_limit, source_dir, initialized=True, mode=configured_mode)
+        if configured_mode == "disk":
+            if source_dir == "":
+                utfprint("Warning: Disk tmpfs mode requires --tmpfsdir. Falling back to memory mode.")
+                tmpfs["mode"] = "memory"
+            else:
+                try:
+                    os.makedirs(source_dir, exist_ok=True)
+                except Exception as create_err:
+                    utfprint(f"Warning: Could not initialize tmpfs disk root {source_dir}: {create_err} – falling back to memory mode.")
+                    tmpfs["mode"] = "memory"
+                    tmpfs["source_dir"] = ""
         if source_dir:
+            if tmpfs_is_disk_mode(tmpfs):
+                tmpfs_set_state(tmpfs)
+                return
             if not os.path.isdir(source_dir):
                 utfprint(f"Warning: Tmpfs source directory does not exist: {source_dir} – starting with empty tmpfs.")
                 tmpfs_set_state(tmpfs)
@@ -5045,7 +5202,7 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
             textReqs = ["/api/extra/generate/stream","/api/extra/tokencount","/api/v1/generate","/sdapi/v1/interrogate","/v1/completions","/v1/chat/completions"]
             sttReqs = ["/api/extra/transcribe","/v1/audio/transcriptions"]
             ttsReqs = ["/api/extra/tts", "/v1/audio/speech"]
-            embedReqs = ["/api/extra/embeddings", "/v1/embeddings", "/api/extra/tmpfs/semantic_search"]
+            embedReqs = ["/api/extra/embeddings", "/v1/embeddings", "/api/extra/fs/semantic_search"]
             musicReqs = ["/api/extra/music/prepare","/api/extra/music/generate"]
             imageReqs = ["/sdapi/v1/txt2img", "/sdapi/v1/img2img", "/sdapi/v1/upscale"] # "/sdapi/v1/sd-models", "/sdapi/v1/options", "/sdapi/v1/samplers"
 
@@ -6106,7 +6263,7 @@ Change Mode<br>
                     utfprint("Error getting resource: " + str(e))
                     response_body = (f"Resource not found").encode()
 
-        elif clean_path == "/tmp.zip":
+        elif clean_path == "/fs.zip":
             if not tmpfs_is_enabled():
                 response_code = 503
                 response_body = ("Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it.").encode()
@@ -6131,7 +6288,7 @@ Change Mode<br>
                 self.wfile.write(zip_body)
                 return
 
-        elif clean_path == '/tmp' or clean_path.startswith('/tmp/'):
+        elif clean_path == '/fs' or clean_path.startswith('/fs/'):
             content_type = 'application/octet-stream'
             if not tmpfs_is_enabled():
                 response_code = 503
@@ -6139,7 +6296,7 @@ Change Mode<br>
                 content_type = 'text/plain'
             else:
                 try:
-                    tmpfs_path = tmpfs_normalize_path(clean_path[4:])
+                    tmpfs_path = tmpfs_normalize_path(clean_path[3:])
                     _, tmpfs_entry = tmpfs_get_file(tmpfs_path)
                     response_body = tmpfs_entry.get("content", b"")
                     detected_type = mimetypes.guess_type(tmpfs_path)[0]
@@ -6148,12 +6305,12 @@ Change Mode<br>
                 except (FileNotFoundError, ValueError):
                     try:
                         # Validate this is a reachable directory path (raises if invalid)
-                        tmpfs_normalize_path(clean_path[4:], allow_root=True)
+                        tmpfs_normalize_path(clean_path[3:], allow_root=True)
                         # Serve the tmpfs browser HTML page for any directory access.
                         # The JS reads window.location.pathname to determine the current dir
-                        # and fetches the file list from /api/extra/tmpfs/files dynamically.
+                        # and fetches the file list from /api/extra/fs/files dynamically.
                         embddir_tmp = os.path.join(os.path.abspath(os.path.dirname(os.path.realpath(__file__))), "embd_res")
-                        browser_html_path = os.path.join(embddir_tmp, "tmpfs_browser.html")
+                        browser_html_path = os.path.join(embddir_tmp, "fs_browser.html")
                         with open(browser_html_path, mode='rb') as _brf:
                             response_body = _brf.read()
                         content_type = 'text/html'
@@ -6168,7 +6325,16 @@ Change Mode<br>
                     response_body = (f"Resource not found").encode()
                     content_type = 'text/plain'
 
-        elif clean_path.endswith('/api/extra/tmpfs/files'):
+        elif clean_path.endswith('/api/extra/fs/mode'):
+            with tmpfs_lock:
+                tmpfs = tmpfs_snapshot_state()
+            response_body = (json.dumps({
+                "enabled": tmpfs_is_enabled(),
+                "mode": tmpfs_get_mode(tmpfs),
+                "source_dir": tmpfs.get("source_dir", ""),
+            }).encode())
+
+        elif clean_path.endswith('/api/extra/fs/files'):
             if not tmpfs_is_enabled():
                 response_code = 503
                 response_body = (json.dumps({"error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
@@ -6179,7 +6345,7 @@ Change Mode<br>
                 case_insensitive_flag = str(parsed_dict.get('case_insensitive', ['0'])[0]).strip().lower() in ['1', 'true', 'yes', 'on']
                 response_body = (json.dumps({"paths": tmpfs_list_paths(pattern, case_insensitive_flag)}).encode())
 
-        elif clean_path.endswith('/api/extra/tmpfs/search'):
+        elif clean_path.endswith('/api/extra/fs/search'):
             if not tmpfs_is_enabled():
                 response_code = 503
                 response_body = (json.dumps({"error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
@@ -6192,7 +6358,7 @@ Change Mode<br>
                 case_insensitive_flag = str(parsed_dict.get('case_insensitive', ['0'])[0]).strip().lower() in ['1', 'true', 'yes', 'on']
                 response_body = (json.dumps({"matches": tmpfs_search_content(pattern, path_pattern, max_results, case_insensitive_flag)}).encode())
 
-        elif clean_path.endswith('/api/extra/tmpfs/metadata'):
+        elif clean_path.endswith('/api/extra/fs/metadata'):
             if not tmpfs_is_enabled():
                 response_code = 503
                 response_body = (json.dumps({"error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
@@ -6208,7 +6374,7 @@ Change Mode<br>
                     response_code = 400
                     response_body = (json.dumps({"error": str(e)}).encode())
 
-        elif clean_path.endswith('/api/extra/tmpfs/content'):
+        elif clean_path.endswith('/api/extra/fs/content'):
             if not tmpfs_is_enabled():
                 response_code = 503
                 response_body = (json.dumps({"error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
@@ -6235,7 +6401,7 @@ Change Mode<br>
                     response_code = 400
                     response_body = (json.dumps({"error": str(e)}).encode())
 
-        elif clean_path.endswith('/api/extra/tmpfs/url'):
+        elif clean_path.endswith('/api/extra/fs/url'):
             if not tmpfs_is_enabled():
                 response_code = 503
                 response_body = (json.dumps({"error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
@@ -6247,7 +6413,7 @@ Change Mode<br>
                     tmpfs_get_file(normalized_path)
                     response_body = (json.dumps({
                         "path": normalized_path,
-                        "url": self.build_external_url(f"/tmp{normalized_path}"),
+                        "url": self.build_external_url(f"/fs{normalized_path}"),
                     }).encode())
                 except FileNotFoundError as e:
                     response_code = 404
@@ -6256,7 +6422,7 @@ Change Mode<br>
                     response_code = 400
                     response_body = (json.dumps({"error": str(e)}).encode())
 
-        elif clean_path.endswith('/api/extra/tmpfs/download'):
+        elif clean_path.endswith('/api/extra/fs/download'):
             if not tmpfs_is_enabled():
                 response_code = 503
                 response_body = (json.dumps({"error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
@@ -6266,7 +6432,7 @@ Change Mode<br>
                 parsed_url = urllib.parse.urlparse(self.path)
                 parsed_dict = urllib.parse.parse_qs(parsed_url.query)
                 zip_dir = str(parsed_dict.get('dir', [''])[0])
-                zip_url = self.build_external_url('/tmp.zip' + (f'?dir={urllib.parse.quote(zip_dir)}' if zip_dir else ''))
+                zip_url = self.build_external_url('/fs.zip' + (f'?dir={urllib.parse.quote(zip_dir)}' if zip_dir else ''))
                 response_body = (json.dumps({
                     "url": zip_url,
                     "file_count": len(tmpfs["files"]),
@@ -6730,7 +6896,7 @@ Change Mode<br>
                 response_code = 400
                 response_body = (json.dumps({"value": -1}).encode())
 
-        elif self.path.endswith('/api/extra/tmpfs/write_lines'):
+        elif self.path.endswith('/api/extra/fs/write_lines'):
             if not tmpfs_is_enabled():
                 response_code = 503
                 response_body = (json.dumps({"success": False, "error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
@@ -6754,7 +6920,7 @@ Change Mode<br>
                     response_code = 400
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
 
-        elif self.path.endswith('/api/extra/tmpfs/mkdir'):
+        elif self.path.endswith('/api/extra/fs/mkdir'):
             if not tmpfs_is_enabled():
                 response_code = 503
                 response_body = (json.dumps({"success": False, "error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
@@ -6770,7 +6936,7 @@ Change Mode<br>
                     response_code = 400
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
 
-        elif self.path.endswith('/api/extra/tmpfs/rmdir'):
+        elif self.path.endswith('/api/extra/fs/rmdir'):
             if not tmpfs_is_enabled():
                 response_code = 503
                 response_body = (json.dumps({"success": False, "error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
@@ -6786,7 +6952,7 @@ Change Mode<br>
                     response_code = 400
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
 
-        elif self.path.endswith('/api/extra/tmpfs/delete'):
+        elif self.path.endswith('/api/extra/fs/delete'):
             if not tmpfs_is_enabled():
                 response_code = 503
                 response_body = (json.dumps({"success": False, "error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
@@ -6802,7 +6968,7 @@ Change Mode<br>
                     response_code = 400
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
 
-        elif self.path.endswith('/api/extra/tmpfs/write'):
+        elif self.path.endswith('/api/extra/fs/write'):
             if not tmpfs_is_enabled():
                 response_code = 503
                 response_body = (json.dumps({"success": False, "error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
@@ -6818,7 +6984,7 @@ Change Mode<br>
                     response_code = 400
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
 
-        elif self.path.endswith('/api/extra/tmpfs/move'):
+        elif self.path.endswith('/api/extra/fs/move'):
             if not tmpfs_is_enabled():
                 response_code = 503
                 response_body = (json.dumps({"success": False, "error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
@@ -6834,7 +7000,7 @@ Change Mode<br>
                     response_code = 400
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
 
-        elif self.path.endswith('/api/extra/tmpfs/copy'):
+        elif self.path.endswith('/api/extra/fs/copy'):
             if not tmpfs_is_enabled():
                 response_code = 503
                 response_body = (json.dumps({"success": False, "error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
@@ -6853,7 +7019,7 @@ Change Mode<br>
                     response_code = 400
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
 
-        elif self.path.endswith('/api/extra/tmpfs/semantic_search'):
+        elif self.path.endswith('/api/extra/fs/semantic_search'):
             if not tmpfs_is_enabled():
                 response_code = 503
                 response_body = (json.dumps({"success": False, "error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
@@ -6877,7 +7043,7 @@ Change Mode<br>
                     response_code = 400
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
 
-        elif self.path.endswith('/api/extra/tmpfs/upload'):
+        elif self.path.endswith('/api/extra/fs/upload'):
             if not tmpfs_is_enabled():
                 response_code = 503
                 response_body = (json.dumps({"success": False, "error": "Tmpfs is disabled. Set --tmpfsmaxsize > 0 to enable it."}).encode())
@@ -8632,6 +8798,7 @@ def show_gui():
 
     tmpfs_maxsize_var = ctk.StringVar(value="0")
     tmpfs_dir_var = ctk.StringVar(value="")
+    tmpfs_direct_var = ctk.IntVar(value=0)
 
     nozenity_var = ctk.IntVar(value=0)
 
@@ -9475,9 +9642,20 @@ def show_gui():
     autoswap_mode_box = makecheckbox(admin_tab, "Autoswap Mode", autoswap_mode_var, 19, 0,tooltiptxt="Autoswap mode builds on router mode to allow switching of model types within the same config automatically. Requires admin mode and router mode. All models desired must be defined within the same config.")
 
     tempfs_tab = tabcontent["Temp FS"]
+    def toggletmpfsdiskmode(a,b,c):
+        if tryparseint(tmpfs_maxsize_var.get(), 0) > 0 and str(tmpfs_dir_var.get() or "").strip() != "":
+            tmpfs_direct_mode_box.grid()
+        else:
+            tmpfs_direct_mode_box.grid_remove()
+            tmpfs_direct_var.set(0)
+
     makelabel(tempfs_tab, "Max TempFS Size (MB):", 1, 0, "Maximum total size for the in-memory temp filesystem. Set 0 for unlimited.")
     ctk.CTkEntry(tempfs_tab, width=100, textvariable=tmpfs_maxsize_var).grid(row=2, column=0, padx=8, pady=2, stick="nw")
     makefileentry(tempfs_tab, "Initial TempFS Directory:", "Select directory to preload into TempFS", tmpfs_dir_var, 4, width=280, singlerow=False, dialog_type=2, tooltiptxt="Optional directory to preload into TempFS on startup.")
+    tmpfs_direct_mode_box = makecheckbox(tempfs_tab, "Use Direct Filesystem Mode (sandboxed to Initial TempFS Directory)", tmpfs_direct_var, 6, 0, tooltiptxt="When enabled, /api/extra/fs operations read/write directly to disk under the selected tempfs directory.")
+    tmpfs_direct_mode_box.grid_remove()
+    tmpfs_maxsize_var.trace_add("write", toggletmpfsdiskmode)
+    tmpfs_dir_var.trace_add("write", toggletmpfsdiskmode)
 
     def kcpp_export_template():
         nonlocal kcpp_exporting_template
@@ -9803,6 +9981,7 @@ def show_gui():
         args.adminunloadtimeout = (0 if admin_unload_timeout_var.get()=="" else int(admin_unload_timeout_var.get()))
         args.tmpfsmaxsize = max(0, tryparseint(tmpfs_maxsize_var.get(), 0))
         args.tmpfsdir = tmpfs_dir_var.get()
+        args.tmpfsdirect = (tmpfs_direct_var.get()==1)
         args.showgui = False #prevent showgui from leaking into configs, its cli only
         args.adminallowhf = (admin_allow_hf_var.get()==1 and not args.cli)
 
@@ -10072,6 +10251,8 @@ def show_gui():
 
         tmpfs_maxsize_var.set(str(dict["tmpfsmaxsize"]) if ("tmpfsmaxsize" in dict and dict["tmpfsmaxsize"] is not None) else "0")
         tmpfs_dir_var.set(dict["tmpfsdir"] if ("tmpfsdir" in dict and dict["tmpfsdir"]) else "")
+        tmpfs_direct_var.set(dict["tmpfsdirect"] if ("tmpfsdirect" in dict) else 0)
+        toggletmpfsdiskmode(None,None,None)
 
         importvars_in_progress = False
         gui_changed_modelfile()
@@ -10616,7 +10797,7 @@ def reload_from_new_args(newargs):
         args.istemplate = False
         newargs = convert_invalid_args(newargs)
         for key, value in newargs.items(): #do not overwrite certain values
-            if key not in ["remotetunnel","showgui","port","host","port_param","admin","adminpassword","password","adminunloadtimeout","routermode","admindir","admintextmodelsdir","admindatadir","adminallowhf","developerMode","tmpfsmaxsize","tmpfsdir","ssl","nocertify","benchmark","prompt","config","downloaddir"]:
+            if key not in ["remotetunnel","showgui","port","host","port_param","admin","adminpassword","password","adminunloadtimeout","routermode","admindir","admintextmodelsdir","admindatadir","adminallowhf","developerMode","tmpfsmaxsize","tmpfsdir","tmpfsdirect","ssl","nocertify","benchmark","prompt","config","downloaddir"]:
                 setattr(args, key, value)
         setattr(args,"showgui",False)
         setattr(args,"benchmark",False)
@@ -11163,7 +11344,7 @@ def main(launch_args, default_args):
             input()
     else:  # manager command queue for admin mode
         with multiprocessing.Manager() as mp_manager:
-            global_memory = mp_manager.dict({"tunnel_url": "", "restart_target": "", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "swapReqType": None, "autoswapmode": False, "tmpfs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "initialized": False}})
+            global_memory = mp_manager.dict({"tunnel_url": "", "restart_target": "", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "swapReqType": None, "autoswapmode": False, "tmpfs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}})
 
             if args.remotetunnel and not args.prompt and not args.benchmark and not args.cli:
                 setuptunnel(global_memory, True if args.sdmodel else False)
@@ -12466,6 +12647,7 @@ if __name__ == '__main__':
     advparser.add_argument("--maxrequestsize", metavar=('[size in MB]'), help="Specify a max request payload size. Any requests to the server larger than this size will be dropped. Do not change if unsure.", type=int, default=32)
     advparser.add_argument("--tmpfsmaxsize", metavar=('[size in MB]'), help="Maximum total size of the in-memory tmp file system. Set to 0 for unlimited.", type=int, default=0)
     advparser.add_argument("--tmpfsdir", metavar=('[directory]'), help="Load an initial on-disk directory into the in-memory tmp file system at startup.", default="")
+    advparser.add_argument("--tmpfsdirect", help="Use direct on-disk filesystem mode sandboxed to --tmpfsdir instead of in-memory tmpfs storage.", action='store_true')
     advparser.add_argument("--overridekv","--override-kv", metavar=('[name=type:value]'), help="Override metadata value by key. Separate multiple values with commas. Format is name=type:value. Types: int, float, bool, str", default="")
     advparser.add_argument("--overridetensors","--override-tensor","-ot", metavar=('[tensor name pattern=buffer type]'), help="Override selected backend for specific tensors matching tensor_name_regex_pattern=buffer_type, same as in llama.cpp.", default="")
     advparser.add_argument("--developerMode", help="Enables developer utilities, such as hot reloading of Kobold Lite.", default=False, type=bool)

@@ -58,19 +58,19 @@ let blobToDataUrl = async (blob) => {
 	})
 }
 
-let readTmpfsPathAsDataUrl = async (tmpfsPath) => {
-	let rawResp = await window.tmpfsClient.fetch_raw(tmpfsPath)
+let readFsPathAsDataUrl = async (tmpfsPath) => {
+	let rawResp = await window.fsClient.fetch_raw(tmpfsPath)
 	let blob = await rawResp.blob()
 	return await blobToDataUrl(blob)
 }
 
-let readTmpfsPathAsBase64 = async (tmpfsPath) => {
-	return normalizeBase64ImageData(await readTmpfsPathAsDataUrl(tmpfsPath))
+let readFsPathAsBase64 = async (tmpfsPath) => {
+	return normalizeBase64ImageData(await readFsPathAsDataUrl(tmpfsPath))
 }
 
-let writeBase64ToTmpfs = async (tmpfsPath, base64Data) => {
+let writeBase64ToFs = async (tmpfsPath, base64Data) => {
 	let bytes = base64ToUint8Array(base64Data)
-	return await window.tmpfsClient.write(tmpfsPath, bytes, true)
+	return await window.fsClient.write(tmpfsPath, bytes, true)
 }
 
 let waitForUserImageSelection = async () => {
@@ -288,14 +288,14 @@ let objToText = (obj, depth = 0) => {
 }
 
 let wordCountEnabled = false
-let getTmpfsEmbedRegistry = () => {
+let getFsEmbedRegistry = () => {
 	if (!window.kcppTmpfsEmbeds) {
 		window.kcppTmpfsEmbeds = {}
 	}
 	return window.kcppTmpfsEmbeds
 }
 
-let clampTmpfsEmbedLayout = (layout = {}) => {
+let clampFsEmbedLayout = (layout = {}) => {
 	let viewportWidth = Math.max(1, window.innerWidth || 1)
 	let viewportHeight = Math.max(1, window.innerHeight || 1)
 	let minWidth = Math.min(180, viewportWidth)
@@ -307,13 +307,13 @@ let clampTmpfsEmbedLayout = (layout = {}) => {
 	return { x, y, width, height, viewportWidth, viewportHeight }
 }
 
-let raiseTmpfsEmbed = (container) => {
+let raiseFsEmbed = (container) => {
 	window.kcppTmpfsEmbedZ = (window.kcppTmpfsEmbedZ || 4000) + 1
 	container.style.zIndex = `${window.kcppTmpfsEmbedZ}`
 }
 
-let closeTmpfsEmbedByName = (name) => {
-	let registry = getTmpfsEmbedRegistry()
+let closeFsEmbedByName = (name) => {
+	let registry = getFsEmbedRegistry()
 	let normalizedName = `${name || ""}`.trim()
 	if (normalizedName === "") {
 		return { success: false, closed: false, reason: "Missing embed name." }
@@ -326,7 +326,7 @@ let closeTmpfsEmbedByName = (name) => {
 	return { success: true, closed: !!existing, name: normalizedName }
 }
 
-let getTmpfsMediaKindByUrl = (url = "") => {
+let getFsMediaKindByUrl = (url = "") => {
 	let normalized = `${url || ""}`.toLowerCase().split("#")[0].split("?")[0]
 	let imageExtensions = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".avif", ".ico"]
 	let videoExtensions = [".mp4", ".webm", ".ogv", ".mov", ".m4v"]
@@ -343,7 +343,7 @@ let getTmpfsMediaKindByUrl = (url = "") => {
 	return "embed"
 }
 
-let createTmpfsEmbedContentElement = (kind) => {
+let createFsEmbedContentElement = (kind) => {
 	if (kind === "image") {
 		let imageElem = document.createElement("img")
 		imageElem.className = "kcpp-tmpfs-embed-content kcpp-tmpfs-embed-media"
@@ -369,30 +369,30 @@ let createTmpfsEmbedContentElement = (kind) => {
 	return embedElem
 }
 
-let openTmpfsEmbedByName = async (args = {}) => {
+let openFsEmbedByName = async (args = {}) => {
 	let normalizedName = `${args?.name || ""}`.trim()
 	let targetPath = `${args?.file_path || args?.path || ""}`.trim()
 	if (normalizedName === "") {
 		throw new Error("Missing embed name.")
 	}
 	if (targetPath === "") {
-		throw new Error("Missing tmpfs file path.")
+		throw new Error("Missing filesystem file path.")
 	}
-	let layout = clampTmpfsEmbedLayout(args)
-	let urlInfo = await window.tmpfsClient.url(targetPath)
-	let registry = getTmpfsEmbedRegistry()
+	let layout = clampFsEmbedLayout(args)
+	let urlInfo = await window.fsClient.url(targetPath)
+	let registry = getFsEmbedRegistry()
 	let existing = registry[normalizedName]
 	let container = existing?.container
 	let titleElem = existing?.titleElem
 	let contentElem = existing?.contentElem
 	let contentKind = existing?.contentKind || "embed"
 	let targetUrl = urlInfo?.url || targetPath
-	let targetKind = getTmpfsMediaKindByUrl(targetUrl)
+	let targetKind = getFsMediaKindByUrl(targetUrl)
 
 	if (!container) {
 		container = document.createElement("div")
 		container.className = "kcpp-tmpfs-embed-window"
-		container.onmousedown = () => raiseTmpfsEmbed(container)
+		container.onmousedown = () => raiseFsEmbed(container)
 
 		titleElem = document.createElement("div")
 		titleElem.className = "kcpp-tmpfs-embed-title"
@@ -402,7 +402,7 @@ let openTmpfsEmbedByName = async (args = {}) => {
 		header.addEventListener("mousedown", (e) => {
 			if (e.target.closest("button")) return
 			e.preventDefault()
-			raiseTmpfsEmbed(container)
+			raiseFsEmbed(container)
 			let startX = e.clientX - container.offsetLeft
 			let startY = e.clientY - container.offsetTop
 			let onMouseMove = (me) => {
@@ -436,9 +436,9 @@ let openTmpfsEmbedByName = async (args = {}) => {
 		closeBtn.className = "kcpp-tmpfs-embed-button"
 		closeBtn.innerText = "✕"
 		closeBtn.title = "Close"
-		closeBtn.onclick = () => closeTmpfsEmbedByName(normalizedName)
+		closeBtn.onclick = () => closeFsEmbedByName(normalizedName)
 
-		contentElem = createTmpfsEmbedContentElement(targetKind)
+		contentElem = createFsEmbedContentElement(targetKind)
 		contentKind = targetKind
 
 		header.appendChild(titleElem)
@@ -452,7 +452,7 @@ let openTmpfsEmbedByName = async (args = {}) => {
 	}
 
 	if (contentKind !== targetKind) {
-		let nextContentElem = createTmpfsEmbedContentElement(targetKind)
+		let nextContentElem = createFsEmbedContentElement(targetKind)
 		if (!!contentElem?.parentElement) {
 			contentElem.parentElement.replaceChild(nextContentElem, contentElem)
 		}
@@ -469,7 +469,7 @@ let openTmpfsEmbedByName = async (args = {}) => {
 	container.dataset.embedName = normalizedName
 	container.dataset.embedPath = `${urlInfo?.path || targetPath}`
 	contentElem.src = targetUrl
-	raiseTmpfsEmbed(container)
+	raiseFsEmbed(container)
 
 	return {
 		success: true,
@@ -480,8 +480,8 @@ let openTmpfsEmbedByName = async (args = {}) => {
 	}
 }
 
-window.openTmpfsEmbedByName = openTmpfsEmbedByName;
-window.closeTmpfsEmbedByName = closeTmpfsEmbedByName;
+window.openFsEmbedByName = openFsEmbedByName;
+window.closeFsEmbedByName = closeFsEmbedByName;
 
 let isPlainObject = (value) => {
 	if (value === null || typeof value !== "object") {
@@ -637,6 +637,17 @@ let formatMacroMessage = (macroName, message) => {
 
 let getCommands = (agentRunState) => {
 	let { currentChainOfThought } = agentRunState
+	let confirmFsMutation = async (mutationName, payload = {}) => {
+		if (!!localsettings?.tools_auto_exec) {
+			return true
+		}
+		let mode = await window.fsClient.getFsMode()
+		if (mode === "memory") {
+			return true
+		}
+		let details = { mutation: mutationName, mode, payload }
+		return await new Promise(resolve => msgboxYesNo(`Filesystem action details:${JSON.stringify(details)}`, "Allow filesystem write action", () => resolve(true), () => resolve(false)))
+	}
 	return [
 		{
 			"name": "send_message",
@@ -741,8 +752,8 @@ let getCommands = (agentRunState) => {
 
 				let combinedUserInput = userInput
 				if (uploadedFilePaths.length > 0) {
-					let fileLines = selectedFiles.length > 0 ? selectedFiles.map(file => `- ${file.path}${file?.source === "tmpfs" ? " (selected from TmpFS)" : " (uploaded from local device)"}`) : uploadedFilePaths.map(path => `- ${path}`)
-					combinedUserInput = `${combinedUserInput}${combinedUserInput.length > 0 ? "\n\n" : ""}Files available in temporary file system (tmpfs):\n${fileLines.join("\n")}`
+					let fileLines = selectedFiles.length > 0 ? selectedFiles.map(file => `- ${file.path}${file?.source === "tmpfs" ? " (selected from FS)" : " (uploaded from local device)"}`) : uploadedFilePaths.map(path => `- ${path}`)
+					combinedUserInput = `${combinedUserInput}${combinedUserInput.length > 0 ? "\n\n" : ""}Files available in filesystem:\n${fileLines.join("\n")}`
 				}
 
 				let isFinalAction = agentRunState.recentActions.length - (!!agentRunState?.planToUse ? 1 : 0) - 1 === agentRunState.currentOrderOfActionsOverall.length
@@ -1334,7 +1345,7 @@ let getCommands = (agentRunState) => {
 		},
 		{
 			"name": "describe_clicked_image",
-			"description": "Describe an image that the user clicks in chat. Incompatible with tmpfs file paths.",
+			"description": "Describe an image that the user clicks in chat. Incompatible with filesystem file paths.",
 			"args": {
 				"question": "<question to ask about image>"
 			},
@@ -1473,8 +1484,8 @@ let getCommands = (agentRunState) => {
 			}
 		},
 		{
-			"name": "tmpfs_generate_music",
-			"description": "Generate music with KoboldCpp music endpoint and save the output audio into tmpfs.",
+			"name": "fs_generate_music",
+			"description": "Generate music with KoboldCpp music endpoint and save the output audio into the filesystem.",
 			"args": {
 				"caption": "<song caption>",
 				"lyrics": "<song lyrics>",
@@ -1493,16 +1504,21 @@ let getCommands = (agentRunState) => {
 					description: "<diffusion inference steps>",
 					type: "integer"
 				},
-				"tmpfs_input_path": "<optional tmpfs reference audio path>",
-				"tmpfs_output_path": "<tmpfs output path for generated audio (.wav/.mp3)>"
+				"fs_input_path": "<optional filesystem reference audio path>",
+				"fs_output_path": "<filesystem output path for generated audio (.wav/.mp3)>"
 			},
 			"enabled": is_using_kcpp_with_musicgen() && is_using_kcpp_with_tmpfs(),
 			"executor": async (action) => {
 				try {
 					let args = action?.args || {}
-					let outputPath = `${args.tmpfs_output_path || ""}`.trim()
+					let outputPath = `${args.fs_output_path || ""}`.trim()
 					if (outputPath === "") {
-						addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: generate_music failed - tmpfs_output_path is required`)
+						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: generate_music failed - fs_output_path is required`)
+						return
+					}
+					let approved = await confirmFsMutation("fs_generate_music", { fs_output_path: outputPath })
+					if (!approved) {
+						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: generate_music cancelled by confirmation dialog`)
 						return
 					}
 					let preparedFromState = {}
@@ -1523,22 +1539,22 @@ let getCommands = (agentRunState) => {
 						vocal_language: `${args.vocal_language || preparedFromState.vocal_language || "en"}`,
 						inference_steps: parseInt(args.inference_steps ?? preparedFromState.inference_steps ?? 8),
 					}
-					let inputPath = `${args.tmpfs_input_path || ""}`.trim()
+					let inputPath = `${args.fs_input_path || ""}`.trim()
 					if (inputPath !== "") {
-						payload.music_reference_audio_data = await readTmpfsPathAsBase64(inputPath)
+						payload.music_reference_audio_data = await readFsPathAsBase64(inputPath)
 					}
 					let response = await postKcppJson("/api/extra/music/generate", payload)
 					let audioData = await response.arrayBuffer()
-					let writeResult = await window.tmpfsClient.write(outputPath, new Uint8Array(audioData))
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: generate_music result\n${objToText(writeResult)}`)
+					let writeResult = await window.fsClient.write(outputPath, new Uint8Array(audioData))
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: generate_music result\n${objToText(writeResult)}`)
 				}
 				catch (e) {
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: generate_music failed - ${e?.message || e}`)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: generate_music failed - ${e?.message || e}`)
 				}
 			}
 		},
 		{
-			"name": "tmpfs_transcribe",
+			"name": "fs_transcribe",
 			"description": "Transcribe a .wav audio file from tmpfs using KoboldCpp transcribe endpoint.",
 			"args": {
 				"path": "<tmpfs path to .wav file>",
@@ -1554,10 +1570,10 @@ let getCommands = (agentRunState) => {
 				try {
 					let tmpfsPath = `${action?.args?.path || ""}`.trim()
 					if (!tmpfsPath.toLowerCase().endsWith(".wav")) {
-						addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: transcribe failed - only .wav files are supported`)
+						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: transcribe failed - only .wav files are supported`)
 						return
 					}
-					let dataUrl = await readTmpfsPathAsDataUrl(tmpfsPath)
+					let dataUrl = await readFsPathAsDataUrl(tmpfsPath)
 					let response = await postKcppJson(koboldcpp_transcribe_endpoint, {
 						audio_data: dataUrl,
 						prompt: `${action?.args?.prompt || ""}`,
@@ -1565,24 +1581,24 @@ let getCommands = (agentRunState) => {
 						langcode: `${action?.args?.langcode || "auto"}`,
 					})
 					let result = await response.json()
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: transcribe result\n${objToText(result)}`)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: transcribe result\n${objToText(result)}`)
 				}
 				catch (e) {
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: transcribe failed - ${e?.message || e}`)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: transcribe failed - ${e?.message || e}`)
 				}
 			}
 		},
 		{
-			"name": "tmpfs_generate_image",
-			"description": "Generate an image (txt2img or img2img) and save it into tmpfs.",
+			"name": "fs_generate_image",
+			"description": "Generate an image (txt2img or img2img) and save it into the filesystem.",
 			"args": {
 				"prompt": "<prompt to generate image with>",
 				"aspect": {
 					type: "string",
 					description: "<aspect ratio - must be \"landscape\", \"portrait\" or \"square\">"
 				},
-				"tmpfs_input_image_paths": {
-					description: "<optional tmpfs image paths to use as inputs>",
+				"fs_input_image_paths": {
+					description: "<optional filesystem image paths to use as inputs>",
 					type: "array",
 					items: { type: "string" }
 				},
@@ -1590,24 +1606,29 @@ let getCommands = (agentRunState) => {
 					description: "<prompt user to click an image to use as input>",
 					type: "boolean"
 				},
-				"tmpfs_output_path": "<tmpfs output path for generated image>"
+				"fs_output_path": "<filesystem output path for generated image>"
 			},
 			"enabled": (localsettings.generate_images_mode == 2) && is_using_kcpp_with_tmpfs(),
 			"executor": async (action) => {
 				try {
 					let args = action?.args || {}
 					let prompt = `${args.prompt || ""}`.trim()
-					let outputPath = `${args.tmpfs_output_path || ""}`.trim()
+					let outputPath = `${args.fs_output_path || ""}`.trim()
 					if (prompt === "" || outputPath === "") {
-						addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: generate_image failed - prompt and tmpfs_output_path are required`)
+						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: generate_image failed - prompt and fs_output_path are required`)
+						return
+					}
+					let approved = await confirmFsMutation("fs_generate_image", { fs_output_path: outputPath })
+					if (!approved) {
+						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: generate_image cancelled by confirmation dialog`)
 						return
 					}
 					let inputImages = []
-					let inputPaths = Array.isArray(args.tmpfs_input_image_paths) ? args.tmpfs_input_image_paths : []
+					let inputPaths = Array.isArray(args.fs_input_image_paths) ? args.fs_input_image_paths : []
 					for (let index = 0; index < inputPaths.length; index++) {
 						let currentPath = `${inputPaths[index] || ""}`.trim()
 						if (currentPath !== "") {
-							inputImages.push(await readTmpfsPathAsBase64(currentPath))
+							inputImages.push(await readFsPathAsBase64(currentPath))
 						}
 					}
 					if (!!args.prompt_user_for_image) {
@@ -1623,17 +1644,17 @@ let getCommands = (agentRunState) => {
 					}
 					let sourceImage = inputImages.length > 0 ? inputImages[0] : ""
 					let outputBase64 = await generateA1111ImageBase64(preparePromptForImageGen(prompt), args.aspect, sourceImage, inputImages.slice(1))
-					let writeResult = await writeBase64ToTmpfs(outputPath, outputBase64)
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: generate_image result\n${objToText(writeResult)}`)
+					let writeResult = await writeBase64ToFs(outputPath, outputBase64)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: generate_image result\n${objToText(writeResult)}`)
 				}
 				catch (e) {
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: generate_image failed - ${e?.message || e}`)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: generate_image failed - ${e?.message || e}`)
 				}
 			}
 		},
 		{
-			"name": "describe_tmpfs_image",
-			"description": "Describe an image from a tmpfs file path. Incompatible with click-selected chat images.",
+			"name": "describe_fs_image",
+			"description": "Describe an image from a filesystem file path. Incompatible with click-selected chat images.",
 			"args": {
 				"path": "<tmpfs image path>",
 				"question": "<optional focus question>"
@@ -1643,25 +1664,25 @@ let getCommands = (agentRunState) => {
 				try {
 					let tmpfsPath = `${action?.args?.path || ""}`.trim()
 					if (tmpfsPath === "") {
-						addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: describe_tmpfs_image failed - path is required`)
+						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: describe_fs_image failed - path is required`)
 						return
 					}
 					let analysisPrompt = "Describe the image in detail. Transcribe and include any text from the image in the description."
 					if (!!action?.args?.question) {
 						analysisPrompt += ` Specifically please focus on:\n\n${action?.args?.question}`
 					}
-					let base64Image = await readTmpfsPathAsBase64(tmpfsPath)
+					let base64Image = await readFsPathAsBase64(tmpfsPath)
 					let analysisResult = await generateAndGetTextFromPrompt(`${createInstructPrompt(analysisPrompt)}${instructendplaceholder}${!!localsettings?.inject_jailbreak_instruct ? localsettings.custom_jailbreak_text : ""}`, undefined, [base64Image])
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: describe_tmpfs_image result\n${analysisResult}`)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: describe_fs_image result\n${analysisResult}`)
 				}
 				catch (e) {
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: describe_tmpfs_image failed - ${e?.message || e}`)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: describe_fs_image failed - ${e?.message || e}`)
 				}
 			}
 		},
 		{
-			"name": "tmpfs_list",
-			"description": "List paths in tmpfs, optionally filtered by glob pattern.",
+			"name": "fs_list",
+			"description": "List paths in the filesystem, optionally filtered by glob pattern.",
 			"args": {
 				"pattern": {
 					description: "<glob pattern, default *>",
@@ -1675,7 +1696,7 @@ let getCommands = (agentRunState) => {
 			"enabled": is_using_kcpp_with_tmpfs(),
 			"executor": async (action) => {
 				try {
-					let normalizeTmpfsListPath = (rawPath = "") => {
+					let normalizeFsListPath = (rawPath = "") => {
 						let path = `${rawPath || ""}`.trim()
 						let isDirectory = false
 						if (!path) {
@@ -1702,19 +1723,19 @@ let getCommands = (agentRunState) => {
 					}
 
 					let pattern = action?.args?.pattern
-					let result = await window.tmpfsClient.list(pattern, action?.args?.case_insensitive)
-					let normalizedEntries = (Array.isArray(result) ? result : []).map(normalizeTmpfsListPath).filter(entry => entry !== null)
+					let result = await window.fsClient.list(pattern, action?.args?.case_insensitive)
+					let normalizedEntries = (Array.isArray(result) ? result : []).map(normalizeFsListPath).filter(entry => entry !== null)
 					result = Array.from(new Set(normalizedEntries.map(entry => `${entry.path}${entry.isDirectory ? " (directory)" : ""}`))).sort((a, b) => a.localeCompare(b))
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: list result\n${objToText(result)}`)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: list result\n${objToText(result)}`)
 				}
 				catch (e) {
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: list failed - ${e?.message || e}`)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: list failed - ${e?.message || e}`)
 				}
 			}
 		},
 		{
-			"name": "tmpfs_search",
-			"description": "Search file contents in tmpfs by text pattern.",
+			"name": "fs_search",
+			"description": "Search file contents in the filesystem by text pattern.",
 			"args": {
 				"pattern": {
 					description: "<content pattern>",
@@ -1736,16 +1757,16 @@ let getCommands = (agentRunState) => {
 			"enabled": is_using_kcpp_with_tmpfs(),
 			"executor": async (action) => {
 				try {
-					let result = await window.tmpfsClient.search(action?.args?.pattern, action?.args?.path_pattern, action?.args?.max_results, action?.args?.case_insensitive)
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: search result\n${objToText(result)}`)
+					let result = await window.fsClient.search(action?.args?.pattern, action?.args?.path_pattern, action?.args?.max_results, action?.args?.case_insensitive)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: search result\n${objToText(result)}`)
 				}
 				catch (e) {
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: search failed - ${e?.message || e}`)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: search failed - ${e?.message || e}`)
 				}
 			}
 		},
 		{
-			"name": "tmpfs_semantic_search",
+			"name": "fs_semantic_search",
 			"description": "Semantic-search a tmpfs .txt or .pdf document using cached embeddings.",
 			"args": {
 				"path": "<tmpfs path to a .txt or .pdf file>",
@@ -1761,7 +1782,15 @@ let getCommands = (agentRunState) => {
 			"enabled": is_using_kcpp_with_tmpfs() && is_using_kcpp_with_embeddings(),
 			"executor": async (action) => {
 				try {
-					let result = await window.tmpfsClient.semantic_search(action?.args?.path, action?.args?.search_query, action?.args?.max_results)
+					let approved = await confirmFsMutation("fs_semantic_search", {
+						path: action?.args?.path,
+						max_results: action?.args?.max_results,
+					})
+					if (!approved) {
+						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: semantic search cancelled by confirmation dialog`)
+						return
+					}
+					let result = await window.fsClient.semantic_search(action?.args?.path, action?.args?.search_query, action?.args?.max_results)
 					if (!Array.isArray(result) || result.length === 0) {
 						addThought(currentChainOfThought, createSysPrompt, `Semantic search performed: Nothing found`)
 					}
@@ -1774,47 +1803,47 @@ let getCommands = (agentRunState) => {
 					}
 				}
 				catch (e) {
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: semantic search failed - ${e?.message || e}`)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: semantic search failed - ${e?.message || e}`)
 				}
 			}
 		},
 		{
-			"name": "tmpfs_metadata",
-			"description": "Get metadata for a tmpfs file.",
+			"name": "fs_metadata",
+			"description": "Get metadata for a filesystem file.",
 			"args": {
 				"path": "<file path>"
 			},
 			"enabled": is_using_kcpp_with_tmpfs(),
 			"executor": async (action) => {
 				try {
-					let result = await window.tmpfsClient.metadata(action?.args?.path)
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: metadata result\n${objToText(result)}`)
+					let result = await window.fsClient.metadata(action?.args?.path)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: metadata result\n${objToText(result)}`)
 				}
 				catch (e) {
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: metadata failed - ${e?.message || e}`)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: metadata failed - ${e?.message || e}`)
 				}
 			}
 		},
 		{
-			"name": "tmpfs_url",
-			"description": "Get the public URL for a tmpfs file.",
+			"name": "fs_url",
+			"description": "Get the public URL for a filesystem file.",
 			"args": {
 				"path": "<file path>"
 			},
 			"enabled": is_using_kcpp_with_tmpfs(),
 			"executor": async (action) => {
 				try {
-					let result = await window.tmpfsClient.url(action?.args?.path)
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: url result\n${objToText(result)}`)
+					let result = await window.fsClient.url(action?.args?.path)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: url result\n${objToText(result)}`)
 				}
 				catch (e) {
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: url failed - ${e?.message || e}`)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: url failed - ${e?.message || e}`)
 				}
 			}
 		},
 		{
-			"name": "tmpfs_content",
-			"description": "Read line-based text content from a tmpfs file.",
+			"name": "fs_content",
+			"description": "Read line-based text content from a filesystem file.",
 			"args": {
 				"path": "<file path>",
 				"start": {
@@ -1829,17 +1858,17 @@ let getCommands = (agentRunState) => {
 			"enabled": is_using_kcpp_with_tmpfs(),
 			"executor": async (action) => {
 				try {
-					let result = await window.tmpfsClient.content(action?.args?.path, action?.args?.start, action?.args?.end)
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: content result\n${objToText(result)}`)
+					let result = await window.fsClient.content(action?.args?.path, action?.args?.start, action?.args?.end)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: content result\n${objToText(result)}`)
 				}
 				catch (e) {
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: content failed - ${e?.message || e}`)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: content failed - ${e?.message || e}`)
 				}
 			}
 		},
 		{
-			"name": "tmpfs_download_info",
-			"description": "Get tmpfs download information for full tmpfs or one subdirectory.",
+			"name": "fs_download_info",
+			"description": "Get filesystem download information for full tmpfs or one subdirectory.",
 			"args": {
 				"dir": {
 					description: "<optional directory prefix>",
@@ -1849,17 +1878,17 @@ let getCommands = (agentRunState) => {
 			"enabled": is_using_kcpp_with_tmpfs(),
 			"executor": async (action) => {
 				try {
-					let result = await window.tmpfsClient.download_info(action?.args?.dir)
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: download_info result\n${objToText(result)}`)
+					let result = await window.fsClient.download_info(action?.args?.dir)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: download_info result\n${objToText(result)}`)
 				}
 				catch (e) {
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: download_info failed - ${e?.message || e}`)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: download_info failed - ${e?.message || e}`)
 				}
 			}
 		},
 		{
-			"name": "tmpfs_write_text",
-			"description": "Write plain text content to a tmpfs file.",
+			"name": "fs_write_text",
+			"description": "Write plain text content to a filesystem file.",
 			"args": {
 				"path": "<file path>",
 				"content": "<text content>"
@@ -1869,20 +1898,25 @@ let getCommands = (agentRunState) => {
 				try {
 					let content = action?.args?.content
 					if (typeof content !== "string") {
-						addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: write_text failed - content must be text (binary is not enabled yet)`)
+						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: write_text failed - content must be text (binary is not enabled yet)`)
 						return
 					}
-					let result = await window.tmpfsClient.write(action?.args?.path, content)
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: write_text result\n${objToText(result)}`)
+					let approved = await confirmFsMutation("fs_write_text", { path: action?.args?.path })
+					if (!approved) {
+						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: write_text cancelled by confirmation dialog`)
+						return
+					}
+					let result = await window.fsClient.write(action?.args?.path, content)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: write_text result\n${objToText(result)}`)
 				}
 				catch (e) {
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: write_text failed - ${e?.message || e}`)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: write_text failed - ${e?.message || e}`)
 				}
 			}
 		},
 		{
-			"name": "tmpfs_write_lines",
-			"description": "Write or append lines in a tmpfs text file.",
+			"name": "fs_write_lines",
+			"description": "Write or append lines in a filesystem text file.",
 			"args": {
 				"path": "<file path>",
 				"lines": {
@@ -1902,34 +1936,44 @@ let getCommands = (agentRunState) => {
 			"enabled": is_using_kcpp_with_tmpfs(),
 			"executor": async (action) => {
 				try {
-					let result = await window.tmpfsClient.write_lines(action?.args?.path, action?.args?.lines, action?.args?.start_line, action?.args?.append)
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: write_lines result\n${objToText(result)}`)
+					let approved = await confirmFsMutation("fs_write_lines", { path: action?.args?.path })
+					if (!approved) {
+						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: write_lines cancelled by confirmation dialog`)
+						return
+					}
+					let result = await window.fsClient.write_lines(action?.args?.path, action?.args?.lines, action?.args?.start_line, action?.args?.append)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: write_lines result\n${objToText(result)}`)
 				}
 				catch (e) {
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: write_lines failed - ${e?.message || e}`)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: write_lines failed - ${e?.message || e}`)
 				}
 			}
 		},
 		{
-			"name": "tmpfs_delete",
-			"description": "Delete a tmpfs file.",
+			"name": "fs_delete",
+			"description": "Delete a filesystem file.",
 			"args": {
 				"path": "<file path>"
 			},
 			"enabled": is_using_kcpp_with_tmpfs(),
 			"executor": async (action) => {
 				try {
-					let result = await window.tmpfsClient.delete(action?.args?.path)
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: delete result\n${objToText(result)}`)
+					let approved = await confirmFsMutation("fs_delete", { path: action?.args?.path })
+					if (!approved) {
+						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: delete cancelled by confirmation dialog`)
+						return
+					}
+					let result = await window.fsClient.delete(action?.args?.path)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: delete result\n${objToText(result)}`)
 				}
 				catch (e) {
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: delete failed - ${e?.message || e}`)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: delete failed - ${e?.message || e}`)
 				}
 			}
 		},
 		{
-			"name": "tmpfs_move",
-			"description": "Move or rename a tmpfs file.",
+			"name": "fs_move",
+			"description": "Move or rename a filesystem file.",
 			"args": {
 				"source": "<source path>",
 				"destination": "<destination path>"
@@ -1937,17 +1981,22 @@ let getCommands = (agentRunState) => {
 			"enabled": is_using_kcpp_with_tmpfs(),
 			"executor": async (action) => {
 				try {
-					let result = await window.tmpfsClient.move(action?.args?.source, action?.args?.destination)
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: move result\n${objToText(result)}`)
+					let approved = await confirmFsMutation("fs_move", { source: action?.args?.source, destination: action?.args?.destination })
+					if (!approved) {
+						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: move cancelled by confirmation dialog`)
+						return
+					}
+					let result = await window.fsClient.move(action?.args?.source, action?.args?.destination)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: move result\n${objToText(result)}`)
 				}
 				catch (e) {
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: move failed - ${e?.message || e}`)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: move failed - ${e?.message || e}`)
 				}
 			}
 		},
 		{
-			"name": "tmpfs_copy",
-			"description": "Copy a tmpfs file.",
+			"name": "fs_copy",
+			"description": "Copy a filesystem file.",
 			"args": {
 				"source": "<source path>",
 				"destination": "<destination path>"
@@ -1955,16 +2004,21 @@ let getCommands = (agentRunState) => {
 			"enabled": is_using_kcpp_with_tmpfs(),
 			"executor": async (action) => {
 				try {
-					let result = await window.tmpfsClient.copy(action?.args?.source, action?.args?.destination)
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: copy result\n${objToText(result)}`)
+					let approved = await confirmFsMutation("fs_copy", { source: action?.args?.source, destination: action?.args?.destination })
+					if (!approved) {
+						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: copy cancelled by confirmation dialog`)
+						return
+					}
+					let result = await window.fsClient.copy(action?.args?.source, action?.args?.destination)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: copy result\n${objToText(result)}`)
 				}
 				catch (e) {
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: copy failed - ${e?.message || e}`)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: copy failed - ${e?.message || e}`)
 				}
 			}
 		},
 		{
-			"name": "tmpfs_extract_zip",
+			"name": "fs_extract_zip",
 			"description": "Extract a .zip file from tmpfs into a target tmpfs directory.",
 			"args": {
 				"zip_path": "<tmpfs .zip file path>",
@@ -1979,63 +2033,78 @@ let getCommands = (agentRunState) => {
 					let zipPath = `${action?.args?.zip_path || ""}`.trim()
 					let targetDir = `${action?.args?.target_dir || "/"}`.trim() || "/"
 					if (zipPath === "") {
-						addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: extract_zip failed - zip_path is required`)
+						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: extract_zip failed - zip_path is required`)
 						return
 					}
-					let rawResp = await window.tmpfsClient.fetch_raw(zipPath)
+					let approved = await confirmFsMutation("fs_extract_zip", { zip_path: zipPath, target_dir: targetDir })
+					if (!approved) {
+						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: extract_zip cancelled by confirmation dialog`)
+						return
+					}
+					let rawResp = await window.fsClient.fetch_raw(zipPath)
 					let zipBlob = await rawResp.blob()
 					let fileName = zipPath.split("/").filter(Boolean).pop() || "archive.zip"
 					if (!fileName.toLowerCase().endsWith(".zip")) {
 						fileName = `${fileName}.zip`
 					}
-					let result = await window.tmpfsClient.extract_zip(zipBlob, targetDir, fileName)
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: extract_zip result\n${objToText(result)}`)
+					let result = await window.fsClient.extract_zip(zipBlob, targetDir, fileName)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: extract_zip result\n${objToText(result)}`)
 				}
 				catch (e) {
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: extract_zip failed - ${e?.message || e}`)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: extract_zip failed - ${e?.message || e}`)
 				}
 			}
 		},
 		{
-			"name": "tmpfs_create_folder",
-			"description": "Create a tmpfs folder.",
+			"name": "fs_create_folder",
+			"description": "Create a filesystem folder.",
 			"args": {
 				"path": "<folder path>"
 			},
 			"enabled": is_using_kcpp_with_tmpfs(),
 			"executor": async (action) => {
 				try {
-					let result = await window.tmpfsClient.mkdir(action?.args?.path)
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: create_folder result\n${objToText(result)}`)
+					let approved = await confirmFsMutation("fs_create_folder", { path: action?.args?.path })
+					if (!approved) {
+						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: create_folder cancelled by confirmation dialog`)
+						return
+					}
+					let result = await window.fsClient.mkdir(action?.args?.path)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: create_folder result\n${objToText(result)}`)
 				}
 				catch (e) {
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: create_folder failed - ${e?.message || e}`)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: create_folder failed - ${e?.message || e}`)
 				}
 			}
 		},
 		{
-			"name": "tmpfs_delete_folder",
-			"description": "Delete a tmpfs folder and all files under it.",
+			"name": "fs_delete_folder",
+			"description": "Delete a filesystem folder and all files under it.",
 			"args": {
 				"path": "<folder path>"
 			},
 			"enabled": is_using_kcpp_with_tmpfs(),
 			"executor": async (action) => {
 				try {
-					let result = await window.tmpfsClient.rmdir(action?.args?.path)
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: delete_folder result\n${objToText(result)}`)
+					let approved = await confirmFsMutation("fs_delete_folder", { path: action?.args?.path })
+					if (!approved) {
+						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: delete_folder cancelled by confirmation dialog`)
+						return
+					}
+					let result = await window.fsClient.rmdir(action?.args?.path)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: delete_folder result\n${objToText(result)}`)
 				}
 				catch (e) {
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: delete_folder failed - ${e?.message || e}`)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: delete_folder failed - ${e?.message || e}`)
 				}
 			}
 		},
 		{
-			"name": "tmpfs_open_embed",
-			"description": `Open or replace a named floating embed window for a tmpfs file URL. Position and size are clamped to the viewport and the header can be dragged to reposition. Current viewport: ${window.innerWidth}x${window.innerHeight}px.`,
+			"name": "fs_open_embed",
+			"description": `Open or replace a named floating embed window for a filesystem file URL. Position and size are clamped to the viewport and the header can be dragged to reposition. Current viewport: ${window.innerWidth}x${window.innerHeight}px.`,
 			"args": {
 				"name": "<unique embed name>",
-				"file_path": "<tmpfs file path>",
+				"file_path": "<filesystem file path>",
 				"x": {
 					description: "<x coordinate in pixels>",
 					type: "integer"
@@ -2056,28 +2125,28 @@ let getCommands = (agentRunState) => {
 			"enabled": is_using_kcpp_with_tmpfs(),
 			"executor": async (action) => {
 				try {
-					let result = await openTmpfsEmbedByName(action?.args || {})
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: open_embed result\n${objToText(result)}`)
+					let result = await openFsEmbedByName(action?.args || {})
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: open_embed result\n${objToText(result)}`)
 				}
 				catch (e) {
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: open_embed failed - ${e?.message || e}`)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: open_embed failed - ${e?.message || e}`)
 				}
 			}
 		},
 		{
-			"name": "tmpfs_close_embed",
-			"description": "Close a named floating tmpfs embed window if it exists. No error is thrown if it is already closed.",
+			"name": "fs_close_embed",
+			"description": "Close a named floating filesystem embed window if it exists. No error is thrown if it is already closed.",
 			"args": {
 				"name": "<embed name to close>"
 			},
 			"enabled": is_using_kcpp_with_tmpfs(),
 			"executor": async (action) => {
 				try {
-					let result = closeTmpfsEmbedByName(action?.args?.name)
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: close_embed result\n${objToText(result)}`)
+					let result = closeFsEmbedByName(action?.args?.name)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: close_embed result\n${objToText(result)}`)
 				}
 				catch (e) {
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: close_embed failed - ${e?.message || e}`)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: close_embed failed - ${e?.message || e}`)
 				}
 			}
 		},
@@ -2107,8 +2176,8 @@ let getCommands = (agentRunState) => {
 			}
 		},
 		{
-			"name": "tmpfs_generate_tts",
-			"description": "Generate TTS audio with Kobold and save it to a tmpfs output path.",
+			"name": "fs_generate_tts",
+			"description": "Generate TTS audio with Kobold and save it to a filesystem output path.",
 			"args": {
 				"textToSay": "<text to say>",
 				"voice": {
@@ -2116,15 +2185,20 @@ let getCommands = (agentRunState) => {
 					type: "string",
 					enum: getKcppVoiceOptionsForCommand()
 				},
-				"tmpfs_output_path": "<tmpfs output path for generated audio (.wav)>"
+				"fs_output_path": "<filesystem output path for generated audio (.wav)>"
 			},
 			"enabled": (localsettings.tts_mode == KCPP_TTS_ID) && is_using_kcpp_with_tmpfs(),
 			"executor": async (action) => {
 				try {
 					let textToSay = `${action?.args?.textToSay || ""}`.trim()
-					let outputPath = `${action?.args?.tmpfs_output_path || ""}`.trim()
+					let outputPath = `${action?.args?.fs_output_path || ""}`.trim()
 					if (textToSay === "" || outputPath === "") {
-						addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: generate_tts failed - textToSay and tmpfs_output_path are required`)
+						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: generate_tts failed - textToSay and fs_output_path are required`)
+						return
+					}
+					let approved = await confirmFsMutation("fs_generate_tts", { fs_output_path: outputPath })
+					if (!approved) {
+						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: generate_tts cancelled by confirmation dialog`)
 						return
 					}
 					let voiceConfig = await resolveKcppVoiceForPayload(action?.args?.voice)
@@ -2137,11 +2211,11 @@ let getCommands = (agentRunState) => {
 					}
 					let response = await postKcppJson(koboldcpp_tts_endpoint, payload)
 					let audioBuffer = await response.arrayBuffer()
-					let result = await window.tmpfsClient.write(outputPath, new Uint8Array(audioBuffer))
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: generate_tts result\n${objToText(result)}`)
+					let result = await window.fsClient.write(outputPath, new Uint8Array(audioBuffer))
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: generate_tts result\n${objToText(result)}`)
 				}
 				catch (e) {
-					addThought(currentChainOfThought, createSysPrompt, `TMPFS_TOOL: generate_tts failed - ${e?.message || e}`)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: generate_tts failed - ${e?.message || e}`)
 				}
 			}
 		}

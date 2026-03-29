@@ -1,5 +1,5 @@
 /* =====================================================================
-   Tmpfs Browser — client-side logic
+   Filesystem Browser — client-side logic
    ===================================================================== */
 
 (function () {
@@ -48,15 +48,15 @@
     // ── Path helpers ───────────────────────────────────────────────────
 
     /**
-     * Derive the logical tmpfs directory from the browser URL.
-     * /tmp        → /
-     * /tmp/       → /
-     * /tmp/foo/   → /foo/
-     * /tmp/a/b/c/ → /a/b/c/
+     * Derive the logical fs directory from the browser URL.
+     * /fs        → /
+     * /fs/       → /
+     * /fs/foo/   → /foo/
+     * /fs/a/b/c/ → /a/b/c/
      */
-    function currentTmpDir() {
-        const loc = window.location.pathname; // e.g. "/tmp/subdir/"
-        let dir = loc.slice(4); // strip "/tmp"
+    function currentFsDir() {
+        const loc = window.location.pathname; // e.g. "/fs/subdir/"
+        let dir = loc.slice(3); // strip "/fs"
         if (!dir || dir === '/') return '/';
         if (!dir.endsWith('/')) dir += '/';
         return dir;
@@ -70,15 +70,15 @@
         return stripped.slice(0, idx + 1);
     }
 
-    /** Build href for navigating to a tmpfs directory. */
+    /** Build href for navigating to a fs directory. */
     function dirHref(dir) {
-        if (dir === '/') return '/tmp/';
-        return '/tmp' + encodeURIPath(dir.endsWith('/') ? dir : dir + '/');
+        if (dir === '/') return '/fs/';
+        return '/fs' + encodeURIPath(dir.endsWith('/') ? dir : dir + '/');
     }
 
-    /** Build href for a tmpfs file. */
+    /** Build href for a fs file. */
     function fileHref(path) {
-        return '/tmp' + encodeURIPath(path);
+        return '/fs' + encodeURIPath(path);
     }
 
     /**
@@ -93,7 +93,7 @@
     function renderBreadcrumbs(dir) {
         const el = document.getElementById('breadcrumbs');
         const parts = dir === '/' ? [] : dir.replace(/\/$/, '').split('/').filter(Boolean);
-        let html = '<a href="/tmp/">/ (root)</a>';
+        let html = '<a href="/fs/">/ (root)</a>';
         let accumulated = '/';
         for (let i = 0; i < parts.length; i++) {
             accumulated += parts[i] + '/';
@@ -111,7 +111,7 @@
 
     /**
      * Extract direct children of `currentDir` from a flat list of all
-     * tmpfs paths. Returns { dirs: string[], files: string[] }.
+     * fs paths. Returns { dirs: string[], files: string[] }.
      */
     function getChildren(allPaths, currentDir) {
         const prefix = currentDir === '/' ? '/' : currentDir; // e.g. "/foo/"
@@ -142,7 +142,7 @@
 
     async function fetchMetadata(path) {
         try {
-            const r = await fetch('/api/extra/tmpfs/metadata?path=' + encodeURIComponent(path));
+            const r = await fetch('/api/extra/fs/metadata?path=' + encodeURIComponent(path));
             if (!r.ok) return null;
             return await r.json();
         } catch (_) { return null; }
@@ -158,7 +158,7 @@
         // Fetch all paths (flat list)
         let allPaths = [];
         try {
-            const r = await fetch('/api/extra/tmpfs/files');
+            const r = await fetch('/api/extra/fs/files');
             if (r.ok) {
                 const data = await r.json();
                 allPaths = data.paths || [];
@@ -230,7 +230,7 @@
                 const path = btn.dataset.delete;
                 if (!confirm(`Delete "${path}"?`)) return;
                 try {
-                    const r = await fetch('/api/extra/tmpfs/delete', {
+                    const r = await fetch('/api/extra/fs/delete', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ path }),
@@ -254,7 +254,7 @@
                 const path = btn.dataset.deleteDir;
                 if (!confirm(`Delete folder "${path}" and all contents?`)) return;
                 try {
-                    const r = await fetch('/api/extra/tmpfs/rmdir', {
+                    const r = await fetch('/api/extra/fs/rmdir', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ path }),
@@ -308,7 +308,7 @@
             fd.append('file', file, file.name);
 
             try {
-                const r = await fetch('/api/extra/tmpfs/upload', {
+                const r = await fetch('/api/extra/fs/upload', {
                     method: 'POST',
                     body: fd,
                 });
@@ -334,7 +334,7 @@
         }
 
         setTimeout(clearStatus, 3000);
-        renderListing(currentTmpDir());
+        renderListing(currentFsDir());
     }
 
     async function createFolder(dir) {
@@ -347,7 +347,7 @@
         }
         const targetPath = dir === '/' ? ('/' + cleanName) : (dir.replace(/\/$/, '') + '/' + cleanName);
         try {
-            const r = await fetch('/api/extra/tmpfs/mkdir', {
+            const r = await fetch('/api/extra/fs/mkdir', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ path: targetPath }),
@@ -358,7 +358,7 @@
                 return;
             }
             showToast(`Created folder ${targetPath}`, false);
-            renderListing(currentTmpDir());
+            renderListing(currentFsDir());
         } catch (e) {
             showToast(`Create folder error: ${e}`, true);
         }
@@ -406,7 +406,7 @@
     // ── Init ───────────────────────────────────────────────────────────
 
     function init() {
-        const dir = currentTmpDir();
+        const dir = currentFsDir();
 
         renderBreadcrumbs(dir);
         renderListing(dir);
@@ -414,9 +414,9 @@
         // ZIP download link
         const zipBtn = document.getElementById('btn-zip');
         if (dir === '/') {
-            zipBtn.href = '/tmp.zip';
+            zipBtn.href = '/fs.zip';
         } else {
-            zipBtn.href = '/tmp.zip?dir=' + encodeURIComponent(dir.replace(/\/$/, ''));
+            zipBtn.href = '/fs.zip?dir=' + encodeURIComponent(dir.replace(/\/$/, ''));
         }
 
         // File input button
@@ -430,7 +430,7 @@
 
         const createFolderBtn = document.getElementById('btn-create-folder');
         createFolderBtn.addEventListener('click', () => {
-            createFolder(currentTmpDir());
+            createFolder(currentFsDir());
         });
 
         initDragDrop(dir);

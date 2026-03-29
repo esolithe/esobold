@@ -1,22 +1,23 @@
 /**
- * TmpfsClient — thin async wrapper around the KoboldCpp in-memory tmpfs API.
+ * FsClient — thin async wrapper around the KoboldCpp filesystem API.
  *
  * All paths follow POSIX conventions (e.g. "/dir/file.txt").
  * base_url defaults to the current page origin; pass a different value when
  * talking to a remote KoboldCpp instance.
  *
  * Example:
- *   const fs = new TmpfsClient();
+ *   const fs = new FsClient();
  *   await fs.write('/hello.txt', 'Hello, world!');
  *   const lines = await fs.content('/hello.txt');
  *   console.log(lines);
  */
-class TmpfsClient {
+class FsClient {
     /**
      * @param {string} [base_url] - Root URL of the KoboldCpp instance (default: page origin).
      */
     constructor(base_url) {
         this.base_url = (base_url || window.location.origin).replace(/\/+$/, '');
+        this.fsModeCache = null;
     }
 
     // -------------------------------------------------------------------------
@@ -39,7 +40,7 @@ class TmpfsClient {
         const resp = await fetch(this._url(path, params));
         if (!resp.ok) {
             const body = await resp.text().catch(() => '');
-            throw new Error(`tmpfs GET ${path} failed (${resp.status}): ${body}`);
+            throw new Error(`fs GET ${path} failed (${resp.status}): ${body}`);
         }
         const ct = resp.headers.get('content-type') || '';
         return ct.includes('application/json') ? resp.json() : resp;
@@ -53,7 +54,7 @@ class TmpfsClient {
         });
         if (!resp.ok) {
             const body = await resp.text().catch(() => '');
-            throw new Error(`tmpfs POST ${path} failed (${resp.status}): ${body}`);
+            throw new Error(`fs POST ${path} failed (${resp.status}): ${body}`);
         }
         return resp.json();
     }
@@ -65,7 +66,7 @@ class TmpfsClient {
         });
         if (!resp.ok) {
             const body = await resp.text().catch(() => '');
-            throw new Error(`tmpfs POST ${path} failed (${resp.status}): ${body}`);
+            throw new Error(`fs POST ${path} failed (${resp.status}): ${body}`);
         }
         return resp.json();
     }
@@ -77,7 +78,7 @@ class TmpfsClient {
             normalized = normalized.replace(/\/[^/]+\/\.\.\//, '/');
         }
         if (!allowRoot && normalized === '/') {
-            throw new Error('Tmpfs path must target a file.');
+            throw new Error('Filesystem path must target a file.');
         }
         return normalized;
     }
@@ -207,7 +208,7 @@ class TmpfsClient {
         return chunks;
     }
 
-    async _load_tmpfs_json(path) {
+    async _load_fs_json(path) {
         if (!(await this._path_exists(path))) {
             return {};
         }
@@ -273,7 +274,7 @@ class TmpfsClient {
      * @returns {Promise<string[]>}
      */
     async list(pattern, case_insensitive) {
-        const data = await this._get('/api/extra/tmpfs/files', { pattern, case_insensitive });
+        const data = await this._get('/api/extra/fs/files', { pattern, case_insensitive });
         return data.paths;
     }
 
@@ -285,7 +286,7 @@ class TmpfsClient {
      * @returns {Promise<Array<{path:string, line:number, text:string}>>}
      */
     async search(pattern, path_pattern, max_results, case_insensitive) {
-        const data = await this._get('/api/extra/tmpfs/search', { pattern, path_pattern, max_results, case_insensitive });
+        const data = await this._get('/api/extra/fs/search', { pattern, path_pattern, max_results, case_insensitive });
         return data.matches;
     }
 
@@ -342,7 +343,7 @@ class TmpfsClient {
             return [];
         }
 
-        const cacheObject = await this._load_tmpfs_json(semanticPaths.cachePath);
+        const cacheObject = await this._load_fs_json(semanticPaths.cachePath);
         const models = typeof cacheObject.models === 'object' && cacheObject.models ? cacheObject.models : {};
         let modelCache = typeof models[modelName] === 'object' && models[modelName]
             ? models[modelName]
@@ -403,7 +404,7 @@ class TmpfsClient {
         };
         await this.write(semanticPaths.cachePath, JSON.stringify(mergedCache));
 
-        const semanticResult = await this._post('/api/extra/tmpfs/semantic_search', {
+        const semanticResult = await this._post('/api/extra/fs/semantic_search', {
             embeddings_cache_path: semanticPaths.cachePath,
             search_query: this._prepare_search_text(queryText),
             max_results: maxResults,
@@ -421,7 +422,29 @@ class TmpfsClient {
      * @returns {Promise<object>}
      */
     async metadata(path) {
-        return this._get('/api/extra/tmpfs/metadata', { path: path || '' });
+        return this._get('/api/extra/fs/metadata', { path: path || '' });
+    }
+
+    /**
+     * Get current filesystem backend mode.
+     * @returns {Promise<{enabled:boolean, mode:string, source_dir:string}>}
+     */
+    async mode() {
+        return this._get('/api/extra/fs/mode');
+    }
+
+    /**
+     * Get current filesystem backend mode with client-side caching.
+     * @param {boolean} [forceRefresh=false]
+     * @returns {Promise<string>}
+     */
+    async getFsMode(forceRefresh = false) {
+        if (!forceRefresh && !!this.fsModeCache) {
+            return this.fsModeCache;
+        }
+        const modeInfo = await this.mode();
+        this.fsModeCache = `${modeInfo?.mode || 'unknown'}`.trim().toLowerCase() || 'unknown';
+        return this.fsModeCache;
     }
 
     // -------------------------------------------------------------------------
@@ -434,7 +457,7 @@ class TmpfsClient {
      * @returns {Promise<{path:string, url:string}>}
      */
     async url(path) {
-        return this._get('/api/extra/tmpfs/url', { path });
+        return this._get('/api/extra/fs/url', { path });
     }
 
     /**
@@ -445,19 +468,19 @@ class TmpfsClient {
      * @returns {Promise<{path:string, start_line:number, end_line:number, total_lines:number, lines:Array<{line:number,text:string}>}>}
      */
     async content(path, start, end) {
-        return this._get('/api/extra/tmpfs/content', { path, start, end });
+        return this._get('/api/extra/fs/content', { path, start, end });
     }
 
     /**
-     * Fetch the raw bytes of a file via the public /tmp/<path> route.
+     * Fetch the raw bytes of a file via the public /fs/<path> route.
      * @param {string} path
      * @returns {Promise<Response>} Raw fetch Response; call .text(), .json(), .blob(), etc.
      */
     async fetch_raw(path) {
-        const url = this._url('/tmp/' + path.replace(/^\/+/, ''));
+        const url = this._url('/fs/' + path.replace(/^\/+/, ''));
         const resp = await fetch(url);
         if (!resp.ok) {
-            throw new Error(`tmpfs fetch_raw ${path} failed (${resp.status})`);
+            throw new Error(`fs fetch_raw ${path} failed (${resp.status})`);
         }
         return resp;
     }
@@ -468,7 +491,7 @@ class TmpfsClient {
      * @returns {Promise<{url:string, file_count:number, size_bytes:number}>}
      */
     async download_info(dir) {
-        return this._get('/api/extra/tmpfs/download', { dir: dir || '' });
+        return this._get('/api/extra/fs/download', { dir: dir || '' });
     }
 
     /**
@@ -479,7 +502,7 @@ class TmpfsClient {
     async download_zip(dir) {
         const params = {};
         if (dir) { params.dir = dir; }
-        const resp = await this._get('/tmp.zip', params);
+        const resp = await this._get('/fs.zip', params);
         return resp.blob();
     }
 
@@ -504,7 +527,7 @@ class TmpfsClient {
             payload_content = bytesToB64(bytes);
             isB64 = true;
         }
-        return this._post('/api/extra/tmpfs/write', { path, content: payload_content, isB64 });
+        return this._post('/api/extra/fs/write', { path, content: payload_content, isB64 });
     }
 
     /**
@@ -516,7 +539,7 @@ class TmpfsClient {
      * @returns {Promise<{success:boolean, path:string, metadata:object}>}
      */
     async write_lines(path, lines, start_line, append) {
-        return this._post('/api/extra/tmpfs/write_lines', { path, lines, start_line, append });
+        return this._post('/api/extra/fs/write_lines', { path, lines, start_line, append });
     }
 
     // -------------------------------------------------------------------------
@@ -529,7 +552,7 @@ class TmpfsClient {
      * @returns {Promise<{success:boolean, path:string}>}
      */
     async delete(path) {
-        return this._post('/api/extra/tmpfs/delete', { path });
+        return this._post('/api/extra/fs/delete', { path });
     }
 
     /**
@@ -539,7 +562,7 @@ class TmpfsClient {
      * @returns {Promise<{success:boolean, source:string, destination:string, metadata:object}>}
      */
     async move(source, destination) {
-        return this._post('/api/extra/tmpfs/move', { source, destination });
+        return this._post('/api/extra/fs/move', { source, destination });
     }
 
     /**
@@ -549,7 +572,7 @@ class TmpfsClient {
      * @returns {Promise<{success:boolean, source:string, destination:string, metadata:object}>}
      */
     async copy(source, destination) {
-        return this._post('/api/extra/tmpfs/copy', { source, destination });
+        return this._post('/api/extra/fs/copy', { source, destination });
     }
 
     /**
@@ -558,7 +581,7 @@ class TmpfsClient {
      * @returns {Promise<{success:boolean, path:string}>}
      */
     async mkdir(path) {
-        return this._post('/api/extra/tmpfs/mkdir', { path });
+        return this._post('/api/extra/fs/mkdir', { path });
     }
 
     /**
@@ -567,7 +590,7 @@ class TmpfsClient {
      * @returns {Promise<{success:boolean, path:string, removed:number}>}
      */
     async rmdir(path) {
-        return this._post('/api/extra/tmpfs/rmdir', { path });
+        return this._post('/api/extra/fs/rmdir', { path });
     }
 
     /**
@@ -587,8 +610,8 @@ class TmpfsClient {
             zip_file = new Blob([bytes], { type: 'application/zip' });
         }
         fd.append('file', zip_file, filename);
-        return this._post_form('/api/extra/tmpfs/upload', fd);
+        return this._post_form('/api/extra/fs/upload', fd);
     }
 }
 
-window.tmpfsClient = new TmpfsClient()
+window.fsClient = new FsClient()

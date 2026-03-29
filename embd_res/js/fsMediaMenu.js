@@ -1,15 +1,15 @@
 (function () {
     'use strict';
 
-    function isTmpfsEnabled() {
-        return fetch('/api/extra/tmpfs/files', { method: 'GET' })
+    function isFsEnabled() {
+        return fetch('/api/extra/fs/files', { method: 'GET' })
             .then(r => r.ok)
             .catch(() => false);
     }
 
-    function injectTmpfsButton() {
+    function injectFsButton() {
         const container = document.getElementById('addmediacontainer');
-        if (!container || container.querySelector('#btn_open_tmpfsui')) {
+        if (!container || container.querySelector('#btn_open_fsui')) {
             return;
         }
 
@@ -20,19 +20,19 @@
 
         const wrapper = document.createElement('div');
         wrapper.className = 'menutext';
-        wrapper.id = 'btn_open_tmpfsui';
+        wrapper.id = 'btn_open_fsui';
 
         const button = document.createElement('button');
         button.type = 'button';
         button.className = 'btn btn-primary bg_purple';
-        button.textContent = 'Launch Tmpfs Browser';
+        button.textContent = 'Launch Filesystem Browser';
         button.onclick = function () {
             try {
                 if (typeof hide_popups === 'function') {
                     hide_popups();
                 }
             } catch (_) {}
-            window.open('/tmp/', '_blank', 'noopener');
+            window.open('/fs/', '_blank', 'noopener');
         };
 
         wrapper.appendChild(button);
@@ -46,10 +46,10 @@
     }
 
     window.addEventListener('load', async () => {
-        const ok = await isTmpfsEnabled();
+        const ok = await isFsEnabled();
         if (!ok) {
             return;
         }
-        injectTmpfsButton();
+        injectFsButton();
     });
 })();
