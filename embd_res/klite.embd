@@ -32385,6 +32385,7 @@ Current version indicated by LITEVER below.
 <script src="static/js/encryptUtils.js"></script>
 <script src="static/js/serverSideSaving.js"></script>
 <link rel="stylesheet" type="text/css" href="static/css/serverSideScenario.css" />
+<script type="module" src="static/js/agent/agent_groups_loader.js"></script>
 <script src="static/js/agentUtils.js"></script>
 <script src="static/js/reloadUtils.js"></script>
 <link rel="stylesheet" type="text/css" href="static/css/agent.css" />

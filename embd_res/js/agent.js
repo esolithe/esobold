@@ -719,6 +719,7 @@ let runAgentCycle = async (agentRunState = {}) => {
             agentVisualiser: genericAgentVisualiser,
             agentFinaliser: genericAgentFinaliser,
             printToConsole: true,
+            wordCountEnabled: false,
             agentName: "",
             initialUser: "",
             systemPrompt: current_memory,
@@ -1025,7 +1026,7 @@ let runAgentCycle = async (agentRunState = {}) => {
                     let action = json
                     recentActions.push(json)
 
-                    addThought(currentChainOfThought, createAIPrompt, getActionSummaryText(action?.command, i > 0 ? promptOverview : null, wordCountEnabled))
+                    addThought(currentChainOfThought, createAIPrompt, getActionSummaryText(action?.command, i > 0 ? promptOverview : null, !!agentRunState?.wordCountEnabled))
 
                     let isCompleted = false;
                     let command = [...getReasoningCommand(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist), ...getCommands(agentRunState)].find(command => command.name === action.command.name)
