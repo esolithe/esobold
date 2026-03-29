@@ -93,7 +93,7 @@ let listOfExclusions = ["Action taken:", "Action taken (words =", "History searc
     "No setting overview provided, nothing has been overwritten", "Current state has been overwritten", "No state provided, nothing has been overwritten", "Error - Empty response instead of action. Ensure all responses are valid JSON.",
     "Current state format has been overwritten", "No valid state format provided, nothing has been overwritten", 
     `Text has been added to world info:`, `Text was empty - nothing added to world info`, `Chain of thought had an exception`, "Tool call response (hidden from user):", "Tool call response error (hidden from user):",
-    "Unique identifer does not exist in world information", "World information search performed:", "Unique identifier was empty - no world information found"]
+    "Unique identifer does not exist in world information", "World information search performed:", "Unique identifier was empty - no world information found", "Agent input:", "Macro:"]
 
 window.agentListOfExclusions = listOfExclusions;
 
@@ -287,6 +287,7 @@ let getFinalAgentPrompt = (agentRunState, commands, objectiveForCurrentAction) =
     if (currentAgentWIs.length > 0) {
         prompt.push(`Current unique identifiers for world info: ${currentAgentWIs.join(", ")}`)
     }
+    prompt.push(`Current date/time (UTC): ${new Date().toUTCString()}`)
     prompt.push(`System prompt for all responses: ${agentPrompt}`)
     if (!!initialPrompt) {
         prompt.push(`Most recent input from user: ${initialPrompt}`)
@@ -637,10 +638,51 @@ let getActionSummaryText = (command, promptOverview, wordCountEnabled) => {
     return actionSummary.join("\n\n")
 }
 
+let removeTrailingEmptyAiStartTags = () => {
+    if (!Array.isArray(gametext_arr) || gametext_arr.length === 0) {
+        return false
+    }
+
+    let aiStartOnly = `${instructendplaceholder || ""}`
+    let aiEmptyWrapped = `${instructendplaceholder || ""}${instructendplaceholder_end || ""}`
+    let lastIndex = gametext_arr.length - 1
+    let lastEntry = `${gametext_arr[lastIndex] || ""}`
+
+    if (lastEntry.trim().length === 0 || lastEntry.trim() === aiStartOnly.trim() || lastEntry.trim() === aiEmptyWrapped.trim()) {
+        gametext_arr.pop()
+        return true
+    }
+
+    if (aiEmptyWrapped.length > 0 && lastEntry.endsWith(aiEmptyWrapped)) {
+        let updatedEntry = lastEntry.slice(0, -aiEmptyWrapped.length).trimEnd()
+        if (updatedEntry.length === 0) {
+            gametext_arr.pop()
+        } else {
+            gametext_arr[lastIndex] = updatedEntry
+        }
+        return true
+    }
+
+    if (aiStartOnly.length > 0 && lastEntry.endsWith(aiStartOnly)) {
+        let updatedEntry = lastEntry.slice(0, -aiStartOnly.length).trimEnd()
+        if (updatedEntry.length === 0) {
+            gametext_arr.pop()
+        } else {
+            gametext_arr[lastIndex] = updatedEntry
+        }
+        return true
+    }
+
+    return false
+}
+
 let runAgentCycle = async (agentRunState = {}) => {
     try
     {
         clearSuggestions()
+        if (removeTrailingEmptyAiStartTags()) {
+            render_gametext(false)
+        }
         let textToCheckForMacro = ""
         if (!!agentRunState?.initialPrompt) {
             textToCheckForMacro = agentRunState.initialPrompt
@@ -746,6 +788,10 @@ let runAgentCycle = async (agentRunState = {}) => {
                 initialPrompt = macroFreePrompt
             }
         }
+        if (typeof agentRunState?.agentInputPrompt === "string" && agentRunState.agentInputPrompt.trim().length > 0) {
+            addThought(currentChainOfThought, createInstructPrompt, `Agent input: ${agentRunState.agentInputPrompt.trim()}`)
+        }
+
         objRefOverride(agentRunState, { initialPrompt })
         if (!!initialPrompt && documentdb_provider != "0") {
             let contentToSearch = documentdb_data
@@ -1146,10 +1192,9 @@ let runAgentCycle = async (agentRunState = {}) => {
 window.execAgentCycle = (argsObj) => {
     let interactionId = window.crypto.randomUUID()
     let agentCycleArgs = objRefAssign({interactionId}, argsObj)
-    currentAgentCycle.push({
-        id: interactionId, 
-        status: runAgentCycle(agentCycleArgs)
-    })
+    let cycle = { id: interactionId, status: runAgentCycle(agentCycleArgs) }
+    currentAgentCycle.push(cycle)
+    return cycle.status
 }
 
 // Overrides to lite / UI interactions
