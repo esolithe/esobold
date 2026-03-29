@@ -23,6 +23,7 @@ window.addEventListener("load", async () => {
             "name": tool.name,
             "description": tool.description,
             "args": args,
+            "group": "mcp",
             "enabled": true,
             "outputVisibleToUser": false,
             "executor": async (action) => {
