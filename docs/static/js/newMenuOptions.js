@@ -21,6 +21,36 @@ render_gametext = (...args) => {
 
 let originalDisplaySettings = display_settings, originalConfirmSettings = confirm_settings;
 
+let DEFAULT_AGENT_TOOL_GROUPS = [
+    { key: "messaging", label: "Messaging" },
+    { key: "planning_input", label: "Planning and User Input" },
+    { key: "search_web", label: "Search and Web" },
+    { key: "macros", label: "Macros" },
+    { key: "world_state", label: "World and State" },
+    { key: "filesystem", label: "Filesystem" },
+    { key: "media", label: "Media" },
+    { key: "utilities", label: "Utilities" },
+    { key: "mcp", label: "MCP Tools" },
+    { key: "misc", label: "Misc" },
+]
+
+let escapeHtml = (value = "") => {
+    return `${value || ""}`
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+}
+
+let sanitizeToolDomId = (value = "") => {
+    return `${value || ""}`.replace(/[^A-Za-z0-9_-]/g, "_")
+}
+
+let getAgentToolGroupDefinitions = () => {
+    let groupDefinitions = Array.isArray(window?.eso?.agentCommandGroupDefinitions) ? window.eso.agentCommandGroupDefinitions : DEFAULT_AGENT_TOOL_GROUPS
+    return groupDefinitions.filter(groupDefinition => !!groupDefinition?.key)
+}
+
 let getEsoboldAgentCommands = () => {
     if (typeof window?.eso?.originalGetCommands !== "function") {
         return []
@@ -44,31 +74,112 @@ let renderEsoboldAgentTools = () => {
 
     let disabledTools = Array.isArray(localsettings?.disabled_agent_tools) ? localsettings.disabled_agent_tools : []
     let commands = getEsoboldAgentCommands()
-    let toolsHtml = `<table class="tools-table"><thead><tr><th>Tool</th><th>Allowed</th></tr></thead><tbody>`
+    let disabledToolsSet = new Set(disabledTools)
+    let groupDefinitions = getAgentToolGroupDefinitions()
+    let groupLabels = {}
+    groupDefinitions.forEach(groupDefinition => {
+        groupLabels[groupDefinition.key] = groupDefinition?.label || groupDefinition.key
+    })
+    let commandsByGroup = {}
+    groupDefinitions.forEach(groupDefinition => {
+        commandsByGroup[groupDefinition.key] = []
+    })
+    commands.forEach(command => {
+        let groupKey = `${command?.group || "utilities"}`
+        if (!Array.isArray(commandsByGroup[groupKey])) {
+            commandsByGroup[groupKey] = []
+        }
+        commandsByGroup[groupKey].push(command)
+        if (!groupLabels[groupKey]) {
+            groupLabels[groupKey] = groupKey
+        }
+    })
 
     if (commands.length === 0) {
         toolsContainer.innerHTML = "<p>No Esobold agent tools are currently available.</p>"
         return
     }
 
-    commands.forEach((command) => {
-        let enabledStatus = command?.enabled ? "enabled" : "disabled"
-        let description = command?.description ? command.description.substr(0, 180) : "No description"
-        toolsHtml += `
-            <tr>
-                <td class="tools-info">
-                    <div class="tool-title">${command.name} (${enabledStatus})</div>
-                    <div class="tool-description">${description}</div>
-                </td>
-                <td class="tools-checkbox">
-                    <input type="checkbox" id="agenttool_${command.name}" value="${command.name}" ${disabledTools.includes(command.name) ? "" : "checked"}/>
-                </td>
-            </tr>
-        `
-    })
+    let toolsHtml = ""
+    let orderedGroups = [...groupDefinitions.map(groupDefinition => groupDefinition.key), ...Object.keys(commandsByGroup).filter(groupKey => !groupDefinitions.some(groupDefinition => groupDefinition.key === groupKey))]
+    orderedGroups.forEach(groupKey => {
+        let groupedCommands = commandsByGroup[groupKey] || []
+        if (groupedCommands.length === 0) {
+            return
+        }
+        let groupDomId = sanitizeToolDomId(groupKey)
+        toolsHtml += `<table class="tools-table esobold-agent-group-table" data-agent-tool-group="${escapeHtml(groupKey)}" style="margin: 0 0 12px 0;"><thead><tr><th>${escapeHtml(groupLabels[groupKey] || groupKey)}</th><th><div class="esobold-agent-allowed-header" style="display:flex;align-items:center;justify-content:flex-end;gap:8px;white-space:nowrap;"><span>Allowed</span><input type="checkbox" id="agenttoolgroup_${groupDomId}" value="${escapeHtml(groupKey)}" data-agent-tool-group-toggle="true" checked/></div></th></tr></thead><tbody>`
 
-    toolsHtml += `</tbody></table>`
+        groupedCommands.forEach((command) => {
+            let enabledStatus = command?.enabled ? "enabled" : "disabled"
+            let description = command?.description ? command.description.substr(0, 180) : "No description"
+            let commandDomId = sanitizeToolDomId(command.name)
+            let isChecked = !disabledToolsSet.has(command.name)
+            toolsHtml += `
+                <tr>
+                    <td class="tools-info">
+                        <div class="tool-title">${escapeHtml(command.name)} (${enabledStatus})</div>
+                        <div class="tool-description">${escapeHtml(description)}</div>
+                    </td>
+                    <td class="tools-checkbox">
+                        <input type="checkbox" id="agenttool_${commandDomId}" value="${escapeHtml(command.name)}" data-agent-tool-checkbox="true" data-agent-tool-group="${escapeHtml(groupKey)}" ${isChecked ? "checked" : ""}/>
+                    </td>
+                </tr>
+            `
+        })
+
+        toolsHtml += `</tbody></table>`
+    })
     toolsContainer.innerHTML = toolsHtml
+
+    let getGroupCheckbox = (groupKey) => toolsContainer.querySelector(`input[data-agent-tool-group-toggle='true'][value='${CSS.escape(groupKey)}']`)
+    let getCommandCheckboxesByGroup = (groupKey) => [...toolsContainer.querySelectorAll(`input[data-agent-tool-checkbox='true'][data-agent-tool-group='${CSS.escape(groupKey)}']`)]
+
+    let refreshGroupState = (groupKey) => {
+        let groupCheckbox = getGroupCheckbox(groupKey)
+        if (!groupCheckbox) {
+            return
+        }
+        let commandCheckboxes = getCommandCheckboxesByGroup(groupKey)
+        if (commandCheckboxes.length === 0) {
+            groupCheckbox.checked = true
+            groupCheckbox.indeterminate = false
+            return
+        }
+        let allowedCount = commandCheckboxes.filter(commandCheckbox => commandCheckbox.checked).length
+        if (allowedCount === 0) {
+            groupCheckbox.checked = false
+            groupCheckbox.indeterminate = false
+            return
+        }
+        if (allowedCount === commandCheckboxes.length) {
+            groupCheckbox.checked = true
+            groupCheckbox.indeterminate = false
+            return
+        }
+        groupCheckbox.checked = true
+        groupCheckbox.indeterminate = true
+    };
+
+    [...toolsContainer.querySelectorAll("input[data-agent-tool-group-toggle='true']")].forEach(groupCheckbox => {
+        groupCheckbox.onchange = () => {
+            let groupKey = `${groupCheckbox.value || ""}`
+            let commandCheckboxes = getCommandCheckboxesByGroup(groupKey)
+            commandCheckboxes.forEach(commandCheckbox => {
+                commandCheckbox.checked = groupCheckbox.checked
+            })
+            groupCheckbox.indeterminate = false
+        }
+    });
+
+    [...toolsContainer.querySelectorAll("input[data-agent-tool-checkbox='true']")].forEach(commandCheckbox => {
+        commandCheckbox.onchange = () => {
+            let groupKey = `${commandCheckbox?.dataset?.agentToolGroup || ""}`
+            refreshGroupState(groupKey)
+        }
+    });
+
+    orderedGroups.forEach(groupKey => refreshGroupState(groupKey))
 }
 
 display_settings = () => {
@@ -124,7 +235,7 @@ confirm_settings = () => {
     localsettings.corpoHideLeftPanel = (document.getElementById("corpoHideLeftPanel").checked ? true : false);
     try
     {
-        localsettings.disabled_agent_tools = [...document.querySelectorAll("#esobold_agent_tools_list_container input[type='checkbox']")].filter(elem => !elem.checked).map(elem => elem.value)
+        localsettings.disabled_agent_tools = [...document.querySelectorAll("#esobold_agent_tools_list_container input[data-agent-tool-checkbox='true']")].filter(elem => !elem.checked).map(elem => elem.value)
 
         if (document.getElementById("agentSavedMacros").value === "")
         {
