@@ -226,7 +226,7 @@ let disableNewEditor = () => {
 
 
 window.updateEditorState = () => {
-    if (!!localsettings?.useNewEditor) {
+    if (!!localsettings?.useNewEditor && !isAgentModeEnabledAndSetCorrectly()) {
         lastEditorState = true;
         enableNewEditor()
     }

@@ -292,6 +292,41 @@
 		display: none;
 	}
 
+	.agent-user-input-file-section {
+		border: 1px solid var(--theme_color_border);
+		border-radius: 6px;
+		background-color: var(--theme_color_bg_popups);
+	}
+
+	.agent-user-input-file-section-summary {
+		cursor: pointer;
+		padding: 10px 12px;
+		font-weight: bold;
+		list-style: none;
+	}
+
+	.agent-user-input-file-section-summary::-webkit-details-marker {
+		display: none;
+	}
+
+	.agent-user-input-file-section-summary::before {
+		content: ">";
+		display: inline-block;
+		margin-right: 8px;
+		transition: transform 0.15s ease;
+	}
+
+	.agent-user-input-file-section[open] .agent-user-input-file-section-summary::before {
+		transform: rotate(90deg);
+	}
+
+	.agent-user-input-file-section-body {
+		display: flex;
+		flex-direction: column;
+		gap: 10px;
+		padding: 0 12px 12px;
+	}
+
 	.agent-user-input-fs-select {
 		width: 100%;
 		min-height: 140px;
