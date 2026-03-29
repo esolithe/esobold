@@ -774,7 +774,10 @@ let runAgentCycle = async (agentRunState = {}) => {
         }
 
         let textDBResults = ""
-        if (!!initialPrompt) {
+        if (typeof agentRunState?.agentInputPrompt === "string" && agentRunState.agentInputPrompt.trim().length > 0) {
+            addThought(currentChainOfThought, createInstructPrompt, `Agent input: ${agentRunState.agentInputPrompt.trim()}`)
+        }
+        else if (!!initialPrompt) {
             // When using a macro, the user must see the text with the macro prefix but the AI must not
             let macroFreePrompt = initialPrompt.indexOf(`${macroUsed}::`) === 0 ? initialPrompt.substring(macroUsed.length + 2) : initialPrompt;
             addThought(currentChainOfThought, createInstructPrompt, (!!agentRunState?.initialUser ? `${agentRunState.initialUser}: ${macroFreePrompt}` : macroFreePrompt), false, true)
@@ -788,9 +791,6 @@ let runAgentCycle = async (agentRunState = {}) => {
                 let macroFreePrompt = prevInput.indexOf(`${macroUsed}::`) === 0 ? prevInput.substring(macroUsed.length + 2) : prevInput;
                 initialPrompt = macroFreePrompt
             }
-        }
-        if (typeof agentRunState?.agentInputPrompt === "string" && agentRunState.agentInputPrompt.trim().length > 0) {
-            addThought(currentChainOfThought, createInstructPrompt, `Agent input: ${agentRunState.agentInputPrompt.trim()}`)
         }
 
         objRefOverride(agentRunState, { initialPrompt })
