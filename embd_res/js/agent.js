@@ -709,6 +709,7 @@ let runAgentCycle = async (agentRunState = {}) => {
             }
         }
         agentRunState = objRefAssign(macroContent, agentRunState)
+        updateCycleRef(agentRunState.interactionId, agentRunState)
 
         if (!!agentRunState?.surpressMessagesToUser)
         {
@@ -718,7 +719,6 @@ let runAgentCycle = async (agentRunState = {}) => {
         // gametext_arr = []
         // render_gametext()
         agentRunState = objRefOverride({
-            endCurrent: false,
             macroUsed: undefined,
             excludeSpecificMessagePrefixes: [],
             agentInitialiser: genericAgentInitialiser,
@@ -738,6 +738,7 @@ let runAgentCycle = async (agentRunState = {}) => {
             cotProcessedUntil: 0,
             errors: []
         })
+        updateCycleRef(agentRunState.interactionId, agentRunState)
 
         if (!!agentRunState?.agentPrompt) {
             // Do nothing as it has an override
@@ -850,6 +851,7 @@ let runAgentCycle = async (agentRunState = {}) => {
             configOverrides,
             manualOverridesForEnabledCommands
         }, agentRunState)
+        updateCycleRef(agentRunState.interactionId, agentRunState)
         if (agentInitialiser !== undefined) {
             await agentInitialiser(agentRunState)
         }
@@ -1198,10 +1200,17 @@ let runAgentCycle = async (agentRunState = {}) => {
 
 window.execAgentCycle = (argsObj) => {
     let interactionId = window.crypto.randomUUID()
-    let agentCycleArgs = objRefAssign({interactionId}, argsObj)
+    let agentCycleArgs = objRefAssign({interactionId, endCurrent: false}, argsObj)
     let cycle = { id: interactionId, status: runAgentCycle(agentCycleArgs), args: agentCycleArgs }
     currentAgentCycle.push(cycle)
     return cycle.status
+}
+
+window.updateCycleRef = (interactionId, agentRunState) => {
+    let cycle = currentAgentCycle.find(c => c.id === interactionId)
+    if (cycle) {
+        cycle.agentRunState = agentRunState
+    }
 }
 
 // Overrides to lite / UI interactions
@@ -1252,13 +1261,13 @@ let toggleAgent = () => {
 }
 
 let stopAgentThinking = async (agentRunState = null) => {
-
+    debugger
     if (agentRunState !== null) {
         agentRunState.endCurrent = true
     }
     else if (currentAgentCycle.length > 0) {
         currentAgentCycle.forEach(c => {
-            c.endCurrent = true
+            c.agentRunState.endCurrent = true
         })
     }
     trigger_abort_controller()
@@ -1298,7 +1307,7 @@ let createStopThinkingButton = () => {
             elem.style.right = "50px";
             elem.style.bottom = "0px";
         }
-        elem.onclick = stopAgentThinking
+        elem.onclick = () => stopAgentThinking();
     })
 }
 
