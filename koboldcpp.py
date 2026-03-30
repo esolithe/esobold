@@ -4753,7 +4753,7 @@ def fs_read_lines(path, start_line=1, end_line=None):
         raise ValueError(f"Filesystem file is binary and cannot be read as lines: {normalized_path}")
     lines = fs_decode_text(content_bytes).splitlines()
     start_idx = max(1, tryparseint(start_line, 1))
-    end_idx = len(lines) if end_line is None else max(start_idx, tryparseint(end_line, start_idx))
+    end_idx = len(lines) if (end_line is None or min(-1, tryparseint(end_line, -1)) == -1) else max(start_idx, tryparseint(end_line, start_idx))
     selected = []
     for line_number in range(start_idx, min(end_idx, len(lines)) + 1):
         selected.append({"line": line_number, "content": lines[line_number - 1]})
