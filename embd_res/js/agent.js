@@ -31,6 +31,8 @@ let generateFromPrompt = (prompt, grammar = "", images = [], bannedTokens = []) 
     if (is_using_kcpp_with_vision() && llavaImages.length > 0) {
         payload.images = llavaImages.map(str => str.includes("base64,")?str.split("base64,")[1]:str);
     }
+    payload.params = {}
+    payload = finalize_submit_payload(payload, !!prompt)
     let reqOpt = {
         method: 'POST', // or 'PUT'
         headers: get_kobold_header(),
@@ -275,7 +277,7 @@ let getInitialAgentPrompt = (agentRunState, max_mem_len) => {
 }
 
 let getFinalAgentPrompt = (agentRunState, commands, objectiveForCurrentAction) => {
-    let { manualOverridesForEnabledCommands, agentPrompt, isUsingWhitelist, initialPrompt } = agentRunState
+    let { manualOverridesForEnabledCommands, agentPrompt, isUsingWhitelist, initialPrompt, agentInputPrompt } = agentRunState
     
     let state = getDocumentFromTextDB('State')
     let prompt = []
@@ -291,6 +293,9 @@ let getFinalAgentPrompt = (agentRunState, commands, objectiveForCurrentAction) =
     prompt.push(`System prompt for all responses: ${agentPrompt}`)
     if (!!initialPrompt) {
         prompt.push(`Most recent input from user: ${initialPrompt}`)
+    }
+    if (!!agentInputPrompt) {
+        prompt.push(`Most recent input from agent: ${agentInputPrompt}`)
     }
     if (!!objectiveForCurrentAction) {
         prompt.push(`Objective for current action: ${objectiveForCurrentAction}`)
@@ -1253,7 +1258,7 @@ let stopAgentThinking = async (agentRunState = null) => {
     }
     else if (currentAgentCycle.length > 0) {
         currentAgentCycle.forEach(c => {
-            currentAgentCycle.endCurrent = true
+            c.endCurrent = true
         })
     }
     trigger_abort_controller()
@@ -1268,8 +1273,6 @@ let stopAgentThinking = async (agentRunState = null) => {
         {
             clearInterval(window.intervalIdForBackgroundAgent)
         }
-    }
-    if (currentAgentCycle.length === 0) {
         Array(...document.getElementsByClassName("stopThinking")).forEach(elem => elem.classList.add("hidden"))
     }
     submit_multiplayer(true)
@@ -1783,6 +1786,10 @@ let getTaskCompletionCheckGrammar = async () => {
         properties: {
             isTaskComplete: {
                 type: "boolean"
+            },
+            objectiveForContinuing: {
+                type: "string",
+                description: "If the task is not complete, provide a concise objective that the agent should aim to complete in the next cycle. This field can be left empty if the task is complete."
             }
         },
         required: ["isTaskComplete"]
@@ -1809,9 +1816,9 @@ let checkIfTaskComplete = async (agentRunState) => {
     try {
         let latestActions = getLastActions(20)
         let latestActionsText = latestActions.map(action => `${action.source}: ${action.msg}`).join("\n")
-        let objective = agentRunState?.initialPrompt || ""
+        let objective = agentRunState?.agentInputPrompt || agentRunState?.initialPrompt || ""
 
-        let completionPrompt = createSysPrompt("You are validating whether the current task objective has been completed. Return only a JSON object with the boolean field isTaskComplete.")
+        let completionPrompt = createSysPrompt("You are validating whether the current task objective has been completed. Return only a JSON object with the boolean field isTaskComplete. If the task is not complete, also provide a concise objective in the string field objectiveForContinuing that the agent should aim to complete in the next cycle. This field can be left empty if the task is complete.")
             + createInstructPrompt(`Task objective:\n${objective}\n\nRecent actions and outputs:\n${latestActionsText}\n\nDecide if the task is complete.`)
 
         let grammar = await getTaskCompletionCheckGrammar()
@@ -1819,7 +1826,7 @@ let checkIfTaskComplete = async (agentRunState) => {
         if (!!response) {
             let parsed = JSON.parse(response)
             if (typeof parsed?.isTaskComplete === "boolean") {
-                return parsed.isTaskComplete
+                return parsed;
             }
         }
     }
@@ -1833,8 +1840,8 @@ let askUserToRetryIncompleteTask = async (agentRunState) => {
     if (!!agentRunState?.skipTaskCompletionCheck || agentRunState.endCurrent) {
         return
     }
-    let isTaskComplete = await checkIfTaskComplete(agentRunState)
-    if (isTaskComplete !== false) {
+    let isTaskComplete = await checkIfTaskComplete(agentRunState), continuePrompt = isTaskComplete?.isTaskComplete === false && !!isTaskComplete?.objectiveForContinuing ? isTaskComplete.objectiveForContinuing : agentRunState?.agentPrompt
+    if (isTaskComplete?.isTaskComplete !== false) {
         return
     }
 
@@ -1863,7 +1870,7 @@ let askUserToRetryIncompleteTask = async (agentRunState) => {
             printToConsole: !!agentRunState?.printToConsole,
             agentName: agentRunState?.agentName,
             systemPrompt: agentRunState?.systemPrompt,
-            agentPrompt: agentRunState?.agentPrompt,
+            agentPrompt: continuePrompt,
             configOverrides: agentRunState?.configOverrides,
             isUsingWhitelist: agentRunState?.isUsingWhitelist,
             agentStopOnRequestForInput: agentRunState?.agentStopOnRequestForInput,
