@@ -450,8 +450,7 @@ export const buildFilesystemCommands = (ctx) => {
 							inputImages.push(await readFsPathAsBase64(currentPath))
 						}
 					}
-					let sourceImage = inputImages.length > 0 ? inputImages[0] : ""
-					let outputBase64 = await generateA1111ImageBase64(preparePromptForImageGen(prompt), args.aspect, sourceImage, inputImages.slice(1))
+					let outputBase64 = await generateA1111ImageBase64(preparePromptForImageGen(prompt), args.aspect, null, inputImages)
 					let writeResult = await writeBase64ToFs(outputPath, outputBase64)
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: generate_image result\n${objToText(writeResult)}`)
 				}
