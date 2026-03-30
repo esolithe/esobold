@@ -29,11 +29,11 @@ let preparePromptForImageGen = (prompt) => {
 	return prompt.replaceAll(/\.+/g, ",").replaceAll(/_+/g, " ").replaceAll(/\n+/g, " ")
 }
 
-let waitForUserImageSelection = async () => {
+let waitForUserImageSelection = async (agentRunState) => {
 	waitingFori2iSelection = true
 	await new Promise((resolve) => {
 		let intervalId = setInterval(() => {
-			if (waitingFori2iSelection === false || endCurrent) {
+			if (waitingFori2iSelection === false || agentRunState.endCurrent) {
 				clearInterval(intervalId)
 				resolve()
 			}
@@ -261,14 +261,14 @@ let getCommands = (agentRunState) => {
 		if (typeof agentVisualiser === "function") {
 			await agentVisualiser(objRefAssign({}, runState, { runState }))
 		}
-		return await waitForUserImageSelection()
+		return await waitForUserImageSelection(agentRunState)
 	}
 	let waitForAgentImageGeneration = async (imageId) => {
 		await new Promise(resolve => {
 			let complete = false
 			image_db[imageId].callback = () => complete = true
 			let intervalId = setInterval(() => {
-				if (complete || endCurrent) {
+				if (complete || agentRunState.endCurrent) {
 					clearInterval(intervalId)
 					resolve()
 				}

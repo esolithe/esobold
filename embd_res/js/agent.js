@@ -441,7 +441,7 @@ let actionToText = (action) => {
     return actionAsText
 }
 
-let maxActionsInHistory = 1000, currentAgentCycle = [], endCurrent = false
+let maxActionsInHistory = 1000, currentAgentCycle = [];
 
 window.objRefAssign = (target, ...sources) => {
     sources.forEach(source => {
@@ -713,6 +713,7 @@ let runAgentCycle = async (agentRunState = {}) => {
         // gametext_arr = []
         // render_gametext()
         agentRunState = objRefOverride({
+            endCurrent: false,
             macroUsed: undefined,
             excludeSpecificMessagePrefixes: [],
             agentInitialiser: genericAgentInitialiser,
@@ -863,7 +864,7 @@ let runAgentCycle = async (agentRunState = {}) => {
             addThought(currentChainOfThought, createAIPrompt, getActionSummaryText(completePlanObject, null, false))
         }
 
-        for (let i = !!agentRunState?.planToUse ? 1 : 0; i < Number(localsettings.agentCOTMax) + 1 && (currentOrderOfActionsOverall.length === 0 || i < currentOrderOfActionsOverall.length + 1) && endCurrent === false; i++) {
+        for (let i = !!agentRunState?.planToUse ? 1 : 0; i < Number(localsettings.agentCOTMax) + 1 && (currentOrderOfActionsOverall.length === 0 || i < currentOrderOfActionsOverall.length + 1) && agentRunState.endCurrent === false; i++) {
             Array(...document.getElementsByClassName("stopThinking")).forEach(elem => elem.classList.remove("hidden"))
 
             let nextAction = []
@@ -1193,7 +1194,7 @@ let runAgentCycle = async (agentRunState = {}) => {
 window.execAgentCycle = (argsObj) => {
     let interactionId = window.crypto.randomUUID()
     let agentCycleArgs = objRefAssign({interactionId}, argsObj)
-    let cycle = { id: interactionId, status: runAgentCycle(agentCycleArgs) }
+    let cycle = { id: interactionId, status: runAgentCycle(agentCycleArgs), args: agentCycleArgs }
     currentAgentCycle.push(cycle)
     return cycle.status
 }
@@ -1209,10 +1210,8 @@ prepare_submit_generation = async () => {
         // Hack to ensure that images are always saved as new turns		
         localsettings.img_newturn = true
         if (currentAgentCycle.length > 0) {
-            endCurrent = true
-            await Promise.all(currentAgentCycle.map(c => c.status))
+            await stopAgentThinking()
         }
-        endCurrent = false
         execAgentCycle({
             initialPrompt: inputText,
             printToConsole: true
@@ -1247,20 +1246,32 @@ let toggleAgent = () => {
     render_gametext();
 }
 
-let stopAgentThinking = async () => {
+let stopAgentThinking = async (agentRunState = null) => {
 
-    endCurrent = true
+    if (agentRunState !== null) {
+        agentRunState.endCurrent = true
+    }
+    else if (currentAgentCycle.length > 0) {
+        currentAgentCycle.forEach(c => {
+            currentAgentCycle.endCurrent = true
+        })
+    }
     trigger_abort_controller()
-    if (currentAgentCycle.length > 0) {
-        endCurrent = true
+    if (agentRunState !== null) {
+        await Promise.all(currentAgentCycle.filter(c => c.id === agentRunState.interactionId).map(c => c.status))
+        currentAgentCycle = currentAgentCycle.filter(c => c.id !== agentRunState.interactionId)
+    }
+    else if (currentAgentCycle.length > 0) {
         await Promise.all(currentAgentCycle.map(c => c.status))
+        currentAgentCycle = []
+        if (window?.intervalIdForBackgroundAgent !== undefined)
+        {
+            clearInterval(window.intervalIdForBackgroundAgent)
+        }
     }
-    currentAgentCycle = []
-    if (window?.intervalIdForBackgroundAgent !== undefined)
-    {
-        clearInterval(window.intervalIdForBackgroundAgent)
+    if (currentAgentCycle.length === 0) {
+        Array(...document.getElementsByClassName("stopThinking")).forEach(elem => elem.classList.add("hidden"))
     }
-    Array(...document.getElementsByClassName("stopThinking")).forEach(elem => elem.classList.add("hidden"))
     submit_multiplayer(true)
 }
 
@@ -1819,7 +1830,7 @@ let checkIfTaskComplete = async (agentRunState) => {
 }
 
 let askUserToRetryIncompleteTask = async (agentRunState) => {
-    if (!!agentRunState?.skipTaskCompletionCheck || endCurrent) {
+    if (!!agentRunState?.skipTaskCompletionCheck || agentRunState.endCurrent) {
         return
     }
     let isTaskComplete = await checkIfTaskComplete(agentRunState)
