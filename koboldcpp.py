@@ -5277,8 +5277,6 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                         self.send_error(504, "KoboldCpp model swap reload timed out")
                         return
                     time.sleep(0.1)
-        # else:
-        #     global_memory["swapReqType"] = None
 
         try:  # connect upstream
             conn = http.client.HTTPConnection('localhost', upstream_port, timeout=600)
@@ -5329,26 +5327,27 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(html_502.encode("utf-8"))
             return
 
-        self.send_response(resp.status, resp.reason) # forward response headers
-        for k, v in resp.getheaders():
-            lk = k.lower()
-            if lk in self.HOP_BY_HOP:
-                continue
-            self.send_header(k, v)
-        self.end_headers()
-        self.close_connection = True
+        with proxy_reload_lock:
+            self.send_response(resp.status, resp.reason) # forward response headers
+            for k, v in resp.getheaders():
+                lk = k.lower()
+                if lk in self.HOP_BY_HOP:
+                    continue
+                self.send_header(k, v)
+            self.end_headers()
+            self.close_connection = True
 
-        try:  # stream response
-            while True:
-                chunk = resp.read(self.STREAM_CHUNK)
-                if not chunk:
-                    break
-                self.wfile.write(chunk)
-                self.wfile.flush()
-        except (BrokenPipeError, ConnectionResetError):
-            pass
-        finally:
-            conn.close()
+            try:  # stream response
+                while True:
+                    chunk = resp.read(self.STREAM_CHUNK)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            finally:
+                conn.close()
 
     # proxy all HTTP methods
     do_GET = _handle
