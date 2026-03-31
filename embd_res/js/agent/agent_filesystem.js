@@ -39,7 +39,7 @@ let readFsPathAsBase64 = async (fsPath) => {
 
 let writeBase64ToFs = async (fsPath, base64Data) => {
 	let bytes = base64ToUint8Array(base64Data)
-	return await window.fsClient.write(fsPath, bytes, true)
+	return await window.fsClient.write([{ path: fsPath, content: bytes, isB64: true }])
 }
 
 let confirmFsMutation = async (mutationName, payload = {}) => {
@@ -187,7 +187,7 @@ let openFsEmbedByName = async (args = {}) => {
 		throw new Error("Missing filesystem file path.")
 	}
 	let layout = clampFsEmbedLayout(args)
-	let urlInfo = await window.fsClient.url(targetPath)
+	let urlInfo = await window.fsClient.url([{ path: targetPath }])
 	let registry = getFsEmbedRegistry()
 	let existing = registry[normalizedName]
 	let container = existing?.container
@@ -327,8 +327,8 @@ export const buildFilesystemCommands = (ctx) => {
 					description: "<diffusion inference steps>",
 					type: "integer"
 				},
-				"fs_input_path": "<optional filesystem reference audio path>",
-				"fs_output_path": "<filesystem output path for generated audio (.wav/.mp3)>"
+				"fs_input_path": "<optional absolute filesystem path to reference audio>",
+				"fs_output_path": "<absolute filesystem output path for generated audio (.wav/.mp3)>"
 			},
 			"enabled": is_using_kcpp_with_musicgen() && is_using_kcpp_with_fs(),
 			"executor": async (action) => {
@@ -368,7 +368,7 @@ export const buildFilesystemCommands = (ctx) => {
 					}
 					let response = await postKcppJson("/api/extra/music/generate", payload)
 					let audioData = await response.arrayBuffer()
-					let writeResult = await window.fsClient.write(outputPath, new Uint8Array(audioData))
+					let writeResult = await window.fsClient.write([{ path: outputPath, content: new Uint8Array(audioData) }])
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: generate_music result\n${objToText(writeResult)}`)
 				}
 				catch (e) {
@@ -380,7 +380,7 @@ export const buildFilesystemCommands = (ctx) => {
 			"name": "fs_transcribe",
 			"description": "Transcribe a .wav audio file from the filesystem using KoboldCpp transcribe endpoint.",
 			"args": {
-				"path": "<filesystem path to .wav file>",
+				"path": "<absolute filesystem path to .wav file>",
 				"prompt": "<optional transcription prompt>",
 				"langcode": "<language code or auto>",
 				"suppress_non_speech": {
@@ -421,11 +421,13 @@ export const buildFilesystemCommands = (ctx) => {
 					description: "<aspect ratio - must be \"landscape\", \"portrait\" or \"square\">"
 				},
 				"fs_input_image_paths": {
-					description: "<optional filesystem image paths to use as inputs>",
-					type: "array",
-					items: { type: "string" }
+					description: "<optional array of absolute filesystem image paths to use as inputs>",
+					format: {
+						type: "array",
+						items: { type: "string" }
+					}
 				},
-				"fs_output_path": "<filesystem output path for generated image>"
+				"fs_output_path": "<absolute filesystem output path for generated image>"
 			},
 			"enabled": (localsettings.generate_images_mode == 2) && is_using_kcpp_with_fs(),
 			"executor": async (action) => {
@@ -463,7 +465,7 @@ export const buildFilesystemCommands = (ctx) => {
 			"name": "describe_fs_image",
 			"description": "Describe an image from a filesystem file path. Incompatible with click-selected chat images.",
 			"args": {
-				"path": "<filesystem image path>",
+				"path": "<absolute filesystem image path>",
 				"question": "<optional focus question>"
 			},
 			"enabled": is_using_kcpp_with_fs() && is_using_kcpp_with_vision(),
@@ -552,14 +554,14 @@ export const buildFilesystemCommands = (ctx) => {
 		},
 		{
 			"name": "fs_search",
-			"description": "Search file contents in the filesystem by text pattern.",
+			"description": "Search file contents in the filesystem using a regex pattern.",
 			"args": {
 				"pattern": {
-					description: "<content pattern>",
+					description: "<regex pattern>",
 					type: "string"
 				},
 				"path_pattern": {
-					description: "<glob path filter, default *>",
+					description: "<glob filter for absolute filesystem paths, default *>",
 					type: "string"
 				},
 				"max_results": {
@@ -574,7 +576,7 @@ export const buildFilesystemCommands = (ctx) => {
 			"enabled": is_using_kcpp_with_fs(),
 			"executor": async (action) => {
 				try {
-					let result = await window.fsClient.search(action?.args?.pattern, action?.args?.path_pattern, action?.args?.max_results, action?.args?.case_insensitive)
+					let result = await window.fsClient.search_regex(action?.args?.pattern, action?.args?.path_pattern, action?.args?.max_results, action?.args?.case_insensitive)
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: search result\n${objToText(result)}`)
 				}
 				catch (e) {
@@ -586,7 +588,7 @@ export const buildFilesystemCommands = (ctx) => {
 			"name": "fs_semantic_search",
 			"description": "Semantic-search a filesystem .txt or .pdf document using cached embeddings.",
 			"args": {
-				"path": "<filesystem path to a .txt or .pdf file>",
+				"path": "<absolute filesystem path to a .txt or .pdf file>",
 				"search_query": {
 					description: "<semantic search query>",
 					type: "string"
@@ -626,14 +628,30 @@ export const buildFilesystemCommands = (ctx) => {
 		},
 		{
 			"name": "fs_metadata",
-			"description": "Get metadata for a filesystem file.",
+			"description": "Get metadata for one or more filesystem files using an operations array.",
 			"args": {
-				"path": "<file path>"
+				"operations": {
+					description: "<array of {path} objects; use one entry for a single file>",
+					format: {
+						type: "array",
+						items: {
+							type: "object",
+							properties: {
+								"path": { type: "string", description: "<absolute filesystem path>" }
+							},
+							required: ["path"]
+						}
+					}
+				}
 			},
 			"enabled": is_using_kcpp_with_fs(),
 			"executor": async (action) => {
 				try {
-					let result = await window.fsClient.metadata(action?.args?.path)
+					let operations = action?.args?.operations
+					if (!Array.isArray(operations) || operations.length === 0) {
+						throw new Error("operations must be a non-empty array of {path} objects.")
+					}
+					let result = await window.fsClient.metadata(operations)
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: metadata result\n${objToText(result)}`)
 				}
 				catch (e) {
@@ -643,14 +661,30 @@ export const buildFilesystemCommands = (ctx) => {
 		},
 		{
 			"name": "fs_url",
-			"description": "Get the public URL for a filesystem file.",
+			"description": "Get public URLs for one or more filesystem files using an operations array.",
 			"args": {
-				"path": "<file path>"
+				"operations": {
+					description: "<array of {path} objects; use one entry for a single file>",
+					format: {
+						type: "array",
+						items: {
+							type: "object",
+							properties: {
+								"path": { type: "string", description: "<absolute filesystem path>" }
+							},
+							required: ["path"]
+						}
+					}
+				}
 			},
 			"enabled": is_using_kcpp_with_fs(),
 			"executor": async (action) => {
 				try {
-					let result = await window.fsClient.url(action?.args?.path)
+					let operations = action?.args?.operations
+					if (!Array.isArray(operations) || operations.length === 0) {
+						throw new Error("operations must be a non-empty array of {path} objects.")
+					}
+					let result = await window.fsClient.url(operations)
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: url result\n${objToText(result)}`)
 				}
 				catch (e) {
@@ -660,22 +694,32 @@ export const buildFilesystemCommands = (ctx) => {
 		},
 		{
 			"name": "fs_content",
-			"description": "Read line-based text content from a filesystem file.",
+			"description": "Read line-based text content from one or more filesystem files using an operations array.",
 			"args": {
-				"path": "<file path>",
-				"start": {
-					description: "<start line, 1-based>",
-					type: "integer"
-				},
-				"end": {
-					description: "<end line, 1-based>",
-					type: "integer"
+				"operations": {
+					description: "<array of {path, start, end} objects; use one entry for a single file>",
+					format: {
+						type: "array",
+						items: {
+							type: "object",
+							properties: {
+								"path": { type: "string", description: "<absolute filesystem path>" },
+								"start": { type: "integer" },
+								"end": { type: "integer" }
+							},
+							required: ["path"]
+						}
+					}
 				}
 			},
 			"enabled": is_using_kcpp_with_fs(),
 			"executor": async (action) => {
 				try {
-					let result = await window.fsClient.content(action?.args?.path, action?.args?.start, action?.args?.end)
+					let operations = action?.args?.operations
+					if (!Array.isArray(operations) || operations.length === 0) {
+						throw new Error("operations must be a non-empty array of {path, start, end} objects.")
+					}
+					let result = await window.fsClient.content(operations)
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: content result\n${objToText(result)}`)
 				}
 				catch (e) {
@@ -688,7 +732,7 @@ export const buildFilesystemCommands = (ctx) => {
 			"description": "Get filesystem download information for the full filesystem or one subdirectory.",
 			"args": {
 				"dir": {
-					description: "<optional directory prefix>",
+					description: "<optional absolute filesystem directory prefix>",
 					type: "string"
 				}
 			},
@@ -705,25 +749,36 @@ export const buildFilesystemCommands = (ctx) => {
 		},
 		{
 			"name": "fs_write_text",
-			"description": "Write plain text content to a filesystem file.",
+			"description": "Write plain text content to one or more filesystem files using an operations array.",
 			"args": {
-				"path": "<file path>",
-				"content": "<text content>"
+				"operations": {
+					description: "<array of {path, content} objects; use one entry for a single file>",
+					format: {
+						type: "array",
+						items: {
+							type: "object",
+							properties: {
+								"path": { type: "string", description: "<absolute filesystem path>" },
+								"content": { type: "string" }
+							},
+							required: ["path", "content"]
+						}
+					}
+				}
 			},
 			"enabled": is_using_kcpp_with_fs(),
 			"executor": async (action) => {
 				try {
-					let content = action?.args?.content
-					if (typeof content !== "string") {
-						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: write_text failed - content must be text (binary is not enabled yet)`)
-						return
+					let operations = action?.args?.operations
+					if (!Array.isArray(operations) || operations.length === 0) {
+						throw new Error("operations must be a non-empty array of {path, content} objects.")
 					}
-					let approved = await confirmFsMutation("fs_write_text", { path: action?.args?.path })
+					let approved = await confirmFsMutation("fs_write_text", { operations })
 					if (!approved) {
 						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: write_text cancelled by confirmation dialog`)
 						return
 					}
-					let result = await window.fsClient.write(action?.args?.path, content)
+					let result = await window.fsClient.write(operations)
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: write_text result\n${objToText(result)}`)
 				}
 				catch (e) {
@@ -733,32 +788,41 @@ export const buildFilesystemCommands = (ctx) => {
 		},
 		{
 			"name": "fs_write_lines",
-			"description": "Write or append lines in a filesystem text file.",
+			"description": "Write or append lines in one or more filesystem text files using an operations array.",
 			"args": {
-				"path": "<file path>",
-				"lines": {
-					description: "<array of lines>",
-					type: "array",
-					items: { type: "string" }
-				},
-				"start_line": {
-					description: "<start line, default 1>",
-					type: "integer"
-				},
-				"append": {
-					description: "<append mode>",
-					type: "boolean"
+				"operations": {
+					description: "<array of {path, lines, start_line, append} objects; use one entry for a single file>",
+					format: {
+						type: "array",
+						items: {
+							type: "object",
+							properties: {
+								"path": { type: "string", description: "<absolute filesystem path>" },
+								"lines": {
+									type: "array",
+									items: { type: "string" }
+								},
+								"start_line": { type: "integer" },
+								"append": { type: "boolean" }
+							},
+							required: ["path", "lines"]
+						}
+					}
 				}
 			},
 			"enabled": is_using_kcpp_with_fs(),
 			"executor": async (action) => {
 				try {
-					let approved = await confirmFsMutation("fs_write_lines", { path: action?.args?.path })
+					let operations = action?.args?.operations
+					if (!Array.isArray(operations) || operations.length === 0) {
+						throw new Error("operations must be a non-empty array of {path, lines, start_line, append} objects.")
+					}
+					let approved = await confirmFsMutation("fs_write_lines", { operations })
 					if (!approved) {
 						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: write_lines cancelled by confirmation dialog`)
 						return
 					}
-					let result = await window.fsClient.write_lines(action?.args?.path, action?.args?.lines, action?.args?.start_line, action?.args?.append)
+					let result = await window.fsClient.write_lines(operations)
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: write_lines result\n${objToText(result)}`)
 				}
 				catch (e) {
@@ -768,27 +832,35 @@ export const buildFilesystemCommands = (ctx) => {
 		},
 		{
 			"name": "fs_delete",
-			"description": "Delete one or more filesystem files. Pass 'paths' as an array (use one item for a single file).",
+			"description": "Delete one or more filesystem files using an operations array.",
 			"args": {
-				"paths": {
-					description: "<array of file paths; use one-item array for single file>",
-					type: "array",
-					items: { type: "string" }
+				"operations": {
+					description: "<array of {path} objects; use one entry for a single file>",
+					format: {
+						type: "array",
+						items: {
+							type: "object",
+							properties: {
+								"path": { type: "string", description: "<absolute filesystem path>" }
+							},
+							required: ["path"]
+						}
+					}
 				}
 			},
 			"enabled": is_using_kcpp_with_fs(),
 			"executor": async (action) => {
 				try {
-					let paths = action?.args?.paths
-					if (!Array.isArray(paths) || paths.length === 0) {
-						throw new Error("paths must be a non-empty array of file paths.")
+					let operations = action?.args?.operations
+					if (!Array.isArray(operations) || operations.length === 0) {
+						throw new Error("operations must be a non-empty array of {path} objects.")
 					}
-					let approved = await confirmFsMutation("fs_delete", { paths })
+					let approved = await confirmFsMutation("fs_delete", { operations })
 					if (!approved) {
 						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: delete cancelled by confirmation dialog`)
 						return
 					}
-					let result = await window.fsClient.delete(paths)
+					let result = await window.fsClient.delete(operations)
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: delete result\n${objToText(result)}`)
 				}
 				catch (e) {
@@ -802,12 +874,15 @@ export const buildFilesystemCommands = (ctx) => {
 			"args": {
 				"operations": {
 					description: "<array of {source, destination} objects; use one entry for a single move>",
-					type: "array",
-					items: {
-						type: "object",
-						properties: {
-							"source": { type: "string" },
-							"destination": { type: "string" }
+					format: {
+						type: "array",
+						items: {
+							type: "object",
+							properties: {
+								"source": { type: "string", description: "<absolute source filesystem path>" },
+								"destination": { type: "string", description: "<absolute destination filesystem path>" }
+							},
+							required: ["source", "destination"]
 						}
 					}
 				}
@@ -817,7 +892,7 @@ export const buildFilesystemCommands = (ctx) => {
 				try {
 					let operations = action?.args?.operations
 					if (!Array.isArray(operations) || operations.length === 0) {
-						throw new Error("operations must be a non-empty array of move objects.")
+						throw new Error("operations must be a non-empty array of {source, destination} objects.")
 					}
 					let approved = await confirmFsMutation("fs_move", { operations })
 					if (!approved) {
@@ -838,12 +913,15 @@ export const buildFilesystemCommands = (ctx) => {
 			"args": {
 				"operations": {
 					description: "<array of {source, destination} objects; use one entry for a single copy>",
-					type: "array",
-					items: {
-						type: "object",
-						properties: {
-							"source": { type: "string" },
-							"destination": { type: "string" }
+					format: {
+						type: "array",
+						items: {
+							type: "object",
+							properties: {
+								"source": { type: "string", description: "<absolute source filesystem path>" },
+								"destination": { type: "string", description: "<absolute destination filesystem path>" }
+							},
+							required: ["source", "destination"]
 						}
 					}
 				}
@@ -853,7 +931,7 @@ export const buildFilesystemCommands = (ctx) => {
 				try {
 					let operations = action?.args?.operations
 					if (!Array.isArray(operations) || operations.length === 0) {
-						throw new Error("operations must be a non-empty array of copy objects.")
+						throw new Error("operations must be a non-empty array of {source, destination} objects.")
 					}
 					let approved = await confirmFsMutation("fs_copy", { operations })
 					if (!approved) {
@@ -872,9 +950,9 @@ export const buildFilesystemCommands = (ctx) => {
 			"name": "fs_extract_zip",
 			"description": "Extract a .zip file from the filesystem into a target filesystem directory.",
 			"args": {
-				"zip_path": "<filesystem .zip file path>",
+				"zip_path": "<absolute filesystem .zip file path>",
 				"target_dir": {
-					description: "<target directory, default />",
+					description: "<absolute target directory, default />",
 					type: "string"
 				}
 			},
@@ -908,27 +986,35 @@ export const buildFilesystemCommands = (ctx) => {
 		},
 		{
 			"name": "fs_create_folder",
-			"description": "Create one or more filesystem folders. Pass 'path' as an array of folder paths (use a one-item array for a single folder).",
+			"description": "Create one or more filesystem folders using an operations array.",
 			"args": {
-				"path": {
-					description: "<array of folder paths; use one-item array for single folder>",
-					type: "array",
-					items: { type: "string" }
+				"operations": {
+					description: "<array of {path} objects; use one entry for a single folder>",
+					format: {
+						type: "array",
+						items: {
+							type: "object",
+							properties: {
+								"path": { type: "string", description: "<absolute filesystem path>" }
+							},
+							required: ["path"]
+						}
+					}
 				}
 			},
 			"enabled": is_using_kcpp_with_fs(),
 			"executor": async (action) => {
 				try {
-					let pathArg = action?.args?.path
-					if (!Array.isArray(pathArg) || pathArg.length === 0) {
-						throw new Error("path must be a non-empty array of folder paths.")
+					let operations = action?.args?.operations
+					if (!Array.isArray(operations) || operations.length === 0) {
+						throw new Error("operations must be a non-empty array of {path} objects.")
 					}
-					let approved = await confirmFsMutation("fs_create_folder", { path: pathArg })
+					let approved = await confirmFsMutation("fs_create_folder", { operations })
 					if (!approved) {
 						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: create_folder cancelled by confirmation dialog`)
 						return
 					}
-					let result = await window.fsClient.mkdir(pathArg)
+					let result = await window.fsClient.mkdir(operations)
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: create_folder result\n${objToText(result)}`)
 				}
 				catch (e) {
@@ -938,27 +1024,35 @@ export const buildFilesystemCommands = (ctx) => {
 		},
 		{
 			"name": "fs_delete_folder",
-			"description": "Delete one or more filesystem folders and all files under them. Pass 'paths' as an array (use one item for a single folder).",
+			"description": "Delete one or more filesystem folders using an operations array.",
 			"args": {
-				"paths": {
-					description: "<array of folder paths; use one-item array for single folder>",
-					type: "array",
-					items: { type: "string" }
+				"operations": {
+					description: "<array of {path} objects; use one entry for a single folder>",
+					format: {
+						type: "array",
+						items: {
+							type: "object",
+							properties: {
+								"path": { type: "string", description: "<absolute filesystem path>" }
+							},
+							required: ["path"]
+						}
+					}
 				}
 			},
 			"enabled": is_using_kcpp_with_fs(),
 			"executor": async (action) => {
 				try {
-					let paths = action?.args?.paths
-					if (!Array.isArray(paths) || paths.length === 0) {
-						throw new Error("paths must be a non-empty array of folder paths.")
+					let operations = action?.args?.operations
+					if (!Array.isArray(operations) || operations.length === 0) {
+						throw new Error("operations must be a non-empty array of {path} objects.")
 					}
-					let approved = await confirmFsMutation("fs_delete_folder", { paths })
+					let approved = await confirmFsMutation("fs_delete_folder", { operations })
 					if (!approved) {
 						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: delete_folder cancelled by confirmation dialog`)
 						return
 					}
-					let result = await window.fsClient.rmdir(paths)
+					let result = await window.fsClient.rmdir(operations)
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: delete_folder result\n${objToText(result)}`)
 				}
 				catch (e) {
@@ -972,13 +1066,16 @@ export const buildFilesystemCommands = (ctx) => {
 			"args": {
 				"operations": {
 					description: "<array of {path, pattern, replacement} objects; use one entry for a single file>",
-					type: "array",
-					items: {
-						type: "object",
-						properties: {
-							"path": { type: "string" },
-							"pattern": { type: "string" },
-							"replacement": { type: "string" }
+					format: {
+						type: "array",
+						items: {
+							type: "object",
+							properties: {
+								"path": { type: "string", description: "<absolute filesystem path>" },
+								"pattern": { type: "string" },
+								"replacement": { type: "string" }
+							},
+							required: ["path", "pattern", "replacement"]
 						}
 					}
 				}
@@ -988,7 +1085,7 @@ export const buildFilesystemCommands = (ctx) => {
 				try {
 					let operations = action?.args?.operations
 					if (!Array.isArray(operations) || operations.length === 0) {
-						throw new Error("operations must be a non-empty array of replace objects.")
+						throw new Error("operations must be a non-empty array of {path, pattern, replacement} objects.")
 					}
 					let approved = await confirmFsMutation("fs_replace_regex", { operations })
 					if (!approved) {
@@ -1008,7 +1105,7 @@ export const buildFilesystemCommands = (ctx) => {
 			"description": `Open or replace a named floating embed window for a filesystem file URL. Position and size are clamped to the viewport and the header can be dragged to reposition. Current viewport: ${window.innerWidth}x${window.innerHeight}px.`,
 			"args": {
 				"name": "<unique embed name>",
-				"file_path": "<filesystem file path>",
+				"file_path": "<absolute filesystem file path>",
 				"x": {
 					description: "<x coordinate in pixels>",
 					type: "integer"
@@ -1064,7 +1161,7 @@ export const buildFilesystemCommands = (ctx) => {
 					type: "string",
 					enum: getKcppVoiceOptionsForCommand()
 				},
-				"fs_output_path": "<filesystem output path for generated audio (.wav)>"
+				"fs_output_path": "<absolute filesystem output path for generated audio (.wav)>"
 			},
 			"enabled": (localsettings.tts_mode == KCPP_TTS_ID) && is_using_kcpp_with_fs(),
 			"executor": async (action) => {
@@ -1090,7 +1187,7 @@ export const buildFilesystemCommands = (ctx) => {
 					}
 					let response = await postKcppJson(koboldcpp_tts_endpoint, payload)
 					let audioBuffer = await response.arrayBuffer()
-					let result = await window.fsClient.write(outputPath, new Uint8Array(audioBuffer))
+					let result = await window.fsClient.write([{ path: outputPath, content: new Uint8Array(audioBuffer) }])
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: generate_tts result\n${objToText(result)}`)
 				}
 				catch (e) {

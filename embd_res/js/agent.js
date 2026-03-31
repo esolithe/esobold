@@ -1715,7 +1715,7 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [], enableFileUpload = 
                     fileStatus.innerText = `Uploading file ${i + 1}/${selectedFiles.length}: ${currentFile.fileName}`
                     let uploadPath = buildAgentUploadFsPath(currentFile.fileName)
                     let bytes = new Uint8Array(await currentFile.localFile.arrayBuffer())
-                    await window.fsClient.write(uploadPath, bytes, true)
+                    await window.fsClient.write([{ path: uploadPath, content: bytes, isB64: true }])
                     preparedFiles.push({
                         source: "local",
                         fileName: currentFile.fileName,
