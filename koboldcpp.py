@@ -4633,29 +4633,55 @@ def fs_copy_file(source_path, destination_path):
     if fs_is_disk_mode(fs):
         _, source_abs, _ = fs_resolve_disk_path(normalized_source, fs_state=fs)
         _, destination_abs, _ = fs_resolve_disk_path(normalized_destination, fs_state=fs)
-        if not os.path.isfile(source_abs):
-            raise FileNotFoundError(f"Filesystem file not found: {normalized_source}")
-        os.makedirs(os.path.dirname(destination_abs), exist_ok=True)
-        shutil.copy2(source_abs, destination_abs)
+        if os.path.isfile(source_abs):
+            os.makedirs(os.path.dirname(destination_abs), exist_ok=True)
+            shutil.copy2(source_abs, destination_abs)
+        elif os.path.isdir(source_abs):
+            shutil.copytree(source_abs, destination_abs, dirs_exist_ok=True)
+        else:
+            raise FileNotFoundError(f"Filesystem file or directory not found: {normalized_source}")
         return normalized_source, normalized_destination
     with fs_lock:
         files = fs["files"]
-        if normalized_source not in files:
-            raise FileNotFoundError(f"Filesystem file not found: {normalized_source}")
-        source_entry = files[normalized_source]
-        destination_size = files.get(normalized_destination, {}).get("size", 0)
-        new_total = fs["current_size_bytes"] - destination_size + source_entry["size"]
-        max_size = fs["max_size_bytes"]
-        if max_size > 0 and new_total > max_size:
-            raise ValueError(f"Filesystem size limit exceeded ({new_total} > {max_size} bytes).")
-        files[normalized_destination] = {
-            "content": source_entry["content"],
-            "modified": datetime.now(timezone.utc).isoformat(),
-            "size": source_entry["size"],
-        }
-        fs["current_size_bytes"] = new_total
-        fs["initialized"] = True
-        fs_set_state(fs)
+        if normalized_source in files:
+            source_entry = files[normalized_source]
+            destination_size = files.get(normalized_destination, {}).get("size", 0)
+            new_total = fs["current_size_bytes"] - destination_size + source_entry["size"]
+            max_size = fs["max_size_bytes"]
+            if max_size > 0 and new_total > max_size:
+                raise ValueError(f"Filesystem size limit exceeded ({new_total} > {max_size} bytes).")
+            files[normalized_destination] = {
+                "content": source_entry["content"],
+                "modified": datetime.now(timezone.utc).isoformat(),
+                "size": source_entry["size"],
+            }
+            fs["current_size_bytes"] = new_total
+            fs["initialized"] = True
+            fs_set_state(fs)
+        else:
+            prefix = normalized_source + "/"
+            targets = [p for p in list(files.keys()) if p.startswith(prefix)]
+            if not targets:
+                raise FileNotFoundError(f"Filesystem file or directory not found: {normalized_source}")
+            copied_pairs = [(p, normalized_destination + p[len(normalized_source):]) for p in targets]
+            copy_size = sum(files[src].get("size", 0) for src, _ in copied_pairs)
+            overwritten_size = sum(files[dst].get("size", 0) for _, dst in copied_pairs if dst in files)
+            new_total = fs["current_size_bytes"] - overwritten_size + copy_size
+            max_size = fs["max_size_bytes"]
+            if max_size > 0 and new_total > max_size:
+                raise ValueError(f"Filesystem size limit exceeded ({new_total} > {max_size} bytes).")
+            new_entries = {
+                dst: {
+                    "content": files[src]["content"],
+                    "modified": datetime.now(timezone.utc).isoformat(),
+                    "size": files[src]["size"],
+                }
+                for src, dst in copied_pairs
+            }
+            files.update(new_entries)
+            fs["current_size_bytes"] = new_total
+            fs["initialized"] = True
+            fs_set_state(fs)
     return normalized_source, normalized_destination
 
 def fs_move_file(source_path, destination_path):
@@ -4666,31 +4692,72 @@ def fs_move_file(source_path, destination_path):
     if fs_is_disk_mode(fs):
         _, source_abs, _ = fs_resolve_disk_path(normalized_source, fs_state=fs)
         _, destination_abs, _ = fs_resolve_disk_path(normalized_destination, fs_state=fs)
-        if not os.path.isfile(source_abs):
-            raise FileNotFoundError(f"Filesystem file not found: {normalized_source}")
-        os.makedirs(os.path.dirname(destination_abs), exist_ok=True)
-        shutil.move(source_abs, destination_abs)
+        if os.path.isfile(source_abs):
+            os.makedirs(os.path.dirname(destination_abs), exist_ok=True)
+            shutil.move(source_abs, destination_abs)
+        elif os.path.isdir(source_abs):
+            if os.path.dirname(destination_abs):
+                os.makedirs(os.path.dirname(destination_abs), exist_ok=True)
+            shutil.move(source_abs, destination_abs)
+        else:
+            raise FileNotFoundError(f"Filesystem file or directory not found: {normalized_source}")
         return normalized_source, normalized_destination
     with fs_lock:
         files = fs["files"]
-        if normalized_source not in files:
-            raise FileNotFoundError(f"Filesystem file not found: {normalized_source}")
-        source_entry = files[normalized_source]
-        destination_size = files.get(normalized_destination, {}).get("size", 0)
-        if normalized_destination != normalized_source:
-            del files[normalized_source]
-            new_total = fs["current_size_bytes"] - destination_size
+        if normalized_source in files:
+            source_entry = files[normalized_source]
+            destination_size = files.get(normalized_destination, {}).get("size", 0)
+            if normalized_destination != normalized_source:
+                del files[normalized_source]
+                new_total = fs["current_size_bytes"] - destination_size
+            else:
+                new_total = fs["current_size_bytes"]
+            files[normalized_destination] = {
+                "content": source_entry["content"],
+                "modified": datetime.now(timezone.utc).isoformat(),
+                "size": source_entry["size"],
+            }
+            fs["current_size_bytes"] = max(0, new_total)
+            fs["initialized"] = True
+            fs_set_state(fs)
         else:
-            new_total = fs["current_size_bytes"]
-        files[normalized_destination] = {
-            "content": source_entry["content"],
-            "modified": datetime.now(timezone.utc).isoformat(),
-            "size": source_entry["size"],
-        }
-        fs["current_size_bytes"] = max(0, new_total)
-        fs["initialized"] = True
-        fs_set_state(fs)
+            prefix = normalized_source + "/"
+            targets = sorted([p for p in list(files.keys()) if p.startswith(prefix)])
+            if not targets:
+                raise FileNotFoundError(f"Filesystem file or directory not found: {normalized_source}")
+            if normalized_source == normalized_destination:
+                return normalized_source, normalized_destination
+            moved_pairs = [(p, normalized_destination + p[len(normalized_source):]) for p in targets]
+            src_set = set(targets)
+            overwritten_size = sum(
+                files[dst].get("size", 0) for _, dst in moved_pairs if dst in files and dst not in src_set
+            )
+            new_entries = {
+                dst: {
+                    "content": files[src]["content"],
+                    "modified": datetime.now(timezone.utc).isoformat(),
+                    "size": files[src]["size"],
+                }
+                for src, dst in moved_pairs
+            }
+            for src in targets:
+                del files[src]
+            files.update(new_entries)
+            fs["current_size_bytes"] = max(0, fs["current_size_bytes"] - overwritten_size)
+            fs["initialized"] = True
+            fs_set_state(fs)
     return normalized_source, normalized_destination
+
+def fs_replace_regex(path, pattern, replacement):
+    normalized_path = fs_normalize_path(path)
+    _, entry = fs_get_file(normalized_path)
+    content_bytes = entry.get("content", b"")
+    if fs_is_binary(content_bytes):
+        raise ValueError(f"Filesystem file is binary and cannot have regex applied: {normalized_path}")
+    content_text = fs_decode_text(content_bytes)
+    new_text = re.sub(pattern, replacement, content_text)
+    fs_write_file(normalized_path, new_text)
+    return normalized_path
 
 def fs_match_glob(value, wildcard, case_insensitive=False):
     value_text = str(value or "")
@@ -4749,10 +4816,13 @@ def fs_list_entries(pattern="*", case_insensitive=False):
 def fs_list_paths(pattern="*", case_insensitive=False):
     return fs_list_entries(pattern, case_insensitive).get("files", [])
 
-def fs_search_content(pattern="*", path_pattern="*", max_results=100, case_insensitive=False):
-    wildcard = pattern or "*"
+def fs_search_content_regex(pattern=".*", path_pattern="*", max_results=100, case_insensitive=False):
+    regex_pattern = str(pattern or ".*")
     path_glob = path_pattern or "*"
     max_hits = max(1, tryparseint(max_results, 100))
+    re_flags = re.IGNORECASE if case_insensitive else 0
+    matcher = re.compile(regex_pattern, re_flags)
+
     with fs_lock:
         fs = fs_snapshot_state()
     if fs_is_disk_mode(fs):
@@ -4773,6 +4843,7 @@ def fs_search_content(pattern="*", path_pattern="*", max_results=100, case_insen
         items.sort(key=lambda item: item[0])
     else:
         items = sorted(fs["files"].items())
+
     matches = []
     for path, entry in items:
         if posixpath.basename(path) == FS_DIR_MARKER_FILENAME:
@@ -4782,8 +4853,9 @@ def fs_search_content(pattern="*", path_pattern="*", max_results=100, case_insen
         content_bytes = entry.get("content", b"")
         if fs_is_binary(content_bytes):
             continue
+
         for line_number, line_content in enumerate(fs_decode_text(content_bytes).splitlines(), start=1):
-            if fs_match_glob(line_content, wildcard, case_insensitive):
+            if matcher.search(line_content):
                 matches.append({
                     "path": path,
                     "line_start": line_number,
@@ -5101,6 +5173,20 @@ def fs_extract_zip(zip_bytes, target_dir):
             content = zf.read(info.filename)
             written.append(fs_write_file(dest, content))
     return written
+
+def fs_batch_apply(items, item_handler, item_key="path"):
+    results = []
+    for item in items:
+        try:
+            payload = item_handler(item)
+            if not isinstance(payload, dict):
+                payload = {}
+            payload.setdefault(item_key, item)
+            payload["success"] = True
+            results.append(payload)
+        except Exception as e:
+            results.append({"success": False, item_key: item, "error": str(e)})
+    return {"success": all(r.get("success", False) for r in results), "results": results}
 
 def initialize_fs_from_args():
     configured_limit = max(0, tryparseint(getattr(args, "fsmaxsize", 0), 0)) * 1024 * 1024
@@ -6593,18 +6679,22 @@ Change Mode<br>
                     "directories": entries.get("directories", []),
                 }).encode())
 
-        elif clean_path.endswith('/api/extra/fs/search'):
+        elif clean_path.endswith('/api/extra/fs/search_regex'):
             if not fs_is_enabled():
                 response_code = 503
                 response_body = (json.dumps({"error": "Filesystem is disabled. Set --fsmaxsize > 0 to enable it."}).encode())
             else:
                 parsed_url = urllib.parse.urlparse(self.path)
                 parsed_dict = urllib.parse.parse_qs(parsed_url.query)
-                pattern = str(parsed_dict.get('pattern', ['*'])[0])
+                pattern = str(parsed_dict.get('pattern', ['.*'])[0])
                 path_pattern = str(parsed_dict.get('path_pattern', ['*'])[0])
                 max_results = tryparseint(parsed_dict.get('max_results', [100])[0], 100)
                 case_insensitive_flag = str(parsed_dict.get('case_insensitive', ['0'])[0]).strip().lower() in ['1', 'true', 'yes', 'on']
-                response_body = (json.dumps({"matches": fs_search_content(pattern, path_pattern, max_results, case_insensitive_flag)}).encode())
+                try:
+                    response_body = (json.dumps({"matches": fs_search_content_regex(pattern, path_pattern, max_results, case_insensitive_flag)}).encode())
+                except re.error as e:
+                    response_code = 400
+                    response_body = (json.dumps({"error": f"Invalid regex pattern: {str(e)}"}).encode())
 
         elif clean_path.endswith('/api/extra/fs/metadata'):
             if not fs_is_enabled():
@@ -6614,7 +6704,10 @@ Change Mode<br>
                 parsed_url = urllib.parse.urlparse(self.path)
                 parsed_dict = urllib.parse.parse_qs(parsed_url.query)
                 try:
-                    response_body = (json.dumps(fs_metadata(parsed_dict.get('path', [''])[0])).encode())
+                    path_args = parsed_dict.get('path', [])
+                    if len(path_args) == 0:
+                        raise ValueError("path must be a non-empty array.")
+                    response_body = (json.dumps(fs_batch_apply(path_args, lambda p: fs_metadata(p))).encode())
                 except FileNotFoundError as e:
                     response_code = 404
                     response_body = (json.dumps({"error": str(e)}).encode())
@@ -6630,18 +6723,34 @@ Change Mode<br>
                 parsed_url = urllib.parse.urlparse(self.path)
                 parsed_dict = urllib.parse.parse_qs(parsed_url.query)
                 try:
-                    normalized_path, all_lines, selected_lines = fs_read_lines(
-                        parsed_dict.get('path', [''])[0],
-                        parsed_dict.get('start', [1])[0],
-                        parsed_dict.get('end', [None])[0],
-                    )
-                    response_body = (json.dumps({
-                        "path": normalized_path,
-                        "start_line": selected_lines[0]["line"] if selected_lines else 0,
-                        "end_line": selected_lines[-1]["line"] if selected_lines else 0,
-                        "total_lines": len(all_lines),
-                        "lines": selected_lines,
-                    }).encode())
+                    path_args = parsed_dict.get('path', [])
+                    if len(path_args) == 0:
+                        raise ValueError("path must be a non-empty array.")
+                    start_args = parsed_dict.get('start', [])
+                    end_args = parsed_dict.get('end', [])
+
+                    def _pick_query_arg(values, index, default_value, field_name):
+                        if len(values) == 0:
+                            return default_value
+                        if len(values) == 1:
+                            return values[0]
+                        if len(values) != len(path_args):
+                            raise ValueError(f"{field_name} must be omitted, have one value, or match path array length.")
+                        return values[index]
+
+                    def _read_for_index(index):
+                        p = path_args[index]
+                        start_line = _pick_query_arg(start_args, index, 1, "start")
+                        end_line = _pick_query_arg(end_args, index, None, "end")
+                        normalized_path, all_lines, selected_lines = fs_read_lines(p, start_line, end_line)
+                        return {
+                            "path": normalized_path,
+                            "start_line": selected_lines[0]["line"] if selected_lines else 0,
+                            "end_line": selected_lines[-1]["line"] if selected_lines else 0,
+                            "total_lines": len(all_lines),
+                            "lines": selected_lines,
+                        }
+                    response_body = (json.dumps(fs_batch_apply(list(range(len(path_args))), _read_for_index, item_key="index")).encode())
                 except FileNotFoundError as e:
                     response_code = 404
                     response_body = (json.dumps({"error": str(e)}).encode())
@@ -6657,12 +6766,17 @@ Change Mode<br>
                 parsed_url = urllib.parse.urlparse(self.path)
                 parsed_dict = urllib.parse.parse_qs(parsed_url.query)
                 try:
-                    normalized_path = fs_normalize_path(parsed_dict.get('path', [''])[0])
-                    fs_get_file(normalized_path)
-                    response_body = (json.dumps({
-                        "path": normalized_path,
-                        "url": self.build_external_url(f"/fs{normalized_path}"),
-                    }).encode())
+                    path_args = parsed_dict.get('path', [])
+                    if len(path_args) == 0:
+                        raise ValueError("path must be a non-empty array.")
+                    def _url_for_path(p):
+                        normalized_path = fs_normalize_path(p)
+                        fs_get_file(normalized_path)
+                        return {
+                            "path": normalized_path,
+                            "url": self.build_external_url(f"/fs{normalized_path}"),
+                        }
+                    response_body = (json.dumps(fs_batch_apply(path_args, _url_for_path)).encode())
                 except FileNotFoundError as e:
                     response_code = 404
                     response_body = (json.dumps({"error": str(e)}).encode())
@@ -7151,13 +7265,31 @@ Change Mode<br>
             else:
                 try:
                     tempbody = json.loads(body)
-                    normalized_path = fs_apply_line_updates(
-                        tempbody.get('path', ''),
-                        tempbody.get('lines', []),
-                        tempbody.get('start_line', 1),
-                        tempbody.get('append', False),
-                    )
-                    response_body = (json.dumps({"success": True, "path": normalized_path, "metadata": fs_metadata(normalized_path)}).encode())
+                    operations = tempbody.get('operations', None)
+                    if not isinstance(operations, list) or len(operations) == 0:
+                        raise ValueError("operations must be a non-empty array.")
+
+                    def _apply_lines_for_op(op):
+                        if not isinstance(op, dict):
+                            raise ValueError("Each operations entry must be an object.")
+                        path_value = op.get('path', '')
+                        if not isinstance(path_value, str) or path_value.strip() == '':
+                            raise ValueError("Each operations entry must include a non-empty string 'path'.")
+                        current_lines = op.get('lines', [])
+                        if isinstance(current_lines, str):
+                            current_lines = [current_lines]
+                        if not isinstance(current_lines, list):
+                            raise ValueError("Each operations entry lines must be a string or an array of strings.")
+                        current_lines = [str(item) for item in current_lines]
+                        current_start_line = op.get('start_line', 1)
+                        current_append = op.get('append', False)
+                        norm = fs_apply_line_updates(path_value, current_lines, current_start_line, current_append)
+                        return {
+                            "path": norm,
+                            "metadata": fs_metadata(norm),
+                        }
+
+                    response_body = (json.dumps(fs_batch_apply(operations, _apply_lines_for_op, item_key="operation")).encode())
                 except FileNotFoundError as e:
                     response_code = 404
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
@@ -7175,8 +7307,19 @@ Change Mode<br>
             else:
                 try:
                     tempbody = json.loads(body)
-                    normalized_dir = fs_create_directory(tempbody.get('path', ''))
-                    response_body = (json.dumps({"success": True, "path": normalized_dir}).encode())
+                    operations = tempbody.get('operations', None)
+                    if not isinstance(operations, list) or len(operations) == 0:
+                        raise ValueError("operations must be a non-empty array.")
+
+                    def _mkdir_for_op(op):
+                        if not isinstance(op, dict):
+                            raise ValueError("Each operations entry must be an object.")
+                        path_value = op.get('path', '')
+                        if not isinstance(path_value, str) or path_value.strip() == '':
+                            raise ValueError("Each operations entry must include a non-empty string 'path'.")
+                        return {"path": fs_create_directory(path_value)}
+
+                    response_body = (json.dumps(fs_batch_apply(operations, _mkdir_for_op, item_key="operation")).encode())
                 except ValueError as e:
                     response_code = 507 if 'size limit exceeded' in str(e).lower() else 400
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
@@ -7191,8 +7334,20 @@ Change Mode<br>
             else:
                 try:
                     tempbody = json.loads(body)
-                    normalized_dir, removed = fs_delete_directory(tempbody.get('path', ''))
-                    response_body = (json.dumps({"success": True, "path": normalized_dir, "removed": removed}).encode())
+                    operations = tempbody.get('operations', None)
+                    if not isinstance(operations, list) or len(operations) == 0:
+                        raise ValueError("operations must be a non-empty array.")
+
+                    def _delete_dir_for_op(op):
+                        if not isinstance(op, dict):
+                            raise ValueError("Each operations entry must be an object.")
+                        path_value = op.get('path', '')
+                        if not isinstance(path_value, str) or path_value.strip() == '':
+                            raise ValueError("Each operations entry must include a non-empty string 'path'.")
+                        norm, removed = fs_delete_directory(path_value)
+                        return {"path": norm, "removed": removed}
+
+                    response_body = (json.dumps(fs_batch_apply(operations, _delete_dir_for_op, item_key="operation")).encode())
                 except FileNotFoundError as e:
                     response_code = 404
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
@@ -7207,8 +7362,19 @@ Change Mode<br>
             else:
                 try:
                     tempbody = json.loads(body)
-                    normalized_path = fs_delete_file(tempbody.get('path', ''))
-                    response_body = (json.dumps({"success": True, "path": normalized_path}).encode())
+                    operations = tempbody.get('operations', None)
+                    if not isinstance(operations, list) or len(operations) == 0:
+                        raise ValueError("operations must be a non-empty array.")
+
+                    def _delete_file_for_op(op):
+                        if not isinstance(op, dict):
+                            raise ValueError("Each operations entry must be an object.")
+                        path_value = op.get('path', '')
+                        if not isinstance(path_value, str) or path_value.strip() == '':
+                            raise ValueError("Each operations entry must include a non-empty string 'path'.")
+                        return {"path": fs_delete_file(path_value)}
+
+                    response_body = (json.dumps(fs_batch_apply(operations, _delete_file_for_op, item_key="operation")).encode())
                 except FileNotFoundError as e:
                     response_code = 404
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
@@ -7223,8 +7389,22 @@ Change Mode<br>
             else:
                 try:
                     tempbody = json.loads(body)
-                    normalized_path = fs_write_file(tempbody.get('path', ''), tempbody.get('content', ''), None, tempbody.get('isB64', False))
-                    response_body = (json.dumps({"success": True, "path": normalized_path, "metadata": fs_metadata(normalized_path)}).encode())
+                    operations = tempbody.get('operations', None)
+                    if not isinstance(operations, list) or len(operations) == 0:
+                        raise ValueError("operations must be a non-empty array.")
+
+                    def _write_for_op(op):
+                        if not isinstance(op, dict):
+                            raise ValueError("Each operations entry must be an object.")
+                        path_value = op.get('path', '')
+                        if not isinstance(path_value, str) or path_value.strip() == '':
+                            raise ValueError("Each operations entry must include a non-empty string 'path'.")
+                        content_value = op.get('content', '')
+                        is_b64_value = op.get('isB64', False)
+                        norm = fs_write_file(path_value, content_value, None, is_b64_value)
+                        return {"path": norm, "metadata": fs_metadata(norm)}
+
+                    response_body = (json.dumps(fs_batch_apply(operations, _write_for_op, item_key="operation")).encode())
                 except ValueError as e:
                     response_code = 507 if 'size limit exceeded' in str(e).lower() else 400
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
@@ -7239,10 +7419,29 @@ Change Mode<br>
             else:
                 try:
                     tempbody = json.loads(body)
-                    source_path, destination_path = fs_move_file(tempbody.get('source', ''), tempbody.get('destination', ''))
-                    response_body = (json.dumps({"success": True, "source": source_path, "destination": destination_path, "metadata": fs_metadata(destination_path)}).encode())
+                    operations = tempbody.get('operations', None)
+                    if isinstance(operations, list) and len(operations) > 0:
+                        results = []
+                        for op in operations:
+                            try:
+                                src, dst = fs_move_file(op.get('source', ''), op.get('destination', ''))
+                                try:
+                                    meta = fs_metadata(dst)
+                                except (FileNotFoundError, OSError):
+                                    meta = None
+                                results.append({"success": True, "source": src, "destination": dst, "metadata": meta})
+                            except FileNotFoundError as e:
+                                results.append({"success": False, "source": op.get('source', ''), "destination": op.get('destination', ''), "error": str(e)})
+                            except Exception as e:
+                                results.append({"success": False, "source": op.get('source', ''), "destination": op.get('destination', ''), "error": str(e)})
+                        response_body = (json.dumps({"success": all(r["success"] for r in results), "results": results}).encode())
+                    else:
+                        raise ValueError("operations must be a non-empty array.")
                 except FileNotFoundError as e:
                     response_code = 404
+                    response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+                except ValueError as e:
+                    response_code = 400
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
                 except Exception as e:
                     response_code = 400
@@ -7255,8 +7454,67 @@ Change Mode<br>
             else:
                 try:
                     tempbody = json.loads(body)
-                    source_path, destination_path = fs_copy_file(tempbody.get('source', ''), tempbody.get('destination', ''))
-                    response_body = (json.dumps({"success": True, "source": source_path, "destination": destination_path, "metadata": fs_metadata(destination_path)}).encode())
+                    operations = tempbody.get('operations', None)
+                    if isinstance(operations, list) and len(operations) > 0:
+                        results = []
+                        for op in operations:
+                            try:
+                                src, dst = fs_copy_file(op.get('source', ''), op.get('destination', ''))
+                                try:
+                                    meta = fs_metadata(dst)
+                                except (FileNotFoundError, OSError):
+                                    meta = None
+                                results.append({"success": True, "source": src, "destination": dst, "metadata": meta})
+                            except FileNotFoundError as e:
+                                results.append({"success": False, "source": op.get('source', ''), "destination": op.get('destination', ''), "error": str(e)})
+                            except ValueError as e:
+                                results.append({"success": False, "source": op.get('source', ''), "destination": op.get('destination', ''), "error": str(e)})
+                            except Exception as e:
+                                results.append({"success": False, "source": op.get('source', ''), "destination": op.get('destination', ''), "error": str(e)})
+                        response_body = (json.dumps({"success": all(r["success"] for r in results), "results": results}).encode())
+                    else:
+                        raise ValueError("operations must be a non-empty array.")
+                except FileNotFoundError as e:
+                    response_code = 404
+                    response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+                except ValueError as e:
+                    response_code = 507 if 'size limit exceeded' in str(e).lower() else 400
+                    response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+                except Exception as e:
+                    response_code = 400
+                    response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+
+        elif self.path.endswith('/api/extra/fs/replace_regex'):
+            if not fs_is_enabled():
+                response_code = 503
+                response_body = (json.dumps({"success": False, "error": "Filesystem is disabled. Set --fsmaxsize > 0 to enable it."}).encode())
+            else:
+                try:
+                    tempbody = json.loads(body)
+                    operations = tempbody.get('operations', None)
+                    if isinstance(operations, list) and len(operations) > 0:
+                        results = []
+                        for op in operations:
+                            try:
+                                if not isinstance(op, dict):
+                                    raise ValueError("Each operations entry must be an object.")
+                                if not isinstance(op.get('path', None), str) or op.get('path', '').strip() == '':
+                                    raise ValueError("Each operations entry must include a non-empty string 'path'.")
+                                if not isinstance(op.get('pattern', None), str):
+                                    raise ValueError("Each operations entry must include string 'pattern'.")
+                                if not isinstance(op.get('replacement', None), str):
+                                    raise ValueError("Each operations entry must include string 'replacement'.")
+                                norm = fs_replace_regex(op.get('path', ''), op.get('pattern', ''), op.get('replacement', ''))
+                                results.append({"success": True, "path": norm, "metadata": fs_metadata(norm)})
+                            except FileNotFoundError as e:
+                                results.append({"success": False, "path": op.get('path', ''), "error": str(e)})
+                            except ValueError as e:
+                                results.append({"success": False, "path": op.get('path', ''), "error": str(e)})
+                            except Exception as e:
+                                results.append({"success": False, "path": op.get('path', ''), "error": str(e)})
+                        response_body = (json.dumps({"success": all(r["success"] for r in results), "results": results}).encode())
+                    else:
+                        raise ValueError("operations must be a non-empty array.")
                 except FileNotFoundError as e:
                     response_code = 404
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())

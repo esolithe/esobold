@@ -571,7 +571,16 @@ class FsClient {
     }
 
     /**
-     * Move/rename a file.
+     * Delete multiple files.
+     * @param {string[]} paths
+     * @returns {Promise<{success:boolean, results:Array}>}
+     */
+    async delete_many(paths) {
+        return this._post('/api/extra/fs/delete', { paths });
+    }
+
+    /**
+     * Move/rename a file or directory.
      * @param {string} source
      * @param {string} destination
      * @returns {Promise<{success:boolean, source:string, destination:string, metadata:object}>}
@@ -581,13 +590,31 @@ class FsClient {
     }
 
     /**
-     * Copy a file.
+     * Move/rename multiple files or directories.
+     * @param {Array<{source:string, destination:string}>} operations
+     * @returns {Promise<{success:boolean, results:Array}>}
+     */
+    async move_many(operations) {
+        return this._post('/api/extra/fs/move', { operations });
+    }
+
+    /**
+     * Copy a file or directory.
      * @param {string} source
      * @param {string} destination
      * @returns {Promise<{success:boolean, source:string, destination:string, metadata:object}>}
      */
     async copy(source, destination) {
         return this._post('/api/extra/fs/copy', { source, destination });
+    }
+
+    /**
+     * Copy multiple files or directories.
+     * @param {Array<{source:string, destination:string}>} operations
+     * @returns {Promise<{success:boolean, results:Array}>}
+     */
+    async copy_many(operations) {
+        return this._post('/api/extra/fs/copy', { operations });
     }
 
     /**
@@ -606,6 +633,37 @@ class FsClient {
      */
     async rmdir(path) {
         return this._post('/api/extra/fs/rmdir', { path });
+    }
+
+    /**
+     * Delete multiple directories and all their contents.
+     * @param {string[]} paths
+     * @returns {Promise<{success:boolean, results:Array}>}
+     */
+    async rmdir_many(paths) {
+        return this._post('/api/extra/fs/rmdir', { paths });
+    }
+
+    /**
+     * Replace text in a file using a regex pattern.
+     * @param {string} path
+     * @param {string} pattern - Regular expression pattern string.
+     * @param {string} replacement - Replacement string (may use back-references like \1).
+     * @returns {Promise<{success:boolean, path:string, metadata:object}>}
+     */
+    async replace_regex(path, pattern, replacement) {
+        return this._post('/api/extra/fs/replace_regex', { path, pattern, replacement });
+    }
+
+    /**
+     * Replace text in multiple files using the same regex pattern.
+     * @param {string[]} paths
+     * @param {string} pattern - Regular expression pattern string.
+     * @param {string} replacement - Replacement string (may use back-references like \1).
+     * @returns {Promise<{success:boolean, results:Array}>}
+     */
+    async replace_regex_many(paths, pattern, replacement) {
+        return this._post('/api/extra/fs/replace_regex', { paths, pattern, replacement });
     }
 
     /**
