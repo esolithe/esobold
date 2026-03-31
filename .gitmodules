@@ -1,0 +1,3 @@
+[submodule "esoExtras/opticlaw"]
+	path = esoExtras/opticlaw
+	url = https://github.com/esolithe/opticlaw
