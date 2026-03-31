@@ -557,54 +557,100 @@ class FsClient {
         return this._post('/api/extra/fs/write_lines', { path, lines, start_line, append });
     }
 
+    /**
+     * Replace text in a file using a regex pattern.
+     * Accepts a single path or an array of paths.
+     * @param {string|string[]} path - File path(s) to modify.
+     * @param {string} pattern      - Regular expression pattern.
+     * @param {string} replacement  - Replacement string (supports $1, $2 backreferences).
+     * @param {number} [count=0]    - Maximum replacements per file (0 = unlimited).
+     * @param {string[]} [flags=[]] - Regex flags: 'IGNORECASE', 'MULTILINE', 'DOTALL'.
+     * @returns {Promise<object>}
+     */
+    async replace(path, pattern, replacement, count = 0, flags = []) {
+        if (Array.isArray(path)) {
+            return this._post('/api/extra/fs/replace', { paths: path, pattern, replacement, count, flags });
+        }
+        return this._post('/api/extra/fs/replace', { path, pattern, replacement, count, flags });
+    }
+
     // -------------------------------------------------------------------------
     // File management
     // -------------------------------------------------------------------------
 
     /**
-     * Delete a file.
-     * @param {string} path
-     * @returns {Promise<{success:boolean, path:string}>}
+     * Delete a file. Accepts a single path or an array of paths.
+     * @param {string|string[]} path
+     * @returns {Promise<object>}
      */
     async delete(path) {
+        if (Array.isArray(path)) {
+            return this._post('/api/extra/fs/delete', { paths: path });
+        }
         return this._post('/api/extra/fs/delete', { path });
     }
 
     /**
-     * Move/rename a file.
-     * @param {string} source
+     * Move/rename a file. Accepts a single source or an array of sources.
+     * When sources is an array, each is moved to destination (which may be a directory).
+     * @param {string|string[]} source
      * @param {string} destination
-     * @returns {Promise<{success:boolean, source:string, destination:string, metadata:object}>}
+     * @returns {Promise<object>}
      */
     async move(source, destination) {
+        if (Array.isArray(source)) {
+            return this._post('/api/extra/fs/move', { sources: source, destination });
+        }
         return this._post('/api/extra/fs/move', { source, destination });
     }
 
     /**
-     * Copy a file.
-     * @param {string} source
+     * Move/rename a directory.
+     * @param {string|string[]} source
      * @param {string} destination
-     * @returns {Promise<{success:boolean, source:string, destination:string, metadata:object}>}
+     * @returns {Promise<object>}
+     */
+    async movedir(source, destination) {
+        if (Array.isArray(source)) {
+            return this._post('/api/extra/fs/movedir', { sources: source, destination });
+        }
+        return this._post('/api/extra/fs/movedir', { source, destination });
+    }
+
+    /**
+     * Copy a file. Accepts a single source or an array of sources.
+     * @param {string|string[]} source
+     * @param {string} destination
+     * @returns {Promise<object>}
      */
     async copy(source, destination) {
+        if (Array.isArray(source)) {
+            return this._post('/api/extra/fs/copy', { sources: source, destination });
+        }
         return this._post('/api/extra/fs/copy', { source, destination });
     }
 
     /**
-     * Create a directory.
-     * @param {string} path
-     * @returns {Promise<{success:boolean, path:string}>}
+     * Create a directory. Accepts a single path or an array of paths.
+     * @param {string|string[]} path
+     * @returns {Promise<object>}
      */
     async mkdir(path) {
+        if (Array.isArray(path)) {
+            return this._post('/api/extra/fs/mkdir', { paths: path });
+        }
         return this._post('/api/extra/fs/mkdir', { path });
     }
 
     /**
-     * Delete a directory and all contents.
-     * @param {string} path
-     * @returns {Promise<{success:boolean, path:string, removed:number}>}
+     * Delete a directory and all contents. Accepts a single path or an array of paths.
+     * @param {string|string[]} path
+     * @returns {Promise<object>}
      */
     async rmdir(path) {
+        if (Array.isArray(path)) {
+            return this._post('/api/extra/fs/rmdir', { paths: path });
+        }
         return this._post('/api/extra/fs/rmdir', { path });
     }
 

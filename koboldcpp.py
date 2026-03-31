@@ -4644,6 +4644,62 @@ def fs_move_file(source_path, destination_path):
         fs_set_state(fs)
     return normalized_source, normalized_destination
 
+def fs_move_directory(source_path, destination_path):
+    normalized_source = fs_normalize_dir_path(source_path)
+    normalized_destination = fs_normalize_dir_path(destination_path)
+    if normalized_source == "/" or normalized_destination == "/":
+        raise ValueError("Cannot move the filesystem root directory.")
+    if normalized_destination == normalized_source:
+        return normalized_source, normalized_destination, 0
+    dest_under_source = normalized_destination == normalized_source or normalized_destination.startswith(normalized_source + "/")
+    if dest_under_source:
+        raise ValueError("Cannot move a directory into itself or one of its subdirectories.")
+    with fs_lock:
+        fs = fs_snapshot_state()
+    if fs_is_disk_mode(fs):
+        _, source_abs, root_dir = fs_resolve_disk_path(normalized_source, allow_root=True, fs_state=fs)
+        _, destination_abs, _ = fs_resolve_disk_path(normalized_destination, allow_root=True, fs_state=fs)
+        if source_abs == root_dir:
+            raise ValueError("Cannot move the filesystem root directory.")
+        if not os.path.isdir(source_abs):
+            raise FileNotFoundError(f"Filesystem directory not found: {normalized_source}")
+        os.makedirs(os.path.dirname(destination_abs), exist_ok=True)
+        shutil.move(source_abs, destination_abs)
+        moved = sum(len(files) for _, _, files in os.walk(destination_abs))
+        return normalized_source, normalized_destination, moved
+    source_prefix = normalized_source + "/"
+    with fs_lock:
+        files = fs["files"]
+        targets = [(p, e) for p, e in files.items() if p.startswith(source_prefix)]
+        if not targets:
+            raise FileNotFoundError(f"Filesystem directory not found: {normalized_source}")
+        dest_prefix = normalized_destination + "/"
+        for old_path, entry in targets:
+            new_path = dest_prefix + old_path[len(source_prefix):]
+            destination_size = files.get(new_path, {}).get("size", 0)
+            if old_path != new_path:
+                del files[old_path]
+                fs["current_size_bytes"] = max(0, fs["current_size_bytes"] - destination_size)
+            files[new_path] = {
+                "content": entry["content"],
+                "modified": datetime.now(timezone.utc).isoformat(),
+                "size": entry["size"],
+            }
+        fs["initialized"] = True
+        fs_set_state(fs)
+    return normalized_source, normalized_destination, len(targets)
+
+def fs_replace_in_file(path, pattern, replacement, count=0, flags=0):
+    normalized_path, entry = fs_get_file(path)
+    content_bytes = entry.get("content", b"")
+    if fs_is_binary(content_bytes):
+        raise ValueError(f"Filesystem file is binary and cannot be modified by replace: {normalized_path}")
+    text = fs_decode_text(content_bytes)
+    compiled = re.compile(pattern, flags)
+    new_text, num_replacements = compiled.subn(replacement, text, count=count)
+    fs_write_file(normalized_path, new_text)
+    return normalized_path, num_replacements
+
 def fs_match_glob(value, wildcard, case_insensitive=False):
     value_text = str(value or "")
     wildcard_text = str(wildcard or "*")
@@ -6965,8 +7021,16 @@ Change Mode<br>
             else:
                 try:
                     tempbody = json.loads(body)
-                    normalized_dir = fs_create_directory(tempbody.get('path', ''))
-                    response_body = (json.dumps({"success": True, "path": normalized_dir}).encode())
+                    raw_paths = tempbody.get('paths', None)
+                    if raw_paths is not None:
+                        paths = raw_paths if isinstance(raw_paths, list) else [raw_paths]
+                        results = []
+                        for p in paths:
+                            results.append({"path": fs_create_directory(p), "success": True})
+                        response_body = (json.dumps({"success": True, "results": results}).encode())
+                    else:
+                        normalized_dir = fs_create_directory(tempbody.get('path', ''))
+                        response_body = (json.dumps({"success": True, "path": normalized_dir}).encode())
                 except ValueError as e:
                     response_code = 507 if 'size limit exceeded' in str(e).lower() else 400
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
@@ -6981,8 +7045,17 @@ Change Mode<br>
             else:
                 try:
                     tempbody = json.loads(body)
-                    normalized_dir, removed = fs_delete_directory(tempbody.get('path', ''))
-                    response_body = (json.dumps({"success": True, "path": normalized_dir, "removed": removed}).encode())
+                    raw_paths = tempbody.get('paths', None)
+                    if raw_paths is not None:
+                        paths = raw_paths if isinstance(raw_paths, list) else [raw_paths]
+                        results = []
+                        for p in paths:
+                            normalized_dir, removed = fs_delete_directory(p)
+                            results.append({"path": normalized_dir, "removed": removed, "success": True})
+                        response_body = (json.dumps({"success": True, "results": results}).encode())
+                    else:
+                        normalized_dir, removed = fs_delete_directory(tempbody.get('path', ''))
+                        response_body = (json.dumps({"success": True, "path": normalized_dir, "removed": removed}).encode())
                 except FileNotFoundError as e:
                     response_code = 404
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
@@ -6997,8 +7070,16 @@ Change Mode<br>
             else:
                 try:
                     tempbody = json.loads(body)
-                    normalized_path = fs_delete_file(tempbody.get('path', ''))
-                    response_body = (json.dumps({"success": True, "path": normalized_path}).encode())
+                    raw_paths = tempbody.get('paths', None)
+                    if raw_paths is not None:
+                        paths = raw_paths if isinstance(raw_paths, list) else [raw_paths]
+                        results = []
+                        for p in paths:
+                            results.append({"path": fs_delete_file(p), "success": True})
+                        response_body = (json.dumps({"success": True, "results": results}).encode())
+                    else:
+                        normalized_path = fs_delete_file(tempbody.get('path', ''))
+                        response_body = (json.dumps({"success": True, "path": normalized_path}).encode())
                 except FileNotFoundError as e:
                     response_code = 404
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
@@ -7029,10 +7110,49 @@ Change Mode<br>
             else:
                 try:
                     tempbody = json.loads(body)
-                    source_path, destination_path = fs_move_file(tempbody.get('source', ''), tempbody.get('destination', ''))
-                    response_body = (json.dumps({"success": True, "source": source_path, "destination": destination_path, "metadata": fs_metadata(destination_path)}).encode())
+                    raw_sources = tempbody.get('sources', None)
+                    if raw_sources is not None:
+                        sources = raw_sources if isinstance(raw_sources, list) else [raw_sources]
+                        destination = tempbody.get('destination', '')
+                        results = []
+                        for src in sources:
+                            sp, dp = fs_move_file(src, destination)
+                            results.append({"source": sp, "destination": dp, "success": True})
+                        response_body = (json.dumps({"success": True, "results": results}).encode())
+                    else:
+                        source_path, destination_path = fs_move_file(tempbody.get('source', ''), tempbody.get('destination', ''))
+                        response_body = (json.dumps({"success": True, "source": source_path, "destination": destination_path, "metadata": fs_metadata(destination_path)}).encode())
                 except FileNotFoundError as e:
                     response_code = 404
+                    response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+                except Exception as e:
+                    response_code = 400
+                    response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+
+        elif self.path.endswith('/api/extra/fs/movedir'):
+            if not fs_is_enabled():
+                response_code = 503
+                response_body = (json.dumps({"success": False, "error": "Filesystem is disabled. Set --fsmaxsize > 0 to enable it."}).encode())
+            else:
+                try:
+                    tempbody = json.loads(body)
+                    raw_sources = tempbody.get('sources', None)
+                    if raw_sources is not None:
+                        sources = raw_sources if isinstance(raw_sources, list) else [raw_sources]
+                        destination = tempbody.get('destination', '')
+                        results = []
+                        for src in sources:
+                            sp, dp, moved = fs_move_directory(src, destination)
+                            results.append({"source": sp, "destination": dp, "moved": moved, "success": True})
+                        response_body = (json.dumps({"success": True, "results": results}).encode())
+                    else:
+                        source_path, destination_path, moved = fs_move_directory(tempbody.get('source', ''), tempbody.get('destination', ''))
+                        response_body = (json.dumps({"success": True, "source": source_path, "destination": destination_path, "moved": moved}).encode())
+                except FileNotFoundError as e:
+                    response_code = 404
+                    response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+                except ValueError as e:
+                    response_code = 400
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
                 except Exception as e:
                     response_code = 400
@@ -7045,11 +7165,60 @@ Change Mode<br>
             else:
                 try:
                     tempbody = json.loads(body)
-                    source_path, destination_path = fs_copy_file(tempbody.get('source', ''), tempbody.get('destination', ''))
-                    response_body = (json.dumps({"success": True, "source": source_path, "destination": destination_path, "metadata": fs_metadata(destination_path)}).encode())
+                    raw_sources = tempbody.get('sources', None)
+                    if raw_sources is not None:
+                        sources = raw_sources if isinstance(raw_sources, list) else [raw_sources]
+                        destination = tempbody.get('destination', '')
+                        results = []
+                        for src in sources:
+                            sp, dp = fs_copy_file(src, destination)
+                            results.append({"source": sp, "destination": dp, "success": True})
+                        response_body = (json.dumps({"success": True, "results": results}).encode())
+                    else:
+                        source_path, destination_path = fs_copy_file(tempbody.get('source', ''), tempbody.get('destination', ''))
+                        response_body = (json.dumps({"success": True, "source": source_path, "destination": destination_path, "metadata": fs_metadata(destination_path)}).encode())
                 except FileNotFoundError as e:
                     response_code = 404
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+                except ValueError as e:
+                    response_code = 507 if 'size limit exceeded' in str(e).lower() else 400
+                    response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+                except Exception as e:
+                    response_code = 400
+                    response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+
+        elif self.path.endswith('/api/extra/fs/replace'):
+            if not fs_is_enabled():
+                response_code = 503
+                response_body = (json.dumps({"success": False, "error": "Filesystem is disabled. Set --fsmaxsize > 0 to enable it."}).encode())
+            else:
+                try:
+                    tempbody = json.loads(body)
+                    raw_flags = tempbody.get('flags', 0)
+                    re_flags = 0
+                    if isinstance(raw_flags, list):
+                        flag_map = {"IGNORECASE": re.IGNORECASE, "MULTILINE": re.MULTILINE, "DOTALL": re.DOTALL}
+                        for f in raw_flags:
+                            re_flags |= flag_map.get(str(f).upper(), 0)
+                    else:
+                        re_flags = tryparseint(raw_flags, 0)
+                    raw_paths = tempbody.get('paths', None)
+                    if raw_paths is not None:
+                        paths = raw_paths if isinstance(raw_paths, list) else [raw_paths]
+                        results = []
+                        for p in paths:
+                            norm_p, count = fs_replace_in_file(p, tempbody.get('pattern', ''), tempbody.get('replacement', ''), tryparseint(tempbody.get('count', 0), 0), re_flags)
+                            results.append({"path": norm_p, "count": count, "success": True})
+                        response_body = (json.dumps({"success": True, "results": results}).encode())
+                    else:
+                        normalized_path, replace_count = fs_replace_in_file(tempbody.get('path', ''), tempbody.get('pattern', ''), tempbody.get('replacement', ''), tryparseint(tempbody.get('count', 0), 0), re_flags)
+                        response_body = (json.dumps({"success": True, "path": normalized_path, "count": replace_count, "metadata": fs_metadata(normalized_path)}).encode())
+                except FileNotFoundError as e:
+                    response_code = 404
+                    response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+                except re.error as e:
+                    response_code = 400
+                    response_body = (json.dumps({"success": False, "error": f"Invalid regex pattern: {e}"}).encode())
                 except ValueError as e:
                     response_code = 507 if 'size limit exceeded' in str(e).lower() else 400
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
