@@ -949,19 +949,27 @@ export const buildFilesystemCommands = (ctx) => {
 		},
 		{
 			"name": "fs_create_folder",
-			"description": "Create a filesystem folder.",
+			"description": "Create one or more filesystem folders. Pass 'path' as an array of folder paths (use a one-item array for a single folder).",
 			"args": {
-				"path": "<folder path>"
+				"path": {
+					description: "<array of folder paths; use one-item array for single folder>",
+					type: "array",
+					items: { type: "string" }
+				}
 			},
 			"enabled": is_using_kcpp_with_fs(),
 			"executor": async (action) => {
 				try {
-					let approved = await confirmFsMutation("fs_create_folder", { path: action?.args?.path })
+					let pathArg = action?.args?.path
+					if (!Array.isArray(pathArg) || pathArg.length === 0) {
+						throw new Error("path must be a non-empty array of folder paths.")
+					}
+					let approved = await confirmFsMutation("fs_create_folder", { path: pathArg })
 					if (!approved) {
 						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: create_folder cancelled by confirmation dialog`)
 						return
 					}
-					let result = await window.fsClient.mkdir(action?.args?.path)
+					let result = await window.fsClient.mkdir(pathArg)
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: create_folder result\n${objToText(result)}`)
 				}
 				catch (e) {

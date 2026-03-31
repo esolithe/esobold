@@ -7262,8 +7262,21 @@ Change Mode<br>
             else:
                 try:
                     tempbody = json.loads(body)
-                    normalized_dir = fs_create_directory(tempbody.get('path', ''))
-                    response_body = (json.dumps({"success": True, "path": normalized_dir}).encode())
+                    path_arg = tempbody.get('path', '')
+                    if isinstance(path_arg, list):
+                        results = []
+                        for p in path_arg:
+                            try:
+                                norm = fs_create_directory(p)
+                                results.append({"success": True, "path": norm})
+                            except ValueError as e:
+                                results.append({"success": False, "path": p, "error": str(e)})
+                            except Exception as e:
+                                results.append({"success": False, "path": p, "error": str(e)})
+                        response_body = (json.dumps({"success": all(r["success"] for r in results), "results": results}).encode())
+                    else:
+                        normalized_dir = fs_create_directory(path_arg)
+                        response_body = (json.dumps({"success": True, "path": normalized_dir}).encode())
                 except ValueError as e:
                     response_code = 507 if 'size limit exceeded' in str(e).lower() else 400
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())

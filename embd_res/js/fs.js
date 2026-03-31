@@ -618,11 +618,20 @@ class FsClient {
     }
 
     /**
-     * Create a directory.
-     * @param {string} path
-     * @returns {Promise<{success:boolean, path:string}>}
+     * Create one or more directories.
+     * @param {string|string[]} path
+     * @returns {Promise<{success:boolean, path?:string, results?:Array}>}
      */
     async mkdir(path) {
+        if (typeof path === 'string') {
+            const trimmedPath = path.trim();
+            if (trimmedPath.startsWith('[') && trimmedPath.endsWith(']')) {
+                throw new Error('mkdir expects a real array for multiple directories, not a stringified JSON array.');
+            }
+            if (trimmedPath.includes(',') && trimmedPath.split(',').length > 1) {
+                throw new Error('mkdir expects an array in path for multiple directories, not a comma-delimited string.');
+            }
+        }
         return this._post('/api/extra/fs/mkdir', { path });
     }
 
