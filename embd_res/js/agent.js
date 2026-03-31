@@ -282,6 +282,19 @@ let getFinalAgentPrompt = (agentRunState, commands, objectiveForCurrentAction) =
     let state = getDocumentFromTextDB('State')
     let prompt = []
 
+    let isPlanningStep = !!commands.find(c => c.name === "plan_actions") 
+    if (!isPlanningStep) {
+        let enabledCommands = getEnabledCommands(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist).map(cmd => {
+            return cmd.name
+        }).join(", ");
+        prompt.push(`All enabled commands: ${enabledCommands}`)
+    }
+    let availableAgentMacros = getAvailableAgentMacros()
+    if (Object.keys(availableAgentMacros).length > 0) {
+        let macroNames = Object.keys(availableAgentMacros).join(", ")
+        prompt.push(`All available agent macros: ${macroNames}`)
+    }
+
     if (state != null) {
         prompt.push(`Current state: ${state}`)
     }
@@ -305,7 +318,7 @@ let getFinalAgentPrompt = (agentRunState, commands, objectiveForCurrentAction) =
     // 	prompt.push(`Order of actions: ${currentOrderOfActions.join(" -> ")}`)
     // }
     let basePrompt = prompt.join("\n\n")
-    return createSysPrompt(`### Available commands:\n\n${getCommandsAsText(!!commands.find(c => c.name === "plan_actions") ? getEnabledCommands(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist) : commands)}`) + (basePrompt.length > 0 ? createSysPrompt(basePrompt) : "")
+    return createSysPrompt(`### Available commands:\n\n${getCommandsAsText(isPlanningStep ? getEnabledCommands(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist) : commands)}`) + (basePrompt.length > 0 ? createSysPrompt(basePrompt) : "")
 }
 
 /**
