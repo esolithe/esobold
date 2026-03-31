@@ -297,7 +297,7 @@ export const buildMacroCommands = (ctx) => {
 		},
 		{
 			"name": "run_macro",
-			"description": "Loads and executes a saved macro by name, optionally with additional agent input.",
+			"description": "Loads and executes a saved macro by name, based on prompt.",
 			"args": {
 				"macroName": {
 					description: "<macro name>",
@@ -305,9 +305,8 @@ export const buildMacroCommands = (ctx) => {
 					pattern: "^[A-Za-z0-9_]+$"
 				},
 				"prompt": {
-					description: "<optional additional instruction for this macro execution. It will be added as 'Agent input: ...'>",
-					type: "string",
-					optional: true
+					description: "<instruction for this macro execution. It will be added as 'Agent input: ...'>",
+					type: "string"
 				}
 			},
 			"enabled": true,
@@ -318,6 +317,10 @@ export const buildMacroCommands = (ctx) => {
 				let macroDefinition = availableMacros[macroName]
 				if (!isPlainObject(macroDefinition)) {
 					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "run failed: macro was not found."))
+					return false
+				}
+				if (macroExecutionPrompt === null || macroExecutionPrompt.length === 0) {
+					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "run failed: no prompt provided for this execution."))
 					return false
 				}
 
@@ -353,8 +356,6 @@ export const buildMacroCommands = (ctx) => {
 				if (macroExecutionPrompt.length > 0) {
 					subAgentRunState.agentInputPrompt = macroExecutionPrompt
 					subAgentRunState.initialPrompt = ""
-				} else if (agentRunState.initialPrompt) {
-					subAgentRunState.initialPrompt = agentRunState.initialPrompt
 				}
 
 				if (typeof macroDefinition.agentPrompt === "string" && macroDefinition.agentPrompt.trim().length > 0) {
