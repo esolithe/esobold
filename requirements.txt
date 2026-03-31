@@ -9,7 +9,8 @@ darkdetect>=0.8.0
 jinja2>=3.1
 pdfplumber>=0.11.6
 PyMuPdf>=1.26.0
-tqdm>=4.67.1openai>=1.0.0
+tqdm>=4.67.1
+openai>=1.0.0
 tiktoken>=0.5.0
 prompt_toolkit>=3.0.0
 msgpack>=1.0.0

@@ -5233,10 +5233,9 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                 headers[k] = v
         headers["Connection"] = "close"
 
-        # Route /opticlaw paths to the opticlaw webui
+        # Route /opticlaw paths to the opticlaw webui (always redirect to root to avoid response splitting)
         if args.opticlaw and (self.path == "/opticlaw" or self.path.startswith("/opticlaw/") or self.path.startswith("/opticlaw?")):
-            opticlaw_remainder = self.path[len("/opticlaw"):]
-            opticlaw_redirect_url = f"http://localhost:{opticlaw_default_webui_port}{opticlaw_remainder or '/'}"
+            opticlaw_redirect_url = f"http://localhost:{opticlaw_default_webui_port}/"
             self.send_response(302)
             self.send_header("Location", opticlaw_redirect_url)
             self.send_header("Content-Length", "0")
@@ -6473,10 +6472,9 @@ Change Mode<br>
             clean_path = clean_path[5:] #adapt lcpp paths to the root
 
         if (clean_path == "/opticlaw" or clean_path.startswith("/opticlaw/")) and args.opticlaw:
-            opticlaw_remainder = clean_path[len("/opticlaw"):]
-            opticlaw_redirect_url = f"http://localhost:{opticlaw_default_webui_port}{opticlaw_remainder or '/'}"
+            opticlaw_redirect_url = f"http://localhost:{opticlaw_default_webui_port}/"
             self.send_response(302)
-            self.send_header("location", opticlaw_redirect_url)
+            self.send_header("Location", opticlaw_redirect_url)
             self.end_headers(content_type='text/html')
             return None
 
