@@ -7,8 +7,8 @@
  *
  * Example:
  *   const fs = new FsClient();
- *   await fs.write('/hello.txt', 'Hello, world!');
- *   const lines = await fs.content('/hello.txt');
+ *   await fs.write([{ path: '/hello.txt', content: 'Hello, world!' }]);
+ *   const lines = await fs.content([{ path: '/hello.txt', start: 1, end: 100 }]);
  *   console.log(lines);
  */
 class FsClient {
@@ -28,7 +28,13 @@ class FsClient {
         const url = new URL(this.base_url + path);
         if (params) {
             for (const [k, v] of Object.entries(params)) {
-                if (v !== undefined && v !== null && v !== '') {
+                if (Array.isArray(v)) {
+                    for (const item of v) {
+                        if (item !== undefined && item !== null && item !== '') {
+                            url.searchParams.append(k, item);
+                        }
+                    }
+                } else if (v !== undefined && v !== null && v !== '') {
                     url.searchParams.set(k, v);
                 }
             }
@@ -85,7 +91,7 @@ class FsClient {
 
     async _path_exists(path) {
         try {
-            await this.metadata(path);
+            await this.metadata([{ path }]);
             return true;
         }
         catch {
@@ -293,15 +299,26 @@ class FsClient {
     }
 
     /**
-     * Search file contents for a text/regex pattern.
-     * @param {string} pattern - Text pattern to search for inside files.
+     * Search file contents using a regex pattern.
+     * @param {string} pattern - Regex pattern to search for inside files.
      * @param {string} [path_pattern='*'] - Glob filter applied to paths.
      * @param {number} [max_results=100]
      * @returns {Promise<Array<{path:string, line:number, text:string}>>}
      */
     async search(pattern, path_pattern, max_results, case_insensitive) {
-        const data = await this._get('/api/extra/fs/search', { pattern, path_pattern, max_results, case_insensitive });
+        const data = await this._get('/api/extra/fs/search_regex', { pattern, path_pattern, max_results, case_insensitive });
         return data.matches;
+    }
+
+    /**
+     * Search file contents using a regex pattern.
+     * @param {string} pattern - Regex pattern to search for inside files.
+     * @param {string} [path_pattern='*'] - Glob filter applied to paths.
+     * @param {number} [max_results=100]
+     * @returns {Promise<Array<{path:string, line:number, text:string}>>}
+     */
+    async search_regex(pattern, path_pattern, max_results, case_insensitive) {
+        return this.search(pattern, path_pattern, max_results, case_insensitive);
     }
 
     /**
@@ -322,7 +339,7 @@ class FsClient {
             throw new Error('Embeddings are not available for the current endpoint.');
         }
 
-        const sourceMetadata = await this.metadata(sourcePath);
+        const sourceMetadata = await this.metadata([{ path: sourcePath }]);
         const lowerPath = sourcePath.toLowerCase();
         const sourceExt = lowerPath.endsWith('.pdf') ? '.pdf' : (lowerPath.endsWith('.txt') ? '.txt' : '');
         if (!['.txt', '.pdf'].includes(sourceExt)) {
@@ -347,7 +364,7 @@ class FsClient {
             throw new Error('No text could be extracted from the selected filesystem file.');
         }
         if (!rawTextExists) {
-            await this.write(semanticPaths.rawTextPath, rawText);
+            await this.write([{ path: semanticPaths.rawTextPath, content: rawText }]);
         }
 
         const preset = this._get_embedding_preset(modelName);
@@ -416,7 +433,7 @@ class FsClient {
                 },
             },
         };
-        await this.write(semanticPaths.cachePath, JSON.stringify(mergedCache));
+        await this.write([{ path: semanticPaths.cachePath, content: JSON.stringify(mergedCache) }]);
 
         const semanticResult = await this._post('/api/extra/fs/semantic_search', {
             embeddings_cache_path: semanticPaths.cachePath,
@@ -431,12 +448,26 @@ class FsClient {
     // -------------------------------------------------------------------------
 
     /**
-     * Get metadata for a single file or overall filesystem stats (pass empty path).
-     * @param {string} [path='']
+     * Get metadata for one or more files.
+     * @param {Array<{path:string}>} operations
      * @returns {Promise<object>}
      */
-    async metadata(path) {
-        return this._get('/api/extra/fs/metadata', { path: path || '' });
+    async metadata(operations) {
+        if (!Array.isArray(operations) || operations.length === 0) {
+            throw new Error('metadata expects a non-empty operations array.');
+        }
+        const path = operations.map((op) => `${op?.path || ''}`);
+        if (path.some((p) => p.trim() === '')) {
+            throw new Error('metadata operations must include non-empty path values.');
+        }
+        const data = await this._get('/api/extra/fs/metadata', { path });
+        if (Array.isArray(data?.results) && data.results.length === 1) {
+            if (!data.results[0]?.success) {
+                throw new Error(`${data.results[0]?.error || 'Metadata lookup failed.'}`);
+            }
+            return data.results[0];
+        }
+        return data;
     }
 
     /**
@@ -466,23 +497,60 @@ class FsClient {
     // -------------------------------------------------------------------------
 
     /**
-     * Get the public URL for a file stored in the filesystem.
-     * @param {string} path
+     * Get the public URL for one or more files.
+     * @param {Array<{path:string}>} operations
      * @returns {Promise<{path:string, url:string}>}
      */
-    async url(path) {
-        return this._get('/api/extra/fs/url', { path });
+    async url(operations) {
+        if (!Array.isArray(operations) || operations.length === 0) {
+            throw new Error('url expects a non-empty operations array.');
+        }
+        const path = operations.map((op) => `${op?.path || ''}`);
+        if (path.some((p) => p.trim() === '')) {
+            throw new Error('url operations must include non-empty path values.');
+        }
+        const data = await this._get('/api/extra/fs/url', { path });
+        if (Array.isArray(data?.results) && data.results.length === 1) {
+            if (!data.results[0]?.success) {
+                throw new Error(`${data.results[0]?.error || 'URL lookup failed.'}`);
+            }
+            return data.results[0];
+        }
+        return data;
     }
 
     /**
-     * Read lines from a text file.
-     * @param {string} path
-     * @param {number} [start=1] - 1-based start line (inclusive).
-     * @param {number} [end]     - 1-based end line (inclusive). Omit for all.
+     * Read line ranges from one or more text files.
+     * @param {Array<{path:string,start?:number,end?:number}>} operations
      * @returns {Promise<{path:string, start_line:number, end_line:number, total_lines:number, lines:Array<{line:number,text:string}>}>}
      */
-    async content(path, start, end) {
-        return this._get('/api/extra/fs/content', { path, start, end });
+    async content(operations) {
+        if (!Array.isArray(operations) || operations.length === 0) {
+            throw new Error('content expects a non-empty operations array.');
+        }
+        const path = operations.map((op) => `${op?.path || ''}`);
+        if (path.some((p) => p.trim() === '')) {
+            throw new Error('content operations must include non-empty path values.');
+        }
+        const startValues = operations.map((op) => op?.start);
+        const endValues = operations.map((op) => op?.end);
+        const hasPerPathStart = startValues.some((v) => v !== undefined && v !== null);
+        const hasPerPathEnd = endValues.some((v) => v !== undefined && v !== null);
+        const params = { path };
+        if (hasPerPathStart) {
+            params.start = startValues.map((v) => (v === undefined || v === null ? 1 : v));
+        }
+        if (hasPerPathEnd) {
+            params.end = endValues.map((v) => (v === undefined || v === null ? 2147483647 : v));
+        }
+        const data = await this._get('/api/extra/fs/content', params);
+        if (Array.isArray(data?.results) && data.results.length === 1) {
+            if (!data.results[0]?.success) {
+                throw new Error(`${data.results[0]?.error || 'Content lookup failed.'}`);
+            }
+            return data.results[0];
+        }
+        return data;
     }
 
     /**
@@ -525,36 +593,63 @@ class FsClient {
     // -------------------------------------------------------------------------
 
     /**
-     * Write a file. Content may be a string or a Uint8Array / ArrayBuffer.
-     * When content is binary (not a string), it is base64-encoded before sending.
-     * @param {string} path
-     * @param {string|Uint8Array|ArrayBuffer} content
-     * @returns {Promise<{success:boolean, path:string, metadata:object}>}
+     * Write one or more files.
+     * @param {Array<{path:string,content:string|Uint8Array|ArrayBuffer,isB64?:boolean}>} operations
+     * @returns {Promise<{success:boolean, results:Array}>}
      */
-    async write(path, content, isB64 = false) {
-        let payload_content;
-        if (typeof content === 'string') {
-            payload_content = content; // For text content, we can send as-is since the server will handle it as UTF-8 text. The server should be able to detect and decode UTF-8 content correctly without needing base64 encoding, and this avoids unnecessary bloat for purely textual files. If the server encounters decoding issues, we can revisit this decision.
-            isB64 = false;
-        } else {
-            // Binary: encode to base64 so it travels safely over JSON
-            const bytes = content instanceof ArrayBuffer ? new Uint8Array(content) : content;
-            payload_content = bytesToB64(bytes);
-            isB64 = true;
+    async write(operations) {
+        if (!Array.isArray(operations) || operations.length === 0) {
+            throw new Error('write expects a non-empty operations array.');
         }
-        return this._post('/api/extra/fs/write', { path, content: payload_content, isB64 });
+        const payloadOperations = [];
+        for (const op of operations) {
+            const currentPath = `${op?.path || ''}`;
+            if (currentPath.trim() === '') {
+                throw new Error('write operations must include non-empty path values.');
+            }
+            const currentContent = op?.content;
+            let currentIsB64 = !!op?.isB64;
+            let payloadContent;
+            if (typeof currentContent === 'string') {
+                payloadContent = currentContent;
+                currentIsB64 = false;
+            } else {
+                const bytes = currentContent instanceof ArrayBuffer ? new Uint8Array(currentContent) : currentContent;
+                payloadContent = bytesToB64(bytes);
+                currentIsB64 = true;
+            }
+            payloadOperations.push({
+                path: currentPath,
+                content: payloadContent,
+                isB64: currentIsB64,
+            });
+        }
+        return this._post('/api/extra/fs/write', { operations: payloadOperations });
     }
 
     /**
-     * Write or patch specific lines in a text file.
-     * @param {string}   path
-     * @param {string[]} lines       - Replacement lines (without trailing newlines).
-     * @param {number}   [start_line=1] - 1-based line number where replacement starts.
-     * @param {boolean}  [append=false] - If true, append lines instead of replacing.
-     * @returns {Promise<{success:boolean, path:string, metadata:object}>}
+     * Write or patch specific lines in one or more text files.
+     * @param {Array<{path:string,lines:string|string[],start_line?:number,append?:boolean}>} operations
+     * @returns {Promise<{success:boolean, results:Array}>}
      */
-    async write_lines(path, lines, start_line, append) {
-        return this._post('/api/extra/fs/write_lines', { path, lines, start_line, append });
+    async write_lines(operations) {
+        if (!Array.isArray(operations) || operations.length === 0) {
+            throw new Error('write_lines expects a non-empty operations array.');
+        }
+        const payloadOperations = [];
+        for (const op of operations) {
+            const currentPath = `${op?.path || ''}`;
+            if (currentPath.trim() === '') {
+                throw new Error('write_lines operations must include non-empty path values.');
+            }
+            payloadOperations.push({
+                path: currentPath,
+                lines: op?.lines ?? [],
+                start_line: op?.start_line ?? 1,
+                append: !!op?.append,
+            });
+        }
+        return this._post('/api/extra/fs/write_lines', { operations: payloadOperations });
     }
 
     // -------------------------------------------------------------------------
@@ -562,108 +657,84 @@ class FsClient {
     // -------------------------------------------------------------------------
 
     /**
-     * Delete a file.
-     * @param {string} path
-     * @returns {Promise<{success:boolean, path:string}>}
-     */
-    async delete(path) {
-        return this._post('/api/extra/fs/delete', { path });
-    }
-
-    /**
-     * Delete multiple files.
-     * @param {string[]} paths
+     * Delete one or more files.
+     * @param {Array<{path:string}>} operations
      * @returns {Promise<{success:boolean, results:Array}>}
      */
-    async delete_many(paths) {
-        return this._post('/api/extra/fs/delete', { paths });
+    async delete(operations) {
+        if (!Array.isArray(operations) || operations.length === 0) {
+            throw new Error('delete expects a non-empty operations array.');
+        }
+        if (operations.some((op) => `${op?.path || ''}`.trim() === '')) {
+            throw new Error('delete operations must include non-empty path values.');
+        }
+        return this._post('/api/extra/fs/delete', { operations });
     }
 
     /**
-     * Move/rename a file or directory.
-     * @param {string} source
-     * @param {string} destination
-     * @returns {Promise<{success:boolean, source:string, destination:string, metadata:object}>}
-     */
-    async move(source, destination) {
-        return this._post('/api/extra/fs/move', { source, destination });
-    }
-
-    /**
-     * Move/rename multiple files or directories.
+     * Move/rename one or more files or directories.
      * @param {Array<{source:string, destination:string}>} operations
      * @returns {Promise<{success:boolean, results:Array}>}
      */
-    async move_many(operations) {
+    async move(operations) {
+        if (!Array.isArray(operations) || operations.length === 0) {
+            throw new Error('move expects a non-empty operations array.');
+        }
         return this._post('/api/extra/fs/move', { operations });
     }
 
     /**
-     * Copy a file or directory.
-     * @param {string} source
-     * @param {string} destination
-     * @returns {Promise<{success:boolean, source:string, destination:string, metadata:object}>}
-     */
-    async copy(source, destination) {
-        return this._post('/api/extra/fs/copy', { source, destination });
-    }
-
-    /**
-     * Copy multiple files or directories.
+     * Copy one or more files or directories.
      * @param {Array<{source:string, destination:string}>} operations
      * @returns {Promise<{success:boolean, results:Array}>}
      */
-    async copy_many(operations) {
+    async copy(operations) {
+        if (!Array.isArray(operations) || operations.length === 0) {
+            throw new Error('copy expects a non-empty operations array.');
+        }
         return this._post('/api/extra/fs/copy', { operations });
     }
 
     /**
-     * Create a directory.
-     * @param {string} path
-     * @returns {Promise<{success:boolean, path:string}>}
-     */
-    async mkdir(path) {
-        return this._post('/api/extra/fs/mkdir', { path });
-    }
-
-    /**
-     * Delete a directory and all contents.
-     * @param {string} path
-     * @returns {Promise<{success:boolean, path:string, removed:number}>}
-     */
-    async rmdir(path) {
-        return this._post('/api/extra/fs/rmdir', { path });
-    }
-
-    /**
-     * Delete multiple directories and all their contents.
-     * @param {string[]} paths
+     * Create one or more directories.
+     * @param {Array<{path:string}>} operations
      * @returns {Promise<{success:boolean, results:Array}>}
      */
-    async rmdir_many(paths) {
-        return this._post('/api/extra/fs/rmdir', { paths });
+    async mkdir(operations) {
+        if (!Array.isArray(operations) || operations.length === 0) {
+            throw new Error('mkdir expects a non-empty operations array.');
+        }
+        if (operations.some((op) => `${op?.path || ''}`.trim() === '')) {
+            throw new Error('mkdir operations must include non-empty path values.');
+        }
+        return this._post('/api/extra/fs/mkdir', { operations });
     }
 
     /**
-     * Replace text in a file using a regex pattern.
-     * @param {string} path
-     * @param {string} pattern - Regular expression pattern string.
-     * @param {string} replacement - Replacement string (may use back-references like \1).
-     * @returns {Promise<{success:boolean, path:string, metadata:object}>}
-     */
-    async replace_regex(path, pattern, replacement) {
-        return this._post('/api/extra/fs/replace_regex', { path, pattern, replacement });
-    }
-
-    /**
-     * Replace text in multiple files using the same regex pattern.
-     * @param {string[]} paths
-     * @param {string} pattern - Regular expression pattern string.
-     * @param {string} replacement - Replacement string (may use back-references like \1).
+     * Delete one or more directories and all their contents.
+     * @param {Array<{path:string}>} operations
      * @returns {Promise<{success:boolean, results:Array}>}
      */
-    async replace_regex_many(paths, pattern, replacement) {
-        return this._post('/api/extra/fs/replace_regex', { paths, pattern, replacement });
+    async rmdir(operations) {
+        if (!Array.isArray(operations) || operations.length === 0) {
+            throw new Error('rmdir expects a non-empty operations array.');
+        }
+        if (operations.some((op) => `${op?.path || ''}`.trim() === '')) {
+            throw new Error('rmdir operations must include non-empty path values.');
+        }
+        return this._post('/api/extra/fs/rmdir', { operations });
+    }
+
+    /**
+     * Replace text in one or more files using per-file regex operations.
+     * @param {Array<{path:string, pattern:string, replacement:string}>} operations
+     * @returns {Promise<{success:boolean, results:Array}>}
+     */
+    async replace_regex(operations) {
+        if (!Array.isArray(operations) || operations.length === 0) {
+            throw new Error('replace_regex expects a non-empty operations array.');
+        }
+        return this._post('/api/extra/fs/replace_regex', { operations });
     }
 
     /**
