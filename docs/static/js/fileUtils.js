@@ -19,6 +19,13 @@ let bytesToB64 = (bytes) => {
     }
     return btoa(text)
 }
+
+let textToBytesToB64 = (text) => {
+    return btoa(new TextEncoder().encode(text)) 
+}
+let b64ToBytesToText = (b64) => {
+    return new TextDecoder().decode(new Uint8Array(atob(b64).split(",").map(Number)));
+}
 let getDownloadDataFromManager = async (charName) => {
     let characterType = allCharacterNames.find(c => c.name === charName)?.type;
     if (characterType !== undefined) {

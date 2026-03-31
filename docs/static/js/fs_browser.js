@@ -56,7 +56,7 @@
      */
     function currentFsDir() {
         const loc = window.location.pathname; // e.g. "/fs/subdir/"
-        let dir = loc.slice(3); // strip "/fs"
+        let dir = decodeURIPath(loc.slice(3)); // strip "/fs"
         if (!dir || dir === '/') return '/';
         if (!dir.endsWith('/')) dir += '/';
         return dir;
@@ -86,6 +86,16 @@
      */
     function encodeURIPath(path) {
         return path.split('/').map(s => encodeURIComponent(s)).join('/');
+    }
+
+    function decodeURIPath(path) {
+        return path.split('/').map(s => {
+            try {
+                return decodeURIComponent(s);
+            } catch (_) {
+                return s;
+            }
+        }).join('/');
     }
 
     // ── Breadcrumbs ────────────────────────────────────────────────────

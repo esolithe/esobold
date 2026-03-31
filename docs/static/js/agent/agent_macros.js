@@ -23,7 +23,7 @@ let cloneAgentMacroObject = (value) => {
 	return value
 }
 
-let getAvailableAgentMacros = () => {
+window.getAvailableAgentMacros = () => {
 	if (!isPlainObject(localsettings.agentSavedMacros)) {
 		let defaultMacros = isPlainObject(window?.eso?.agentMacros) ? cloneAgentMacroObject(window.eso.agentMacros) : {}
 		localsettings.agentSavedMacros = defaultMacros
@@ -97,9 +97,9 @@ let validateAgentMacroDefinition = (macroName, macroDefinition, agentRunState) =
 	if (macroDefinition.agentName != null && typeof macroDefinition.agentName !== "string") {
 		return { valid: false, error: "Macro agentName must be a string when provided." }
 	}
-	if (macroDefinition.printToConsole != null && typeof macroDefinition.printToConsole !== "boolean") {
-		return { valid: false, error: "Macro printToConsole must be a boolean when provided." }
-	}
+	// if (macroDefinition.printToConsole != null && typeof macroDefinition.printToConsole !== "boolean") {
+	// 	return { valid: false, error: "Macro printToConsole must be a boolean when provided." }
+	// }
 	if (macroDefinition.wordCountEnabled != null && typeof macroDefinition.wordCountEnabled !== "boolean") {
 		return { valid: false, error: "Macro wordCountEnabled must be a boolean when provided." }
 	}
@@ -109,28 +109,28 @@ let validateAgentMacroDefinition = (macroName, macroDefinition, agentRunState) =
 	if (macroDefinition.isUsingWhitelist != null && typeof macroDefinition.isUsingWhitelist !== "boolean") {
 		return { valid: false, error: "Macro isUsingWhitelist must be a boolean when provided." }
 	}
-	if (macroDefinition.configOverrides != null) {
-		if (!isPlainObject(macroDefinition.configOverrides)) {
-			return { valid: false, error: "Macro configOverrides must be an object when provided." }
-		}
-		let configOverrideKeys = Object.keys(macroDefinition.configOverrides)
-		for (let index = 0; index < configOverrideKeys.length; index++) {
-			let actionName = configOverrideKeys[index]
-			if (!availableCommandNameSet.has(actionName)) {
-				return { valid: false, error: `Macro configOverrides contains unknown action '${actionName}'.` }
-			}
-			let overrideEntry = macroDefinition.configOverrides[actionName]
-			if (!isPlainObject(overrideEntry)) {
-				return { valid: false, error: `Macro configOverrides['${actionName}'] must be an object.` }
-			}
-			if (overrideEntry.config !== undefined && typeof overrideEntry.config !== "string") {
-				return { valid: false, error: `Macro configOverrides['${actionName}'].config must be a string when provided.` }
-			}
-			if (overrideEntry.model !== undefined && typeof overrideEntry.model !== "string") {
-				return { valid: false, error: `Macro configOverrides['${actionName}'].model must be a string when provided.` }
-			}
-		}
-	}
+	// if (macroDefinition.configOverrides != null) {
+	// 	if (!isPlainObject(macroDefinition.configOverrides)) {
+	// 		return { valid: false, error: "Macro configOverrides must be an object when provided." }
+	// 	}
+	// 	let configOverrideKeys = Object.keys(macroDefinition.configOverrides)
+	// 	for (let index = 0; index < configOverrideKeys.length; index++) {
+	// 		let actionName = configOverrideKeys[index]
+	// 		if (!availableCommandNameSet.has(actionName)) {
+	// 			return { valid: false, error: `Macro configOverrides contains unknown action '${actionName}'.` }
+	// 		}
+	// 		let overrideEntry = macroDefinition.configOverrides[actionName]
+	// 		if (!isPlainObject(overrideEntry)) {
+	// 			return { valid: false, error: `Macro configOverrides['${actionName}'] must be an object.` }
+	// 		}
+	// 		if (overrideEntry.config !== undefined && typeof overrideEntry.config !== "string") {
+	// 			return { valid: false, error: `Macro configOverrides['${actionName}'].config must be a string when provided.` }
+	// 		}
+	// 		if (overrideEntry.model !== undefined && typeof overrideEntry.model !== "string") {
+	// 			return { valid: false, error: `Macro configOverrides['${actionName}'].model must be a string when provided.` }
+	// 		}
+	// 	}
+	// }
 	return { valid: true }
 }
 
@@ -201,7 +201,8 @@ export const buildMacroCommands = (ctx) => {
 											properties: {
 												"action": {
 													description: "Command name to run.",
-													type: "string"
+													type: "string",
+													enum: getCommandNamesForMacroValidation(agentRunState)
 												},
 												"objective": {
 													description: "Why this action is needed in the macro.",
@@ -216,32 +217,32 @@ export const buildMacroCommands = (ctx) => {
 								required: ["responsePlanOverview", "orderOfActions"]
 							},
 							"agentPrompt": {
-								description: "Optional system-level instruction override while the macro runs.",
+								description: "Optional system prompt. This should be guidance on the macro without any specific details that would be expected to change per execution. For example, if the macro is for writing an email, the agentPrompt could include instructions on the style and format of the email, while the specific content of the email would be provided in the prompt argument of the run_macro command.",
 								type: "string"
 							},
 							"agentName": {
 								description: "Optional speaker name/persona override used for assistant responses.",
 								type: "string"
 							},
-							"configOverrides": {
-								description: "Optional per-action config/model overrides. Keys are command names.",
-								type: "object",
-								additionalProperties: {
-									type: "object",
-									properties: {
-										"config": {
-											type: "string"
-										},
-										"model": {
-											type: "string"
-										}
-									}
-								}
-							},
-							"printToConsole": {
-								description: "Optional boolean to print internal logs to console for this macro.",
-								type: "boolean"
-							},
+							// "configOverrides": {
+							// 	description: "Optional per-action config/model overrides. Keys are command names.",
+							// 	type: "object",
+							// 	additionalProperties: {
+							// 		type: "object",
+							// 		properties: {
+							// 			"config": {
+							// 				type: "string"
+							// 			},
+							// 			"model": {
+							// 				type: "string"
+							// 			}
+							// 		}
+							// 	}
+							// },
+							// "printToConsole": {
+							// 	description: "Optional boolean to print internal logs to console for this macro.",
+							// 	type: "boolean"
+							// },
 							"wordCountEnabled": {
 								description: "Optional boolean to enable word counts for this macro run.",
 								type: "boolean"
@@ -275,6 +276,7 @@ export const buildMacroCommands = (ctx) => {
 					macroDefinition,
 					overwrite,
 				}
+				macroDefinition.printToConsole = true // Force printToConsole to true for macro creation logs to assist with debugging macro creation issues. This does not affect the printToConsole setting when the macro is executed.
 				let shouldSaveMacro = await window.showCommandExecutionConfirmation(
 					"Save macro",
 					"Please review macro details before saving.",
@@ -311,90 +313,97 @@ export const buildMacroCommands = (ctx) => {
 			},
 			"enabled": true,
 			"executor": async (action) => {
-				let macroName = `${action?.args?.macroName || ""}`.trim()
-				let macroExecutionPrompt = `${action?.args?.prompt || ""}`.trim()
-				let availableMacros = getAvailableAgentMacros()
-				let macroDefinition = availableMacros[macroName]
-				if (!isPlainObject(macroDefinition)) {
-					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "run failed: macro was not found."))
-					return false
-				}
-				if (macroExecutionPrompt === null || macroExecutionPrompt.length === 0) {
-					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "run failed: no prompt provided for this execution."))
-					return false
-				}
+				try {
+					let macroName = `${action?.args?.macroName || ""}`.trim()
+					let macroExecutionPrompt = `${action?.args?.prompt || ""}`.trim()
+					let availableMacros = getAvailableAgentMacros()
+					let macroDefinition = availableMacros[macroName]
+					if (!isPlainObject(macroDefinition)) {
+						addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "run failed: macro was not found."))
+						return false
+					}
+					if (macroExecutionPrompt === null || macroExecutionPrompt.length === 0) {
+						addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "run failed: no prompt provided for this execution."))
+						return false
+					}
 
-				let validationResult = validateAgentMacroDefinition(macroName, macroDefinition, agentRunState)
-				if (!validationResult.valid) {
-					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, `run failed: ${validationResult.error}`))
-					return false
-				}
+					let validationResult = validateAgentMacroDefinition(macroName, macroDefinition, agentRunState)
+					if (!validationResult.valid) {
+						addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, `run failed: ${validationResult.error}`))
+						return false
+					}
 
-				if (!isPlainObject(agentRunState._executedMacroNames)) {
-					agentRunState._executedMacroNames = {}
-				}
-				agentRunState._executedMacroNames[macroName] = (agentRunState._executedMacroNames[macroName] || 0) + 1
-				if (agentRunState._executedMacroNames[macroName] > 3) {
-					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "run failed: exceeded recursion limit."))
-					return false
-				}
+					if (!isPlainObject(agentRunState._executedMacroNames)) {
+						agentRunState._executedMacroNames = {}
+					}
+					agentRunState._executedMacroNames[macroName] = (agentRunState._executedMacroNames[macroName] || 0) + 1
+					if (agentRunState._executedMacroNames[macroName] > 3) {
+						addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "run failed: exceeded recursion limit."))
+						return false
+					}
 
-				let subAgentRunState = {
-					planToUse: macroDefinition.planToUse,
-					systemPrompt: agentRunState.systemPrompt,
-					agentVisualiser: agentRunState.agentVisualiser,
-					agentInitialiser: agentRunState.agentInitialiser,
-					agentFinaliser: agentRunState.agentFinaliser,
-					skipTaskCompletionCheck: true,
-					_executedMacroNames: { ...agentRunState._executedMacroNames },
-					configOverrides: {
-						...(isPlainObject(agentRunState.configOverrides) ? agentRunState.configOverrides : {}),
-						...(isPlainObject(macroDefinition.configOverrides) ? macroDefinition.configOverrides : {})
+					let subAgentRunState = {
+						planToUse: macroDefinition.planToUse,
+						systemPrompt: agentRunState.systemPrompt,
+						agentVisualiser: agentRunState.agentVisualiser,
+						agentInitialiser: agentRunState.agentInitialiser,
+						agentFinaliser: agentRunState.agentFinaliser,
+						skipTaskCompletionCheck: true,
+						_executedMacroNames: { ...agentRunState._executedMacroNames },
+						configOverrides: {
+							...(isPlainObject(agentRunState.configOverrides) ? agentRunState.configOverrides : {}),
+							...(isPlainObject(macroDefinition.configOverrides) ? macroDefinition.configOverrides : {})
+						}
+					}
+
+					if (macroExecutionPrompt.length > 0) {
+						subAgentRunState.agentInputPrompt = macroExecutionPrompt
+						subAgentRunState.initialPrompt = ""
+					}
+
+					if (typeof macroDefinition.agentPrompt === "string" && macroDefinition.agentPrompt.trim().length > 0) {
+						subAgentRunState.agentPrompt = macroDefinition.agentPrompt
+					} else if (agentRunState.agentPrompt) {
+						subAgentRunState.agentPrompt = agentRunState.agentPrompt
+					}
+
+					if (typeof macroDefinition.agentName === "string" && macroDefinition.agentName.trim().length > 0) {
+						subAgentRunState.agentName = macroDefinition.agentName
+					} else if (agentRunState.agentName) {
+						subAgentRunState.agentName = agentRunState.agentName
+					}
+
+					if (typeof macroDefinition.printToConsole === "boolean") {
+						subAgentRunState.printToConsole = macroDefinition.printToConsole
+					} else {
+						subAgentRunState.printToConsole = agentRunState.printToConsole
+					}
+
+					if (typeof macroDefinition.wordCountEnabled === "boolean") {
+						subAgentRunState.wordCountEnabled = macroDefinition.wordCountEnabled
+					} else {
+						subAgentRunState.wordCountEnabled = !!agentRunState.wordCountEnabled
+					}
+
+					if (typeof macroDefinition.surpressMessagesToUser === "boolean") {
+						subAgentRunState.surpressMessagesToUser = macroDefinition.surpressMessagesToUser
+					} else {
+						subAgentRunState.surpressMessagesToUser = agentRunState.surpressMessagesToUser
+					}
+
+					if (typeof macroDefinition.isUsingWhitelist === "boolean") {
+						subAgentRunState.isUsingWhitelist = macroDefinition.isUsingWhitelist
+					} else {
+						subAgentRunState.isUsingWhitelist = agentRunState.isUsingWhitelist
+					}
+
+					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "executing as sub-agent loop."))
+				}
+				finally {
+					if (typeof agentRunState.agentVisualiser === "function") {
+						await agentRunState.agentVisualiser(objRefAssign({}, agentRunState, {agentRunState}))
 					}
 				}
-
-				if (macroExecutionPrompt.length > 0) {
-					subAgentRunState.agentInputPrompt = macroExecutionPrompt
-					subAgentRunState.initialPrompt = ""
-				}
-
-				if (typeof macroDefinition.agentPrompt === "string" && macroDefinition.agentPrompt.trim().length > 0) {
-					subAgentRunState.agentPrompt = macroDefinition.agentPrompt
-				} else if (agentRunState.agentPrompt) {
-					subAgentRunState.agentPrompt = agentRunState.agentPrompt
-				}
-
-				if (typeof macroDefinition.agentName === "string" && macroDefinition.agentName.trim().length > 0) {
-					subAgentRunState.agentName = macroDefinition.agentName
-				} else if (agentRunState.agentName) {
-					subAgentRunState.agentName = agentRunState.agentName
-				}
-
-				if (typeof macroDefinition.printToConsole === "boolean") {
-					subAgentRunState.printToConsole = macroDefinition.printToConsole
-				} else {
-					subAgentRunState.printToConsole = agentRunState.printToConsole
-				}
-
-				if (typeof macroDefinition.wordCountEnabled === "boolean") {
-					subAgentRunState.wordCountEnabled = macroDefinition.wordCountEnabled
-				} else {
-					subAgentRunState.wordCountEnabled = !!agentRunState.wordCountEnabled
-				}
-
-				if (typeof macroDefinition.surpressMessagesToUser === "boolean") {
-					subAgentRunState.surpressMessagesToUser = macroDefinition.surpressMessagesToUser
-				} else {
-					subAgentRunState.surpressMessagesToUser = agentRunState.surpressMessagesToUser
-				}
-
-				if (typeof macroDefinition.isUsingWhitelist === "boolean") {
-					subAgentRunState.isUsingWhitelist = macroDefinition.isUsingWhitelist
-				} else {
-					subAgentRunState.isUsingWhitelist = agentRunState.isUsingWhitelist
-				}
-
-				addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "executing as sub-agent loop."))
 				await window.execAgentCycle(subAgentRunState)
 				addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "sub-agent loop complete."))
 				return false
@@ -433,14 +442,14 @@ export const buildMacroCommands = (ctx) => {
 					return false
 				}
 
-				let configOverrideKeys = isPlainObject(macroDefinition.configOverrides) ? Object.keys(macroDefinition.configOverrides) : []
+				// let configOverrideKeys = isPlainObject(macroDefinition.configOverrides) ? Object.keys(macroDefinition.configOverrides) : []
 				let summary = {
 					macroName,
 					responsePlanOverview: macroDefinition.planToUse.responsePlanOverview,
 					orderOfActions: macroDefinition.planToUse.orderOfActions,
 					hasAgentPrompt: typeof macroDefinition.agentPrompt === "string" && macroDefinition.agentPrompt.trim().length > 0,
-					hasConfigOverrides: configOverrideKeys.length > 0,
-					configOverrideKeys,
+					// hasConfigOverrides: configOverrideKeys.length > 0,
+					// configOverrideKeys,
 				}
 				addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, `info:\n${JSON.stringify(summary, null, 2)}`))
 				return false

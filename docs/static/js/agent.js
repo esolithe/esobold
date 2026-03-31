@@ -31,6 +31,8 @@ let generateFromPrompt = (prompt, grammar = "", images = [], bannedTokens = []) 
     if (is_using_kcpp_with_vision() && llavaImages.length > 0) {
         payload.images = llavaImages.map(str => str.includes("base64,")?str.split("base64,")[1]:str);
     }
+    payload.params = {}
+    payload = finalize_submit_payload(payload, !!prompt)
     let reqOpt = {
         method: 'POST', // or 'PUT'
         headers: get_kobold_header(),
@@ -275,10 +277,23 @@ let getInitialAgentPrompt = (agentRunState, max_mem_len) => {
 }
 
 let getFinalAgentPrompt = (agentRunState, commands, objectiveForCurrentAction) => {
-    let { manualOverridesForEnabledCommands, agentPrompt, isUsingWhitelist, initialPrompt } = agentRunState
+    let { manualOverridesForEnabledCommands, agentPrompt, isUsingWhitelist, initialPrompt, agentInputPrompt } = agentRunState
     
     let state = getDocumentFromTextDB('State')
     let prompt = []
+
+    let isPlanningStep = !!commands.find(c => c.name === "plan_actions") 
+    if (!isPlanningStep) {
+        let enabledCommands = getEnabledCommands(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist).map(cmd => {
+            return cmd.name
+        }).join(", ");
+        prompt.push(`All enabled commands: ${enabledCommands}`)
+    }
+    let availableAgentMacros = getAvailableAgentMacros()
+    if (Object.keys(availableAgentMacros).length > 0) {
+        let macroNames = Object.keys(availableAgentMacros).join(", ")
+        prompt.push(`All available agent macros: ${macroNames}`)
+    }
 
     if (state != null) {
         prompt.push(`Current state: ${state}`)
@@ -292,6 +307,9 @@ let getFinalAgentPrompt = (agentRunState, commands, objectiveForCurrentAction) =
     if (!!initialPrompt) {
         prompt.push(`Most recent input from user: ${initialPrompt}`)
     }
+    if (!!agentInputPrompt) {
+        prompt.push(`Most recent input from agent: ${agentInputPrompt}`)
+    }
     if (!!objectiveForCurrentAction) {
         prompt.push(`Objective for current action: ${objectiveForCurrentAction}`)
     }
@@ -300,7 +318,7 @@ let getFinalAgentPrompt = (agentRunState, commands, objectiveForCurrentAction) =
     // 	prompt.push(`Order of actions: ${currentOrderOfActions.join(" -> ")}`)
     // }
     let basePrompt = prompt.join("\n\n")
-    return createSysPrompt(`### Available commands:\n\n${getCommandsAsText(!!commands.find(c => c.name === "plan_actions") ? getEnabledCommands(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist) : commands)}`) + (basePrompt.length > 0 ? createSysPrompt(basePrompt) : "")
+    return createSysPrompt(`### Available commands:\n\n${getCommandsAsText(isPlanningStep ? getEnabledCommands(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist) : commands)}`) + (basePrompt.length > 0 ? createSysPrompt(basePrompt) : "")
 }
 
 /**
@@ -441,7 +459,7 @@ let actionToText = (action) => {
     return actionAsText
 }
 
-let maxActionsInHistory = 1000, currentAgentCycle = [], endCurrent = false
+let maxActionsInHistory = 1000, currentAgentCycle = [];
 
 window.objRefAssign = (target, ...sources) => {
     sources.forEach(source => {
@@ -704,6 +722,7 @@ let runAgentCycle = async (agentRunState = {}) => {
             }
         }
         agentRunState = objRefAssign(macroContent, agentRunState)
+        updateCycleRef(agentRunState.interactionId, agentRunState)
 
         if (!!agentRunState?.surpressMessagesToUser)
         {
@@ -732,6 +751,7 @@ let runAgentCycle = async (agentRunState = {}) => {
             cotProcessedUntil: 0,
             errors: []
         })
+        updateCycleRef(agentRunState.interactionId, agentRunState)
 
         if (!!agentRunState?.agentPrompt) {
             // Do nothing as it has an override
@@ -844,6 +864,7 @@ let runAgentCycle = async (agentRunState = {}) => {
             configOverrides,
             manualOverridesForEnabledCommands
         }, agentRunState)
+        updateCycleRef(agentRunState.interactionId, agentRunState)
         if (agentInitialiser !== undefined) {
             await agentInitialiser(agentRunState)
         }
@@ -863,7 +884,7 @@ let runAgentCycle = async (agentRunState = {}) => {
             addThought(currentChainOfThought, createAIPrompt, getActionSummaryText(completePlanObject, null, false))
         }
 
-        for (let i = !!agentRunState?.planToUse ? 1 : 0; i < Number(localsettings.agentCOTMax) + 1 && (currentOrderOfActionsOverall.length === 0 || i < currentOrderOfActionsOverall.length + 1) && endCurrent === false; i++) {
+        for (let i = !!agentRunState?.planToUse ? 1 : 0; i < Number(localsettings.agentCOTMax) + 1 && (currentOrderOfActionsOverall.length === 0 || i < currentOrderOfActionsOverall.length + 1) && agentRunState.endCurrent === false; i++) {
             Array(...document.getElementsByClassName("stopThinking")).forEach(elem => elem.classList.remove("hidden"))
 
             let nextAction = []
@@ -1192,10 +1213,17 @@ let runAgentCycle = async (agentRunState = {}) => {
 
 window.execAgentCycle = (argsObj) => {
     let interactionId = window.crypto.randomUUID()
-    let agentCycleArgs = objRefAssign({interactionId}, argsObj)
-    let cycle = { id: interactionId, status: runAgentCycle(agentCycleArgs) }
+    let agentCycleArgs = objRefAssign({interactionId, endCurrent: false}, argsObj)
+    let cycle = { id: interactionId, status: runAgentCycle(agentCycleArgs), args: agentCycleArgs }
     currentAgentCycle.push(cycle)
     return cycle.status
+}
+
+window.updateCycleRef = (interactionId, agentRunState) => {
+    let cycle = currentAgentCycle.find(c => c.id === interactionId)
+    if (cycle) {
+        cycle.agentRunState = agentRunState
+    }
 }
 
 // Overrides to lite / UI interactions
@@ -1209,10 +1237,8 @@ prepare_submit_generation = async () => {
         // Hack to ensure that images are always saved as new turns		
         localsettings.img_newturn = true
         if (currentAgentCycle.length > 0) {
-            endCurrent = true
-            await Promise.all(currentAgentCycle.map(c => c.status))
+            await stopAgentThinking()
         }
-        endCurrent = false
         execAgentCycle({
             initialPrompt: inputText,
             printToConsole: true
@@ -1247,20 +1273,29 @@ let toggleAgent = () => {
     render_gametext();
 }
 
-let stopAgentThinking = async () => {
-
-    endCurrent = true
+let stopAgentThinking = async (agentRunState = null) => {
+    if (agentRunState !== null) {
+        agentRunState.endCurrent = true
+    }
+    else if (currentAgentCycle.length > 0) {
+        currentAgentCycle.forEach(c => {
+            c.agentRunState.endCurrent = true
+        })
+    }
     trigger_abort_controller()
-    if (currentAgentCycle.length > 0) {
-        endCurrent = true
+    if (agentRunState !== null) {
+        await Promise.all(currentAgentCycle.filter(c => c.id === agentRunState.interactionId).map(c => c.status))
+        currentAgentCycle = currentAgentCycle.filter(c => c.id !== agentRunState.interactionId)
+    }
+    else if (currentAgentCycle.length > 0) {
         await Promise.all(currentAgentCycle.map(c => c.status))
+        currentAgentCycle = []
+        if (window?.intervalIdForBackgroundAgent !== undefined)
+        {
+            clearInterval(window.intervalIdForBackgroundAgent)
+        }
+        Array(...document.getElementsByClassName("stopThinking")).forEach(elem => elem.classList.add("hidden"))
     }
-    currentAgentCycle = []
-    if (window?.intervalIdForBackgroundAgent !== undefined)
-    {
-        clearInterval(window.intervalIdForBackgroundAgent)
-    }
-    Array(...document.getElementsByClassName("stopThinking")).forEach(elem => elem.classList.add("hidden"))
     submit_multiplayer(true)
 }
 
@@ -1284,7 +1319,7 @@ let createStopThinkingButton = () => {
             elem.style.right = "50px";
             elem.style.bottom = "0px";
         }
-        elem.onclick = stopAgentThinking
+        elem.onclick = () => stopAgentThinking();
     })
 }
 
@@ -1772,6 +1807,10 @@ let getTaskCompletionCheckGrammar = async () => {
         properties: {
             isTaskComplete: {
                 type: "boolean"
+            },
+            objectiveForContinuing: {
+                type: "string",
+                description: "If the task is not complete, provide a concise objective that the agent should aim to complete in the next cycle. This field can be left empty if the task is complete."
             }
         },
         required: ["isTaskComplete"]
@@ -1798,9 +1837,9 @@ let checkIfTaskComplete = async (agentRunState) => {
     try {
         let latestActions = getLastActions(20)
         let latestActionsText = latestActions.map(action => `${action.source}: ${action.msg}`).join("\n")
-        let objective = agentRunState?.initialPrompt || ""
+        let objective = agentRunState?.agentInputPrompt || agentRunState?.initialPrompt || ""
 
-        let completionPrompt = createSysPrompt("You are validating whether the current task objective has been completed. Return only a JSON object with the boolean field isTaskComplete.")
+        let completionPrompt = createSysPrompt("You are validating whether the current task objective has been completed. Return only a JSON object with the boolean field isTaskComplete. If the task is not complete, also provide a concise objective in the string field objectiveForContinuing that the agent should aim to complete in the next cycle. This field can be left empty if the task is complete.")
             + createInstructPrompt(`Task objective:\n${objective}\n\nRecent actions and outputs:\n${latestActionsText}\n\nDecide if the task is complete.`)
 
         let grammar = await getTaskCompletionCheckGrammar()
@@ -1808,7 +1847,7 @@ let checkIfTaskComplete = async (agentRunState) => {
         if (!!response) {
             let parsed = JSON.parse(response)
             if (typeof parsed?.isTaskComplete === "boolean") {
-                return parsed.isTaskComplete
+                return parsed;
             }
         }
     }
@@ -1819,11 +1858,11 @@ let checkIfTaskComplete = async (agentRunState) => {
 }
 
 let askUserToRetryIncompleteTask = async (agentRunState) => {
-    if (!!agentRunState?.skipTaskCompletionCheck || endCurrent) {
+    if (!!agentRunState?.skipTaskCompletionCheck || agentRunState.endCurrent) {
         return
     }
-    let isTaskComplete = await checkIfTaskComplete(agentRunState)
-    if (isTaskComplete !== false) {
+    let isTaskComplete = await checkIfTaskComplete(agentRunState), continuePrompt = isTaskComplete?.isTaskComplete === false && !!isTaskComplete?.objectiveForContinuing ? isTaskComplete.objectiveForContinuing : agentRunState?.agentPrompt
+    if (isTaskComplete?.isTaskComplete !== false) {
         return
     }
 
@@ -1852,7 +1891,7 @@ let askUserToRetryIncompleteTask = async (agentRunState) => {
             printToConsole: !!agentRunState?.printToConsole,
             agentName: agentRunState?.agentName,
             systemPrompt: agentRunState?.systemPrompt,
-            agentPrompt: agentRunState?.agentPrompt,
+            agentPrompt: continuePrompt,
             configOverrides: agentRunState?.configOverrides,
             isUsingWhitelist: agentRunState?.isUsingWhitelist,
             agentStopOnRequestForInput: agentRunState?.agentStopOnRequestForInput,

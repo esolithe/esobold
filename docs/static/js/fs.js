@@ -49,7 +49,7 @@ class FsClient {
     async _post(path, body_obj) {
         const resp = await fetch(this.base_url + path, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', 'charset': 'utf-8' },
             body: JSON.stringify(body_obj),
         });
         if (!resp.ok) {
@@ -95,7 +95,8 @@ class FsClient {
 
     async _read_text_file(path) {
         const resp = await this.fetch_raw(path);
-        return await resp.text();
+        const buffer = await resp.arrayBuffer();
+        return new TextDecoder('utf-8').decode(buffer);
     }
 
     _prepare_search_text(text) {
@@ -533,7 +534,8 @@ class FsClient {
     async write(path, content, isB64 = false) {
         let payload_content;
         if (typeof content === 'string') {
-            payload_content = content;
+            payload_content = content; // For text content, we can send as-is since the server will handle it as UTF-8 text. The server should be able to detect and decode UTF-8 content correctly without needing base64 encoding, and this avoids unnecessary bloat for purely textual files. If the server encounters decoding issues, we can revisit this decision.
+            isB64 = false;
         } else {
             // Binary: encode to base64 so it travels safely over JSON
             const bytes = content instanceof ArrayBuffer ? new Uint8Array(content) : content;

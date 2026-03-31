@@ -425,10 +425,6 @@ export const buildFilesystemCommands = (ctx) => {
 					type: "array",
 					items: { type: "string" }
 				},
-				"prompt_user_for_image": {
-					description: "<prompt user to click an image to use as input>",
-					type: "boolean"
-				},
 				"fs_output_path": "<filesystem output path for generated image>"
 			},
 			"enabled": (localsettings.generate_images_mode == 2) && is_using_kcpp_with_fs(),
@@ -454,14 +450,7 @@ export const buildFilesystemCommands = (ctx) => {
 							inputImages.push(await readFsPathAsBase64(currentPath))
 						}
 					}
-					if (!!args.prompt_user_for_image) {
-						let selectedImage = await requestUserSelectedImageForAgent(agentRunState, currentChainOfThought, `Please click an image as an additional source for filesystem image generation`)
-						if (!!selectedImage) {
-							inputImages.unshift(normalizeBase64ImageData(selectedImage))
-						}
-					}
-					let sourceImage = inputImages.length > 0 ? inputImages[0] : ""
-					let outputBase64 = await generateA1111ImageBase64(preparePromptForImageGen(prompt), args.aspect, sourceImage, inputImages.slice(1))
+					let outputBase64 = await generateA1111ImageBase64(preparePromptForImageGen(prompt), args.aspect, null, inputImages)
 					let writeResult = await writeBase64ToFs(outputPath, outputBase64)
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: generate_image result\n${objToText(writeResult)}`)
 				}
