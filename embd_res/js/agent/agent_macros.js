@@ -201,7 +201,8 @@ export const buildMacroCommands = (ctx) => {
 											properties: {
 												"action": {
 													description: "Command name to run.",
-													type: "string"
+													type: "string",
+													enum: getCommandNamesForMacroValidation(agentRunState)
 												},
 												"objective": {
 													description: "Why this action is needed in the macro.",

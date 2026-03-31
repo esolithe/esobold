@@ -1274,7 +1274,6 @@ let toggleAgent = () => {
 }
 
 let stopAgentThinking = async (agentRunState = null) => {
-    debugger
     if (agentRunState !== null) {
         agentRunState.endCurrent = true
     }

@@ -6333,6 +6333,8 @@ Change Mode<br>
                     detected_type = mimetypes.guess_type(fs_path)[0]
                     if detected_type:
                         content_type = detected_type
+                        if content_type.startswith("text/"):
+                            content_type += "; charset=utf-8"
                 except (FileNotFoundError, ValueError):
                     try:
                         # Validate this is a reachable directory path (raises if invalid)
