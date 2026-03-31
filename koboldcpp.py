@@ -6161,7 +6161,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                         await self.send_oai_responses_sse_event("response.completed",completed_event)
                             elif api_format == 9: # Anthropic Streaming Format
                                 if anthropic_first_loop:
-                                    start_msg = json.dumps({"type":"message","id":f"msg_A{req_id_suffix}","role":"assistant","model":friendlymodelname,"usage":{"input_tokens":prompttokens,"output_tokens":0}})
+                                    start_msg = json.dumps({"type":"message","id":f"msg_A{req_id_suffix}","role":"assistant","model":modelNameToReturn,"usage":{"input_tokens":prompttokens,"output_tokens":0}})
                                     await self.send_anthropic_sse_event("message_start", json.dumps({"type": "message_start", "message": json.loads(start_msg)}))
                                     await self.send_anthropic_sse_event("content_block_start", json.dumps({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}))
                                     anthropic_first_loop = False
