@@ -262,6 +262,10 @@ select{
     <div style="display:flex; gap:6px;">
       <input id="baseUrl" placeholder="http://localhost:5001">
     </div>
+    <label>API Key (optional)</label>
+    <div style="display:flex; gap:6px;">
+      <input type="password" id="baseUrlKey" placeholder="(Input Key)">
+    </div>
   </div>
 
   <div class="actions" id="actionContainer">
@@ -306,6 +310,10 @@ select{
   <div style="margin-top:14px">
     <label>API Base URL (optional)</label>
     <input id="tts_baseUrl" placeholder="http://localhost:5001">
+    <label>API Key (optional)</label>
+    <div style="display:flex; gap:6px;">
+      <input type="password" id="tts_baseUrlKey" placeholder="(Input Key)">
+    </div>
   </div>
 
   <div id="ttsActions" class="actions">
@@ -365,7 +373,16 @@ async function fetchVoices(){
     const base = document.getElementById("tts_baseUrl").value.trim();
     const url = (base ? base.replace(/\/$/,"") : "") + "/speakers_list";
 
-    const res = await fetch(url);
+    let headers =  {"Content-Type": "application/json"};
+    if(document.getElementById("tts_baseUrlKey").value!="")
+    {
+      headers["Authorization"] = `Bearer ${document.getElementById("tts_baseUrlKey").value}`;
+    }
+
+    const res = await fetch(url,{
+      method: "GET",
+      headers: headers
+    });
     if(!res.ok) throw new Error();
 
     const voices = await res.json();
@@ -405,9 +422,15 @@ async function generateTTS(){
     const instruction = document.getElementById("tts_instruction").value;
     if(instruction) payload.instruction = instruction;
 
+    let headers =  {"Content-Type": "application/json"};
+    if(document.getElementById("tts_baseUrlKey").value!="")
+    {
+      headers["Authorization"] = `Bearer ${document.getElementById("tts_baseUrlKey").value}`;
+    }
+
     const res = await fetch(url,{
       method:"POST",
-      headers:{"Content-Type":"application/json"},
+      headers:headers,
       body:JSON.stringify(payload),
       signal:currentController.signal
     });
@@ -564,9 +587,15 @@ async function planSongNative(){
       randomizeSeed();
     }
 
+    let headers =  {"Content-Type":"application/json"};
+    if(document.getElementById("baseUrlKey").value!="")
+    {
+      headers["Authorization"] = `Bearer ${document.getElementById("baseUrlKey").value}`;
+    }
+
     const res=await fetch(buildUrl("/api/extra/music/prepare"),{
       method:"POST",
-      headers:{"Content-Type":"application/json"},
+      headers:headers,
       body:JSON.stringify(getFormData()),
       signal:currentController.signal
     });
@@ -602,11 +631,17 @@ async function planSongWithLLM(){
 
     let origPayload = getFormData();
     let origCaption = (origPayload["caption"] ? origPayload["caption"] : "an interesting song");
-    let payload = {"temperature":1.0, "messages":[{"role":"system","content":"Please use the music generation tool to generate the caption and full song lyrics based on the request information provided by the user, with outputs wrapped in a JSON format."},{"role":"user","content":origCaption}],"tool_choice":{"type":"function","function":{"name":"generate_music"}},"tools":[{"type":"function","function":{"name":"generate_music","description":"Generates a new song based on provided request. All output fields are mandatory.","parameters":{"type":"object","properties":{"caption":{"type":"string","description":"Acoustically relevant and detailed description of the song such as the genre and iconic elements."},"lyrics":{"type":"string","description":"The complete full song lyrics, suitably long for its genre. Each line should be on a newline, with double newlines between verses, and stanza headings in square brackets e.g. [Verse 1]"},"bpm":{"type":"integer","description":"The appropriate BPM (beats per minute) of the generated song. Valid range 30 to 200"},"duration":{"type":"integer","description":"Total projected song duration in seconds. Valid range 30 to 300"},"keyscale":{"type":"string","description":"Keyscale to use for the song. A/B/C/D/E/F/G Major/Minor/Dorian/Pentatonic etc."},"timesignature":{"type":"integer","description":"Time signature to use for the song, as a single integer. Valid values 2,3,4,6"},"vocal_language":{"type":"string","description":"Language code for this song lyrics, e.g. en"}},"required":["caption","lyrics","bpm","duration","keyscale","timesignature","vocal_language"]}}}]};
+    let payload = {"temperature":1.0, "rep_pen":1.04, "top_p":0.97, "messages":[{"role":"system","content":"Please use the music generation tool to generate the caption and full song lyrics based on the request information provided by the user, with outputs wrapped in a JSON format. Ensure BPM, duration and keyscale values are appropriate to the song length and genre, generation may fail if parameters are unrealistic."},{"role":"user","content":origCaption}],"tool_choice":{"type":"function","function":{"name":"generate_music"}},"tools":[{"type":"function","function":{"name":"generate_music","description":"Generates a new song based on provided request. All output fields are mandatory.","parameters":{"type":"object","properties":{"caption":{"type":"string","description":"Acoustically relevant and detailed description of the song such as the genre and iconic elements."},"lyrics":{"type":"string","description":"The complete full song lyrics, suitably long for its genre. Each line should be on a newline, with double newlines between verses, and stanza headings in square brackets e.g. [Verse 1]"},"bpm":{"type":"integer","description":"The appropriate BPM (beats per minute) for the genre of the song."},"duration":{"type":"integer","description":"Total song duration in seconds, based on BPM and amount of lyrics."},"keyscale":{"type":"string","description":"Keyscale to use for the song. A/B/C/D/E/F/G Major/Minor/Dorian/Pentatonic etc."},"timesignature":{"type":"integer","description":"Time signature to use for the song, as a single integer. Valid values 2,3,4,6"},"vocal_language":{"type":"string","description":"Language code for this song lyrics, e.g. en"}},"required":["caption","lyrics","bpm","duration","keyscale","timesignature","vocal_language"]}}}]};
+
+    let headers =  {"Content-Type":"application/json"};
+    if(document.getElementById("baseUrlKey").value!="")
+    {
+      headers["Authorization"] = `Bearer ${document.getElementById("baseUrlKey").value}`;
+    }
 
     const res=await fetch(buildUrl("/v1/chat/completions"),{
       method:"POST",
-      headers:{"Content-Type":"application/json"},
+      headers:headers,
       body:JSON.stringify(payload),
       signal:currentController.signal
     });
@@ -663,9 +698,15 @@ async function generateSong(){
       payload.music_reference_audio_data=await fileToBase64(refFile.files[0]);
     }
 
+    let headers =  {"Content-Type":"application/json"};
+    if(document.getElementById("baseUrlKey").value!="")
+    {
+      headers["Authorization"] = `Bearer ${document.getElementById("baseUrlKey").value}`;
+    }
+
     const res=await fetch(buildUrl("/api/extra/music/generate"),{
       method:"POST",
-      headers:{"Content-Type":"application/json"},
+      headers:headers,
       body:JSON.stringify(payload),
       signal:currentController.signal
     });
@@ -784,6 +825,20 @@ function clearFields()
     document.getElementById("caption").value = "";
     document.getElementById("lyrics").value = "";
     document.getElementById("audio_codes").value = "";
+
+    const container = document.getElementById('advanced');
+    const inputs = container.querySelectorAll('input');
+
+    inputs.forEach(input => {
+      if (input.type === 'checkbox') {
+        // For checkboxes, do nothing
+        //input.checked = input.defaultChecked;
+      } else {
+        // For text/number inputs, restore the original 'value'
+        input.value = input.defaultValue;
+      }
+    });
+
     clearReferenceAudio();
 }
 function exportPlan(){

@@ -1260,8 +1260,8 @@ def get_capabilities():
     has_tts = (ttsmodelpath!="") or (autoswapmode and ttsName is not None)
     has_embeddings = (embeddingsmodelpath!="") or (autoswapmode and embedName is not None)
     has_music = (musicdiffusionmodelpath!="" or musicllmmodelpath!="") or (autoswapmode and musicName is not None)
-    visionSupport = (has_vision_support) or (autoswapmode and mmprojName is not None)
-    audioSupport = (has_audio_support) # or (autoswapmode and mmprojName is not None)
+    visionSupport = (has_vision_support) or (autoswapmode and mmprojName is not None) #todo: not always correct
+    audioSupport = (has_audio_support) #todo: not always correct
     if autoswapmode and embedName is not None:
         embeddingModel = embedName
     else:
@@ -3556,6 +3556,22 @@ def format_jinja(messages, tools, chat_template_kwargs=None):
         for m in messages:
             if m.get("content") is None:
                 del m["content"]
+        for m in messages: # Fix tool_calls arguments and content if parsable
+            if m.get("tool_calls"):
+                for tc in m["tool_calls"]:
+                    func = tc.get("function", {})
+                    args = func.get("arguments")
+                    if isinstance(args, str):
+                        try:
+                            func["arguments"] = json.loads(args)
+                        except Exception:
+                            pass
+            # Fix tool content
+            if m.get("role") == "tool" and isinstance(m.get("content"), str):
+                try:
+                    m["content"] = json.loads(m["content"])
+                except Exception:
+                    pass
         jinja_env.globals['strftime_now'] = strftime_now
         jinja_env.globals['raise_exception'] = raise_exception
         jinja_env.filters["tojson"] = tojson
@@ -3860,7 +3876,9 @@ def determine_tool_json_to_use(genparams, curr_ctx, assistant_message_start, is_
 def compress_tools_array(tools_array):
     tools_array_filtered = []
     for tool_dict in tools_array:
-        tool_data = tool_dict['function']
+        tool_data = tool_dict
+        if 'function' in tool_dict:
+            tool_data = tool_dict['function']
         tool_props = {}
         params = tool_data.get("parameters", {})
         props = params.get("properties", {})
@@ -3948,7 +3966,7 @@ ws ::= | " " | "\n" [ \t]{0,20}
 """
 
     used_tool_json = None
-    #api format 1=basic,2=kai,3=oai,4=oai-chat,5=interrogate,6=ollama,7=ollamachat
+    #api format 1=basic,2=kai,3=oai,4=oai-chat,5=interrogate,6=ollama,7=ollamachat,8=oai-responses,9=anthropic-messages
     #alias all nonstandard alternative names for rep pen.
     rp1 = float(genparams.get('repeat_penalty', 1.0))
     rp2 = float(genparams.get('repetition_penalty', 1.0))
@@ -4073,7 +4091,7 @@ ws ::= | " " | "\n" [ \t]{0,20}
             if jinja_output:
                 messages_string = jinja_output
                 if jinja_output.rstrip().endswith("<think>"): #the prompt template already forced a start think.
-                    genparams["jinja_already_started_thinking"] = True
+                    genparams["already_started_thinking"] = True
                 if jinjatools and len(jinjatools)>0:
                     genparams["using_openai_tools"] = True
                 # handle media
@@ -4190,6 +4208,8 @@ ws ::= | " " | "\n" [ \t]{0,20}
                 if (latest_turn_was_assistant and continue_assistant_turn): #allow continue a prefill, chop off end
                     messages_string = messages_string[:-(len(assistant_message_gen)+len(assistant_message_end))]
             genparams["prompt"] = messages_string
+            if messages_string.rstrip().endswith("<think>"): #the prompt template already forced a start think.
+                genparams["already_started_thinking"] = True
             if len(images_added)>0:
                 genparams["images"] = images_added
             if len(audio_added)>0:
@@ -4255,14 +4275,42 @@ ws ::= | " " | "\n" [ \t]{0,20}
         raw_instructions = genparams.get('instructions', '')
         if isinstance(raw_input, str):
             genparams['messages'] = [{"role": "user", "content": raw_input}]
-        elif isinstance(raw_input, list):
-            genparams['messages'] = raw_input
+        elif isinstance(raw_input, list): # Convert Responses API input items to chat messages format
+            converted = []
+            for item in raw_input:
+                if isinstance(item, dict):
+                    role = item.get("role", "user")
+                    content = item.get("content", "")
+                    # content can itself be a list of typed parts
+                    if isinstance(content, list):
+                        parts = []
+                        for part in content:
+                            if part.get("type") == "input_text":
+                                parts.append({"type": "text", "text": part.get("text", "")})
+                            elif part.get("type") == "input_image":
+                                img = part.get("image_url", part.get("source", {}))
+                                parts.append({"type": "image_url", "image_url": {"url": img}})
+                        content = parts
+                    converted.append({"role": role, "content": content})
+                elif isinstance(item, str):
+                    converted.append({"role": "user", "content": item})
+            genparams['messages'] = converted
         else:
             genparams['messages'] = []
-        if raw_instructions and isinstance(raw_instructions, str) and raw_instructions!="":
+        if raw_instructions and isinstance(raw_instructions, str):
             genparams['messages'].insert(0, {"role": "system", "content": raw_instructions})
-        genparams['stream'] = False
         transform_genparams(genparams, 4, use_jinja) # Delegate to the chat-completions transform by re-running as format 4
+        return genparams
+    elif api_format==9: # Anthropic Messages API
+        genparams["max_length"] = genparams.get("max_tokens", args.defaultgenamt)
+        sys_prompt = genparams.get("system", "")
+        messages = genparams.get("messages", [])
+        if sys_prompt:
+            if isinstance(sys_prompt, list): # Handle array-style system prompts
+                sys_prompt = "".join([s.get("text","") for s in sys_prompt if s.get("type") == "text"])
+            messages.insert(0, {"role": "system", "content": sys_prompt})
+        genparams["messages"] = messages
+        transform_genparams(genparams, 4, use_jinja) # Delegate to oai chat completions
         return genparams
 
     #final transformations (universal template replace)
@@ -5297,7 +5345,7 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                             self.send_error(504, "KoboldCpp model swap reload timed out")
                             return
                         time.sleep(0.1)
-        elif autoswapEnabled:                            
+        elif autoswapEnabled:
             textReqs = ["/api/extra/generate/stream","/api/extra/tokencount","/api/v1/generate","/sdapi/v1/interrogate","/v1/completions","/v1/chat/completions"]
             sttReqs = ["/api/extra/transcribe","/v1/audio/transcriptions"]
             ttsReqs = ["/api/extra/tts", "/v1/audio/speech"]
@@ -5339,7 +5387,6 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                     resp = conn.getresponse()
                     time.sleep(3)
                     global_memory["last_active_timestamp"] = datetime.now()
-                    global_memory["triggered_sleeping"] = False
                     if not self.wait_for_upstream_ready(upstream_port,120,0.5):
                         self.send_error(504, "KoboldCpp model swap reload timed out")
                         return
@@ -5777,6 +5824,41 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             print(f"File Upload Process Error: {e}")
             return result
 
+    def prepare_basic_responses_body(self,resp_id,genparams):
+        global friendlymodelname
+        ret = {
+            "id": resp_id,
+            "object": "response",
+            "created_at": int(time.time()),
+            "completed_at": None,
+            "incomplete_details": None,
+            "previous_response_id": None,
+            "truncation": "disabled",
+            "parallel_tool_calls": False,
+            "text": {"format": {"type": "text"},"verbosity": "medium"},
+            "instructions": genparams.get('instructions', None),
+            "model": friendlymodelname,
+            "error": None,
+            "metadata": {},
+            "tools": genparams.get('tools', []),
+            "tool_choice": "auto",
+            "background": False,
+            "service_tier": "default",
+            "safety_identifier": None,
+            "prompt_cache_key": None,
+            "max_tool_calls": None,
+            "store": False,
+            "top_p": genparams.get("top_p", 0.92),
+            "max_output_tokens":genparams.get("max_length", None),
+            "presence_penalty": genparams.get("presence_penalty", 0),
+            "frequency_penalty": genparams.get("frequency_penalty", 0),
+            "top_logprobs": 0,
+            "temperature": genparams.get("temperature", 1),
+            "reasoning": {"effort": None, "summary": None},
+            "usage": None
+        }
+        return ret
+
     async def generate_text(self, genparams, api_format, stream_flag):
         global friendlymodelname, chatcompl_adapter, currfinishreason
         global autoswapmode, textName, sttName, ttsName, embedName, musicName, imageName, mmprojName
@@ -5824,7 +5906,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         #tool calls resolution
         tool_calls = []
-        if api_format == 4 or api_format == 2:
+        if api_format == 4 or api_format == 2 or api_format == 8:
             using_openai_tools = genparams.get('using_openai_tools', False)
             if using_openai_tools:
                 # first, check and potentially segment multiple tags for multi-tool calls
@@ -5873,7 +5955,36 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             res = {"model": modelNameToReturn,"created_at": str(datetime.now(timezone.utc).isoformat()),"message":{"role":"assistant","content":recvtxt},"done": True,"done_reason":currfinishreason,"total_duration": 1,"load_duration": 1,"prompt_eval_count": prompttokens,"prompt_eval_duration": 1,"eval_count": comptokens,"eval_duration": 1}
         elif api_format == 8:
             resp_id = f"resp-A{genparams.get('oai_uniqueid', 1)}"
-            res = {"id": resp_id, "object": "response", "created_at": int(time.time()), "model": modelNameToReturn, "output": [ { "type": "message", "role": "assistant", "content": [ {"type": "output_text", "text": recvtxt} ] } ], "usage": { "input_tokens": prompttokens, "output_tokens": comptokens, "total_tokens": prompttokens + comptokens } }
+            output_item_id = f"msg_0{genparams.get('oai_uniqueid', 1)}"
+            output_items = []
+            if recvtxt is not None:    # Add text message if there's content
+                output_items.append({
+                    "type": "message",
+                    "id": output_item_id,
+                    "status": "completed",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": recvtxt, "annotations": [], "logprobs": []}]
+                })
+            if tool_calls and len(tool_calls) > 0:  # Add function call items if tool calls exist
+                for tc in tool_calls:
+                    output_items.append({"type": "function_call", "id": tc.get("id", ""), "call_id": tc.get("id", ""), "name": tc.get("function", {}).get("name", ""), "arguments": tc.get("function", {}).get("arguments", "{}"), "status": "completed"})
+            res = self.prepare_basic_responses_body(resp_id,genparams)
+            res["completed_at"] = int(time.time())
+            res["status"] = "completed" if currfinishreason != "error" else "failed"
+            res["output"] = output_items
+            res["usage"] = {"input_tokens": prompttokens, "output_tokens": comptokens, "total_tokens": prompttokens + comptokens, "input_tokens_details": {"cached_tokens": 0}, "output_tokens_details": {"reasoning_tokens": 0}}
+        elif api_format == 9: # Anthropic Format
+            anthropic_reason = "end_turn" if currfinishreason == "stop" else ("max_tokens" if currfinishreason == "length" else "stop_sequence")
+            res = {
+                "id": f"msg_A{req_id_suffix}",
+                "type": "message",
+                "role": "assistant",
+                "model": modelNameToReturn,
+                "content": [{"type": "text", "text": recvtxt}],
+                "stop_reason": anthropic_reason,
+                "stop_sequence": None,
+                "usage": {"input_tokens": prompttokens, "output_tokens": comptokens}
+            }
         else: #kcpp format
             res = {"results": [{"text": recvtxt, "tool_calls": tool_calls, "finish_reason": currfinishreason, "logprobs":logprobsdict, "prompt_tokens": prompttokens, "completion_tokens": comptokens}]}
 
@@ -5889,6 +6000,14 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(f'data: {data}\n\n'.encode())
         self.wfile.flush()
 
+    async def send_oai_responses_sse_event(self, eventname, data):
+        self.wfile.write(f'event: {eventname}\ndata: {data}\n\n'.encode())
+        self.wfile.flush()
+
+    async def send_anthropic_sse_event(self, eventname, data):
+        self.wfile.write(f'event: {eventname}\ndata: {data}\n\n'.encode())
+        self.wfile.flush()
+
     async def send_kai_sse_event(self, data):
         self.wfile.write('event: message\n'.encode())
         self.wfile.write(f'data: {data}\n\n'.encode())
@@ -5901,7 +6020,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         modelNameToReturn = friendlymodelname
         if autoswapmode and textName is not None:
             modelNameToReturn = textName
-        
+
         using_openai_tools = genparams.get('using_openai_tools', False)
         req_id_suffix = genparams.get('oai_uniqueid',1)
         chatcmpl_id = f"chatcmpl-A{req_id_suffix}"
@@ -5915,11 +6034,14 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             return
 
         encap_in_thinking = False
-        if genparams.get('jinja_already_started_thinking', False):
+        if genparams.get('already_started_thinking', False):
             encap_in_thinking = True
         encap_first_loop = True
         thinkpairs = [{"start":"<|channel|>analysis<|message|>","end":"<|start|>assistant<|channel|>final<|message|>"},
                       {"start":"<think>","end":"</think>"}]
+        responses_first_loop = True
+        anthropic_first_loop = True
+        rseq_num = 0
         current_token = 0
         prompttokens = 0
         incomplete_token_buffer = bytearray()
@@ -5973,32 +6095,60 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                         if tokenStr!="" or streamDone:
                             need_split_final_msg = True if (currfinishreason is not None and streamDone and tokenStr!="") else False
 
-                            # hack for lcppui reasoning_content for thinking models
-                            delta = {'role':'assistant','content':tokenStr}
+                            # Hack for lcppui reasoning_content for thinking models
+                            delta = {'role': 'assistant'}
                             if genparams.get('encapsulate_thinking', True):
-                                for pair in thinkpairs:
-                                    if encap_first_loop and not encap_in_thinking and genparams.get("prompt","").endswith(pair["start"]):
-                                        encap_in_thinking = True
-                                        delta = {'role':'assistant','reasoning_content':tokenStr}
-                                        thinkpairs = [pair] #remove all others
-                                        break
-                                    elif not encap_in_thinking and (pair["start"] in tokenStr):
-                                        encap_in_thinking = True
-                                        out1, out2 = tokenStr.split(pair["start"], 1)
-                                        delta = {'role':'assistant','reasoning_content':out2}
-                                        thinkpairs = [pair] #remove all others
-                                        break
-                                    elif encap_in_thinking and pair["end"] in tokenStr:
+                                if encap_in_thinking:
+                                    # We are already inside a thinking block. thinkpairs has already been reduced to [pair], so we just check the active one.
+                                    active_pair = thinkpairs[0]
+                                    if active_pair["end"] in tokenStr:
                                         encap_in_thinking = False
-                                        out1, out2 = tokenStr.split(pair["end"], 1)
-                                        delta = {'role':'assistant','reasoning_content':out1,'content':out2}
-                                        thinkpairs = [pair] #remove all others
-                                        break
-                                    elif encap_in_thinking:
-                                        delta = {'role':'assistant','reasoning_content':tokenStr}
+                                        out1, out2 = tokenStr.split(active_pair["end"], 1)
+                                        if out1:
+                                            delta['reasoning_content'] = out1
+                                        if out2:
+                                            delta['content'] = out2
                                     else:
-                                        delta = {'role':'assistant','content':tokenStr}
+                                        # Still thinking
+                                        delta['reasoning_content'] = tokenStr
+                                else:
+                                    # Not thinking. Let's see if a start tag appears in this chunk.
+                                    matched_start = False
+                                    for pair in thinkpairs:
+                                        # Condition A: The prompt ended exactly with the start tag
+                                        if encap_first_loop and genparams.get("prompt", "").endswith(pair["start"]):
+                                            encap_in_thinking = True
+                                            thinkpairs = [pair] # lock in this pair
+                                            delta['reasoning_content'] = tokenStr
+                                            matched_start = True
+                                            break
+                                        # Condition B: The start tag is inside this chunk
+                                        elif pair["start"] in tokenStr:
+                                            encap_in_thinking = True
+                                            thinkpairs = [pair] # lock in this pair
+                                            out1, out2 = tokenStr.split(pair["start"], 1)
+                                            # Preserve text that came BEFORE the start tag
+                                            if out1:
+                                                delta['content'] = out1
+                                            if out2:
+                                                delta['reasoning_content'] = out2
+                                            # Edge Case: The end tag is ALSO in this exact same chunk (in out2)
+                                            if pair["end"] in out2:
+                                                encap_in_thinking = False
+                                                out2_think, out2_content = out2.split(pair["end"], 1)
+                                                # Overwrite reasoning with the exact thinking part
+                                                delta['reasoning_content'] = out2_think
+                                                # Append anything after the end tag to the content part
+                                                if out2_content:
+                                                    delta['content'] = delta.get('content', '') + out2_content
+                                            matched_start = True
+                                            break
+                                    # Condition C: No start tag found, just normal text
+                                    if not matched_start:
+                                        delta['content'] = tokenStr
                                 encap_first_loop = False
+                            else:
+                                delta['content'] = tokenStr
 
                             if need_split_final_msg: #we need to send one message without the finish reason, then send a finish reason with no msg to follow standards
                                 if api_format == 4:  # if oai chat, set format to expected openai streaming response
@@ -6029,6 +6179,66 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                     await self.send_oai_sse_event(addonstr)
                                 event_str = json.dumps({"id":cmpl_id,"object":"text_completion","created":int(time.time()),"model":modelNameToReturn,"choices":[{"index":0,"finish_reason":currfinishreason,"text":tokenStr}]})
                                 await self.send_oai_sse_event(event_str)
+                            elif api_format == 8: #oai-responses
+                                resp_id = f"resp-A{genparams.get('oai_uniqueid', 1)}"
+                                item_id = f"msg_0{genparams.get('oai_uniqueid', 1)}"
+                                # Send response.created once at the start (only on first iteration)
+                                if responses_first_loop:
+                                    res = self.prepare_basic_responses_body(resp_id, genparams)
+                                    res["status"] = "in_progress"
+                                    res["output"] = []
+                                    created_event = json.dumps({"type": "response.created", "response": res, "sequence_number":rseq_num})
+                                    rseq_num += 1
+                                    await self.send_oai_responses_sse_event("response.created",created_event)
+                                    # response.output_item.added
+                                    item_added = json.dumps({"type": "response.output_item.added", "output_index": 0, "sequence_number":rseq_num, "item": { "type": "message", "id": item_id, "status": "in_progress", "role": "assistant", "content": []}})
+                                    rseq_num += 1
+                                    await self.send_oai_responses_sse_event("response.output_item.added",item_added)
+                                    # content_part.added
+                                    part_added = json.dumps({"type": "response.content_part.added", "item_id": item_id, "output_index": 0, "sequence_number":rseq_num, "content_index": 0, "part": {"type": "output_text", "text": "", "annotations": []}})
+                                    rseq_num += 1
+                                    await self.send_oai_responses_sse_event("response.content_part.added",part_added)
+                                    responses_first_loop = False
+                                if tokenStr != "" or streamDone:
+                                    if tokenStr != "":
+                                        delta_event = json.dumps({"type": "response.output_text.delta", "item_id": item_id, "output_index": 0, "sequence_number":rseq_num, "logprobs":[], "content_index": 0, "delta": tokenStr})
+                                        rseq_num += 1
+                                        await self.send_oai_responses_sse_event("response.output_text.delta",delta_event)
+                                    if streamDone:
+                                        # content_part.done, reply full text
+                                        await asyncio.sleep(async_sleep_short)
+                                        finaltxt = handle.get_pending_output().decode("UTF-8", "ignore")
+                                        await asyncio.sleep(async_sleep_short)
+                                        done_event = json.dumps({"type": "response.output_text.done", "item_id": item_id, "output_index": 0, "sequence_number":rseq_num, "content_index": 0, "text": finaltxt})
+                                        rseq_num += 1
+                                        await self.send_oai_responses_sse_event("response.output_text.done",done_event)
+                                        # response.output_item.done
+                                        item_done = json.dumps({"type": "response.output_item.done", "output_index": 0, "sequence_number":rseq_num, "item": { "type": "message", "id": item_id, "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": finaltxt, "annotations": [], "logprobs": []}]}})
+                                        rseq_num += 1
+                                        await self.send_oai_responses_sse_event("response.output_item.done",item_done)
+                                        usage_pp = handle.get_last_input_count()
+                                        usage_gen = current_token
+                                        res = self.prepare_basic_responses_body(resp_id,genparams)
+                                        res["completed_at"] = int(time.time())
+                                        res["status"] = "completed" if currfinishreason != "error" else "failed"
+                                        res["output"] = [{"type": "message", "id": item_id, "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": finaltxt, "annotations": [], "logprobs": []}]}]
+                                        res["usage"] = {"input_tokens": usage_pp,"input_tokens_details":{"cached_tokens":0}, "output_tokens": usage_gen, "output_tokens_details":{"reasoning_tokens":0}, "total_tokens": usage_pp + usage_gen}
+                                        completed_event = json.dumps({"type": "response.completed", "response": res, "sequence_number":rseq_num})
+                                        rseq_num += 1
+                                        await self.send_oai_responses_sse_event("response.completed",completed_event)
+                            elif api_format == 9: # Anthropic Streaming Format
+                                if anthropic_first_loop:
+                                    start_msg = json.dumps({"type":"message","id":f"msg_A{req_id_suffix}","role":"assistant","model":modelNameToReturn,"usage":{"input_tokens":prompttokens,"output_tokens":0}})
+                                    await self.send_anthropic_sse_event("message_start", json.dumps({"type": "message_start", "message": json.loads(start_msg)}))
+                                    await self.send_anthropic_sse_event("content_block_start", json.dumps({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}))
+                                    anthropic_first_loop = False
+                                if tokenStr != "":
+                                    await self.send_anthropic_sse_event("content_block_delta", json.dumps({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":tokenStr}}))
+                                if streamDone:
+                                    anthropic_reason = "end_turn" if currfinishreason == "stop" else ("max_tokens" if currfinishreason == "length" else "stop_sequence")
+                                    await self.send_anthropic_sse_event("content_block_stop", json.dumps({"type":"content_block_stop","index":0}))
+                                    await self.send_anthropic_sse_event("message_delta", json.dumps({"type":"message_delta","delta":{"stop_reason":anthropic_reason,"stop_sequence":None},"usage":{"output_tokens":current_token}}))
+                                    await self.send_anthropic_sse_event("message_stop", json.dumps({"type":"message_stop"}))
                             else:
                                 event_str = json.dumps({"token": tokenStr, "finish_reason":currfinishreason})
                                 await self.send_kai_sse_event(event_str)
@@ -6296,7 +6506,7 @@ Change Mode<br>
         global last_req_time, start_time, cached_chat_template, has_vision_support, has_audio_support, has_whisper, friendlymodelname
         global savedata_obj, has_multiplayer, multiplayer_turn_major, multiplayer_turn_minor, multiplayer_story_data_compressed, multiplayer_dataformat, multiplayer_lastactive, maxctx, maxhordelen, friendlymodelname, lastuploadedcomfyimg, lastgeneratedcomfyimg, KcppVersion, totalgens, preloaded_story, exitcounter, currentusergenkey, friendlysdmodelname, fullsdmodelpath, password, friendlyembeddingsmodelname, voicelist
         global autoswapmode, textName, sttName, ttsName, embedName, musicName, imageName, mmprojName
-        
+
         clean_path = self.path.split("?")[0] #for cases where we do not want query params
         if clean_path=="/lcpp": #fix for svelte redirect issues, browser path needs to end with slash
             clean_path = "/lcpp/"
@@ -7901,7 +8111,7 @@ Change Mode<br>
         # handle endpoints that require mutex locking and handle actual gens
         try:
             sse_stream_flag = False
-            api_format = 0 #1=basic,2=kai,3=oai,4=oai-chat,5=interrogate,6=ollama,7=ollamachat,8=oai-responses
+            api_format = 0 #1=basic,2=kai,3=oai,4=oai-chat,5=interrogate,6=ollama,7=ollamachat,8=oai-responses,9=anthropic-messages
             is_imggen = False
             is_comfyui_imggen = False
             is_oai_imggen = False
@@ -8000,6 +8210,8 @@ Change Mode<br>
                 api_format = 7
             elif self.path.endswith('/v1/responses') or self.path=='/responses': #oai-responses
                 api_format = 8
+            elif self.path.endswith('/v1/messages') or self.path=='/messages': #anthropic
+                api_format = 9
             elif self.path.endswith('/sdapi/v1/extra-single-image') or self.path.endswith('/sdapi/v1/upscale'):
                 is_img_upscale = True
             elif self.path=="/prompt" or self.path=="/images/generations" or self.path.endswith('/v1/images/generations') or self.path.endswith('/sdapi/v1/txt2img') or self.path.endswith('/sdapi/v1/img2img'):
@@ -8107,7 +8319,7 @@ Change Mode<br>
 
                 if api_format > 0: #text gen
                     # Check if streaming chat completions, if so, set stream mode to true
-                    if (api_format == 4 or api_format == 3) and "stream" in genparams and genparams["stream"]:
+                    if (api_format == 4 or api_format == 3 or api_format == 8 or api_format == 9) and "stream" in genparams and genparams["stream"]:
                         sse_stream_flag = True
 
                     gendat = asyncio.run(self.handle_request(genparams, api_format, sse_stream_flag))
@@ -8901,7 +9113,7 @@ def show_gui():
     # slider data
     batchsize_values = ["-1","16","32","64","128","256","512","1024","2048","4096"]
     batchsize_text = ["Don't Batch","16","32","64","128","256","512","1024","2048","4096"]
-    contextsize_text = ["256", "512", "1024", "2048", "3072", "4096", "6144", "8192", "10240", "12288", "14336", "16384", "20480", "24576", "28672", "32768", "40960", "49152", "57344", "65536", "81920", "98304", "114688", "131072"]
+    contextsize_text = ["256", "512", "1024", "2048", "3072", "4096", "6144", "8192", "10240", "12288", "14336", "16384", "20480", "24576", "28672", "32768", "40960", "49152", "57344", "65536", "81920", "98304", "114688", "131072","163840","196608","229376","262144"]
     quantkv_text = ["F16 (Off)","8-Bit","4-Bit","BF16"]
 
     if not any(runopts):
@@ -9714,7 +9926,7 @@ def show_gui():
         changed_gpulayers_estimate()
     makecheckbox(context_tab, "Use Jinja", jinja_var, row=45, command=togglejinja, tooltiptxt="Enables using jinja chat template formatting for chat completions endpoint. Other endpoints are unaffected.")
     jinjatoolsbox = makecheckbox(context_tab, "Jinja for Tools", jinja_tools_var, row=45 ,padx=(140), tooltiptxt="Allows jinja even with tool calls. If unchecked, jinja will be disabled when tools are used.")
-    jinjakwargsbox,jinjakwargsboxlbl = makelabelentry(context_tab, "J.Kwargs:", jinja_kwargs_var, row=45, width=80, padx=(350), singleline=True, tooltip='Set additiona fields for Jinja JSON template parser, must be a valid json object.\nSpecified as JSON fields: {"KEY1":"VALUE1", "KEY2":"VALUE2"...}', labelpadx=290)
+    jinjakwargsbox,jinjakwargsboxlbl = makelabelentry(context_tab, "Jj.Kwargs:", jinja_kwargs_var, row=45, width=80, padx=(350), singleline=True, tooltip='Set additiona fields for Jinja JSON template parser, must be a valid json object.\nSpecified as JSON fields: {"KEY1":"VALUE1", "KEY2":"VALUE2"...}', labelpadx=285)
     jinja_var.trace_add("write", togglejinja)
     makelabelentry(context_tab, "MoE Experts:", moeexperts_var, row=55, padx=(120), singleline=True, tooltip="Override number of MoE experts.")
     moecpu_box,moecpu_box_lbl = makelabelentry(context_tab, "MoE CPU Layers:", moecpu_var, row=55, padx=(320), singleline=True, tooltip="Force Mixture of Experts (MoE) weights of the first N layers to the CPU.\nSetting it higher than GPU layers has no effect.", labelpadx=(210))
@@ -9879,12 +10091,14 @@ def show_gui():
             router_mode_box.grid()
         else:
             router_mode_box.grid_remove()
+        togglerouter(1,1,1)
+
     def togglerouter(a,b,c):
-        if router_mode_var.get()==1:
+        if router_mode_var.get()==1 and admin_var.get()==1:
             autoswap_mode_box.grid()
         else:
             autoswap_mode_box.grid_remove()
-            
+
     makecheckbox(admin_tab, "Enable Model Administration", admin_var, 1, 0, command=toggleadmin,tooltiptxt="Enable a admin server, allowing you to remotely relaunch and swap models and configs.")
     makelabelentry(admin_tab, "Admin Password:" , admin_password_var, 3, 150,padx=(120),singleline=True,tooltip="Require a password to access admin functions. You are strongly advised to use one for publically accessible instances!")
     makefileentry(admin_tab, "Config Directory (Required):", "Select directory containing .gguf or .kcpps files to relaunch from", admin_dir_var, 5, width=280, dialog_type=2, tooltiptxt="Specify a directory to look for .kcpps configs in, which can be used to swap models.")
@@ -10231,8 +10445,8 @@ def show_gui():
         args.admindatadir = admin_data_dir_var.get()
         args.adminpassword = admin_password_var.get()
         args.singleinstance = (singleinstance_var.get()==1)
-        args.routermode = router_mode_var.get()==1
-        args.autoswapmode = autoswap_mode_var.get()==1
+        args.routermode = (router_mode_var.get()==1 and admin_var.get()==1)
+        args.autoswapmode = (autoswap_mode_var.get()==1 and router_mode_var.get()==1 and admin_var.get()==1)
         args.adminunloadtimeout = (0 if admin_unload_timeout_var.get()=="" else int(admin_unload_timeout_var.get()))
         args.fsmaxsize = max(0, tryparseint(fs_maxsize_var.get(), 0))
         args.fsdir = fs_dir_var.get()
@@ -10958,6 +11172,8 @@ def convert_invalid_args(args):
         dict["sdclip2"] = dict["sdclipg"]
     if "jinja_tools" in dict and dict["jinja_tools"]:
         dict["jinja"] = True
+    if "jinja_kwargs" in dict and dict["jinja_kwargs"]:
+        dict["jinja"] = True
     if "sdgendefaults" in dict and "gendefaults" not in dict:
         dict["gendefaults"] = dict["sdgendefaults"]
     if "flashattention" in dict and "noflashattention" not in dict:
@@ -11646,6 +11862,7 @@ def main(launch_args, default_args):
                             kcpp_instance.daemon = True
                             kcpp_instance.start()
                             global_memory["restart_target"] = ""
+                            global_memory["restart_override_config_target"] = ""
                             global_memory["restart_model"] = ""
                             global_memory["swapReqType"] = None
                             time.sleep(3)
@@ -11665,10 +11882,11 @@ def main(launch_args, default_args):
                                 if global_memory["swapReqType"] is not None and global_memory["swapReqType"] != "nomodel":
                                     print(f"[Unload Timeout] Inactive for over {time_since_last_active}s, unloading models via autoswap...")
                                     global_memory["swapReqType"] = "nomodel"
+                                    global_memory["triggered_sleeping"] = True
                             elif global_memory["current_model"]!="unload_model":
                                 print(f"[Unload Timeout] Inactive for over {time_since_last_active}s, unloading models...")
                                 restart_target = "unload_model"
-                            global_memory["triggered_sleeping"] = True
+                                global_memory["triggered_sleeping"] = True
                     if restart_target!="":
                         if restart_model != "":
                             global_memory["restart_model"] = ""
@@ -11842,7 +12060,7 @@ def disableSwappedFieldsInConfig(args, swapReqType):
     if swapReqType != "image":
         for e in ["sdmodel", "sdt5xxl", "sdclip1", "sdclip2", "sdphotomaker", "sdupscaler", "sdvae", "sdlora"]:
             setattr(args, e, "")
-        
+
 
 def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
     global embedded_kailite, embedded_kcpp_docs, embedded_kcpp_sdui, embedded_kailite_gz, embedded_kcpp_docs_gz, embedded_kcpp_sdui_gz, embedded_lcpp_ui_gz, embedded_musicui, embedded_musicui_gz, start_time, exitcounter, global_memory, using_gui_launcher
@@ -12603,6 +12821,7 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
     if "llm" in caps and caps["llm"]:
         apimlist.append("OpenAiApi")
         apimlist.append("OllamaApi")
+        apimlist.append("AnthropicApi")
     if "txt2img" in caps and caps["txt2img"]:
         apimlist.append("A1111ForgeApi")
         apimlist.append("ComfyUiApi")
