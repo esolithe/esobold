@@ -562,117 +562,75 @@ class FsClient {
     // -------------------------------------------------------------------------
 
     /**
-     * Delete a file.
-     * @param {string} path
-     * @returns {Promise<{success:boolean, path:string}>}
-     */
-    async delete(path) {
-        return this._post('/api/extra/fs/delete', { path });
-    }
-
-    /**
-     * Delete multiple files.
+     * Delete one or more files.
      * @param {string[]} paths
      * @returns {Promise<{success:boolean, results:Array}>}
      */
-    async delete_many(paths) {
+    async delete(paths) {
+        if (!Array.isArray(paths) || paths.length === 0) {
+            throw new Error('delete expects a non-empty array of file paths.');
+        }
         return this._post('/api/extra/fs/delete', { paths });
     }
 
     /**
-     * Move/rename a file or directory.
-     * @param {string} source
-     * @param {string} destination
-     * @returns {Promise<{success:boolean, source:string, destination:string, metadata:object}>}
-     */
-    async move(source, destination) {
-        return this._post('/api/extra/fs/move', { source, destination });
-    }
-
-    /**
-     * Move/rename multiple files or directories.
+     * Move/rename one or more files or directories.
      * @param {Array<{source:string, destination:string}>} operations
      * @returns {Promise<{success:boolean, results:Array}>}
      */
-    async move_many(operations) {
+    async move(operations) {
+        if (!Array.isArray(operations) || operations.length === 0) {
+            throw new Error('move expects a non-empty operations array.');
+        }
         return this._post('/api/extra/fs/move', { operations });
     }
 
     /**
-     * Copy a file or directory.
-     * @param {string} source
-     * @param {string} destination
-     * @returns {Promise<{success:boolean, source:string, destination:string, metadata:object}>}
-     */
-    async copy(source, destination) {
-        return this._post('/api/extra/fs/copy', { source, destination });
-    }
-
-    /**
-     * Copy multiple files or directories.
+     * Copy one or more files or directories.
      * @param {Array<{source:string, destination:string}>} operations
      * @returns {Promise<{success:boolean, results:Array}>}
      */
-    async copy_many(operations) {
+    async copy(operations) {
+        if (!Array.isArray(operations) || operations.length === 0) {
+            throw new Error('copy expects a non-empty operations array.');
+        }
         return this._post('/api/extra/fs/copy', { operations });
     }
 
     /**
      * Create one or more directories.
-     * @param {string|string[]} path
-     * @returns {Promise<{success:boolean, path?:string, results?:Array}>}
+     * @param {string[]} path
+     * @returns {Promise<{success:boolean, results:Array}>}
      */
     async mkdir(path) {
-        if (typeof path === 'string') {
-            const trimmedPath = path.trim();
-            if (trimmedPath.startsWith('[') && trimmedPath.endsWith(']')) {
-                throw new Error('mkdir expects a real array for multiple directories, not a stringified JSON array.');
-            }
-            if (trimmedPath.includes(',') && trimmedPath.split(',').length > 1) {
-                throw new Error('mkdir expects an array in path for multiple directories, not a comma-delimited string.');
-            }
+        if (!Array.isArray(path) || path.length === 0) {
+            throw new Error('mkdir expects a non-empty array of directory paths.');
         }
         return this._post('/api/extra/fs/mkdir', { path });
     }
 
     /**
-     * Delete a directory and all contents.
-     * @param {string} path
-     * @returns {Promise<{success:boolean, path:string, removed:number}>}
-     */
-    async rmdir(path) {
-        return this._post('/api/extra/fs/rmdir', { path });
-    }
-
-    /**
-     * Delete multiple directories and all their contents.
+     * Delete one or more directories and all their contents.
      * @param {string[]} paths
      * @returns {Promise<{success:boolean, results:Array}>}
      */
-    async rmdir_many(paths) {
+    async rmdir(paths) {
+        if (!Array.isArray(paths) || paths.length === 0) {
+            throw new Error('rmdir expects a non-empty array of directory paths.');
+        }
         return this._post('/api/extra/fs/rmdir', { paths });
     }
 
     /**
-     * Replace text in a file using a regex pattern.
-     * @param {string} path
-     * @param {string} pattern - Regular expression pattern string.
-     * @param {string} replacement - Replacement string (may use back-references like \1).
-     * @returns {Promise<{success:boolean, path:string, metadata:object}>}
-     */
-    async replace_regex(path, pattern, replacement) {
-        return this._post('/api/extra/fs/replace_regex', { path, pattern, replacement });
-    }
-
-    /**
-     * Replace text in multiple files using the same regex pattern.
-     * @param {string[]} paths
-     * @param {string} pattern - Regular expression pattern string.
-     * @param {string} replacement - Replacement string (may use back-references like \1).
+     * Replace text in one or more files using per-file regex operations.
+     * @param {Array<{path:string, pattern:string, replacement:string}>} operations
      * @returns {Promise<{success:boolean, results:Array}>}
      */
-    async replace_regex_many(paths, pattern, replacement) {
-        return this._post('/api/extra/fs/replace_regex', { paths, pattern, replacement });
+    async replace_regex(operations) {
+        if (!Array.isArray(operations) || operations.length === 0) {
+            throw new Error('replace_regex expects a non-empty operations array.');
+        }
+        return this._post('/api/extra/fs/replace_regex', { operations });
     }
 
     /**

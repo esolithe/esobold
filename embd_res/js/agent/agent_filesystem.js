@@ -768,14 +768,10 @@ export const buildFilesystemCommands = (ctx) => {
 		},
 		{
 			"name": "fs_delete",
-			"description": "Delete one or more filesystem files. Pass a single path via 'path', or an array of paths via 'paths' to delete multiple files at once.",
+			"description": "Delete one or more filesystem files. Pass 'paths' as an array (use one item for a single file).",
 			"args": {
-				"path": {
-					description: "<file path, used when deleting a single file>",
-					type: "string"
-				},
 				"paths": {
-					description: "<array of file paths, used when deleting multiple files>",
+					description: "<array of file paths; use one-item array for single file>",
 					type: "array",
 					items: { type: "string" }
 				}
@@ -784,23 +780,16 @@ export const buildFilesystemCommands = (ctx) => {
 			"executor": async (action) => {
 				try {
 					let paths = action?.args?.paths
-					if (Array.isArray(paths)) {
-						let approved = await confirmFsMutation("fs_delete", { paths })
-						if (!approved) {
-							addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: delete cancelled by confirmation dialog`)
-							return
-						}
-						let result = await window.fsClient.delete_many(paths)
-						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: delete result\n${objToText(result)}`)
-					} else {
-						let approved = await confirmFsMutation("fs_delete", { path: action?.args?.path })
-						if (!approved) {
-							addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: delete cancelled by confirmation dialog`)
-							return
-						}
-						let result = await window.fsClient.delete(action?.args?.path)
-						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: delete result\n${objToText(result)}`)
+					if (!Array.isArray(paths) || paths.length === 0) {
+						throw new Error("paths must be a non-empty array of file paths.")
 					}
+					let approved = await confirmFsMutation("fs_delete", { paths })
+					if (!approved) {
+						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: delete cancelled by confirmation dialog`)
+						return
+					}
+					let result = await window.fsClient.delete(paths)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: delete result\n${objToText(result)}`)
 				}
 				catch (e) {
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: delete failed - ${e?.message || e}`)
@@ -809,18 +798,10 @@ export const buildFilesystemCommands = (ctx) => {
 		},
 		{
 			"name": "fs_move",
-			"description": "Move or rename filesystem files or directories. Pass 'source' and 'destination' for a single operation, or an 'operations' array of {source, destination} objects to move multiple items at once. Supports moving both files and directories.",
+			"description": "Move or rename one or more filesystem files or directories using an 'operations' array (use one entry for a single move).",
 			"args": {
-				"source": {
-					description: "<source file or directory path, used for a single move>",
-					type: "string"
-				},
-				"destination": {
-					description: "<destination file or directory path, used for a single move>",
-					type: "string"
-				},
 				"operations": {
-					description: "<array of {source, destination} objects for moving multiple items>",
+					description: "<array of {source, destination} objects; use one entry for a single move>",
 					type: "array",
 					items: {
 						type: "object",
@@ -835,23 +816,16 @@ export const buildFilesystemCommands = (ctx) => {
 			"executor": async (action) => {
 				try {
 					let operations = action?.args?.operations
-					if (Array.isArray(operations)) {
-						let approved = await confirmFsMutation("fs_move", { operations })
-						if (!approved) {
-							addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: move cancelled by confirmation dialog`)
-							return
-						}
-						let result = await window.fsClient.move_many(operations)
-						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: move result\n${objToText(result)}`)
-					} else {
-						let approved = await confirmFsMutation("fs_move", { source: action?.args?.source, destination: action?.args?.destination })
-						if (!approved) {
-							addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: move cancelled by confirmation dialog`)
-							return
-						}
-						let result = await window.fsClient.move(action?.args?.source, action?.args?.destination)
-						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: move result\n${objToText(result)}`)
+					if (!Array.isArray(operations) || operations.length === 0) {
+						throw new Error("operations must be a non-empty array of move objects.")
 					}
+					let approved = await confirmFsMutation("fs_move", { operations })
+					if (!approved) {
+						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: move cancelled by confirmation dialog`)
+						return
+					}
+					let result = await window.fsClient.move(operations)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: move result\n${objToText(result)}`)
 				}
 				catch (e) {
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: move failed - ${e?.message || e}`)
@@ -860,18 +834,10 @@ export const buildFilesystemCommands = (ctx) => {
 		},
 		{
 			"name": "fs_copy",
-			"description": "Copy filesystem files or directories. Pass 'source' and 'destination' for a single copy, or an 'operations' array of {source, destination} objects to copy multiple items at once. Supports copying both files and directories.",
+			"description": "Copy one or more filesystem files or directories using an 'operations' array (use one entry for a single copy).",
 			"args": {
-				"source": {
-					description: "<source file or directory path, used for a single copy>",
-					type: "string"
-				},
-				"destination": {
-					description: "<destination file or directory path, used for a single copy>",
-					type: "string"
-				},
 				"operations": {
-					description: "<array of {source, destination} objects for copying multiple items>",
+					description: "<array of {source, destination} objects; use one entry for a single copy>",
 					type: "array",
 					items: {
 						type: "object",
@@ -886,23 +852,16 @@ export const buildFilesystemCommands = (ctx) => {
 			"executor": async (action) => {
 				try {
 					let operations = action?.args?.operations
-					if (Array.isArray(operations)) {
-						let approved = await confirmFsMutation("fs_copy", { operations })
-						if (!approved) {
-							addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: copy cancelled by confirmation dialog`)
-							return
-						}
-						let result = await window.fsClient.copy_many(operations)
-						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: copy result\n${objToText(result)}`)
-					} else {
-						let approved = await confirmFsMutation("fs_copy", { source: action?.args?.source, destination: action?.args?.destination })
-						if (!approved) {
-							addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: copy cancelled by confirmation dialog`)
-							return
-						}
-						let result = await window.fsClient.copy(action?.args?.source, action?.args?.destination)
-						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: copy result\n${objToText(result)}`)
+					if (!Array.isArray(operations) || operations.length === 0) {
+						throw new Error("operations must be a non-empty array of copy objects.")
 					}
+					let approved = await confirmFsMutation("fs_copy", { operations })
+					if (!approved) {
+						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: copy cancelled by confirmation dialog`)
+						return
+					}
+					let result = await window.fsClient.copy(operations)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: copy result\n${objToText(result)}`)
 				}
 				catch (e) {
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: copy failed - ${e?.message || e}`)
@@ -979,14 +938,10 @@ export const buildFilesystemCommands = (ctx) => {
 		},
 		{
 			"name": "fs_delete_folder",
-			"description": "Delete one or more filesystem folders and all files under them. Pass a single path via 'path', or an array of paths via 'paths' to delete multiple folders at once.",
+			"description": "Delete one or more filesystem folders and all files under them. Pass 'paths' as an array (use one item for a single folder).",
 			"args": {
-				"path": {
-					description: "<folder path, used when deleting a single folder>",
-					type: "string"
-				},
 				"paths": {
-					description: "<array of folder paths, used when deleting multiple folders>",
+					description: "<array of folder paths; use one-item array for single folder>",
 					type: "array",
 					items: { type: "string" }
 				}
@@ -995,23 +950,16 @@ export const buildFilesystemCommands = (ctx) => {
 			"executor": async (action) => {
 				try {
 					let paths = action?.args?.paths
-					if (Array.isArray(paths)) {
-						let approved = await confirmFsMutation("fs_delete_folder", { paths })
-						if (!approved) {
-							addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: delete_folder cancelled by confirmation dialog`)
-							return
-						}
-						let result = await window.fsClient.rmdir_many(paths)
-						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: delete_folder result\n${objToText(result)}`)
-					} else {
-						let approved = await confirmFsMutation("fs_delete_folder", { path: action?.args?.path })
-						if (!approved) {
-							addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: delete_folder cancelled by confirmation dialog`)
-							return
-						}
-						let result = await window.fsClient.rmdir(action?.args?.path)
-						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: delete_folder result\n${objToText(result)}`)
+					if (!Array.isArray(paths) || paths.length === 0) {
+						throw new Error("paths must be a non-empty array of folder paths.")
 					}
+					let approved = await confirmFsMutation("fs_delete_folder", { paths })
+					if (!approved) {
+						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: delete_folder cancelled by confirmation dialog`)
+						return
+					}
+					let result = await window.fsClient.rmdir(paths)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: delete_folder result\n${objToText(result)}`)
 				}
 				catch (e) {
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: delete_folder failed - ${e?.message || e}`)
@@ -1020,27 +968,10 @@ export const buildFilesystemCommands = (ctx) => {
 		},
 		{
 			"name": "fs_replace_regex",
-			"description": "Replace text in one or more filesystem text files using a regular expression pattern. Pass 'path' with 'pattern' and 'replacement' for a single file, 'paths' (array) with shared 'pattern' and 'replacement' to apply the same substitution to multiple files, or 'operations' (array of {path, pattern, replacement}) for per-file patterns.",
+			"description": "Replace text in one or more filesystem files using an 'operations' array of {path, pattern, replacement} objects (use one entry for a single file).",
 			"args": {
-				"path": {
-					description: "<file path, used when replacing in a single file>",
-					type: "string"
-				},
-				"paths": {
-					description: "<array of file paths, used when applying the same pattern to multiple files>",
-					type: "array",
-					items: { type: "string" }
-				},
-				"pattern": {
-					description: "<regular expression pattern string>",
-					type: "string"
-				},
-				"replacement": {
-					description: "<replacement string, may use back-references such as \\1>",
-					type: "string"
-				},
 				"operations": {
-					description: "<array of {path, pattern, replacement} objects for per-file patterns>",
+					description: "<array of {path, pattern, replacement} objects; use one entry for a single file>",
 					type: "array",
 					items: {
 						type: "object",
@@ -1056,32 +987,16 @@ export const buildFilesystemCommands = (ctx) => {
 			"executor": async (action) => {
 				try {
 					let operations = action?.args?.operations
-					let paths = action?.args?.paths
-					if (Array.isArray(operations)) {
-						let approved = await confirmFsMutation("fs_replace_regex", { operations })
-						if (!approved) {
-							addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: replace_regex cancelled by confirmation dialog`)
-							return
-						}
-						let result = await window.fsClient._post('/api/extra/fs/replace_regex', { operations })
-						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: replace_regex result\n${objToText(result)}`)
-					} else if (Array.isArray(paths)) {
-						let approved = await confirmFsMutation("fs_replace_regex", { paths, pattern: action?.args?.pattern, replacement: action?.args?.replacement })
-						if (!approved) {
-							addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: replace_regex cancelled by confirmation dialog`)
-							return
-						}
-						let result = await window.fsClient.replace_regex_many(paths, action?.args?.pattern, action?.args?.replacement)
-						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: replace_regex result\n${objToText(result)}`)
-					} else {
-						let approved = await confirmFsMutation("fs_replace_regex", { path: action?.args?.path, pattern: action?.args?.pattern, replacement: action?.args?.replacement })
-						if (!approved) {
-							addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: replace_regex cancelled by confirmation dialog`)
-							return
-						}
-						let result = await window.fsClient.replace_regex(action?.args?.path, action?.args?.pattern, action?.args?.replacement)
-						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: replace_regex result\n${objToText(result)}`)
+					if (!Array.isArray(operations) || operations.length === 0) {
+						throw new Error("operations must be a non-empty array of replace objects.")
 					}
+					let approved = await confirmFsMutation("fs_replace_regex", { operations })
+					if (!approved) {
+						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: replace_regex cancelled by confirmation dialog`)
+						return
+					}
+					let result = await window.fsClient.replace_regex(operations)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: replace_regex result\n${objToText(result)}`)
 				}
 				catch (e) {
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: replace_regex failed - ${e?.message || e}`)
