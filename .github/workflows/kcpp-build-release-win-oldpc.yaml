@@ -91,7 +91,7 @@ jobs:
         run: |
           make LLAMA_VULKAN=1 LLAMA_PORTABLE=1 -j ${env:NUMBER_OF_PROCESSORS} LLAMA_NOAVX2=1
 
-      - uses: LostRuins/cuda-toolkit@v1.0
+      - uses: Jimver/cuda-toolkit@v0.2.35
         id: cuda-toolkit
         with:
           cuda: '11.4.4'
