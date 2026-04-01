@@ -4890,7 +4890,14 @@ def fs_apply_line_updates(path, line_updates, start_line=1, append=False):
         _, abs_path, _ = fs_resolve_disk_path(normalized_path, fs_state=fs)
         os.makedirs(os.path.dirname(abs_path), exist_ok=True)
         new_text = "\n".join(str(item) for item in line_updates) + "\n"
-        with open(abs_path, "ab") as fh:
+        with open(abs_path, "a+b") as fh:
+            # Ensure we're on a fresh line if the file already has content
+            fh.seek(0, 2)
+            if fh.tell() > 0:
+                fh.seek(-1, 2)
+                last_byte = fh.read(1)
+                if last_byte != b"\n":
+                    fh.write(b"\n")
             fh.write(new_text.encode("utf-8"))
         return normalized_path
 

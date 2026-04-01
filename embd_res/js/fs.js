@@ -12,6 +12,15 @@
  *   console.log(lines);
  */
 class FsClient {
+    // Text file extensions supported for semantic search (treated identically to .txt)
+    static SEMANTIC_TEXT_EXTENSIONS = [
+        '.txt', '.csv', '.tsv', '.md', '.json', '.xml', '.html', '.htm',
+        '.yaml', '.yml', '.log', '.ini', '.cfg', '.conf', '.rst', '.tex',
+    ];
+
+    // Number of newly-generated embedding items written per progressive flush
+    static EMBEDDING_PROGRESSIVE_WRITE_INTERVAL = 1000;
+
     /**
      * @param {string} [base_url] - Root URL of the KoboldCpp instance (default: page origin).
      */
@@ -148,13 +157,14 @@ class FsClient {
         const dotIndex = sourceName.lastIndexOf('.');
         const baseName = dotIndex > 0 ? sourceName.slice(0, dotIndex) : sourceName;
         const dirPath = normalizedSourcePath.slice(0, normalizedSourcePath.length - sourceName.length).replace(/\/$/, '') || '/';
+        const prefix = dirPath === '/' ? '' : dirPath;
         return {
             sourcePath: normalizedSourcePath,
             dirPath,
             sourceName,
             baseName,
-            rawTextPath: `${dirPath === '/' ? '' : dirPath}/${baseName}_rawtext.txt` || `/${baseName}_rawtext.txt`,
-            cachePath: `${dirPath === '/' ? '' : dirPath}/${baseName}_embeddings.jsonl` || `/${baseName}_embeddings.jsonl`,
+            rawTextPath: `${prefix}/${baseName}_rawtext.txt`,
+            cachePath: `${prefix}/${baseName}_embeddings.jsonl`,
         };
     }
 
@@ -404,11 +414,8 @@ class FsClient {
      * @returns {Promise<Array<{snippet:string, document:string|null, similarity:number}>>}
      */
     async semantic_search(path, search_query, max_results = 5) {
-        const PROGRESSIVE_WRITE_INTERVAL = 1000;
-        const TEXT_EXTENSIONS = [
-            '.txt', '.csv', '.tsv', '.md', '.json', '.xml', '.html', '.htm',
-            '.yaml', '.yml', '.log', '.ini', '.cfg', '.conf', '.rst', '.tex',
-        ];
+        const PROGRESSIVE_WRITE_INTERVAL = FsClient.EMBEDDING_PROGRESSIVE_WRITE_INTERVAL;
+        const TEXT_EXTENSIONS = FsClient.SEMANTIC_TEXT_EXTENSIONS;
 
         const sourcePath = this._normalize_path(path);
         const queryText = `${search_query || ''}`.trim();
