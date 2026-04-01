@@ -4490,11 +4490,39 @@ def fs_normalize_path(raw_path, allow_root=False):
         raise ValueError("Filesystem path must target a file.")
     return normalized
 
+_BINARY_SAMPLE_SIZE = 8192  # bytes to inspect when deciding text vs binary
+_TEXT_BOMS = (
+    b'\xff\xfe\x00\x00',  # UTF-32 LE (must be checked before UTF-16 LE)
+    b'\x00\x00\xfe\xff',  # UTF-32 BE
+    b'\xff\xfe',          # UTF-16 LE
+    b'\xfe\xff',          # UTF-16 BE
+    b'\xef\xbb\xbf',      # UTF-8 BOM
+)
+
 def fs_is_binary(content_bytes):
-    return b"\x00" in content_bytes
+    b = content_bytes if isinstance(content_bytes, (bytes, bytearray)) else bytes(content_bytes)
+    # A recognised BOM unambiguously marks the file as a text encoding
+    for bom in _TEXT_BOMS:
+        if b.startswith(bom):
+            return False
+    # Only inspect the first 8 KB so metadata calls stay fast on large files
+    sample = b[:_BINARY_SAMPLE_SIZE]
+    if not sample:
+        return False
+    # Count control bytes that are not normal text whitespace (tab / LF / CR / FF / VT)
+    non_printable = sum(1 for byte in sample if byte <= 0x08 or (0x0e <= byte <= 0x1f))
+    return (non_printable / len(sample)) > 0.30
 
 def fs_decode_text(content_bytes):
-    return fs_to_bytes(content_bytes).decode("utf-8", "replace")
+    b = fs_to_bytes(content_bytes)
+    # Decode according to BOM so UTF-16/UTF-32 files round-trip correctly
+    if b.startswith(b'\xff\xfe\x00\x00') or b.startswith(b'\x00\x00\xfe\xff'):
+        return b.decode('utf-32', 'replace')
+    if b.startswith(b'\xff\xfe') or b.startswith(b'\xfe\xff'):
+        return b.decode('utf-16', 'replace')
+    if b.startswith(b'\xef\xbb\xbf'):
+        return b.decode('utf-8-sig', 'replace')
+    return b.decode('utf-8', 'replace')
 
 def fs_count_lines(content_bytes):
     if fs_is_binary(content_bytes):
