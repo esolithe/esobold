@@ -5096,8 +5096,10 @@ def fs_load_json_file(path):
 
 def fs_load_embeddings_cache_file(path):
     """Load an embeddings cache file, supporting both JSONL (v2) and legacy JSON (v1) formats.
-    Returns (normalized_path, items_list, query_prefix, model_name) where items_list is a
-    list of item dicts containing at least 'snippet', 'document', and 'embedding' keys."""
+    Returns (normalized_path, items_list, query_prefix, model_name, content_hash) where
+    items_list is a list of item dicts containing at least 'snippet', 'document', and
+    'embedding' keys, and content_hash is the SHA-256 hex digest of the source document
+    text stored in the JSONL meta line (None for legacy v1 caches)."""
     normalized_path, entry = fs_get_file(path)
     content_bytes = entry.get("content", b"")
     if fs_is_binary(content_bytes):
@@ -5135,7 +5137,8 @@ def fs_load_embeddings_cache_file(path):
             if not (normalized_active in cache_model or cache_model in normalized_active):
                 raise ValueError(f"No embedding cache found for active model: {normalized_active or 'unknown'}")
         query_prefix = str(meta.get("query_prefix", "") or "")
-        return normalized_path, list(items.values()), query_prefix, cache_model or active_model_name
+        content_hash = str(meta.get("content_hash", "") or "") or None
+        return normalized_path, list(items.values()), query_prefix, cache_model or active_model_name, content_hash
 
     # Legacy JSON (v1)
     parsed = json.loads(raw_text)
@@ -5147,8 +5150,8 @@ def fs_load_embeddings_cache_file(path):
     model_name = str(model_cache.get("model_name", active_model_name) or active_model_name)
     items_dict = model_cache.get("items", {})
     if not isinstance(items_dict, dict):
-        return normalized_path, [], query_prefix, model_name
-    return normalized_path, list(items_dict.values()), query_prefix, model_name
+        return normalized_path, [], query_prefix, model_name, None
+    return normalized_path, list(items_dict.values()), query_prefix, model_name, None
 
 def fs_cosine_similarity(vec_a, vec_b):
     if not isinstance(vec_a, list) or not isinstance(vec_b, list):
@@ -5195,7 +5198,7 @@ def fs_select_embedding_cache(cache_obj, active_model_name):
     raise ValueError(f"No embedding cache found for active model: {normalized_name or 'unknown'}")
 
 def fs_semantic_search_cache(embeddings_cache_path, search_query, max_results=5):
-    normalized_cache_path, items_list, query_prefix, model_name = fs_load_embeddings_cache_file(embeddings_cache_path)
+    normalized_cache_path, items_list, query_prefix, model_name, _ = fs_load_embeddings_cache_file(embeddings_cache_path)
     query_text = str(search_query or "").strip()
     if query_text == "":
         raise ValueError("Search query cannot be empty.")
@@ -5309,13 +5312,21 @@ def fs_semantic_search_document(document_path, search_query, max_results=5, chun
 
     Workflow:
       1. Resolve the filesystem path and extract text (supports plain text and PDF).
-      2. Determine the cache path:
+      2. Compute a SHA-256 content hash of the extracted text.
+      3. Determine the cache path:
          - Documents under /INTERNAL_READ_ONLY/Documents: cache written directly
            to the admindocsdir on disk (e.g. /path/to/docs/file.txt.embd.jsonl).
          - All other paths: cache written via the normal writable filesystem API
            (memory or direct-disk depending on --fsdirect).
-      3. Check for an existing valid cache; use it if available.
-      4. Otherwise chunk the text, generate embeddings, cache results, then score.
+      4. If a cache exists and its stored content_hash matches the current document:
+         use the cache as-is (no re-embedding).
+      5. If a cache exists but the content_hash differs (document changed):
+         load the old per-chunk embeddings, rechunk the current text, reuse
+         embeddings for any chunk whose hash already exists in the cache, and
+         only embed the new/changed chunks (incremental update).
+      6. If no cache exists: embed all chunks from scratch.
+      7. Write the updated cache (with the new content_hash in the meta line).
+      8. Score all chunks against the query and return top results.
     """
     normalized_path = fs_normalize_path(document_path)
     query_text = str(search_query or "").strip()
@@ -5344,14 +5355,25 @@ def fs_semantic_search_document(document_path, search_query, max_results=5, chun
             if _candidate == _docsdir_abs or _candidate.startswith(_docsdir_abs + os.sep):
                 cache_disk_path = _candidate
 
-    # --- Try using an existing cache ---
+    # --- Extract text (always needed to compute the content hash) ---
+    utfprint(f"[SemanticSearch] Extracting text from document: {normalized_path}")
+    text = fs_extract_document_text(normalized_path)
+    if not text or not text.strip():
+        raise ValueError(f"Document is empty or could not be parsed: {normalized_path}")
+
+    content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    # --- Try loading an existing cache ---
+    # existing_items_by_hash maps chunk_hash -> item dict for incremental reuse.
+    existing_items_by_hash = {}
+    cache_usable = False
     try:
         # For docs paths prefer reading the cache from disk directly if available
         if _in_docs and cache_disk_path and os.path.isfile(cache_disk_path):
             utfprint(f"[SemanticSearch] Loading cache from disk: {cache_disk_path}")
             with open(cache_disk_path, mode="rb") as _cf:
                 _cache_bytes = _cf.read()
-            # Temporarily inject into FS so fs_semantic_search_cache can read it
+            # Temporarily inject into FS so fs_load_embeddings_cache_file can read it
             with fs_lock:
                 _fs = fs_snapshot_state()
             if not fs_is_disk_mode(_fs):
@@ -5362,44 +5384,72 @@ def fs_semantic_search_document(document_path, search_query, max_results=5, chun
                 }
                 fs_set_state(_fs)
         utfprint(f"[SemanticSearch] Checking for cached embeddings at: {cache_virtual_path}")
-        result = fs_semantic_search_cache(cache_virtual_path, query_text, max_results)
-        utfprint(f"[SemanticSearch] Using cached embeddings (model: {result.get('model', '?')})")
-        return result
+        _, cached_items, _, _, cached_content_hash = fs_load_embeddings_cache_file(cache_virtual_path)
+
+        if cached_content_hash and cached_content_hash == content_hash:
+            # Document unchanged — the entire cache is still valid.
+            utfprint(f"[SemanticSearch] Cache is up-to-date (content hash matches), using as-is.")
+            cache_usable = True
+        else:
+            # Document changed (or old cache predates content-hash tracking).
+            if cached_content_hash:
+                utfprint(f"[SemanticSearch] Document changed (hash mismatch), updating cache incrementally.")
+            else:
+                utfprint(f"[SemanticSearch] Cache has no content hash; refreshing embeddings.")
+            for item in cached_items:
+                h = item.get("hash", "")
+                if h:
+                    existing_items_by_hash[h] = item
     except (FileNotFoundError, ValueError):
-        pass  # No usable cache – generate fresh embeddings below
+        pass  # No usable cache — full generation
 
-    # --- Extract text ---
-    utfprint(f"[SemanticSearch] Extracting text from document: {normalized_path}")
-    text = fs_extract_document_text(normalized_path)
-    if not text or not text.strip():
-        raise ValueError(f"Document is empty or could not be parsed: {normalized_path}")
+    if cache_usable:
+        # Delegate scoring to the standard cache search path (cache already in FS).
+        return fs_semantic_search_cache(cache_virtual_path, query_text, max_results)
 
-    # --- Chunk and embed ---
-    chunks = fs_chunk_text(text, chunk_size=max(1, tryparseint(chunk_size, 1024)),
-                           overlap=max(0, tryparseint(overlap, 500)))
-    utfprint(f"[SemanticSearch] Split document into {len(chunks)} chunks, generating embeddings...")
+    # --- Chunk and embed (incremental where possible, otherwise full) ---
+    _chunk_size = max(1, tryparseint(chunk_size, 1024))
+    _overlap = max(0, tryparseint(overlap, 500))
+    chunks = fs_chunk_text(text, chunk_size=_chunk_size, overlap=_overlap)
+    reused_count = len([c for c in chunks
+                        if hashlib.sha256(c.encode("utf-8")).hexdigest()[:16] in existing_items_by_hash])
+    utfprint(f"[SemanticSearch] {len(chunks)} chunks; "
+             f"{reused_count} can be reused from cache, "
+             f"{len(chunks) - reused_count} need new embeddings.")
     query_prefix = ""
     items = []
+    new_count = 0
+    actual_reused = 0
     for idx, chunk in enumerate(chunks):
-        if idx % 10 == 0:
-            utfprint(f"[SemanticSearch] Embedding chunk {idx + 1}/{len(chunks)}...")
-        emb_resp = embeddings_generate({"input": f"{query_prefix}{chunk}", "truncate": True})
-        emb_data = emb_resp.get("data", []) if isinstance(emb_resp, dict) else []
-        if not emb_data or not isinstance(emb_data[0], list) or len(emb_data[0]) == 0:
-            utfprint(f"[SemanticSearch] Warning: could not embed chunk {idx + 1}")
-            continue
         h = hashlib.sha256(chunk.encode("utf-8")).hexdigest()[:16]
-        items.append({
-            "hash": h,
-            "snippet": chunk,
-            "document": posixpath.basename(normalized_path),
-            "embedding": emb_data[0],
-        })
-    utfprint(f"[SemanticSearch] Generated {len(items)} embeddings for {normalized_path}")
+        if h in existing_items_by_hash:
+            items.append(existing_items_by_hash[h])
+            actual_reused += 1
+        else:
+            if new_count % 10 == 0:
+                utfprint(f"[SemanticSearch] Embedding new chunk {new_count + 1} (chunk {idx + 1}/{len(chunks)})...")
+            emb_resp = embeddings_generate({"input": f"{query_prefix}{chunk}", "truncate": True})
+            emb_data = emb_resp.get("data", []) if isinstance(emb_resp, dict) else []
+            if not emb_data or not isinstance(emb_data[0], list) or len(emb_data[0]) == 0:
+                utfprint(f"[SemanticSearch] Warning: could not embed chunk {idx + 1}")
+                continue
+            items.append({
+                "hash": h,
+                "snippet": chunk,
+                "document": posixpath.basename(normalized_path),
+                "embedding": emb_data[0],
+            })
+            new_count += 1
+    utfprint(f"[SemanticSearch] Done: {new_count} new embeddings generated, {actual_reused} reused from cache.")
 
-    # --- Persist cache ---
+    # --- Persist cache (includes content_hash in meta for future incremental checks) ---
     if items:
-        meta_line = json.dumps({"type": "meta", "model_name": active_model, "query_prefix": query_prefix})
+        meta_line = json.dumps({
+            "type": "meta",
+            "model_name": active_model,
+            "query_prefix": query_prefix,
+            "content_hash": content_hash,
+        })
         item_lines = [json.dumps({"type": "item", **item}) for item in items]
         cache_content = "\n".join([meta_line] + item_lines) + "\n"
         if _in_docs and cache_disk_path:
