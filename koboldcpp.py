@@ -4505,6 +4505,7 @@ def fs_resolve_readonly_disk_path(normalized_path):
     Returns (abs_path, root_dir).
     Raises FileNotFoundError when the base directory is not configured.
     Raises ValueError on path traversal attempts."""
+    _script_dir = os.path.dirname(os.path.realpath(__file__))
     parsed = globals().get("args", None)
     if normalized_path == FS_INTERNAL_READONLY_DOCS or normalized_path.startswith(FS_INTERNAL_READONLY_DOCS + "/"):
         base_dir = str(getattr(parsed, "admindocsdir", "") or "").strip()
@@ -4513,10 +4514,10 @@ def fs_resolve_readonly_disk_path(normalized_path):
         root = os.path.realpath(os.path.abspath(base_dir))
         rel = normalized_path[len(FS_INTERNAL_READONLY_DOCS):].lstrip("/")
     elif normalized_path == FS_INTERNAL_READONLY_RES or normalized_path.startswith(FS_INTERNAL_READONLY_RES + "/"):
-        base_dir = str(getattr(parsed, "fsdir", "") or "").strip()
-        if not base_dir:
-            raise FileNotFoundError("Resources directory (/INTERNAL_READ_ONLY/Resources) is not configured. Set --fsdir.")
-        root = os.path.realpath(os.path.abspath(base_dir))
+        # Resources maps to the packaged embd_res folder alongside the script
+        root = os.path.realpath(os.path.abspath(os.path.join(_script_dir, "embd_res")))
+        if not os.path.isdir(root):
+            raise FileNotFoundError("Resources directory (/INTERNAL_READ_ONLY/Resources) is not available: embd_res not found.")
         rel = normalized_path[len(FS_INTERNAL_READONLY_RES):].lstrip("/")
     else:
         raise FileNotFoundError(f"Filesystem path not found: {normalized_path}")
@@ -4524,6 +4525,11 @@ def fs_resolve_readonly_disk_path(normalized_path):
     if abs_path != root and not abs_path.startswith(root + os.sep):
         raise ValueError("Invalid filesystem path.")
     return abs_path, root
+
+def fs_is_docs_path(normalized_path):
+    """Return True when the path lives under /INTERNAL_READ_ONLY/Documents/."""
+    return (normalized_path == FS_INTERNAL_READONLY_DOCS or
+            normalized_path.startswith(FS_INTERNAL_READONLY_DOCS + "/"))
 
 _BINARY_SAMPLE_SIZE = 8192  # bytes to inspect when deciding text vs binary
 _TEXT_BOMS = (
@@ -4904,16 +4910,17 @@ def fs_list_entries(pattern="*", case_insensitive=False):
             for _fn in _filenames:
                 _rel = os.path.relpath(os.path.join(_root, _fn), _admindocsdir).replace("\\", "/")
                 file_paths.append(FS_INTERNAL_READONLY_DOCS + "/" + _rel.lstrip("/"))
-    _fsdir = str(getattr(_parsed, "fsdir", "") or "").strip()
-    if _fsdir and os.path.isdir(_fsdir):
+    _embddir = os.path.realpath(os.path.abspath(
+        os.path.join(os.path.dirname(os.path.realpath(__file__)), "embd_res")))
+    if os.path.isdir(_embddir):
         dir_paths.add(FS_INTERNAL_READONLY_PREFIX)
         dir_paths.add(FS_INTERNAL_READONLY_RES)
-        for _root, _dirnames, _filenames in os.walk(_fsdir):
+        for _root, _dirnames, _filenames in os.walk(_embddir):
             for _dn in _dirnames:
-                _rel = os.path.relpath(os.path.join(_root, _dn), _fsdir).replace("\\", "/")
+                _rel = os.path.relpath(os.path.join(_root, _dn), _embddir).replace("\\", "/")
                 dir_paths.add(FS_INTERNAL_READONLY_RES + "/" + _rel.lstrip("/"))
             for _fn in _filenames:
-                _rel = os.path.relpath(os.path.join(_root, _fn), _fsdir).replace("\\", "/")
+                _rel = os.path.relpath(os.path.join(_root, _fn), _embddir).replace("\\", "/")
                 file_paths.append(FS_INTERNAL_READONLY_RES + "/" + _rel.lstrip("/"))
 
     file_paths.sort()
@@ -5302,11 +5309,13 @@ def fs_semantic_search_document(document_path, search_query, max_results=5, chun
 
     Workflow:
       1. Resolve the filesystem path and extract text (supports plain text and PDF).
-      2. Check for a cached embeddings file next to the document (<path>.embd.jsonl).
-         If found and valid for the active model, use it directly.
-      3. Otherwise chunk the text, generate embeddings for each chunk, and cache
-         the result as <path>.embd.jsonl in the regular (writable) filesystem.
-      4. Score all chunks against the query embedding and return the top results.
+      2. Determine the cache path:
+         - Documents under /INTERNAL_READ_ONLY/Documents: cache written directly
+           to the admindocsdir on disk (e.g. /path/to/docs/file.txt.embd.jsonl).
+         - All other paths: cache written via the normal writable filesystem API
+           (memory or direct-disk depending on --fsdirect).
+      3. Check for an existing valid cache; use it if available.
+      4. Otherwise chunk the text, generate embeddings, cache results, then score.
     """
     normalized_path = fs_normalize_path(document_path)
     query_text = str(search_query or "").strip()
@@ -5314,12 +5323,46 @@ def fs_semantic_search_document(document_path, search_query, max_results=5, chun
         raise ValueError("Search query cannot be empty.")
 
     active_model = fs_get_active_embedding_model_name()
-    cache_path = normalized_path + ".embd.jsonl"
+
+    # Determine where the embedding cache lives
+    _in_docs = fs_is_docs_path(normalized_path)
+    cache_virtual_path = normalized_path + ".embd.jsonl"
+
+    # For docs-dir documents we also track the physical cache path so we can
+    # write it directly to disk (bypassing the read-only virtual layer).
+    # The path is validated to stay within admindocsdir to prevent traversal.
+    cache_disk_path = None
+    if _in_docs:
+        _parsed = globals().get("args", None)
+        _docsdir = str(getattr(_parsed, "admindocsdir", "") or "").strip()
+        if _docsdir:
+            _docsdir_abs = os.path.realpath(os.path.abspath(_docsdir))
+            _rel = normalized_path[len(FS_INTERNAL_READONLY_DOCS):].lstrip("/")
+            _candidate = os.path.realpath(os.path.abspath(
+                os.path.join(_docsdir_abs, _rel + ".embd.jsonl")))
+            # Containment check — reject if outside docs root
+            if _candidate == _docsdir_abs or _candidate.startswith(_docsdir_abs + os.sep):
+                cache_disk_path = _candidate
 
     # --- Try using an existing cache ---
     try:
-        utfprint(f"[SemanticSearch] Checking for cached embeddings at: {cache_path}")
-        result = fs_semantic_search_cache(cache_path, query_text, max_results)
+        # For docs paths prefer reading the cache from disk directly if available
+        if _in_docs and cache_disk_path and os.path.isfile(cache_disk_path):
+            utfprint(f"[SemanticSearch] Loading cache from disk: {cache_disk_path}")
+            with open(cache_disk_path, mode="rb") as _cf:
+                _cache_bytes = _cf.read()
+            # Temporarily inject into FS so fs_semantic_search_cache can read it
+            with fs_lock:
+                _fs = fs_snapshot_state()
+            if not fs_is_disk_mode(_fs):
+                _fs["files"][cache_virtual_path] = {
+                    "content": _cache_bytes,
+                    "modified": datetime.fromtimestamp(os.path.getmtime(cache_disk_path), timezone.utc).isoformat(),
+                    "size": len(_cache_bytes),
+                }
+                fs_set_state(_fs)
+        utfprint(f"[SemanticSearch] Checking for cached embeddings at: {cache_virtual_path}")
+        result = fs_semantic_search_cache(cache_virtual_path, query_text, max_results)
         utfprint(f"[SemanticSearch] Using cached embeddings (model: {result.get('model', '?')})")
         return result
     except (FileNotFoundError, ValueError):
@@ -5354,19 +5397,29 @@ def fs_semantic_search_document(document_path, search_query, max_results=5, chun
         })
     utfprint(f"[SemanticSearch] Generated {len(items)} embeddings for {normalized_path}")
 
-    # --- Persist cache if the filesystem is writable ---
+    # --- Persist cache ---
     if items:
         meta_line = json.dumps({"type": "meta", "model_name": active_model, "query_prefix": query_prefix})
         item_lines = [json.dumps({"type": "item", **item}) for item in items]
         cache_content = "\n".join([meta_line] + item_lines) + "\n"
-        try:
-            fs_write_file(cache_path, cache_content)
-            utfprint(f"[SemanticSearch] Embeddings cached to: {cache_path}")
-        except Exception as _ce:
-            utfprint(f"[SemanticSearch] Warning: could not cache embeddings: {_ce}")
+        if _in_docs and cache_disk_path:
+            # Write directly to disk in the docs directory
+            try:
+                os.makedirs(os.path.dirname(cache_disk_path), exist_ok=True)
+                with open(cache_disk_path, mode="w", encoding="utf-8") as _cf:
+                    _cf.write(cache_content)
+                utfprint(f"[SemanticSearch] Embeddings cached to disk: {cache_disk_path}")
+            except Exception as _ce:
+                utfprint(f"[SemanticSearch] Warning: could not write cache to disk: {_ce}")
+        else:
+            try:
+                fs_write_file(cache_virtual_path, cache_content)
+                utfprint(f"[SemanticSearch] Embeddings cached to: {cache_virtual_path}")
+            except Exception as _ce:
+                utfprint(f"[SemanticSearch] Warning: could not cache embeddings: {_ce}")
 
     if not items:
-        return {"cache_path": cache_path, "model": active_model, "snippets": []}
+        return {"cache_path": cache_virtual_path, "model": active_model, "snippets": []}
 
     # --- Score against query ---
     q_resp = embeddings_generate({"input": f"{query_prefix}{query_text}", "truncate": True})
@@ -5384,7 +5437,7 @@ def fs_semantic_search_document(document_path, search_query, max_results=5, chun
     } for item in items]
     scored.sort(key=lambda x: x.get("similarity", 0.0), reverse=True)
     return {
-        "cache_path": cache_path,
+        "cache_path": cache_virtual_path,
         "model": active_model,
         "snippets": scored[:max_hits],
     }
@@ -9652,6 +9705,7 @@ def show_gui():
     autoswap_mode_var = ctk.IntVar(value=0)
     admin_unload_timeout_var = ctk.StringVar(value=str(0))
     admin_allow_hf_var = ctk.IntVar(value=0)
+    developer_mode_var = ctk.IntVar(value=0)
 
     fs_maxsize_var = ctk.StringVar(value="0")
     fs_dir_var = ctk.StringVar(value="")
@@ -10498,8 +10552,9 @@ def show_gui():
     makefileentry(admin_tab, "Documents Directory:", "Select directory containing text or PDF documents for semantic search", admin_docs_dir_var, 13, width=280, dialog_type=2, tooltiptxt="Specify a directory containing text or PDF files. Accessible read-only at /INTERNAL_READ_ONLY/Documents via filesystem API endpoints.")
     makecheckbox(admin_tab, "Allow Model Download From HuggingFace", admin_allow_hf_var, 15, 0,tooltiptxt="Allows model downloading from HuggingFace within the Lite UI.")
     makecheckbox(admin_tab, "SingleInstance Mode", singleinstance_var, 17, 0,tooltiptxt="Allows this server to be shut down by another KoboldCpp instance with singleinstance starting on the same port.")
-    router_mode_box = makecheckbox(admin_tab, "Router Mode", router_mode_var, 19, 0, command=togglerouter, tooltiptxt="Router mode uses a reverse proxy router, allowing you to easily hotswap models and configs within a single request. Requires admin mode.")
-    autoswap_mode_box = makecheckbox(admin_tab, "Autoswap Mode", autoswap_mode_var, 21, 0,tooltiptxt="Autoswap mode builds on router mode to allow switching of model types within the same config automatically. Requires admin mode and router mode. All models desired must be defined within the same config.")
+    makecheckbox(admin_tab, "Developer Mode", developer_mode_var, 19, 0,tooltiptxt="Enables developer utilities such as hot reloading of Kobold Lite from disk.")
+    router_mode_box = makecheckbox(admin_tab, "Router Mode", router_mode_var, 21, 0, command=togglerouter, tooltiptxt="Router mode uses a reverse proxy router, allowing you to easily hotswap models and configs within a single request. Requires admin mode.")
+    autoswap_mode_box = makecheckbox(admin_tab, "Autoswap Mode", autoswap_mode_var, 23, 0,tooltiptxt="Autoswap mode builds on router mode to allow switching of model types within the same config automatically. Requires admin mode and router mode. All models desired must be defined within the same config.")
 
     tempfs_tab = tabcontent["Filesystem"]
     def togglefsdiskmode(a,b,c):
@@ -10845,6 +10900,7 @@ def show_gui():
         args.fsdirect = (fs_direct_var.get()==1)
         args.showgui = False #prevent showgui from leaking into configs, its cli only
         args.adminallowhf = (admin_allow_hf_var.get()==1 and not args.cli)
+        args.developerMode = (developer_mode_var.get()==1)
 
     def import_vars(dict):
         global importvars_in_progress
@@ -11110,6 +11166,7 @@ def show_gui():
         admin_unload_timeout_var.set(dict["adminunloadtimeout"] if ("adminunloadtimeout" in dict and dict["adminunloadtimeout"]) else 0)
         singleinstance_var.set(dict["singleinstance"] if ("singleinstance" in dict) else 0)
         admin_allow_hf_var.set(dict["adminallowhf"] if ("adminallowhf" in dict) else 0)
+        developer_mode_var.set(1 if ("developerMode" in dict and dict["developerMode"]) else 0)
 
         fs_maxsize_var.set(str(dict["fsmaxsize"]) if ("fsmaxsize" in dict and dict["fsmaxsize"] is not None) else "0")
         fs_dir_var.set(dict["fsdir"] if ("fsdir" in dict and dict["fsdir"]) else "")

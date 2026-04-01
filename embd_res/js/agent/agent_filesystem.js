@@ -586,7 +586,7 @@ export const buildFilesystemCommands = (ctx) => {
 		},
 		{
 			"name": "fs_semantic_search",
-			"description": "Semantic-search a filesystem .txt or .pdf document using cached embeddings.",
+			"description": "Semantic-search a filesystem .txt or .pdf document. The backend handles text extraction, embedding generation and caching automatically.",
 			"args": {
 				"path": "<absolute filesystem path to a .txt or .pdf file>",
 				"search_query": {
