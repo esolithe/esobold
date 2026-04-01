@@ -4881,6 +4881,20 @@ def fs_read_lines(path, start_line=1, end_line=None):
 
 def fs_apply_line_updates(path, line_updates, start_line=1, append=False):
     normalized_path = fs_normalize_path(path)
+    with fs_lock:
+        fs = fs_snapshot_state()
+
+    # Fast path: in disk mode with a pure-append list of simple strings, write
+    # new lines directly to the end of the file without reading existing content.
+    if append and fs_is_disk_mode(fs) and isinstance(line_updates, list) and all(not isinstance(item, dict) for item in line_updates):
+        _, abs_path, _ = fs_resolve_disk_path(normalized_path, fs_state=fs)
+        os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+        new_text = "\n".join(str(item) for item in line_updates) + "\n"
+        with open(abs_path, "ab") as fh:
+            fh.write(new_text.encode("utf-8"))
+        return normalized_path
+
+    # General path: read existing content, apply updates, write back.
     try:
         _, entry = fs_get_file(normalized_path)
         existing_bytes = entry.get("content", b"")
@@ -4948,6 +4962,62 @@ def fs_load_json_file(path):
         raise ValueError(f"Filesystem JSON file must contain an object: {normalized_path}")
     return normalized_path, parsed
 
+def fs_load_embeddings_cache_file(path):
+    """Load an embeddings cache file, supporting both JSONL (v2) and legacy JSON (v1) formats.
+    Returns (normalized_path, items_list, query_prefix, model_name) where items_list is a
+    list of item dicts containing at least 'snippet', 'document', and 'embedding' keys."""
+    normalized_path, entry = fs_get_file(path)
+    content_bytes = entry.get("content", b"")
+    if fs_is_binary(content_bytes):
+        raise ValueError(f"Embeddings cache file is binary: {normalized_path}")
+    raw_text = fs_decode_text(content_bytes).strip()
+    if not raw_text:
+        raise ValueError(f"Embeddings cache file is empty: {normalized_path}")
+
+    first_line = raw_text.split("\n")[0].strip()
+    # Detect JSONL (v2): first line is a meta object with "type":"meta"
+    if '"type"' in first_line and '"meta"' in first_line:
+        meta = None
+        items = {}  # keyed by hash for deduplication (last write wins)
+        for line in raw_text.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+                obj_type = obj.get("type", "")
+                if obj_type == "meta":
+                    meta = obj
+                elif obj_type == "item":
+                    h = obj.get("hash", "")
+                    if h:
+                        items[h] = obj
+            except Exception:
+                pass
+        if meta is None:
+            raise ValueError(f"JSONL embeddings cache is missing meta header: {normalized_path}")
+        active_model_name = fs_get_active_embedding_model_name()
+        cache_model = str(meta.get("model_name", "") or "").strip()
+        normalized_active = str(active_model_name or "").strip()
+        if normalized_active and cache_model and normalized_active != cache_model:
+            if not (normalized_active in cache_model or cache_model in normalized_active):
+                raise ValueError(f"No embedding cache found for active model: {normalized_active or 'unknown'}")
+        query_prefix = str(meta.get("query_prefix", "") or "")
+        return normalized_path, list(items.values()), query_prefix, cache_model or active_model_name
+
+    # Legacy JSON (v1)
+    parsed = json.loads(raw_text)
+    if not isinstance(parsed, dict):
+        raise ValueError(f"Embeddings cache file must contain a JSON object: {normalized_path}")
+    active_model_name = fs_get_active_embedding_model_name()
+    _, model_cache = fs_select_embedding_cache(parsed, active_model_name)
+    query_prefix = str(model_cache.get("query_prefix", "") or "")
+    model_name = str(model_cache.get("model_name", active_model_name) or active_model_name)
+    items_dict = model_cache.get("items", {})
+    if not isinstance(items_dict, dict):
+        return normalized_path, [], query_prefix, model_name
+    return normalized_path, list(items_dict.values()), query_prefix, model_name
+
 def fs_cosine_similarity(vec_a, vec_b):
     if not isinstance(vec_a, list) or not isinstance(vec_b, list):
         return 0.0
@@ -4993,19 +5063,15 @@ def fs_select_embedding_cache(cache_obj, active_model_name):
     raise ValueError(f"No embedding cache found for active model: {normalized_name or 'unknown'}")
 
 def fs_semantic_search_cache(embeddings_cache_path, search_query, max_results=5):
-    normalized_cache_path, cache_obj = fs_load_json_file(embeddings_cache_path)
+    normalized_cache_path, items_list, query_prefix, model_name = fs_load_embeddings_cache_file(embeddings_cache_path)
     query_text = str(search_query or "").strip()
     if query_text == "":
         raise ValueError("Search query cannot be empty.")
 
-    active_model_name = fs_get_active_embedding_model_name()
-    _, model_cache = fs_select_embedding_cache(cache_obj, active_model_name)
-    query_prefix = str(model_cache.get("query_prefix", "") or "")
-    items = model_cache.get("items", {})
-    if not isinstance(items, dict) or len(items) == 0:
+    if not items_list:
         return {
             "cache_path": normalized_cache_path,
-            "model": str(model_cache.get("model_name", active_model_name) or active_model_name),
+            "model": model_name,
             "snippets": [],
         }
 
@@ -5019,7 +5085,7 @@ def fs_semantic_search_cache(embeddings_cache_path, search_query, max_results=5)
     query_embedding = query_embeddings[0]
 
     candidates = []
-    for item in items.values():
+    for item in items_list:
         if not isinstance(item, dict):
             continue
         embedding = item.get("embedding", [])
@@ -5035,7 +5101,7 @@ def fs_semantic_search_cache(embeddings_cache_path, search_query, max_results=5)
     if len(candidates) == 0:
         return {
             "cache_path": normalized_cache_path,
-            "model": str(model_cache.get("model_name", active_model_name) or active_model_name),
+            "model": model_name,
             "snippets": [],
         }
 
@@ -5058,7 +5124,7 @@ def fs_semantic_search_cache(embeddings_cache_path, search_query, max_results=5)
     scored_candidates.sort(key=lambda item: item.get("similarity", 0.0), reverse=True)
     return {
         "cache_path": normalized_cache_path,
-        "model": str(model_cache.get("model_name", active_model_name) or active_model_name),
+        "model": model_name,
         "snippets": scored_candidates[:max_hits],
     }
 
