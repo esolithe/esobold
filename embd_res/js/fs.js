@@ -12,12 +12,6 @@
  *   console.log(lines);
  */
 class FsClient {
-    // Text file extensions supported for semantic search (treated identically to .txt)
-    static SEMANTIC_TEXT_EXTENSIONS = [
-        '.txt', '.csv', '.tsv', '.md', '.json', '.xml', '.html', '.htm',
-        '.yaml', '.yml', '.log', '.ini', '.cfg', '.conf', '.rst', '.tex',
-    ];
-
     // Number of newly-generated embedding items written per progressive flush
     static EMBEDDING_PROGRESSIVE_WRITE_INTERVAL = 1000;
 
@@ -405,21 +399,19 @@ class FsClient {
     }
 
     /**
-     * Semantic-search a filesystem text or PDF file using the optimised backend pipeline.
+     * Semantic-search a filesystem document using the optimised backend pipeline.
      * The backend handles text extraction, chunking, embedding generation and caching.
      * Cache location is determined server-side:
      *   - /INTERNAL_READ_ONLY/Documents/... → cached into the admindocsdir on disk
      *   - All other paths → cached in the writable filesystem (memory or fsDir direct mode)
-     * Supported text extensions: .txt, .csv, .tsv, .md, .json, .xml, .html,
-     * .htm, .yaml, .yml, .log, .ini, .cfg, .conf, .rst, .tex
+     * Supported file types are determined by the backend (plain text, PDF, and any
+     * format the backend extraction logic can handle).
      * @param {string} path
      * @param {string} search_query
      * @param {number} [max_results=5]
      * @returns {Promise<Array<{snippet:string, document:string|null, similarity:number}>>}
      */
     async semantic_search(path, search_query, max_results = 5) {
-        const TEXT_EXTENSIONS = FsClient.SEMANTIC_TEXT_EXTENSIONS;
-
         const sourcePath = this._normalize_path(path);
         const queryText = `${search_query || ''}`.trim();
         const maxResults = Math.max(1, Math.min(20, parseInt(max_results, 10) || 5));
@@ -428,13 +420,6 @@ class FsClient {
         }
         if (typeof is_using_kcpp_with_embeddings === 'function' && !is_using_kcpp_with_embeddings()) {
             throw new Error('Embeddings are not available for the current endpoint.');
-        }
-
-        const lowerPath = sourcePath.toLowerCase();
-        const isPdf = lowerPath.endsWith('.pdf');
-        const isText = TEXT_EXTENSIONS.some(ext => lowerPath.endsWith(ext));
-        if (!isPdf && !isText) {
-            throw new Error(`Filesystem semantic search only supports text files (${TEXT_EXTENSIONS.join(', ')}) and .pdf files.`);
         }
 
         // Delegate all extraction, chunking, embedding and caching to the backend.

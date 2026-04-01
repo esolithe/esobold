@@ -5287,24 +5287,24 @@ def fs_extract_document_text(path):
         raise ValueError(f"File is binary and cannot be used as a text document: {normalized_path}")
     return fs_decode_text(content_bytes)
 
-def fs_chunk_text(text, chunk_size=500, overlap=50):
-    """Split text into overlapping word-based chunks.
-    chunk_size is the target number of words per chunk; overlap is the number of
-    words shared between adjacent chunks.  Returns a list of non-empty strings."""
-    words = str(text or "").split()
-    if not words:
+def fs_chunk_text(text, chunk_size=1024, overlap=500):
+    """Split text into overlapping character-based chunks.
+    chunk_size is the target number of characters per chunk; overlap is the number of
+    characters shared between adjacent chunks.  Returns a list of non-empty strings."""
+    raw = str(text or "")
+    if not raw.strip():
         return []
     step = max(1, chunk_size - overlap)
     chunks = []
     i = 0
-    while i < len(words):
-        chunk = " ".join(words[i:i + chunk_size])
-        if chunk.strip():
+    while i < len(raw):
+        chunk = raw[i:i + chunk_size].strip()
+        if chunk:
             chunks.append(chunk)
         i += step
     return chunks
 
-def fs_semantic_search_document(document_path, search_query, max_results=5, chunk_size=500, overlap=50):
+def fs_semantic_search_document(document_path, search_query, max_results=5, chunk_size=1024, overlap=500):
     """Perform semantic search on a document file stored in the filesystem API.
 
     Workflow:
@@ -5375,8 +5375,8 @@ def fs_semantic_search_document(document_path, search_query, max_results=5, chun
         raise ValueError(f"Document is empty or could not be parsed: {normalized_path}")
 
     # --- Chunk and embed ---
-    chunks = fs_chunk_text(text, chunk_size=max(1, tryparseint(chunk_size, 500)),
-                           overlap=max(0, tryparseint(overlap, 50)))
+    chunks = fs_chunk_text(text, chunk_size=max(1, tryparseint(chunk_size, 1024)),
+                           overlap=max(0, tryparseint(overlap, 500)))
     utfprint(f"[SemanticSearch] Split document into {len(chunks)} chunks, generating embeddings...")
     query_prefix = ""
     items = []
@@ -7928,8 +7928,8 @@ Change Mode<br>
                             document_path,
                             search_query,
                             max_results,
-                            tempbody.get('chunk_size', 500),
-                            tempbody.get('overlap', 50),
+                            tempbody.get('chunk_size', 1024),
+                            tempbody.get('overlap', 500),
                         )
                     else:
                         # Legacy mode: use a pre-built embeddings cache file
