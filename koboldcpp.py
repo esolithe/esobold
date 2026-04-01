@@ -4494,6 +4494,7 @@ def fs_normalize_path(raw_path, allow_root=False):
 FS_INTERNAL_READONLY_PREFIX = "/INTERNAL_READ_ONLY"
 FS_INTERNAL_READONLY_DOCS   = "/INTERNAL_READ_ONLY/Documents"
 FS_INTERNAL_READONLY_RES    = "/INTERNAL_READ_ONLY/Resources"
+FS_EMBEDDING_CACHE_PREFIX   = "/EmbeddingCache"
 
 def fs_is_readonly_path(normalized_path):
     """Return True when the path lives under /INTERNAL_READ_ONLY/."""
@@ -4531,26 +4532,31 @@ def fs_is_docs_path(normalized_path):
     return (normalized_path == FS_INTERNAL_READONLY_DOCS or
             normalized_path.startswith(FS_INTERNAL_READONLY_DOCS + "/"))
 
+def fs_is_res_path(normalized_path):
+    """Return True when the path lives under /INTERNAL_READ_ONLY/Resources/."""
+    return (normalized_path == FS_INTERNAL_READONLY_RES or
+            normalized_path.startswith(FS_INTERNAL_READONLY_RES + "/"))
+
+try:
+    import chardet as _chardet
+    _CHARDET_AVAILABLE = True
+except ImportError:
+    _chardet = None
+    _CHARDET_AVAILABLE = False
+
 _BINARY_SAMPLE_SIZE = 8192  # bytes to inspect when deciding text vs binary
-_TEXT_BOMS = (
-    b'\xff\xfe\x00\x00',  # UTF-32 LE (must be checked before UTF-16 LE)
-    b'\x00\x00\xfe\xff',  # UTF-32 BE
-    b'\xff\xfe',          # UTF-16 LE
-    b'\xfe\xff',          # UTF-16 BE
-    b'\xef\xbb\xbf',      # UTF-8 BOM
-)
 
 def fs_is_binary(content_bytes):
     b = content_bytes if isinstance(content_bytes, (bytes, bytearray)) else bytes(content_bytes)
-    # A recognised BOM unambiguously marks the file as a text encoding
-    for bom in _TEXT_BOMS:
-        if b.startswith(bom):
-            return False
-    # Only inspect the first 8 KB so metadata calls stay fast on large files
-    sample = b[:_BINARY_SAMPLE_SIZE]
-    if not sample:
+    if not b:
         return False
-    # Count control bytes that are not normal text whitespace (tab / LF / CR / FF / VT)
+    sample = b[:_BINARY_SAMPLE_SIZE]
+    if _CHARDET_AVAILABLE:
+        detected = _chardet.detect(sample)
+        enc = (detected.get("encoding") or "").lower()
+        # chardet returns encoding=None or encoding='binary' for non-text data
+        return not enc or enc == "binary"
+    # Fallback heuristic: count control bytes outside normal text whitespace
     non_printable = sum(1 for byte in sample if byte <= 0x08 or (0x0e <= byte <= 0x1f))
     return (non_printable / len(sample)) > 0.30
 
@@ -5316,8 +5322,11 @@ def fs_semantic_search_document(document_path, search_query, max_results=5, chun
       3. Determine the cache path:
          - Documents under /INTERNAL_READ_ONLY/Documents: cache written directly
            to the admindocsdir on disk (e.g. /path/to/docs/file.txt.embd.jsonl).
+         - Resources under /INTERNAL_READ_ONLY/Resources: cache stored in the
+           writable FS under /EmbeddingCache/ (e.g.
+           /INTERNAL_READ_ONLY/Resources/js/agent.js -> /EmbeddingCache/js/agent.embd.jsonl).
          - All other paths: cache written via the normal writable filesystem API
-           (memory or direct-disk depending on --fsdirect).
+           (memory or direct-disk depending on --fsdirect), next to the source file.
       4. If a cache exists and its stored content_hash matches the current document:
          use the cache as-is (no re-embedding).
       5. If a cache exists but the content_hash differs (document changed):
@@ -5337,7 +5346,16 @@ def fs_semantic_search_document(document_path, search_query, max_results=5, chun
 
     # Determine where the embedding cache lives
     _in_docs = fs_is_docs_path(normalized_path)
-    cache_virtual_path = normalized_path + ".embd.jsonl"
+    _in_res  = fs_is_res_path(normalized_path)
+
+    if _in_res:
+        # Resources are read-only; store the cache in the writable /EmbeddingCache/ tree.
+        # Strip /INTERNAL_READ_ONLY/Resources, remove the file extension, add .embd.jsonl
+        _res_rel = normalized_path[len(FS_INTERNAL_READONLY_RES):].lstrip("/")
+        _res_stem = posixpath.splitext(_res_rel)[0]
+        cache_virtual_path = FS_EMBEDDING_CACHE_PREFIX + "/" + _res_stem + ".embd.jsonl"
+    else:
+        cache_virtual_path = normalized_path + ".embd.jsonl"
 
     # For docs-dir documents we also track the physical cache path so we can
     # write it directly to disk (bypassing the read-only virtual layer).
@@ -5462,6 +5480,8 @@ def fs_semantic_search_document(document_path, search_query, max_results=5, chun
             except Exception as _ce:
                 utfprint(f"[SemanticSearch] Warning: could not write cache to disk: {_ce}")
         else:
+            # For Resources paths this writes to /EmbeddingCache/... in the writable FS.
+            # For all other paths this writes next to the source file.
             try:
                 fs_write_file(cache_virtual_path, cache_content)
                 utfprint(f"[SemanticSearch] Embeddings cached to: {cache_virtual_path}")
