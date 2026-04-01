@@ -168,7 +168,13 @@
         try {
             const r = await fetch('/api/extra/fs/metadata?path=' + encodeURIComponent(path));
             if (!r.ok) return null;
-            return await r.json();
+            const data = await r.json();
+            // The metadata endpoint uses fs_batch_apply, which wraps the result as
+            // { success, results: [ { path, size_bytes, last_modified, ... } ] }
+            if (Array.isArray(data?.results) && data.results.length > 0 && data.results[0]?.success) {
+                return data.results[0];
+            }
+            return null;
         } catch (_) { return null; }
     }
 

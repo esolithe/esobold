@@ -4,6 +4,10 @@
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+/* Ensure the HTML `hidden` attribute always hides elements even when an
+   explicit `display` rule (e.g. display:flex on #empty-notice) is present. */
+[hidden] { display: none !important; }
+
 :root {
     --bg:        #1a1a2e;
     --bg2:       #16213e;
