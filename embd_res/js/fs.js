@@ -12,6 +12,15 @@
  *   console.log(lines);
  */
 class FsClient {
+    // Text file extensions supported for semantic search (treated identically to .txt)
+    static SEMANTIC_TEXT_EXTENSIONS = [
+        '.txt', '.csv', '.tsv', '.md', '.json', '.xml', '.html', '.htm',
+        '.yaml', '.yml', '.log', '.ini', '.cfg', '.conf', '.rst', '.tex',
+    ];
+
+    // Number of newly-generated embedding items written per progressive flush
+    static EMBEDDING_PROGRESSIVE_WRITE_INTERVAL = 1000;
+
     /**
      * @param {string} [base_url] - Root URL of the KoboldCpp instance (default: page origin).
      */
@@ -137,19 +146,25 @@ class FsClient {
         };
     }
 
+    _get_embedding_api_batch_size() {
+        const val = parseInt(typeof localsettings !== 'undefined' ? localsettings?.embeddingsBatchSize : 0, 10);
+        return Number.isFinite(val) && val > 0 ? val : 100;
+    }
+
     _derive_semantic_cache_paths(sourcePath) {
         const normalizedSourcePath = this._normalize_path(sourcePath);
         const sourceName = normalizedSourcePath.split('/').pop() || 'document.txt';
         const dotIndex = sourceName.lastIndexOf('.');
         const baseName = dotIndex > 0 ? sourceName.slice(0, dotIndex) : sourceName;
         const dirPath = normalizedSourcePath.slice(0, normalizedSourcePath.length - sourceName.length).replace(/\/$/, '') || '/';
+        const prefix = dirPath === '/' ? '' : dirPath;
         return {
             sourcePath: normalizedSourcePath,
             dirPath,
             sourceName,
             baseName,
-            rawTextPath: `${dirPath === '/' ? '' : dirPath}/${baseName}_rawtext.txt` || `/${baseName}_rawtext.txt`,
-            cachePath: `${dirPath === '/' ? '' : dirPath}/${baseName}_embeddings.json` || `/${baseName}_embeddings.json`,
+            rawTextPath: `${prefix}/${baseName}_rawtext.txt`,
+            cachePath: `${prefix}/${baseName}_embeddings.jsonl`,
         };
     }
 
@@ -176,6 +191,10 @@ class FsClient {
         const bytes = new Uint8Array(await rawResp.arrayBuffer());
         const mimeType = sourceExt === '.pdf' ? 'application/pdf' : 'text/plain';
         const dataUrl = `data:${mimeType};base64,${bytesToB64(bytes)}`;
+        if (sourceExt !== '.pdf') {
+            // Plain text variant — decode directly without the extractText server round-trip
+            return new TextDecoder('utf-8').decode(bytes);
+        }
         if (window.documentParser && typeof window.documentParser.extractTextFromB64 === 'function') {
             return `${await window.documentParser.extractTextFromB64(dataUrl) || ''}`;
         }
@@ -227,10 +246,74 @@ class FsClient {
         }
     }
 
+    /**
+     * Load an embeddings cache file, supporting both the legacy JSON format (v1)
+     * and the new JSONL format (v2).  Returns { meta, existingHashes } where
+     * existingHashes is a Set of hash strings for deduplication without keeping
+     * full embedding vectors in JS memory.
+     */
+    async _load_embeddings_cache(cachePath) {
+        if (!(await this._path_exists(cachePath))) {
+            return { meta: null, existingHashes: new Set() };
+        }
+        let rawText = '';
+        try {
+            rawText = (await this._read_text_file(cachePath)).trim();
+        } catch {
+            return { meta: null, existingHashes: new Set() };
+        }
+        if (!rawText) {
+            return { meta: null, existingHashes: new Set() };
+        }
+        // Detect JSONL (v2): first non-empty line contains "type":"meta"
+        const firstLine = rawText.split('\n')[0].trim();
+        if (firstLine.includes('"type"') && firstLine.includes('"meta"')) {
+            const meta = (() => { try { return JSON.parse(firstLine); } catch { return null; } })();
+            const existingHashes = new Set();
+            for (const line of rawText.split('\n')) {
+                const l = line.trim();
+                if (!l) continue;
+                try {
+                    const obj = JSON.parse(l);
+                    if (obj.type === 'item' && obj.hash) {
+                        existingHashes.add(obj.hash);
+                    }
+                } catch { /* skip malformed lines */ }
+            }
+            return { meta, existingHashes };
+        }
+        // Legacy JSON (v1): parse the whole object and extract hashes
+        try {
+            const legacyObj = JSON.parse(rawText);
+            return { meta: null, existingHashes: new Set(), legacy: legacyObj };
+        } catch {
+            return { meta: null, existingHashes: new Set() };
+        }
+    }
+
+    /**
+     * Write the JSONL header (meta) line, replacing any existing cache file.
+     */
+    async _write_embeddings_cache_header(cachePath, metaData) {
+        const headerLine = JSON.stringify({ type: 'meta', ...metaData });
+        await this.write([{ path: cachePath, content: headerLine + '\n' }]);
+    }
+
+    /**
+     * Append a batch of embedding items to the JSONL cache file.
+     * Each item is written as a single JSON line.
+     */
+    async _append_embeddings_items(cachePath, items) {
+        if (!items || items.length === 0) return;
+        const lines = items.map(item => JSON.stringify({ type: 'item', ...item }));
+        await this.write_lines([{ path: cachePath, lines, append: true }]);
+    }
+
     async _generate_embeddings_for_chunks(chunks, modelName) {
         const generated = [];
-        for (let index = 0; index < chunks.length; index += 100) {
-            const currentBatch = chunks.slice(index, index + 100);
+        const apiBatchSize = this._get_embedding_api_batch_size();
+        for (let index = 0; index < chunks.length; index += apiBatchSize) {
+            const currentBatch = chunks.slice(index, index + apiBatchSize);
             if (typeof showToast === 'function') {
                 showToast(`Generating ${index + 1} / ${chunks.length} embeddings...`, 15000);
             }
@@ -322,13 +405,18 @@ class FsClient {
     }
 
     /**
-     * Semantic-search a filesystem .txt or .pdf file using cached embeddings.
+     * Semantic-search a filesystem text or PDF file using cached embeddings.
+     * Supported text extensions: .txt, .csv, .tsv, .md, .json, .xml, .html,
+     * .htm, .yaml, .yml, .log, .ini, .cfg, .conf, .rst, .tex
      * @param {string} path
      * @param {string} search_query
      * @param {number} [max_results=5]
      * @returns {Promise<Array<{snippet:string, document:string|null, similarity:number}>>}
      */
     async semantic_search(path, search_query, max_results = 5) {
+        const PROGRESSIVE_WRITE_INTERVAL = FsClient.EMBEDDING_PROGRESSIVE_WRITE_INTERVAL;
+        const TEXT_EXTENSIONS = FsClient.SEMANTIC_TEXT_EXTENSIONS;
+
         const sourcePath = this._normalize_path(path);
         const queryText = `${search_query || ''}`.trim();
         const maxResults = Math.max(1, Math.min(20, parseInt(max_results, 10) || 5));
@@ -339,14 +427,19 @@ class FsClient {
             throw new Error('Embeddings are not available for the current endpoint.');
         }
 
-        const sourceMetadata = await this.metadata([{ path: sourcePath }]);
         const lowerPath = sourcePath.toLowerCase();
-        const sourceExt = lowerPath.endsWith('.pdf') ? '.pdf' : (lowerPath.endsWith('.txt') ? '.txt' : '');
-        if (!['.txt', '.pdf'].includes(sourceExt)) {
-            throw new Error('Filesystem semantic search only supports .txt and .pdf files.');
+        const isPdf = lowerPath.endsWith('.pdf');
+        const isText = TEXT_EXTENSIONS.some(ext => lowerPath.endsWith(ext));
+        if (!isPdf && !isText) {
+            throw new Error(`Filesystem semantic search only supports text files (${TEXT_EXTENSIONS.join(', ')}) and .pdf files.`);
         }
-        if (sourceExt === '.txt' && sourceMetadata?.binary) {
-            throw new Error('Filesystem semantic search requires a text-readable .txt file.');
+        const sourceExt = isPdf ? '.pdf' : '.txt';
+
+        if (isText) {
+            const sourceMetadata = await this.metadata([{ path: sourcePath }]);
+            if (sourceMetadata?.binary) {
+                throw new Error('Filesystem semantic search requires a text-readable file.');
+            }
         }
 
         const modelName = `${(typeof get_kcpp_embedding_model === 'function' ? get_kcpp_embedding_model() : '') || ''}`.trim();
@@ -374,66 +467,108 @@ class FsClient {
             return [];
         }
 
-        const cacheObject = await this._load_fs_json(semanticPaths.cachePath);
-        const models = typeof cacheObject.models === 'object' && cacheObject.models ? cacheObject.models : {};
-        let modelCache = typeof models[modelName] === 'object' && models[modelName]
-            ? models[modelName]
-            : {};
-        const shouldInvalidateModelCache = modelCache.rawtext_hash !== rawTextHash
-            || `${modelCache.query_prefix || ''}` !== `${preset.query_prompt || ''}`
-            || `${modelCache.document_prefix || ''}` !== `${preset.document_prompt || ''}`;
-        if (shouldInvalidateModelCache) {
-            modelCache = {};
+        // Load existing cache — only hashes are kept in memory, not full embeddings.
+        const { meta: cacheMeta, existingHashes, legacy: legacyCache } = await this._load_embeddings_cache(semanticPaths.cachePath);
+
+        // Determine whether the cache is still valid for this model / rawtext.
+        let shouldInvalidate = true;
+        if (cacheMeta) {
+            // JSONL v2 format
+            shouldInvalidate = cacheMeta.rawtext_hash !== rawTextHash
+                || `${cacheMeta.model_name || ''}` !== modelName
+                || `${cacheMeta.query_prefix || ''}` !== `${preset.query_prompt || ''}`
+                || `${cacheMeta.document_prefix || ''}` !== `${preset.document_prompt || ''}`;
+        } else if (legacyCache) {
+            // Legacy JSON format — check if there is a matching model entry
+            const models = typeof legacyCache.models === 'object' && legacyCache.models ? legacyCache.models : {};
+            const legacyModelCache = typeof models[modelName] === 'object' && models[modelName] ? models[modelName] : null;
+            shouldInvalidate = !legacyModelCache
+                || legacyModelCache.rawtext_hash !== rawTextHash
+                || `${legacyModelCache.query_prefix || ''}` !== `${preset.query_prompt || ''}`
+                || `${legacyModelCache.document_prefix || ''}` !== `${preset.document_prompt || ''}`;
         }
 
-        const existingItems = typeof modelCache.items === 'object' && modelCache.items ? modelCache.items : {};
-        const nextItems = {};
-        const missingChunks = [];
-        for (const chunk of chunks) {
-            const cachedItem = existingItems[chunk.hash];
-            if (cachedItem && Array.isArray(cachedItem.embedding) && cachedItem.embedding.length > 0
-                && `${cachedItem.snippet || ''}` === chunk.snippet
-                && `${cachedItem.document || ''}` === `${chunk.document || ''}`) {
-                nextItems[chunk.hash] = cachedItem;
-            }
-            else {
-                missingChunks.push(chunk);
-            }
-        }
+        const validHashes = shouldInvalidate ? new Set() : existingHashes;
+        const missingChunks = chunks.filter(chunk => !validHashes.has(chunk.hash));
 
         let resolvedModelName = modelName;
-        if (missingChunks.length > 0) {
-            const generatedItems = await this._generate_embeddings_for_chunks(missingChunks, modelName);
-            for (const generatedItem of generatedItems) {
-                resolvedModelName = `${generatedItem.modelUsed || resolvedModelName}`.trim() || resolvedModelName;
-                nextItems[generatedItem.hash] = generatedItem;
+
+        if (shouldInvalidate || !(await this._path_exists(semanticPaths.cachePath))) {
+            // Write a fresh JSONL header; this also truncates any stale cache.
+            await this._write_embeddings_cache_header(semanticPaths.cachePath, {
+                version: 2,
+                source_path: semanticPaths.sourcePath,
+                rawtext_path: semanticPaths.rawTextPath,
+                rawtext_hash: rawTextHash,
+                model_name: modelName,
+                query_prefix: `${preset.query_prompt || ''}`,
+                document_prefix: `${preset.document_prompt || ''}`,
+                chunk_size: this._get_chunking_settings().chunkSize,
+                chunk_overlap: this._get_chunking_settings().chunkOverlap,
+                updated_at: new Date().toISOString(),
+            });
+
+            if (!shouldInvalidate && legacyCache) {
+                // Migrate legacy cache items to the new JSONL format so they aren't lost.
+                const models = legacyCache.models || {};
+                const lm = models[modelName] || {};
+                const legacyItems = typeof lm.items === 'object' && lm.items ? Object.values(lm.items) : [];
+                for (let i = 0; i < legacyItems.length; i += PROGRESSIVE_WRITE_INTERVAL) {
+                    await this._append_embeddings_items(semanticPaths.cachePath, legacyItems.slice(i, i + PROGRESSIVE_WRITE_INTERVAL));
+                }
             }
         }
-        else if (`${modelCache.model_name || ''}`.trim() !== '') {
-            resolvedModelName = `${modelCache.model_name}`.trim();
-        }
 
-        const mergedCache = {
-            version: 1,
-            source_path: semanticPaths.sourcePath,
-            rawtext_path: semanticPaths.rawTextPath,
-            rawtext_hash: rawTextHash,
-            updated_at: new Date().toISOString(),
-            models: {
-                ...models,
-                [modelName]: {
-                    model_name: resolvedModelName,
-                    query_prefix: `${preset.query_prompt || ''}`,
-                    document_prefix: `${preset.document_prompt || ''}`,
-                    rawtext_hash: rawTextHash,
-                    chunk_size: this._get_chunking_settings().chunkSize,
-                    chunk_overlap: this._get_chunking_settings().chunkOverlap,
-                    updated_at: new Date().toISOString(),
-                    items: nextItems,
-                },
-            },
-        };
-        await this.write([{ path: semanticPaths.cachePath, content: JSON.stringify(mergedCache) }]);
+        if (missingChunks.length > 0) {
+            const apiBatchSize = this._get_embedding_api_batch_size();
+            let pendingItems = [];
+            for (let index = 0; index < missingChunks.length; index += apiBatchSize) {
+                const apiBatch = missingChunks.slice(index, index + apiBatchSize);
+                if (typeof showToast === 'function') {
+                    showToast(`Generating ${index + 1} / ${missingChunks.length} embeddings...`, 15000);
+                }
+                const reqOpt = {
+                    method: 'POST',
+                    headers: get_kobold_header(),
+                    body: JSON.stringify({
+                        input: apiBatch.map(chunk => chunk.embeddingInput),
+                        truncate: true,
+                    }),
+                };
+                if (globalabortcontroller) {
+                    reqOpt.signal = globalabortcontroller.signal;
+                }
+                const sub_endpt = apply_proxy_url(`${custom_kobold_endpoint}/api/extra/embeddings`);
+                const response = await fetch(sub_endpt, reqOpt);
+                if (!response.ok) {
+                    throw new Error(`Embedding request failed (${response.status})`);
+                }
+                const payload = await response.json();
+                const responseModelName = `${payload?.model || modelName || ''}`.trim() || modelName;
+                resolvedModelName = responseModelName || resolvedModelName;
+                for (let bi = 0; bi < apiBatch.length; bi++) {
+                    if (!Array.isArray(payload?.data) || !Array.isArray(payload.data[bi]?.embedding)) {
+                        throw new Error('Embedding response was missing expected vectors.');
+                    }
+                    pendingItems.push({
+                        hash: apiBatch[bi].hash,
+                        snippet: apiBatch[bi].snippet,
+                        document: apiBatch[bi].document,
+                        embedding: payload.data[bi].embedding,
+                        modelUsed: responseModelName,
+                    });
+                }
+
+                // Progressive write: flush every PROGRESSIVE_WRITE_INTERVAL new items
+                if (pendingItems.length >= PROGRESSIVE_WRITE_INTERVAL || index + apiBatchSize >= missingChunks.length) {
+                    await this._append_embeddings_items(semanticPaths.cachePath, pendingItems);
+                    pendingItems = [];
+                }
+            }
+            if (typeof showToast === 'function') {
+                showToast('');
+            }
+        }
 
         const semanticResult = await this._post('/api/extra/fs/semantic_search', {
             embeddings_cache_path: semanticPaths.cachePath,

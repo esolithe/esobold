@@ -202,6 +202,8 @@ display_settings = () => {
     document.getElementById("showContextUsageChart").checked = localsettings.showContextUsageChart;
     document.getElementById("fullScreenEditorForInputs").checked = localsettings.fullScreenEditorForInputs;
     document.getElementById("corpoHideLeftPanel").checked = localsettings.corpoHideLeftPanel;
+    document.getElementById("embeddingsBatchSize").value = localsettings.embeddingsBatchSize;
+    document.getElementById("embeddingsBatchSizenumeric").value = localsettings.embeddingsBatchSize;
     document.getElementById("agentSavedMacros").value = JSON.stringify(localsettings?.agentSavedMacros || window.eso.agentMacros, null, 2)
     renderEsoboldAgentTools()
 }
@@ -233,6 +235,7 @@ confirm_settings = () => {
     localsettings.showContextUsageChart = (document.getElementById("showContextUsageChart").checked ? true : false);
     localsettings.fullScreenEditorForInputs = (document.getElementById("fullScreenEditorForInputs").checked ? true : false);
     localsettings.corpoHideLeftPanel = (document.getElementById("corpoHideLeftPanel").checked ? true : false);
+    localsettings.embeddingsBatchSize = parseInt(document.getElementById("embeddingsBatchSize").value, 10) || 100;
     try
     {
         localsettings.disabled_agent_tools = [...document.querySelectorAll("#esobold_agent_tools_list_container input[data-agent-tool-checkbox='true']")].filter(elem => !elem.checked).map(elem => elem.value)
@@ -312,6 +315,9 @@ window.addEventListener('load', () => {
     }
     if (localsettings?.corpoHideLeftPanel == undefined) {
         localsettings.corpoHideLeftPanel = false
+    }
+    if (localsettings?.embeddingsBatchSize == undefined) {
+        localsettings.embeddingsBatchSize = 100
     }
     if (localsettings?.agentSavedMacros == undefined) {
         localsettings.agentSavedMacros = window.eso.agentMacros
@@ -591,6 +597,11 @@ window.addEventListener('load', () => {
     settingsBox.append(settingLabelElem)
 
     settingLabelElem = createSettingElemButton("libraryMods", "Mods", "Open the third-party mods manager to browse and apply community mods.", () => modManager.showModListWarning())
+    settingsBox.append(settingLabelElem)
+
+    settingsBox.appendChild(createNewSubSection("Semantic search settings"))
+
+    settingLabelElem = createSettingElemRange("embeddingsBatchSize", "Embeddings batch size", "Number of text chunks sent to the embeddings API in a single request during semantic search. Lower values use less memory; higher values may be faster.", 10, 500, 10, 100)
     settingsBox.append(settingLabelElem)
 
     toolsSettingsBox.appendChild(createNewSubSection("Esobold Agent Tools"))
