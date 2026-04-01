@@ -6704,6 +6704,11 @@ Change Mode<br>
                         content_type = detected_type
                         if content_type.startswith("text/"):
                             content_type += "; charset=utf-8"
+                    elif not fs_is_binary(response_body):
+                        # No recognized extension but content looks like text — serve
+                        # as plain text so the browser displays it inline rather than
+                        # forcing a download.
+                        content_type = "text/plain; charset=utf-8"
                 except (FileNotFoundError, ValueError):
                     try:
                         # Validate this is a reachable directory path (raises if invalid)
