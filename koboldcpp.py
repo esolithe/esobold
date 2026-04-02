@@ -7053,6 +7053,52 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                     auth_ok = True
         return auth_ok
 
+    def check_fs_basic_auth(self):
+        # Filesystem endpoints use HTTP Basic auth with any username and
+        # the admin password as the required password.
+        if not args.adminpassword or args.adminpassword == "":
+            return True
+        auth_header = self.headers.get('Authorization') or self.headers.get('authorization')
+        if auth_header is None or not auth_header.startswith('Basic '):
+            return False
+        encoded_token = auth_header[len('Basic '):].strip()
+        if encoded_token == "":
+            return False
+        try:
+            decoded = base64.b64decode(encoded_token, validate=True).decode('utf-8', 'replace')
+        except Exception:
+            return False
+        _, sep, password_value = decoded.partition(':')
+        if sep == "":
+            return False
+        return password_value == args.adminpassword
+
+    def is_fs_protected_path(self, request_path):
+        if not isinstance(request_path, str) or request_path == "":
+            return False
+        clean_path = request_path.split("?")[0].rstrip('/')
+        if clean_path in ["/fs", "/fs.zip"]:
+            return True
+        if clean_path.startswith('/fs/'):
+            return True
+        if clean_path.startswith('/api/extra/fs/'):
+            return True
+        return False
+
+    def secure_fs_endpoint(self): #returns false if auth fails. caller should exit
+        auth_ok = self.check_fs_basic_auth()
+        if auth_ok is False:
+            self.send_response(401)
+            self.send_header('WWW-Authenticate', 'Basic realm="KoboldCpp Filesystem"')
+            self.end_headers(content_type='application/json')
+            self.wfile.write(json.dumps({"detail": {
+                    "error": "Unauthorized",
+                    "msg": "Filesystem authentication is missing or invalid.",
+                    "type": "unauthorized",
+                }}).encode())
+            return False
+        return True
+
     def secure_endpoint(self): #returns false if auth fails. caller should exit
         #handle password stuff
         auth_ok = self.check_header_password(password, args.adminpassword)
@@ -7262,6 +7308,10 @@ Change Mode<br>
 
         if clean_path!="/lcpp" and clean_path.startswith("/lcpp/"):
             clean_path = clean_path[5:] #adapt lcpp paths to the root
+
+        if self.is_fs_protected_path(clean_path):
+            if not self.secure_fs_endpoint():
+                return None
 
         if clean_path in [""]: # the root url is lite
             content_type = 'text/html'
@@ -7911,6 +7961,10 @@ Change Mode<br>
     def do_POST(self):
         global modelbusy, requestsinqueue, currentusergenkey, totalgens, pendingabortkey, lastuploadedcomfyimg, lastgeneratedcomfyimg, multiplayer_turn_major, multiplayer_turn_minor, multiplayer_story_data_compressed, multiplayer_dataformat, multiplayer_lastactive, net_save_slots, has_vision_support, savestate_limit, mcp_lock
         global autoswapmode, textName, sttName, ttsName, embedName, musicName, imageName, mmprojName
+        post_path = self.path.rstrip('/')
+        if self.is_fs_protected_path(post_path):
+            if not self.secure_fs_endpoint():
+                return
         contlenstr = self.headers['content-length']
         content_length = 0
         body = None

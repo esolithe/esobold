@@ -45,8 +45,25 @@ class FsClient {
         return url.toString();
     }
 
+    _get_fs_auth_headers() {
+        try {
+            if (typeof window.getFsClientAuthHeaders === 'function') {
+                const maybeHeaders = window.getFsClientAuthHeaders();
+                if (maybeHeaders && typeof maybeHeaders === 'object') {
+                    return maybeHeaders;
+                }
+            }
+        }
+        catch {
+            // Ignore auth-header callback errors and proceed without auth headers.
+        }
+        return {};
+    }
+
     async _get(path, params) {
-        const resp = await fetch(this._url(path, params));
+        const resp = await fetch(this._url(path, params), {
+            headers: this._get_fs_auth_headers(),
+        });
         if (!resp.ok) {
             const body = await resp.text().catch(() => '');
             throw new Error(`fs GET ${path} failed (${resp.status}): ${body}`);
@@ -56,9 +73,14 @@ class FsClient {
     }
 
     async _post(path, body_obj) {
+        const headers = {
+            'Content-Type': 'application/json',
+            'charset': 'utf-8',
+            ...this._get_fs_auth_headers(),
+        };
         const resp = await fetch(this.base_url + path, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'charset': 'utf-8' },
+            headers,
             body: JSON.stringify(body_obj),
         });
         if (!resp.ok) {
@@ -71,6 +93,7 @@ class FsClient {
     async _post_form(path, form_data) {
         const resp = await fetch(this.base_url + path, {
             method: 'POST',
+            headers: this._get_fs_auth_headers(),
             body: form_data,
         });
         if (!resp.ok) {
@@ -581,7 +604,9 @@ class FsClient {
      */
     async fetch_raw(path) {
         const url = this._url('/fs/' + path.replace(/^\/+/, ''));
-        const resp = await fetch(url);
+        const resp = await fetch(url, {
+            headers: this._get_fs_auth_headers(),
+        });
         if (!resp.ok) {
             throw new Error(`fs fetch_raw ${path} failed (${resp.status})`);
         }

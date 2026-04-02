@@ -7,6 +7,44 @@ let normalizeBase64ImageData = (input = "") => {
 	return value
 }
 
+let syncFsBasicAuthPasswordFromAdminHeaders = () => {
+	if (typeof window.getAuthHeaders !== "function") {
+		return
+	}
+	let headers = window.getAuthHeaders() || {}
+	let authHeader = `${headers.Authorization || headers.authorization || ""}`.trim()
+	if (!authHeader.toLowerCase().startsWith("bearer ")) {
+		return
+	}
+	window.kcppFsBasicAuthPassword = authHeader.substring(7).trim()
+}
+
+let ensureFsAdminPasswordIfRequired = async () => {
+	if (typeof window.promptForAdminPassword !== "function") {
+		return
+	}
+	if (typeof koboldcpp_admin_type !== "undefined" && koboldcpp_admin_type !== 2) {
+		window.kcppFsBasicAuthPassword = ""
+		return
+	}
+	await new Promise((resolve) => window.promptForAdminPassword(resolve))
+	syncFsBasicAuthPasswordFromAdminHeaders()
+}
+
+window.getFsClientAuthHeaders = () => {
+	let password = `${window.kcppFsBasicAuthPassword || ""}`
+	if (password === "") {
+		syncFsBasicAuthPasswordFromAdminHeaders()
+		password = `${window.kcppFsBasicAuthPassword || ""}`
+	}
+	if (password === "") {
+		return {}
+	}
+	return {
+		Authorization: `Basic ${btoa(`kcpp:${password}`)}`,
+	}
+}
+
 let base64ToUint8Array = (base64 = "") => {
 	let cleanBase64 = `${base64 || ""}`.trim()
 	if (cleanBase64 === "") return new Uint8Array(0)
@@ -28,6 +66,7 @@ let blobToDataUrl = async (blob) => {
 }
 
 let readFsPathAsDataUrl = async (fsPath) => {
+	await ensureFsAdminPasswordIfRequired()
 	let rawResp = await window.fsClient.fetch_raw(fsPath)
 	let blob = await rawResp.blob()
 	return await blobToDataUrl(blob)
@@ -38,11 +77,13 @@ let readFsPathAsBase64 = async (fsPath) => {
 }
 
 let writeBase64ToFs = async (fsPath, base64Data) => {
+	await ensureFsAdminPasswordIfRequired()
 	let bytes = base64ToUint8Array(base64Data)
 	return await window.fsClient.write([{ path: fsPath, content: bytes, isB64: true }])
 }
 
 let confirmFsMutation = async (mutationName, payload = {}) => {
+	await ensureFsAdminPasswordIfRequired()
 	let mode = await window.fsClient.getFsMode()
 	if (mode === "memory") {
 		return true
@@ -178,6 +219,7 @@ let createFsEmbedContentElement = (kind) => {
 }
 
 let openFsEmbedByName = async (args = {}) => {
+	await ensureFsAdminPasswordIfRequired()
 	let normalizedName = `${args?.name || ""}`.trim()
 	let targetPath = `${args?.file_path || args?.path || ""}`.trim()
 	if (normalizedName === "") {
