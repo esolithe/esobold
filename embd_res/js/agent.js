@@ -814,12 +814,38 @@ let runAgentCycle = async (agentRunState = {}) => {
         }
 
         objRefOverride(agentRunState, { initialPrompt })
+        let textDBSearchString = null
+        if (!!initialPrompt) {
+            textDBSearchString = initialPrompt.trim()
+        }
+        else if (typeof agentRunState?.agentInputPrompt === "string" && agentRunState.agentInputPrompt.trim().length > 0) {
+            textDBSearchString = agentRunState.agentInputPrompt.trim()
+        }
         if (!!initialPrompt && documentdb_provider != "0") {
             let contentToSearch = documentdb_data
             if (!!documentdb_searchhistory) {
                 contentToSearch += `\n\n[DOCUMENT BREAK][Chatlog history]${concat_gametext(true)}[DOCUMENT BREAK]`
             }
-            let ltmSnippets = await DatabaseMinisearch(contentToSearch, initialPrompt, "");
+            let ltmSnippets = await DatabaseMinisearch(contentToSearch, textDBSearchString, "");
+            let searchDocumentsEnabled = documentdb_searchdocuments && is_using_kcpp_with_searchable_docs() && window.fsClient;
+            // Merge document directory search results if enabled
+            if (searchDocumentsEnabled)
+            {
+                try {
+                    let docSnippets = await window.fsClient.search_all_documents(textDBSearchString, documentdb_numresults);
+                    if (Array.isArray(docSnippets) && docSnippets.length > 0)
+                    {
+                        // Normalise scores: text DB results use .similarity (embeddings) or .match (minisearch)
+                        const getScore = s => (s.similarity ?? s.match ?? 0);
+                        let combined = [...ltmSnippets, ...docSnippets];
+                        combined.sort((a, b) => getScore(b) - getScore(a));
+                        ltmSnippets = combined.slice(0, documentdb_numresults);
+                    }
+                } catch(docErr) {
+                    console.log("Document search failed:", docErr);
+                }
+            }
+
             for (let i = 0; i < ltmSnippets.length; ++i) {
                 textDBResults += getInfoSnippet(ltmSnippets[i]);
             }

@@ -12,12 +12,6 @@
  *   console.log(lines);
  */
 class FsClient {
-    // Text file extensions supported for semantic search (treated identically to .txt)
-    static SEMANTIC_TEXT_EXTENSIONS = [
-        '.txt', '.csv', '.tsv', '.md', '.json', '.xml', '.html', '.htm',
-        '.yaml', '.yml', '.log', '.ini', '.cfg', '.conf', '.rst', '.tex',
-    ];
-
     // Number of newly-generated embedding items written per progressive flush
     static EMBEDDING_PROGRESSIVE_WRITE_INTERVAL = 1000;
 
@@ -405,18 +399,19 @@ class FsClient {
     }
 
     /**
-     * Semantic-search a filesystem text or PDF file using cached embeddings.
-     * Supported text extensions: .txt, .csv, .tsv, .md, .json, .xml, .html,
-     * .htm, .yaml, .yml, .log, .ini, .cfg, .conf, .rst, .tex
+     * Semantic-search a filesystem document using the optimised backend pipeline.
+     * The backend handles text extraction, chunking, embedding generation and caching.
+     * Cache location is determined server-side:
+     *   - /INTERNAL_READ_ONLY/Documents/... → cached into the admindocsdir on disk
+     *   - All other paths → cached in the writable filesystem (memory or fsDir direct mode)
+     * Supported file types are determined by the backend (plain text, PDF, and any
+     * format the backend extraction logic can handle).
      * @param {string} path
      * @param {string} search_query
      * @param {number} [max_results=5]
      * @returns {Promise<Array<{snippet:string, document:string|null, similarity:number}>>}
      */
     async semantic_search(path, search_query, max_results = 5) {
-        const PROGRESSIVE_WRITE_INTERVAL = FsClient.EMBEDDING_PROGRESSIVE_WRITE_INTERVAL;
-        const TEXT_EXTENSIONS = FsClient.SEMANTIC_TEXT_EXTENSIONS;
-
         const sourcePath = this._normalize_path(path);
         const queryText = `${search_query || ''}`.trim();
         const maxResults = Math.max(1, Math.min(20, parseInt(max_results, 10) || 5));
@@ -427,155 +422,46 @@ class FsClient {
             throw new Error('Embeddings are not available for the current endpoint.');
         }
 
-        const lowerPath = sourcePath.toLowerCase();
-        const isPdf = lowerPath.endsWith('.pdf');
-        const isText = TEXT_EXTENSIONS.some(ext => lowerPath.endsWith(ext));
-        if (!isPdf && !isText) {
-            throw new Error(`Filesystem semantic search only supports text files (${TEXT_EXTENSIONS.join(', ')}) and .pdf files.`);
-        }
-        const sourceExt = isPdf ? '.pdf' : '.txt';
-
-        if (isText) {
-            const sourceMetadata = await this.metadata([{ path: sourcePath }]);
-            if (sourceMetadata?.binary) {
-                throw new Error('Filesystem semantic search requires a text-readable file.');
-            }
-        }
-
-        const modelName = `${(typeof get_kcpp_embedding_model === 'function' ? get_kcpp_embedding_model() : '') || ''}`.trim();
-        if (modelName === '') {
-            throw new Error('No active embedding model is available.');
-        }
-
-        const semanticPaths = this._derive_semantic_cache_paths(sourcePath);
-        const rawTextExists = await this._path_exists(semanticPaths.rawTextPath);
-        let rawText = rawTextExists
-            ? await this._read_text_file(semanticPaths.rawTextPath)
-            : await this._extract_source_text(sourcePath, sourceExt);
-        rawText = `${rawText || ''}`.trim();
-        if (rawText === '') {
-            throw new Error('No text could be extracted from the selected filesystem file.');
-        }
-        if (!rawTextExists) {
-            await this.write([{ path: semanticPaths.rawTextPath, content: rawText }]);
-        }
-
-        const preset = this._get_embedding_preset(modelName);
-        const rawTextHash = cyrb_hash(`${this._prepare_search_text(rawText) || ''}`, 0, 8);
-        const chunks = this._chunk_raw_text(rawText, semanticPaths.sourceName, preset.document_prompt);
-        if (chunks.length === 0) {
-            return [];
-        }
-
-        // Load existing cache — only hashes are kept in memory, not full embeddings.
-        const { meta: cacheMeta, existingHashes, legacy: legacyCache } = await this._load_embeddings_cache(semanticPaths.cachePath);
-
-        // Determine whether the cache is still valid for this model / rawtext.
-        let shouldInvalidate = true;
-        if (cacheMeta) {
-            // JSONL v2 format
-            shouldInvalidate = cacheMeta.rawtext_hash !== rawTextHash
-                || `${cacheMeta.model_name || ''}` !== modelName
-                || `${cacheMeta.query_prefix || ''}` !== `${preset.query_prompt || ''}`
-                || `${cacheMeta.document_prefix || ''}` !== `${preset.document_prompt || ''}`;
-        } else if (legacyCache) {
-            // Legacy JSON format — check if there is a matching model entry
-            const models = typeof legacyCache.models === 'object' && legacyCache.models ? legacyCache.models : {};
-            const legacyModelCache = typeof models[modelName] === 'object' && models[modelName] ? models[modelName] : null;
-            shouldInvalidate = !legacyModelCache
-                || legacyModelCache.rawtext_hash !== rawTextHash
-                || `${legacyModelCache.query_prefix || ''}` !== `${preset.query_prompt || ''}`
-                || `${legacyModelCache.document_prefix || ''}` !== `${preset.document_prompt || ''}`;
-        }
-
-        const validHashes = shouldInvalidate ? new Set() : existingHashes;
-        const missingChunks = chunks.filter(chunk => !validHashes.has(chunk.hash));
-
-        let resolvedModelName = modelName;
-
-        if (shouldInvalidate || !(await this._path_exists(semanticPaths.cachePath))) {
-            // Write a fresh JSONL header; this also truncates any stale cache.
-            await this._write_embeddings_cache_header(semanticPaths.cachePath, {
-                version: 2,
-                source_path: semanticPaths.sourcePath,
-                rawtext_path: semanticPaths.rawTextPath,
-                rawtext_hash: rawTextHash,
-                model_name: modelName,
-                query_prefix: `${preset.query_prompt || ''}`,
-                document_prefix: `${preset.document_prompt || ''}`,
-                chunk_size: this._get_chunking_settings().chunkSize,
-                chunk_overlap: this._get_chunking_settings().chunkOverlap,
-                updated_at: new Date().toISOString(),
-            });
-
-            if (!shouldInvalidate && legacyCache) {
-                // Migrate legacy cache items to the new JSONL format so they aren't lost.
-                const models = legacyCache.models || {};
-                const lm = models[modelName] || {};
-                const legacyItems = typeof lm.items === 'object' && lm.items ? Object.values(lm.items) : [];
-                for (let i = 0; i < legacyItems.length; i += PROGRESSIVE_WRITE_INTERVAL) {
-                    await this._append_embeddings_items(semanticPaths.cachePath, legacyItems.slice(i, i + PROGRESSIVE_WRITE_INTERVAL));
-                }
-            }
-        }
-
-        if (missingChunks.length > 0) {
-            const apiBatchSize = this._get_embedding_api_batch_size();
-            let pendingItems = [];
-            for (let index = 0; index < missingChunks.length; index += apiBatchSize) {
-                const apiBatch = missingChunks.slice(index, index + apiBatchSize);
-                if (typeof showToast === 'function') {
-                    showToast(`Generating ${index + 1} / ${missingChunks.length} embeddings...`, 15000);
-                }
-                const reqOpt = {
-                    method: 'POST',
-                    headers: get_kobold_header(),
-                    body: JSON.stringify({
-                        input: apiBatch.map(chunk => chunk.embeddingInput),
-                        truncate: true,
-                    }),
-                };
-                if (globalabortcontroller) {
-                    reqOpt.signal = globalabortcontroller.signal;
-                }
-                const sub_endpt = apply_proxy_url(`${custom_kobold_endpoint}/api/extra/embeddings`);
-                const response = await fetch(sub_endpt, reqOpt);
-                if (!response.ok) {
-                    throw new Error(`Embedding request failed (${response.status})`);
-                }
-                const payload = await response.json();
-                const responseModelName = `${payload?.model || modelName || ''}`.trim() || modelName;
-                resolvedModelName = responseModelName || resolvedModelName;
-                for (let bi = 0; bi < apiBatch.length; bi++) {
-                    if (!Array.isArray(payload?.data) || !Array.isArray(payload.data[bi]?.embedding)) {
-                        throw new Error('Embedding response was missing expected vectors.');
-                    }
-                    pendingItems.push({
-                        hash: apiBatch[bi].hash,
-                        snippet: apiBatch[bi].snippet,
-                        document: apiBatch[bi].document,
-                        embedding: payload.data[bi].embedding,
-                        modelUsed: responseModelName,
-                    });
-                }
-
-                // Progressive write: flush every PROGRESSIVE_WRITE_INTERVAL new items
-                if (pendingItems.length >= PROGRESSIVE_WRITE_INTERVAL || index + apiBatchSize >= missingChunks.length) {
-                    await this._append_embeddings_items(semanticPaths.cachePath, pendingItems);
-                    pendingItems = [];
-                }
-            }
-            if (typeof showToast === 'function') {
-                showToast('');
-            }
-        }
-
+        // Delegate all extraction, chunking, embedding and caching to the backend.
+        const { chunkSize, chunkOverlap } = this._get_chunking_settings();
         const semanticResult = await this._post('/api/extra/fs/semantic_search', {
-            embeddings_cache_path: semanticPaths.cachePath,
+            document_path: sourcePath,
             search_query: this._prepare_search_text(queryText),
             max_results: maxResults,
+            chunk_size: chunkSize,
+            overlap: chunkOverlap,
         });
         return Array.isArray(semanticResult?.snippets) ? semanticResult.snippets : [];
+    }
+
+    /**
+     * Semantic-search across all documents in the configured document database
+     * (--admindocsdir).  The backend searches every file under
+     * /INTERNAL_READ_ONLY/Documents/, merges the results and returns the top N
+     * snippets sorted by relevance.
+     * Throws an error if the document database is not configured server-side.
+     * @param {string} search_query
+     * @param {number} [max_results=5]
+     * @returns {Promise<Array<{snippet:string, document:string|null, similarity:number}>>}
+     */
+    async search_all_documents(search_query, max_results = 5) {
+        const queryText = `${search_query || ''}`.trim();
+        const maxResults = Math.max(1, Math.min(20, parseInt(max_results, 10) || 5));
+        if (queryText === '') {
+            throw new Error('Search query cannot be empty.');
+        }
+        if (typeof is_using_kcpp_with_embeddings === 'function' && !is_using_kcpp_with_embeddings()) {
+            throw new Error('Embeddings are not available for the current endpoint.');
+        }
+
+        const { chunkSize, chunkOverlap } = this._get_chunking_settings();
+        const result = await this._post('/api/extra/fs/search_all_documents', {
+            search_query: this._prepare_search_text(queryText),
+            max_results: maxResults,
+            chunk_size: chunkSize,
+            overlap: chunkOverlap,
+        });
+        return Array.isArray(result?.snippets) ? result.snippets : [];
     }
 
     // -------------------------------------------------------------------------

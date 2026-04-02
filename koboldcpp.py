@@ -1285,7 +1285,9 @@ def get_capabilities():
     had_admin_with_hf = args.adminallowhf
     admin_type = (2 if args.admin and args.admindir and args.adminpassword else (1 if args.admin and args.admindir else 0))
     has_router = True if args.routermode else False
-    return {"result":"KoboldCpp", "version":KcppVersion, "protected":has_password, "llm":has_llm, "txt2img":has_txt2img,"vision":visionSupport,"audio":audioSupport,"transcribe":has_whisper,"multiplayer":has_multiplayer,"websearch":has_search,"tts":has_tts, "embeddings":has_embeddings, "music":has_music, "fs":has_fs, "fsMode":fs_mode, "savedata":(savedata_obj is not None), "admin": admin_type, "router":has_router, "guidance": has_guidance, "jinja": has_jinja, "mcp":has_mcp, "hasServerSaving": has_server_saving, "hasAdminWithHF": had_admin_with_hf, "embeddingModel": embeddingModel}
+    _admindocsdir = str(getattr(args, "admindocsdir", "") or "").strip()
+    can_search_documents = has_embeddings and bool(_admindocsdir) and os.path.isdir(_admindocsdir)
+    return {"result":"KoboldCpp", "version":KcppVersion, "protected":has_password, "llm":has_llm, "txt2img":has_txt2img,"vision":visionSupport,"audio":audioSupport,"transcribe":has_whisper,"multiplayer":has_multiplayer,"websearch":has_search,"tts":has_tts, "embeddings":has_embeddings, "music":has_music, "fs":has_fs, "fsMode":fs_mode, "savedata":(savedata_obj is not None), "admin": admin_type, "router":has_router, "guidance": has_guidance, "jinja": has_jinja, "mcp":has_mcp, "hasServerSaving": has_server_saving, "hasAdminWithHF": had_admin_with_hf, "embeddingModel": embeddingModel, "canSearchDocuments": can_search_documents}
 
 
 def scan_directory(dirpath, valid_exts, depth):
@@ -4494,6 +4496,8 @@ def fs_normalize_path(raw_path, allow_root=False):
 FS_INTERNAL_READONLY_PREFIX = "/INTERNAL_READ_ONLY"
 FS_INTERNAL_READONLY_DOCS   = "/INTERNAL_READ_ONLY/Documents"
 FS_INTERNAL_READONLY_RES    = "/INTERNAL_READ_ONLY/Resources"
+FS_EMBEDDING_CACHE_PREFIX   = "/EmbeddingCache"
+FS_PDF_TEXT_CACHE_SUFFIX    = ".pdf.txt.cache"
 
 def fs_is_readonly_path(normalized_path):
     """Return True when the path lives under /INTERNAL_READ_ONLY/."""
@@ -4531,26 +4535,68 @@ def fs_is_docs_path(normalized_path):
     return (normalized_path == FS_INTERNAL_READONLY_DOCS or
             normalized_path.startswith(FS_INTERNAL_READONLY_DOCS + "/"))
 
+def fs_is_res_path(normalized_path):
+    """Return True when the path lives under /INTERNAL_READ_ONLY/Resources/."""
+    return (normalized_path == FS_INTERNAL_READONLY_RES or
+            normalized_path.startswith(FS_INTERNAL_READONLY_RES + "/"))
+
+def fs_get_pdf_text_cache_paths(normalized_path):
+    """Return (cache_virtual_path, cache_disk_path) for a PDF text extraction cache.
+
+    The virtual and disk paths mirror the rules used for embedding caches:
+      - Resources (/INTERNAL_READ_ONLY/Resources/...): stored in the writable FS
+        under /EmbeddingCache/ with the .pdf.txt.cache suffix.
+      - Documents (/INTERNAL_READ_ONLY/Documents/...): stored on disk next to the
+        source file inside admindocsdir (cache_disk_path is set), with a matching
+        virtual path used as an in-memory mirror.
+      - All other paths: stored via the normal writable FS next to the source file.
+
+    Returns cache_disk_path=None when no physical disk path is applicable.
+    """
+    _in_docs = fs_is_docs_path(normalized_path)
+    _in_res  = fs_is_res_path(normalized_path)
+
+    if _in_res:
+        _res_rel  = normalized_path[len(FS_INTERNAL_READONLY_RES):].lstrip("/")
+        _res_stem = posixpath.splitext(_res_rel)[0]
+        cache_virtual_path = FS_EMBEDDING_CACHE_PREFIX + "/" + _res_stem + FS_PDF_TEXT_CACHE_SUFFIX
+    else:
+        cache_virtual_path = normalized_path + FS_PDF_TEXT_CACHE_SUFFIX
+
+    cache_disk_path = None
+    if _in_docs:
+        _parsed   = globals().get("args", None)
+        _docsdir  = str(getattr(_parsed, "admindocsdir", "") or "").strip()
+        if _docsdir:
+            _docsdir_abs = os.path.realpath(os.path.abspath(_docsdir))
+            _rel = normalized_path[len(FS_INTERNAL_READONLY_DOCS):].lstrip("/")
+            _candidate = os.path.realpath(os.path.abspath(
+                os.path.join(_docsdir_abs, _rel + FS_PDF_TEXT_CACHE_SUFFIX)))
+            if _candidate == _docsdir_abs or _candidate.startswith(_docsdir_abs + os.sep):
+                cache_disk_path = _candidate
+
+    return cache_virtual_path, cache_disk_path
+
+try:
+    import chardet as _chardet
+    _CHARDET_AVAILABLE = True
+except ImportError:
+    _chardet = None
+    _CHARDET_AVAILABLE = False
+
 _BINARY_SAMPLE_SIZE = 8192  # bytes to inspect when deciding text vs binary
-_TEXT_BOMS = (
-    b'\xff\xfe\x00\x00',  # UTF-32 LE (must be checked before UTF-16 LE)
-    b'\x00\x00\xfe\xff',  # UTF-32 BE
-    b'\xff\xfe',          # UTF-16 LE
-    b'\xfe\xff',          # UTF-16 BE
-    b'\xef\xbb\xbf',      # UTF-8 BOM
-)
 
 def fs_is_binary(content_bytes):
     b = content_bytes if isinstance(content_bytes, (bytes, bytearray)) else bytes(content_bytes)
-    # A recognised BOM unambiguously marks the file as a text encoding
-    for bom in _TEXT_BOMS:
-        if b.startswith(bom):
-            return False
-    # Only inspect the first 8 KB so metadata calls stay fast on large files
-    sample = b[:_BINARY_SAMPLE_SIZE]
-    if not sample:
+    if not b:
         return False
-    # Count control bytes that are not normal text whitespace (tab / LF / CR / FF / VT)
+    sample = b[:_BINARY_SAMPLE_SIZE]
+    if _CHARDET_AVAILABLE:
+        detected = _chardet.detect(sample)
+        enc = (detected.get("encoding") or "").lower()
+        # chardet returns encoding=None or encoding='binary' for non-text data
+        return not enc or enc == "binary"
+    # Fallback heuristic: count control bytes outside normal text whitespace
     non_printable = sum(1 for byte in sample if byte <= 0x08 or (0x0e <= byte <= 0x1f))
     return (non_printable / len(sample)) > 0.30
 
@@ -5266,26 +5312,85 @@ def fs_semantic_search_cache(embeddings_cache_path, search_query, max_results=5)
 def fs_extract_document_text(path):
     """Extract plain text from a filesystem file.
     Supports text/markdown files and PDF files (via PyMuPDF or pdfplumber).
+    For PDF files the extracted text is cached on disk or in the FS (using the
+    same placement rules as the embedding cache) so that subsequent calls skip
+    the expensive extraction step when the PDF content has not changed.
     Returns the extracted text string.
     Raises ValueError for binary files that are not PDFs."""
     normalized_path, entry = fs_get_file(path)
     content_bytes = entry.get("content", b"")
     filename_lower = posixpath.basename(normalized_path).lower()
     if filename_lower.endswith(".pdf"):
+        pdf_hash = hashlib.sha256(content_bytes).hexdigest()
+        cache_virtual_path, cache_disk_path = fs_get_pdf_text_cache_paths(normalized_path)
+        _in_docs = fs_is_docs_path(normalized_path)
+
+        # --- Try loading an existing PDF text cache ---
+        try:
+            cache_raw = None
+            if _in_docs and cache_disk_path and os.path.isfile(cache_disk_path):
+                utfprint(f"[SemanticSearch] Loading PDF text cache from disk: {cache_disk_path}")
+                with open(cache_disk_path, mode="rb") as _cf:
+                    cache_raw = _cf.read()
+                # Mirror into FS so the virtual path resolves
+                with fs_lock:
+                    _fs = fs_snapshot_state()
+                if not fs_is_disk_mode(_fs):
+                    _fs["files"][cache_virtual_path] = {
+                        "content": cache_raw,
+                        "modified": datetime.fromtimestamp(os.path.getmtime(cache_disk_path), timezone.utc).isoformat(),
+                        "size": len(cache_raw),
+                    }
+                    fs_set_state(_fs)
+            if cache_raw is None:
+                _, cache_entry = fs_get_file(cache_virtual_path)
+                cache_raw = cache_entry.get("content", b"")
+            cached_obj = json.loads(cache_raw.decode("utf-8"))
+            if isinstance(cached_obj, dict) and cached_obj.get("pdf_hash") == pdf_hash:
+                cached_text = cached_obj.get("text", "")
+                if cached_text and cached_text.strip():
+                    utfprint(f"[SemanticSearch] PDF text cache hit: {normalized_path}")
+                    return cached_text
+        except Exception:
+            pass  # Cache miss or unreadable — fall through to extraction
+
+        # --- Perform the (expensive) extraction ---
         utfprint(f"[SemanticSearch] Extracting text from PDF: {normalized_path}")
+        extracted_text = None
         try:
             text = getTextFromPDFEncapsulatedPyMuPdf(content_bytes)
             if text and text.strip():
-                return text
+                extracted_text = text
         except Exception as _e:
             utfprint(f"[SemanticSearch] PyMuPDF extraction failed ({_e}), trying pdfplumber...")
-        try:
-            text = getTextFromPDFEncapsulated(content_bytes)
-            if text and text.strip():
-                return text
-        except Exception as _e:
-            utfprint(f"[SemanticSearch] pdfplumber extraction failed: {_e}")
-        raise ValueError(f"Could not extract text from PDF: {normalized_path}")
+        if not extracted_text:
+            try:
+                text = getTextFromPDFEncapsulated(content_bytes)
+                if text and text.strip():
+                    extracted_text = text
+            except Exception as _e:
+                utfprint(f"[SemanticSearch] pdfplumber extraction failed: {_e}")
+        if not extracted_text:
+            raise ValueError(f"Could not extract text from PDF: {normalized_path}")
+
+        # --- Persist the PDF text cache ---
+        cache_content = json.dumps({"pdf_hash": pdf_hash, "text": extracted_text}, ensure_ascii=False)
+        if _in_docs and cache_disk_path:
+            try:
+                os.makedirs(os.path.dirname(cache_disk_path), exist_ok=True)
+                with open(cache_disk_path, mode="w", encoding="utf-8") as _cf:
+                    _cf.write(cache_content)
+                utfprint(f"[SemanticSearch] PDF text cached to disk: {cache_disk_path}")
+            except Exception as _ce:
+                utfprint(f"[SemanticSearch] Warning: could not write PDF text cache to disk: {_ce}")
+        else:
+            try:
+                fs_write_file(cache_virtual_path, cache_content)
+                utfprint(f"[SemanticSearch] PDF text cached to: {cache_virtual_path}")
+            except Exception as _ce:
+                utfprint(f"[SemanticSearch] Warning: could not cache PDF text: {_ce}")
+
+        return extracted_text
     if fs_is_binary(content_bytes):
         raise ValueError(f"File is binary and cannot be used as a text document: {normalized_path}")
     return fs_decode_text(content_bytes)
@@ -5316,8 +5421,11 @@ def fs_semantic_search_document(document_path, search_query, max_results=5, chun
       3. Determine the cache path:
          - Documents under /INTERNAL_READ_ONLY/Documents: cache written directly
            to the admindocsdir on disk (e.g. /path/to/docs/file.txt.embd.jsonl).
+         - Resources under /INTERNAL_READ_ONLY/Resources: cache stored in the
+           writable FS under /EmbeddingCache/ (e.g.
+           /INTERNAL_READ_ONLY/Resources/js/agent.js -> /EmbeddingCache/js/agent.embd.jsonl).
          - All other paths: cache written via the normal writable filesystem API
-           (memory or direct-disk depending on --fsdirect).
+           (memory or direct-disk depending on --fsdirect), next to the source file.
       4. If a cache exists and its stored content_hash matches the current document:
          use the cache as-is (no re-embedding).
       5. If a cache exists but the content_hash differs (document changed):
@@ -5337,7 +5445,16 @@ def fs_semantic_search_document(document_path, search_query, max_results=5, chun
 
     # Determine where the embedding cache lives
     _in_docs = fs_is_docs_path(normalized_path)
-    cache_virtual_path = normalized_path + ".embd.jsonl"
+    _in_res  = fs_is_res_path(normalized_path)
+
+    if _in_res:
+        # Resources are read-only; store the cache in the writable /EmbeddingCache/ tree.
+        # Strip /INTERNAL_READ_ONLY/Resources, remove the file extension, add .embd.jsonl
+        _res_rel = normalized_path[len(FS_INTERNAL_READONLY_RES):].lstrip("/")
+        _res_stem = posixpath.splitext(_res_rel)[0]
+        cache_virtual_path = FS_EMBEDDING_CACHE_PREFIX + "/" + _res_stem + ".embd.jsonl"
+    else:
+        cache_virtual_path = normalized_path + ".embd.jsonl"
 
     # For docs-dir documents we also track the physical cache path so we can
     # write it directly to disk (bypassing the read-only virtual layer).
@@ -5462,6 +5579,8 @@ def fs_semantic_search_document(document_path, search_query, max_results=5, chun
             except Exception as _ce:
                 utfprint(f"[SemanticSearch] Warning: could not write cache to disk: {_ce}")
         else:
+            # For Resources paths this writes to /EmbeddingCache/... in the writable FS.
+            # For all other paths this writes next to the source file.
             try:
                 fs_write_file(cache_virtual_path, cache_content)
                 utfprint(f"[SemanticSearch] Embeddings cached to: {cache_virtual_path}")
@@ -5490,6 +5609,58 @@ def fs_semantic_search_document(document_path, search_query, max_results=5, chun
         "cache_path": cache_virtual_path,
         "model": active_model,
         "snippets": scored[:max_hits],
+    }
+
+
+def fs_search_all_documents(search_query, max_results=5, chunk_size=1024, overlap=500):
+    """Perform semantic search across all documents in the configured docs directory.
+
+    Requires --admindocsdir to be configured (doc DB enabled).  Every file under
+    /INTERNAL_READ_ONLY/Documents/ is searched (cache files are excluded).
+    Results from all documents are merged, sorted by similarity, and the top
+    max_results snippets are returned.
+
+    Returns a dict with keys: model, snippets (list of {snippet, document, similarity}).
+    """
+    _parsed = globals().get("args", None)
+    _docsdir = str(getattr(_parsed, "admindocsdir", "") or "").strip()
+    if not _docsdir or not os.path.isdir(_docsdir):
+        raise ValueError("Document database is not enabled. Set --admindocsdir to a valid directory.")
+
+    query_text = str(search_query or "").strip()
+    if not query_text:
+        raise ValueError("Search query cannot be empty.")
+
+    # Collect all document paths under the docs directory, skipping cache files
+    _cache_suffixes = (".embd.jsonl", FS_PDF_TEXT_CACHE_SUFFIX)
+    all_docs = []
+    for _root, _, _filenames in os.walk(_docsdir):
+        for _fn in _filenames:
+            if any(_fn.endswith(s) for s in _cache_suffixes):
+                continue
+            _rel = os.path.relpath(os.path.join(_root, _fn), _docsdir).replace("\\", "/")
+            all_docs.append(FS_INTERNAL_READONLY_DOCS + "/" + _rel.lstrip("/"))
+
+    if not all_docs:
+        raise ValueError("No documents found in the document database.")
+
+    max_hits = max(1, min(20, tryparseint(max_results, 5)))
+    _chunk_size = max(1, tryparseint(chunk_size, 1024))
+    _overlap = max(0, tryparseint(overlap, 500))
+
+    all_snippets = []
+    active_model = fs_get_active_embedding_model_name()
+    for doc_path in all_docs:
+        try:
+            result = fs_semantic_search_document(doc_path, query_text, max_hits, _chunk_size, _overlap)
+            all_snippets.extend(result.get("snippets", []))
+        except Exception as _e:
+            utfprint(f"[SemanticSearch] Skipping {doc_path}: {_e}")
+
+    all_snippets.sort(key=lambda x: x.get("similarity", 0.0), reverse=True)
+    return {
+        "model": active_model,
+        "snippets": all_snippets[:max_hits],
     }
 
 
@@ -5799,7 +5970,7 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
             textReqs = ["/api/extra/generate/stream","/api/extra/tokencount","/api/v1/generate","/sdapi/v1/interrogate","/v1/completions","/v1/chat/completions"]
             sttReqs = ["/api/extra/transcribe","/v1/audio/transcriptions"]
             ttsReqs = ["/api/extra/tts", "/v1/audio/speech"]
-            embedReqs = ["/api/extra/embeddings", "/v1/embeddings", "/api/extra/fs/semantic_search"]
+            embedReqs = ["/api/extra/embeddings", "/v1/embeddings", "/api/extra/fs/semantic_search", "/api/extra/fs/search_all_documents"]
             musicReqs = ["/api/extra/music/prepare","/api/extra/music/generate"]
             imageReqs = ["/sdapi/v1/txt2img", "/sdapi/v1/img2img", "/sdapi/v1/upscale"] # "/sdapi/v1/sd-models", "/sdapi/v1/options", "/sdapi/v1/samplers"
 
@@ -7999,6 +8170,29 @@ Change Mode<br>
                 except Exception as e:
                     response_code = 400
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+
+        elif self.path.endswith('/api/extra/fs/search_all_documents'):
+            try:
+                tempbody = json.loads(body)
+                search_query = tempbody.get('search_query', '')
+                max_results = tempbody.get('max_results', 5)
+                result = fs_search_all_documents(
+                    search_query,
+                    max_results,
+                    tempbody.get('chunk_size', 1024),
+                    tempbody.get('overlap', 500),
+                )
+                result["success"] = True
+                response_body = (json.dumps(result).encode())
+            except FileNotFoundError as e:
+                response_code = 404
+                response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+            except ValueError as e:
+                response_code = 400
+                response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+            except Exception as e:
+                response_code = 400
+                response_body = (json.dumps({"success": False, "error": str(e)}).encode())
 
         elif self.path.endswith('/api/extra/fs/upload'):
             if not fs_is_enabled():
