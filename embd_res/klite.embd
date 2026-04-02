@@ -3844,6 +3844,7 @@ Current version indicated by LITEVER below.
 	var wi_searchdepth = 0; //search everything
 	var documentdb_provider = 0; //0 = disables, 1 = textdb, 2 = kcpp, 3 = openai embeddings
 	var documentdb_searchhistory = false;
+	var documentdb_searchdocuments = false;
 	var documentdb_numresults = 3;
 	var documentdb_searchrange = 300;
 	var documentdb_chunksize = 800;
@@ -3943,6 +3944,7 @@ Current version indicated by LITEVER below.
 	var koboldcpp_has_musicgen = false;
 	var koboldcpp_has_fs = false;
 	var koboldcpp_has_routermode = false;
+	var koboldcpp_can_search_docs = false;
 	var no_escape_html = false;
 	var timetaken_timestamp = performance.now();
 	var bg_silence = null;
@@ -9302,6 +9304,9 @@ Current version indicated by LITEVER below.
 	function is_using_kcpp_with_embeddings() {
 		return (custom_kobold_endpoint != "" && koboldcpp_version && koboldcpp_version != "" && compare_version_str(koboldcpp_version, "1.84") >= 0 && koboldcpp_has_embeddings);
 	}
+	function is_using_kcpp_with_searchable_docs() {
+		return (custom_kobold_endpoint != "" && koboldcpp_version && koboldcpp_version != "" && compare_version_str(koboldcpp_version, "1.111") >= 0 && koboldcpp_can_search_docs);
+	}
 	function is_using_kcpp_with_imagegen() {
 		return (custom_kobold_endpoint != "" && koboldcpp_version && koboldcpp_version != "" && compare_version_str(koboldcpp_version, "1.61") >= 0 && koboldcpp_has_txt2img);
 	}
@@ -9772,6 +9777,7 @@ Current version indicated by LITEVER below.
 		new_save_storyobj.newlineaftermemory = newlineaftermemory;
 		new_save_storyobj.documentdb_provider = documentdb_provider;
 		new_save_storyobj.documentdb_searchhistory = documentdb_searchhistory;
+		new_save_storyobj.documentdb_searchdocuments = documentdb_searchdocuments;
 		new_save_storyobj.documentdb_numresults = documentdb_numresults;
 		new_save_storyobj.documentdb_searchrange = documentdb_searchrange;
 		new_save_storyobj.documentdb_chunksize = documentdb_chunksize;
@@ -10119,6 +10125,10 @@ Current version indicated by LITEVER below.
 				if(storyobj.documentdb_searchhistory)
 				{
 					documentdb_searchhistory = storyobj.documentdb_searchhistory;
+				}
+				if(storyobj.documentdb_searchdocuments)
+				{
+					documentdb_searchdocuments = storyobj.documentdb_searchdocuments;
 				}
 				if(storyobj.documentdb_numresults)
 				{
@@ -13870,6 +13880,7 @@ Current version indicated by LITEVER below.
 									koboldcpp_has_musicgen = (data.music ? true : false);
 									koboldcpp_has_fs = (data.fs ? true : false);
 									koboldcpp_has_routermode = (data.router ? true:false);
+									koboldcpp_can_search_docs = (data.canSearchDocuments ? true : false);
 									koboldcpp_embedding_model = data?.embeddingModel
 									koboldcpp_has_admin_with_HF = (data.hasAdminWithHF ? true : false)
 									let has_password = (data.protected?true:false);
@@ -17296,6 +17307,7 @@ Current version indicated by LITEVER below.
 		newlineaftermemory = (document.getElementById("newlineaftermemory").checked?true:false);
 		documentdb_provider = document.getElementById("documentdb_provider").value;
 		documentdb_searchhistory = document.getElementById("documentdb_searchhistory").checked?true:false;
+		documentdb_searchdocuments = document.getElementById("documentdb_searchdocuments").checked?true:false;
 		documentdb_numresults = document.getElementById("documentdb_numresults").value;
 		documentdb_searchrange = document.getElementById("documentdb_searchrange").value;
 		documentdb_chunksize = document.getElementById("documentdb_chunksize").value;
@@ -17810,6 +17822,7 @@ Current version indicated by LITEVER below.
 			current_anotetemplate = "[Author's note: <|>]";
 			documentdb_provider = 0; //disabled
 			documentdb_searchhistory = false;
+			documentdb_searchdocuments = false;
 			documentdb_numresults = 3;
 			documentdb_searchrange = 300;
 			documentdb_chunksize = 800;
@@ -20282,6 +20295,25 @@ Current version indicated by LITEVER below.
 						}
 
 						let ltmSnippets = yield DatabaseMinisearch(fullDocument,ltmSearchQuery,recentTextStr);
+
+						// Merge document directory search results if enabled
+						if (documentdb_searchdocuments && is_using_kcpp_with_searchable_docs() && window.fsClient)
+						{
+							try {
+								let docSnippets = yield window.fsClient.search_all_documents(ltmSearchQuery, documentdb_numresults);
+								if (Array.isArray(docSnippets) && docSnippets.length > 0)
+								{
+									// Normalise scores: text DB results use .similarity (embeddings) or .match (minisearch)
+									const getScore = s => (s.similarity ?? s.match ?? 0);
+									let combined = [...ltmSnippets, ...docSnippets];
+									combined.sort((a, b) => getScore(b) - getScore(a));
+									ltmSnippets = combined.slice(0, documentdb_numresults);
+								}
+							} catch(docErr) {
+								console.log("Document search failed:", docErr);
+							}
+						}
+
 						if (ltmSnippets.length === 0)
 						{
 							console.log("No memory fragments found either as history is too short or no relevant content found");
@@ -26522,6 +26554,8 @@ Current version indicated by LITEVER below.
 
 		document.getElementById("documentdb_provider").value = documentdb_provider;
 		document.getElementById("documentdb_searchhistory").checked = documentdb_searchhistory;
+		document.getElementById("documentdb_searchdocuments").checked = documentdb_searchdocuments;
+		document.getElementById("documentdb_searchdocuments").disabled = !is_using_kcpp_with_searchable_docs();
 		document.getElementById("documentdb_numresults").value = documentdb_numresults
 		document.getElementById("documentdb_searchrange").value = documentdb_searchrange;
 		document.getElementById("documentdb_chunksize").value = documentdb_chunksize;
@@ -29530,6 +29564,12 @@ Current version indicated by LITEVER below.
 					<div class="justifyleft">Search Includes Context History <span class="helpicon">?
 						<span class="helptext">If enabled, the entire story/chat history is used as a searchable document.</span></span></div>
 					<input title="Search Includes Context History" type="checkbox" id="documentdb_searchhistory" class="push-right">
+				</div>
+
+				<div class="settinglabel" style="padding: 4px;">
+					<div class="justifyleft">Search Includes Documents <span class="helpicon">?
+						<span class="helptext">If enabled and a KoboldCpp document directory is configured with an embedding model, all documents in the directory are also searched and the best results are merged in.</span></span></div>
+					<input title="Search Includes Documents" type="checkbox" id="documentdb_searchdocuments" class="push-right">
 				</div>
 
 				<div class="shareEquallyHorizontally">
