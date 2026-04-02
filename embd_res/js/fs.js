@@ -434,6 +434,36 @@ class FsClient {
         return Array.isArray(semanticResult?.snippets) ? semanticResult.snippets : [];
     }
 
+    /**
+     * Semantic-search across all documents in the configured document database
+     * (--admindocsdir).  The backend searches every file under
+     * /INTERNAL_READ_ONLY/Documents/, merges the results and returns the top N
+     * snippets sorted by relevance.
+     * Throws an error if the document database is not configured server-side.
+     * @param {string} search_query
+     * @param {number} [max_results=5]
+     * @returns {Promise<Array<{snippet:string, document:string|null, similarity:number}>>}
+     */
+    async search_all_documents(search_query, max_results = 5) {
+        const queryText = `${search_query || ''}`.trim();
+        const maxResults = Math.max(1, Math.min(20, parseInt(max_results, 10) || 5));
+        if (queryText === '') {
+            throw new Error('Search query cannot be empty.');
+        }
+        if (typeof is_using_kcpp_with_embeddings === 'function' && !is_using_kcpp_with_embeddings()) {
+            throw new Error('Embeddings are not available for the current endpoint.');
+        }
+
+        const { chunkSize, chunkOverlap } = this._get_chunking_settings();
+        const result = await this._post('/api/extra/fs/search_all_documents', {
+            search_query: this._prepare_search_text(queryText),
+            max_results: maxResults,
+            chunk_size: chunkSize,
+            overlap: chunkOverlap,
+        });
+        return Array.isArray(result?.snippets) ? result.snippets : [];
+    }
+
     // -------------------------------------------------------------------------
     // Metadata
     // -------------------------------------------------------------------------

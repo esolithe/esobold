@@ -5610,6 +5610,58 @@ def fs_semantic_search_document(document_path, search_query, max_results=5, chun
     }
 
 
+def fs_search_all_documents(search_query, max_results=5, chunk_size=1024, overlap=500):
+    """Perform semantic search across all documents in the configured docs directory.
+
+    Requires --admindocsdir to be configured (doc DB enabled).  Every file under
+    /INTERNAL_READ_ONLY/Documents/ is searched (cache files are excluded).
+    Results from all documents are merged, sorted by similarity, and the top
+    max_results snippets are returned.
+
+    Returns a dict with keys: model, snippets (list of {snippet, document, similarity}).
+    """
+    _parsed = globals().get("args", None)
+    _docsdir = str(getattr(_parsed, "admindocsdir", "") or "").strip()
+    if not _docsdir or not os.path.isdir(_docsdir):
+        raise ValueError("Document database is not enabled. Set --admindocsdir to a valid directory.")
+
+    query_text = str(search_query or "").strip()
+    if not query_text:
+        raise ValueError("Search query cannot be empty.")
+
+    # Collect all document paths under the docs directory, skipping cache files
+    _cache_suffixes = (".embd.jsonl", FS_PDF_TEXT_CACHE_SUFFIX)
+    all_docs = []
+    for _root, _, _filenames in os.walk(_docsdir):
+        for _fn in _filenames:
+            if any(_fn.endswith(s) for s in _cache_suffixes):
+                continue
+            _rel = os.path.relpath(os.path.join(_root, _fn), _docsdir).replace("\\", "/")
+            all_docs.append(FS_INTERNAL_READONLY_DOCS + "/" + _rel.lstrip("/"))
+
+    if not all_docs:
+        raise ValueError("No documents found in the document database.")
+
+    max_hits = max(1, min(20, tryparseint(max_results, 5)))
+    _chunk_size = max(1, tryparseint(chunk_size, 1024))
+    _overlap = max(0, tryparseint(overlap, 500))
+
+    all_snippets = []
+    active_model = fs_get_active_embedding_model_name()
+    for doc_path in all_docs:
+        try:
+            result = fs_semantic_search_document(doc_path, query_text, max_hits, _chunk_size, _overlap)
+            all_snippets.extend(result.get("snippets", []))
+        except Exception as _e:
+            utfprint(f"[SemanticSearch] Skipping {doc_path}: {_e}")
+
+    all_snippets.sort(key=lambda x: x.get("similarity", 0.0), reverse=True)
+    return {
+        "model": active_model,
+        "snippets": all_snippets[:max_hits],
+    }
+
+
 def fs_build_zip_bytes(dir_prefix=""):
     prefix = (fs_normalize_path(dir_prefix) + "/").lstrip("/") if dir_prefix and dir_prefix.strip("/") else ""
     with fs_lock:
@@ -5916,7 +5968,7 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
             textReqs = ["/api/extra/generate/stream","/api/extra/tokencount","/api/v1/generate","/sdapi/v1/interrogate","/v1/completions","/v1/chat/completions"]
             sttReqs = ["/api/extra/transcribe","/v1/audio/transcriptions"]
             ttsReqs = ["/api/extra/tts", "/v1/audio/speech"]
-            embedReqs = ["/api/extra/embeddings", "/v1/embeddings", "/api/extra/fs/semantic_search"]
+            embedReqs = ["/api/extra/embeddings", "/v1/embeddings", "/api/extra/fs/semantic_search", "/api/extra/fs/search_all_documents"]
             musicReqs = ["/api/extra/music/prepare","/api/extra/music/generate"]
             imageReqs = ["/sdapi/v1/txt2img", "/sdapi/v1/img2img", "/sdapi/v1/upscale"] # "/sdapi/v1/sd-models", "/sdapi/v1/options", "/sdapi/v1/samplers"
 
@@ -8116,6 +8168,29 @@ Change Mode<br>
                 except Exception as e:
                     response_code = 400
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+
+        elif self.path.endswith('/api/extra/fs/search_all_documents'):
+            try:
+                tempbody = json.loads(body)
+                search_query = tempbody.get('search_query', '')
+                max_results = tempbody.get('max_results', 5)
+                result = fs_search_all_documents(
+                    search_query,
+                    max_results,
+                    tempbody.get('chunk_size', 1024),
+                    tempbody.get('overlap', 500),
+                )
+                result["success"] = True
+                response_body = (json.dumps(result).encode())
+            except FileNotFoundError as e:
+                response_code = 404
+                response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+            except ValueError as e:
+                response_code = 400
+                response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+            except Exception as e:
+                response_code = 400
+                response_body = (json.dumps({"success": False, "error": str(e)}).encode())
 
         elif self.path.endswith('/api/extra/fs/upload'):
             if not fs_is_enabled():
