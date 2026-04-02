@@ -4495,6 +4495,7 @@ FS_INTERNAL_READONLY_PREFIX = "/INTERNAL_READ_ONLY"
 FS_INTERNAL_READONLY_DOCS   = "/INTERNAL_READ_ONLY/Documents"
 FS_INTERNAL_READONLY_RES    = "/INTERNAL_READ_ONLY/Resources"
 FS_EMBEDDING_CACHE_PREFIX   = "/EmbeddingCache"
+FS_PDF_TEXT_CACHE_SUFFIX    = ".pdf.txt.cache"
 
 def fs_is_readonly_path(normalized_path):
     """Return True when the path lives under /INTERNAL_READ_ONLY/."""
@@ -4536,6 +4537,43 @@ def fs_is_res_path(normalized_path):
     """Return True when the path lives under /INTERNAL_READ_ONLY/Resources/."""
     return (normalized_path == FS_INTERNAL_READONLY_RES or
             normalized_path.startswith(FS_INTERNAL_READONLY_RES + "/"))
+
+def fs_get_pdf_text_cache_paths(normalized_path):
+    """Return (cache_virtual_path, cache_disk_path) for a PDF text extraction cache.
+
+    The virtual and disk paths mirror the rules used for embedding caches:
+      - Resources (/INTERNAL_READ_ONLY/Resources/...): stored in the writable FS
+        under /EmbeddingCache/ with the .pdf.txt.cache suffix.
+      - Documents (/INTERNAL_READ_ONLY/Documents/...): stored on disk next to the
+        source file inside admindocsdir (cache_disk_path is set), with a matching
+        virtual path used as an in-memory mirror.
+      - All other paths: stored via the normal writable FS next to the source file.
+
+    Returns cache_disk_path=None when no physical disk path is applicable.
+    """
+    _in_docs = fs_is_docs_path(normalized_path)
+    _in_res  = fs_is_res_path(normalized_path)
+
+    if _in_res:
+        _res_rel  = normalized_path[len(FS_INTERNAL_READONLY_RES):].lstrip("/")
+        _res_stem = posixpath.splitext(_res_rel)[0]
+        cache_virtual_path = FS_EMBEDDING_CACHE_PREFIX + "/" + _res_stem + FS_PDF_TEXT_CACHE_SUFFIX
+    else:
+        cache_virtual_path = normalized_path + FS_PDF_TEXT_CACHE_SUFFIX
+
+    cache_disk_path = None
+    if _in_docs:
+        _parsed   = globals().get("args", None)
+        _docsdir  = str(getattr(_parsed, "admindocsdir", "") or "").strip()
+        if _docsdir:
+            _docsdir_abs = os.path.realpath(os.path.abspath(_docsdir))
+            _rel = normalized_path[len(FS_INTERNAL_READONLY_DOCS):].lstrip("/")
+            _candidate = os.path.realpath(os.path.abspath(
+                os.path.join(_docsdir_abs, _rel + FS_PDF_TEXT_CACHE_SUFFIX)))
+            if _candidate == _docsdir_abs or _candidate.startswith(_docsdir_abs + os.sep):
+                cache_disk_path = _candidate
+
+    return cache_virtual_path, cache_disk_path
 
 try:
     import chardet as _chardet
@@ -5272,26 +5310,85 @@ def fs_semantic_search_cache(embeddings_cache_path, search_query, max_results=5)
 def fs_extract_document_text(path):
     """Extract plain text from a filesystem file.
     Supports text/markdown files and PDF files (via PyMuPDF or pdfplumber).
+    For PDF files the extracted text is cached on disk or in the FS (using the
+    same placement rules as the embedding cache) so that subsequent calls skip
+    the expensive extraction step when the PDF content has not changed.
     Returns the extracted text string.
     Raises ValueError for binary files that are not PDFs."""
     normalized_path, entry = fs_get_file(path)
     content_bytes = entry.get("content", b"")
     filename_lower = posixpath.basename(normalized_path).lower()
     if filename_lower.endswith(".pdf"):
+        pdf_hash = hashlib.sha256(content_bytes).hexdigest()
+        cache_virtual_path, cache_disk_path = fs_get_pdf_text_cache_paths(normalized_path)
+        _in_docs = fs_is_docs_path(normalized_path)
+
+        # --- Try loading an existing PDF text cache ---
+        try:
+            cache_raw = None
+            if _in_docs and cache_disk_path and os.path.isfile(cache_disk_path):
+                utfprint(f"[SemanticSearch] Loading PDF text cache from disk: {cache_disk_path}")
+                with open(cache_disk_path, mode="rb") as _cf:
+                    cache_raw = _cf.read()
+                # Mirror into FS so the virtual path resolves
+                with fs_lock:
+                    _fs = fs_snapshot_state()
+                if not fs_is_disk_mode(_fs):
+                    _fs["files"][cache_virtual_path] = {
+                        "content": cache_raw,
+                        "modified": datetime.fromtimestamp(os.path.getmtime(cache_disk_path), timezone.utc).isoformat(),
+                        "size": len(cache_raw),
+                    }
+                    fs_set_state(_fs)
+            if cache_raw is None:
+                _, cache_entry = fs_get_file(cache_virtual_path)
+                cache_raw = cache_entry.get("content", b"")
+            cached_obj = json.loads(cache_raw.decode("utf-8"))
+            if isinstance(cached_obj, dict) and cached_obj.get("pdf_hash") == pdf_hash:
+                cached_text = cached_obj.get("text", "")
+                if cached_text and cached_text.strip():
+                    utfprint(f"[SemanticSearch] PDF text cache hit: {normalized_path}")
+                    return cached_text
+        except Exception:
+            pass  # Cache miss or unreadable — fall through to extraction
+
+        # --- Perform the (expensive) extraction ---
         utfprint(f"[SemanticSearch] Extracting text from PDF: {normalized_path}")
+        extracted_text = None
         try:
             text = getTextFromPDFEncapsulatedPyMuPdf(content_bytes)
             if text and text.strip():
-                return text
+                extracted_text = text
         except Exception as _e:
             utfprint(f"[SemanticSearch] PyMuPDF extraction failed ({_e}), trying pdfplumber...")
-        try:
-            text = getTextFromPDFEncapsulated(content_bytes)
-            if text and text.strip():
-                return text
-        except Exception as _e:
-            utfprint(f"[SemanticSearch] pdfplumber extraction failed: {_e}")
-        raise ValueError(f"Could not extract text from PDF: {normalized_path}")
+        if not extracted_text:
+            try:
+                text = getTextFromPDFEncapsulated(content_bytes)
+                if text and text.strip():
+                    extracted_text = text
+            except Exception as _e:
+                utfprint(f"[SemanticSearch] pdfplumber extraction failed: {_e}")
+        if not extracted_text:
+            raise ValueError(f"Could not extract text from PDF: {normalized_path}")
+
+        # --- Persist the PDF text cache ---
+        cache_content = json.dumps({"pdf_hash": pdf_hash, "text": extracted_text}, ensure_ascii=False)
+        if _in_docs and cache_disk_path:
+            try:
+                os.makedirs(os.path.dirname(cache_disk_path), exist_ok=True)
+                with open(cache_disk_path, mode="w", encoding="utf-8") as _cf:
+                    _cf.write(cache_content)
+                utfprint(f"[SemanticSearch] PDF text cached to disk: {cache_disk_path}")
+            except Exception as _ce:
+                utfprint(f"[SemanticSearch] Warning: could not write PDF text cache to disk: {_ce}")
+        else:
+            try:
+                fs_write_file(cache_virtual_path, cache_content)
+                utfprint(f"[SemanticSearch] PDF text cached to: {cache_virtual_path}")
+            except Exception as _ce:
+                utfprint(f"[SemanticSearch] Warning: could not cache PDF text: {_ce}")
+
+        return extracted_text
     if fs_is_binary(content_bytes):
         raise ValueError(f"File is binary and cannot be used as a text document: {normalized_path}")
     return fs_decode_text(content_bytes)
