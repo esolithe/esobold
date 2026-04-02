@@ -3959,6 +3959,7 @@ Current version indicated by LITEVER below.
 	var websearch_in_progress = false;
 	var kcpp_tts_json = "";
 	var avoidwelcome = false;
+	var undisplayed_editing_text = "";
 
 	var localsettings = {
 		my_api_key: "0000000000", //put here so it can be saved and loaded in persistent mode
@@ -4107,6 +4108,7 @@ Current version indicated by LITEVER below.
 		kcpp_mcp_bridge: true,
 		cached_mcp_tools: {}, //key is url, value is tools array
 		disabled_mcp_tools: [], //maintain a list of unwanted tools that was deselected
+		max_display_chars: 0, //unlimited. otherwise, char limit for rendering
 
 		raw_instruct_tags: false, //experimental flags
 		show_endpoint_selector: false,
@@ -14473,6 +14475,34 @@ Current version indicated by LITEVER below.
 		}
 	}
 
+	function change_admin_config_selection()
+	{
+		let targetfile = document.getElementById("adminconfigdropdown").value;
+		if(targetfile && targetfile.endsWith(".gguf"))
+		{
+			let overridedropdown = document.getElementById("adminconfigoverridedropdown");
+			var dropdown = document.getElementById("adminconfigdropdown");
+			for (var i = overridedropdown.options.length; i >= 0; i--) {
+				var option = overridedropdown.options[i];
+				overridedropdown.remove(option);
+			}
+			var el = document.createElement("option");
+			el.textContent = "Default Config";
+			el.value = "";
+			overridedropdown.appendChild(el);
+			for(var i=0;i<dropdown.options.length;++i)
+			{
+				let str = dropdown.options[i].value;
+				if(str.endsWith(".gguf") || str=="unload_model")
+				{continue;}
+				var el = document.createElement("option");
+				el.textContent = str;
+				el.value = str;
+				overridedropdown.appendChild(el);
+			}
+		}
+	}
+
 	var adminrebootflag = 0;
 	function trigger_admin_reload()
 	{
@@ -14485,6 +14515,12 @@ Current version indicated by LITEVER below.
 		}
 
 		let header = {'Content-Type': 'application/json'};
+		let payload = {"filename": targetfile};
+		if(document.getElementById("adminconfigoverridedropdown").value && document.getElementById("adminconfigoverridedropdown").value!="")
+		{
+			payload["overrideconfig"] = document.getElementById("adminconfigoverridedropdown").value;
+		}
+		payload["modelName"] = modelName
 
 		if(last_admin_key!="")
 		{
@@ -14493,10 +14529,7 @@ Current version indicated by LITEVER below.
 		fetch(apply_proxy_url(custom_kobold_endpoint + koboldcpp_admin_reload_endpoint), {
 			method: 'POST',
 			headers: header,
-			body: JSON.stringify({
-				"filename": targetfile,
-				"modelName": modelName
-			})
+			body: JSON.stringify(payload)
 		})
 		.then(x => x.json())
 		.then(values => {
@@ -15856,6 +15889,7 @@ Current version indicated by LITEVER below.
 		document.getElementById("auto_ctxlen").checked = localsettings.auto_ctxlen;
 		document.getElementById("auto_genamt").checked = localsettings.auto_genamt;
 		document.getElementById("wordsearch_toggle").checked = localsettings.wordsearch_enabled;
+		document.getElementById("max_display_chars").value = localsettings.max_display_chars;
 		if(localflag)
 		{
 			document.getElementById("auto_ctxlen_panel").classList.add("hidden");
@@ -16645,6 +16679,7 @@ Current version indicated by LITEVER below.
 		localsettings.instruct_has_latex = (document.getElementById("instruct_has_latex").checked ? true : false);
 		localsettings.placeholder_tags = (document.getElementById("placeholder_tags").checked ? true : false);
 		localsettings.inject_randomness_seed = document.getElementById("inject_randomness_seed").value;
+		localsettings.max_display_chars = parseInt(document.getElementById("max_display_chars").value);
 		run_in_background = (document.getElementById("run_in_background").checked ? true : false);
 		background_audio_loop(run_in_background);
 		localsettings.generate_images_model = document.getElementById("generate_images_model").value;
@@ -18088,6 +18123,23 @@ Current version indicated by LITEVER below.
 			}
 			return trim;
 		}
+	}
+
+	//for display trimming
+	function splitAtWhitespaceFromEnd(str, maxLength)
+	{
+		if (str.length <= maxLength) {
+			return ["", str];
+		}
+		const sliceStart = str.length - maxLength;
+		const visiblePart = str.slice(sliceStart);
+		const match = visiblePart.match(/[\s\n]/);
+		if (match) {
+			const splitIndex = match.index;
+			return [ str.slice(0, sliceStart + splitIndex + 1), visiblePart.slice(splitIndex + 1) ];
+		}
+
+		return [str.slice(0, sliceStart), visiblePart];
 	}
 
 	//Prioritizes truncating example messages in memory
@@ -21185,7 +21237,7 @@ Current version indicated by LITEVER below.
 				//pollinations always uses the exact same url for text gen regardless
 				if(targetep.toLowerCase().includes("text.pollinations.ai"))
 				{
-					targetep = pollinations_text_endpoint;
+					targetep = apply_proxy_url(pollinations_text_endpoint);
 					oai_payload.private = true;
 					oai_payload.referrer = "koboldai";
 					oai_payload.seed = Math.floor(Math.random() * 99999999);
@@ -24181,6 +24233,7 @@ Current version indicated by LITEVER below.
 			let oldInnerText = concat_gametext(false, "","","");
 			let gametext_elem = document.getElementById("gametext");
 			let editedmatcher = unstash_image_placeholders(gametext_elem.innerText);
+			editedmatcher = undisplayed_editing_text + editedmatcher;
 
 			if (oldInnerText != editedmatcher) {
 				gametext_arr = [];
@@ -24210,7 +24263,7 @@ Current version indicated by LITEVER below.
 				gametext_elem.innerHTML = htmlstr;
 
 				//rather than dump it all into one history, let's split it into paragraphs
-				let fullmergedstory = gametext_elem.innerText;
+				let fullmergedstory = undisplayed_editing_text + gametext_elem.innerText;
 
 				let newestChunk = "";
 
@@ -24650,6 +24703,7 @@ Current version indicated by LITEVER below.
 	{
 		document.getElementById("gametext").contentEditable = (document.getElementById("allowediting").checked && pending_response_id=="");
 		let inEditMode = (document.getElementById("allowediting").checked ? true : false);
+		undisplayed_editing_text = "";
 
 		if(is_corpo_ui())
 		{
@@ -25074,6 +25128,15 @@ Current version indicated by LITEVER below.
 			if (inEditMode) //edit mode only
 			{
 				fulltxt = concat_gametext(false, "", "%SpnStg%", "%SpnEtg%",true);
+				if(localsettings.max_display_chars>0 && fulltxt.length > localsettings.max_display_chars)
+				{
+					let splitted = splitAtWhitespaceFromEnd(fulltxt,localsettings.max_display_chars);
+					undisplayed_editing_text = unescape_html(splitted[0]);
+					undisplayed_editing_text = replaceAll(undisplayed_editing_text, `%SpnStg%`, ``);
+					undisplayed_editing_text = replaceAll(undisplayed_editing_text, `%SclStg%`,``);
+					undisplayed_editing_text = replaceAll(undisplayed_editing_text, `%SpnEtg%`, ``);
+					fulltxt = splitted[1];
+				}
 				fulltxt = replaceAll(fulltxt, get_instruct_starttag(true), `%SclStg%`+escape_html(get_instruct_starttag(true))+`%SpnEtg%`);
 				fulltxt = replaceAll(fulltxt, get_instruct_endtag(true), `%SclStg%`+escape_html(get_instruct_endtag(true))+`%SpnEtg%`);
 				if (localsettings.separate_end_tags) {
@@ -25108,10 +25171,10 @@ Current version indicated by LITEVER below.
 			}
 			else //non edit mode
 			{
+				fulltxt = concat_gametext(false, "", "", "",true);
+
 				if(localsettings.opmode==4) //instruct mode only, non edit
 				{
-					fulltxt = concat_gametext(false, "", "", "",true);
-
 					//accept all newline formats for backwards compatibility
 					fulltxt = replaceAll(fulltxt, "\n\n"+get_instruct_starttag(false)+"\n\n", get_instruct_starttag(false));
 					fulltxt = replaceAll(fulltxt, "\n\n"+get_instruct_endtag(false)+"\n\n", get_instruct_endtag(false));
@@ -25126,9 +25189,14 @@ Current version indicated by LITEVER below.
 					fulltxt = "";
 
 					let countmap = new Map();
+					let turnsincluded = count_visible_turns(chatunits);
 					for(let i=0;i<chatunits.length;++i)
 					{
 						let curr = chatunits[i];
+						if(localsettings.max_display_chars>0 && i<(chatunits.length-turnsincluded))
+						{
+							continue;
+						}
 
 						//in some special cases, add streaming text inline
 						let allow_cont_prev_turn = (localsettings.opmode==4 || (localsettings.opmode==3 && localsettings.allow_continue_chat));
@@ -25206,7 +25274,12 @@ Current version indicated by LITEVER below.
 				}
 				else //all other modes besides instruct, non-edit
 				{
-					fulltxt = concat_gametext(false, "", "", "",true);
+					if(localsettings.max_display_chars>0 && fulltxt.length > localsettings.max_display_chars)
+					{
+						let splitted = splitAtWhitespaceFromEnd(fulltxt,localsettings.max_display_chars);
+						fulltxt = splitted[1];
+					}
+
 					fulltxt = apply_display_only_regex(fulltxt);
 					fulltxt = replace_placeholders(fulltxt,true);
 
@@ -25354,6 +25427,26 @@ Current version indicated by LITEVER below.
 			toggle_editable();
 		}
 		return outputhtml;
+	}
+
+	function count_visible_turns(chatunits)
+	{
+		let turnsincluded = 0;
+		if(localsettings.max_display_chars>0)
+		{
+			let budget = localsettings.max_display_chars;
+			for(let i=chatunits.length-1;i>=0;--i)
+			{
+				let curr = chatunits[i];
+				budget -= (chatunits[i].msg?chatunits[i].msg.length:0);
+				turnsincluded += 1;
+				if(budget<=0)
+				{
+					break;
+				}
+			}
+		}
+		return turnsincluded;
 	}
 
 	function render_corpo_welcome()
@@ -25990,9 +26083,14 @@ Current version indicated by LITEVER below.
 		let incomplete_resp = (synchro_pending_stream!="" || pending_response_id!="");
 
 		let countmap = new Map();
+		let turnsincluded = count_visible_turns(chatunits);
 		for(var i=0;i<chatunits.length;++i)
 		{
 			let curr = chatunits[i];
+			if(localsettings.max_display_chars>0 && i<(chatunits.length-turnsincluded))
+			{
+				continue;
+			}
 			if(corpo_editing_turn != i)
 			{
 				curr = repack_postprocess_turn(curr, countmap, true); //change whole object
@@ -26298,9 +26396,14 @@ Current version indicated by LITEVER below.
 
 		let colormap = {}, colidx = 0;
 		let countmap = new Map();
+		let turnsincluded = count_visible_turns(chatunits);
 		for(var i=0;i<chatunits.length;++i)
 		{
 			let curr = chatunits[i];
+			if(localsettings.max_display_chars>0 && i<(chatunits.length-turnsincluded))
+			{
+				continue;
+			}
 			if(curr.msg && curr.msg!="")
 			{
 				curr = repack_postprocess_turn(curr, countmap, true); //change whole object
@@ -28255,9 +28358,15 @@ Current version indicated by LITEVER below.
 				chatunits.push({"msg":"","add_stream_msg":`<span class='pending_text'>${pendstream}</span>`,"myturn":false,"unlabelled_name":true, "unlabelled_img":false});
 			}
 		}
+		let turnsincluded = count_visible_turns(chatunits);
 		for(var i=0;i<chatunits.length;++i)
 		{
 			let curr = chatunits[i];
+
+			if(localsettings.max_display_chars>0 && i<(chatunits.length-turnsincluded))
+			{
+				continue;
+			}
 
 			//for aesthetic mode, use fancy quotes, but we must exclude anything in codeblocks, and html tags
 			let temphtmlstash = [];
@@ -29982,6 +30091,11 @@ Current version indicated by LITEVER below.
 							<div class="justifyleft">Unlock scroll height <span class="helpicon">?<span
 								class="helptext">Unlocks the text viewport, allowing for infinite height without scrolling</span></span></div>
 							<input title="Unlock Scroll Height" type="checkbox" id="printer_view" class="push-right">
+						</div>
+						<div class="settinglabel">
+							<div class="justifyleft">Max Displayed Text Characters&nbsp;<span class="helpicon">?<span
+								class="helptext">If set above 0, will limit the number of text characters rendered to display (any earlier text will still be submitted but stay hidden).</span></span></div>
+							<input class="push-right" title="Max Displayed Text Characters" type="text" inputmode="decimal" value="0" style="width:10ch" id="max_display_chars">
 						</div>
 						<div class="settinglabel">
 							<input type="file" id="loadbgimg" accept="image/*" onchange="load_bg_img(event)" style="display:none;">
@@ -31837,8 +31951,11 @@ Current version indicated by LITEVER below.
 			<div>
 				<b class="color_white" style="padding: 5px;">Change Loaded Model / Config:</b><br>
 				<div style="padding: 5px;">
-					<label for="adminconfigdropdown" id="adminconfigdropdownlabel" style="color: white"></label>
-					<select title="Select New Config" style="padding:4px;" class="form-control" id="adminconfigdropdown">
+					<label for="adminconfigdropdown" id="adminconfigdropdownlabel" style="color: white">Select New Target: </label>
+					<select title="Select New Config" style="padding:4px;" class="form-control" id="adminconfigdropdown" onchange="change_admin_config_selection()">
+					</select>
+					<label for="adminconfigdropdown" id="adminconfigdropdownlabel" style="color: white">Select Base Config: </label>
+					<select title="Override Config" style="padding:4px;" class="form-control" id="adminconfigdropdown">
 					</select>
 					<label for="adminmodeldropdown" id="adminmodeldropdownlabel" style="color: white"></label>
 					<select title="Select New Model" style="padding:4px;" class="form-control" id="adminmodeldropdown">

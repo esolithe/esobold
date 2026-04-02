@@ -73,7 +73,7 @@ jobs:
           apt-get update
           apt-get install -y gh
 
-      - name: Upload to GitHub Release
+      - name: Upload to GitHub Rolling Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

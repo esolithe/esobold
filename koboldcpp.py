@@ -3530,19 +3530,130 @@ def is_ipv6_supported():
     except Exception:
         return False
 
-def detect_toolcall_tags(text: str): #for use with jinja tool responses, detect the tool call tag if present, we'll use that to split.
-    if text is None:
-        return None
+def toolcall_to_normalized_json(text): #convert weird formats into standard tool call json
     text = text.strip()
-    m = re.match(r'<\s*([A-Za-z_][\w\-]*)\b[^>]*>', text, re.DOTALL)   # match first opening tag
-    if not m:
-        return None
-    tag = m.group(1)
-    if re.search(rf'</\s*{re.escape(tag)}\s*>\s*$', text, re.DOTALL): # ensure the string ends with the matching closing tag
-        return tag
-    return None
+    def parse_qwen35(text: str) -> str:
+        fn_match = re.search(r"<function=(.*?)>", text)
+        if not fn_match:
+            return text
+        fn_name = fn_match.group(1).strip()
+        params = {}
+        param_blocks = re.findall(r"<parameter=(.*?)>(.*?)</parameter>", text, re.DOTALL)
+        for key, value in param_blocks:
+            params[key.strip()] = value.strip()
+        return json.dumps({"name": fn_name, "arguments": params})
+    def parse_glm(text: str) -> str:
+        text = text.strip()
+        # Extract function name: it's the first thing before any <arg_key>
+        fn_match = re.match(r"^\s*([^\<\s]+)", text)
+        if not fn_match:
+            return text
+        fn_name = fn_match.group(1).strip()
+        # Extract all key/value pairs
+        keys = re.findall(r"<arg_key>(.*?)</arg_key>", text)
+        values = re.findall(r"<arg_value>(.*?)</arg_value>", text)
+        params = {}
+        for i in range(min(len(keys), len(values))):
+            params[keys[i].strip()] = values[i].strip()
+        return json.dumps({"name": fn_name, "arguments": params})
+    def parse_deepseek_r1_sep(text: str) -> str:
+        text = re.sub(r'<｜tool▁calls▁begin｜>(.*?)<｜tool▁calls▁end｜>', r'\1',
+                    text, flags=re.DOTALL).strip()
+        sep = '<｜tool▁sep｜>'
+        if sep not in text:
+            return text
+        parts = [p.strip() for p in text.split(sep) if p.strip()]
+        results = []
+        for part in parts:
+            lines = part.split('\n', 1)
+            fn_name = lines[0].strip()
+            args_block = lines[1] if len(lines) > 1 else '{}'
+            args_block = re.sub(r'^```(?:json)?\s*', '', args_block.strip())
+            args_block = re.sub(r'\s*```$', '', args_block.strip())
+            try:
+                results.append({"name": fn_name, "arguments": json.loads(args_block)})
+            except Exception:
+                pass
+        if not results:
+            return text
+        return json.dumps(results) if len(results) > 1 else json.dumps(results[0])
+    def parse_minimax(text: str) -> str:
+        results = []
+        for invoke in re.finditer(
+            r'<invoke\s+name=["\']?([^"\'>\s]+)["\']?>(.*?)</invoke>',
+            text, re.DOTALL
+        ):
+            fn_name = invoke.group(1).strip()
+            params = {}
+            for p in re.finditer(
+                r'<parameter\s+name=["\']?([^"\'>\s]+)["\']?>(.*?)</parameter>',
+                invoke.group(2), re.DOTALL
+            ):
+                val = p.group(2).strip()
+                try:
+                    params[p.group(1).strip()] = json.loads(val)
+                except Exception:
+                    params[p.group(1).strip()] = val
+            results.append({"name": fn_name, "arguments": params})
+        if not results:
+            return text
+        return json.dumps(results) if len(results) > 1 else json.dumps(results[0])
 
-def format_jinja(messages, tools, chat_template_kwargs=None):
+
+    #if we are already valid JSON, return
+    check_ok = extract_json_from_string(text)
+    if check_ok and len(check_ok)>0:
+        return text #is valid JSON or parsable
+
+    if "<arg_key>" in text and "<arg_value>" in text: # handle glm with args
+        return parse_glm(text)
+
+    if "<function=" in text: # handle qwen3.5
+        return parse_qwen35(text)
+
+    if "<invoke " in text: #minimax
+        return parse_minimax(text)
+
+    if '<｜tool▁sep｜>' in text: #deepseek
+        return parse_deepseek_r1_sep(text)
+
+    if ' ' not in text and '\n' not in text: # handle glm without args
+        return parse_glm(text)
+
+    return text #fallback
+
+def repack_toolcall_tags(text: str):
+    tool_calls = []
+    if not text:
+        return tool_calls
+    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+    text = re.sub(r'<thinking>.*?</thinking>', '', text, flags=re.DOTALL)
+    text = re.sub(r'<reasoning>.*?</reasoning>', '', text, flags=re.DOTALL)
+    text = text.strip()
+    tcpairs = [
+        ("<tool_call>", "</tool_call>"),
+        ("<seed:tool_call>", "</seed:tool_call>"),
+        ("<|tool_call_begin|>", "<|tool_call_end|>"),
+        ("<｜tool▁call▁begin｜>", "<｜tool▁call▁end｜>"),
+        ("<minimax:tool_call>", "</minimax:tool_call>"),
+    ]
+    found = False
+    for start, end in tcpairs:
+        pattern = re.escape(start) + r"(.*?)" + re.escape(end)
+        matches = re.findall(pattern, text, flags=re.DOTALL)
+        if matches:
+            found = True
+            for match in matches:
+                normalizedtc = toolcall_to_normalized_json(match.strip())
+                sub_tool_calls = extract_json_from_string(normalizedtc)
+                tool_calls.extend(sub_tool_calls)
+            break
+    # fallback ONLY if no tags were found at all
+    if not found:
+        tool_calls = extract_json_from_string(text)
+    return tool_calls
+
+def format_jinja(messages_orig, tools, chat_template_kwargs=None):
     try:
         def strftime_now(format='%Y-%m-%d %H:%M:%S'):
             return datetime.now().strftime(format)
@@ -3555,6 +3666,7 @@ def format_jinja(messages, tools, chat_template_kwargs=None):
         from jinja2.sandbox import ImmutableSandboxedEnvironment
         jinja_env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True)
         # sanitize messages to remove none types
+        messages = json.loads(json.dumps(messages_orig))
         for m in messages:
             if m.get("content") is None:
                 del m["content"]
@@ -3568,12 +3680,12 @@ def format_jinja(messages, tools, chat_template_kwargs=None):
                             func["arguments"] = json.loads(args)
                         except Exception:
                             pass
-            # Fix tool content
-            if m.get("role") == "tool" and isinstance(m.get("content"), str):
-                try:
-                    m["content"] = json.loads(m["content"])
-                except Exception:
-                    pass
+            # Fix tool content for some templates
+            # if m.get("role") == "tool" and isinstance(m.get("content"), str):
+            #     try:
+            #         m["content"] = json.loads(m["content"])
+            #     except Exception:
+            #         pass
         jinja_env.globals['strftime_now'] = strftime_now
         jinja_env.globals['raise_exception'] = raise_exception
         jinja_env.filters["tojson"] = tojson
@@ -6447,6 +6559,11 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
 
     def prepare_basic_responses_body(self,resp_id,genparams):
         global friendlymodelname
+        global autoswapmode, textName, sttName, ttsName, embedName, musicName, imageName, mmprojName
+
+        modelNameToReturn = friendlymodelname
+        if autoswapmode and textName is not None:
+            modelNameToReturn = textName
         ret = {
             "id": resp_id,
             "object": "response",
@@ -6458,7 +6575,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             "parallel_tool_calls": False,
             "text": {"format": {"type": "text"},"verbosity": "medium"},
             "instructions": genparams.get('instructions', None),
-            "model": friendlymodelname,
+            "model": modelNameToReturn,
             "error": None,
             "metadata": {},
             "tools": genparams.get('tools', []),
@@ -6531,18 +6648,15 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             using_openai_tools = genparams.get('using_openai_tools', False)
             if using_openai_tools:
                 # first, check and potentially segment multiple tags for multi-tool calls
-                toolcalltagfound = detect_toolcall_tags(recvtxt)
-                if not toolcalltagfound:
-                    tool_calls = extract_json_from_string(recvtxt)
-                else: # we found tool call tags, split to extract all internal stuff
-                    splitting_str = recvtxt.replace(f"<{toolcalltagfound}>", "<TO_SPLIT>").replace(f"</{toolcalltagfound}>", "<TO_SPLIT>")
-                    chunks = [x.strip() for x in splitting_str.split("<TO_SPLIT>") if x]
-                    chunks = [x for x in chunks if x]
-                    for chunk in chunks: #for each potential toolcall, add it to the pile
-                        sub_tool_calls = extract_json_from_string(chunk)
-                        tool_calls.extend(sub_tool_calls)
+                tool_calls = repack_toolcall_tags(recvtxt)
                 if tool_calls and len(tool_calls)>0:
-                    tool_calls = [normalize_tool_call(obj) for obj in tool_calls]
+                    flat = []
+                    for obj in tool_calls:
+                        if isinstance(obj, list):
+                            flat.extend(obj)
+                        else:
+                            flat.append(obj)
+                    tool_calls = [normalize_tool_call(obj) for obj in flat]
                     for tc in tool_calls:
                         tcarg = tc.get("function",{}).get("arguments",None)
                         tc["id"] = f"call_{random.randint(10000, 99999)}"
@@ -8659,6 +8773,12 @@ Change Mode<br>
                         targetfilepath = os.path.join(dirpath, targetfile)
                         opts = [f for f in os.listdir(dirpath) if (f.lower().endswith(".kcpps") or f.lower().endswith(".kcppt") or f.lower().endswith(".gguf")) and os.path.isfile(os.path.join(dirpath, f))]
                         if targetfile in opts and os.path.exists(targetfilepath):
+                            global_memory["restart_override_config_target"] = "" # Jail enforcement
+                            if targetfile and overrideconfig:
+                                overrideconfigfilepath = os.path.abspath(os.path.join(dirpath, overrideconfig))
+                                if (overrideconfig in allowed_files and os.path.commonpath([dirpath, overrideconfigfilepath]) == dirpath and os.path.exists(overrideconfigfilepath)):
+                                    print(f"Admin: Override base config set to {overrideconfig}")
+                                    global_memory["restart_override_config_target"] = overrideconfig
                             # Now check targetModel
                             if targetModel and targetModel!="":
                                 dirpath = os.path.abspath(args.admintextmodelsdir)
@@ -10755,7 +10875,7 @@ def show_gui():
     tts_model_var.trace_add("write", gui_changed_modelfile)
     makelabelentry(audio_tab, "TTS Threads:" , tts_threads_var, 5, 50,padx=100,singleline=True,tooltip="How many threads to use during TTS generation.\nIf left blank, uses same value as threads.")
     makelabelentry(audio_tab, "TTS Max Tokens:" , ttsmaxlen_var, 5, 50,padx=300,singleline=True,tooltip="Max allowed audiotokens to generate per TTS request.", labelpadx=190)
-    makecheckbox(audio_tab, "TTS Use GPU", ttsgpu_var, 9, 0,tooltiptxt="Uses the GPU for TTS. Currently only works on OuteTTS.")
+    makecheckbox(audio_tab, "TTS Use GPU", ttsgpu_var, 9, 0,tooltiptxt="Uses the GPU for TTS. Currently only works on certain models (OuteTTS/Q3TTS).")
     ttsgpu_var.trace_add("write", gui_changed_modelfile)
     makefileentry(audio_tab, "WavTokenizer Model (Required for some models):", "Select WavTokenizer GGUF Model File", wavtokenizer_var, 11, width=280, filetypes=[("*.gguf","*.gguf")], tooltiptxt="Select a WavTokenizer GGUF model file on disk to be loaded for Narration.")
     wavtokenizer_var.trace_add("write", gui_changed_modelfile)
@@ -11986,12 +12106,14 @@ def reload_from_new_args(newargs):
     except Exception as e:
         print(f"Reload New Config Failed: {e}")
 
-def reload_new_config(filename,defaultargs): #for changing config after launch
+def reload_new_config(filename,defaultargs,overwrite_blank=False): #for changing config after launch
     with open(filename, 'r', encoding='utf-8', errors='ignore') as f:
         try:
             config = json.load(f)
             for key, value in defaultargs.items():   # Fill missing defaults directly into config
                 if key not in config:
+                    config[key] = value
+                elif overwrite_blank and key in config and not config[key]:
                     config[key] = value
             reload_from_new_args(config)
         except Exception as e:
@@ -12611,6 +12733,9 @@ def main(launch_args, default_args):
                                 elif targetfilepath.endswith(".gguf"):
                                     reload_from_new_args(defaultargs)
                                     args.model_param = targetfilepath
+                                elif targetfilepath and targetfilepath2 and restart_override_config_target!="":
+                                    reload_new_config(targetfilepath2,defaultargs)
+                                    reload_new_config(targetfilepath,vars(args),True)
                                 else:
                                     reload_new_config(targetfilepath,defaultargs)
 
