@@ -190,7 +190,7 @@ let AGENT_COMMAND_GROUPS = {
 		{ key: "messaging", label: "Messaging", commands: ["send_message"] },
 		{ key: "planning_input", label: "Planning and User Input", commands: ["userInput"] },
 		{ key: "search_web", label: "Search and Web", commands: ["web_search", "search_history"] },
-		{ key: "macros", label: "Macros", commands: ["create_macro", "run_macro", "get_macro_info"] },
+		{ key: "macros", label: "Macros", commands: ["create_macro", "run_macro", "run_macro_on_files", "get_macro_info"] },
 		{ key: "world_state", label: "World and State", commands: ["add_to_history", "overwrite_world_information", "read_world_information", "overwrite_setting_overview", "overwrite_current_state", "overwrite_current_state_response"] },
 		{ key: "filesystem", label: "Filesystem", commands: ["fs_generate_music", "fs_transcribe", "fs_generate_image", "describe_fs_image", "fs_list", "fs_search", "fs_semantic_search", "fs_metadata", "fs_url", "fs_content", "fs_download_info", "fs_write_text", "fs_write_lines", "fs_delete", "fs_move", "fs_copy", "fs_extract_zip", "fs_create_folder", "fs_delete_folder", "fs_open_embed", "fs_close_embed", "fs_generate_tts"] },
 		{ key: "media", label: "Media", commands: ["describe_clicked_image", "generate_image", "music_prepare", "generate_tts"] },
