@@ -83,7 +83,7 @@ extra_images_max = 4 # for kontext/qwen img
 KcppVersion = "1.111"
 showdebug = True
 kcpp_instance = None #global running instance
-global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "swapReqType": None, "autoswapmode": False, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}}
+global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "swapReqType": None, "autoswapmode": False, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}, "restart_override_config_target": ""}
 using_gui_launcher = False
 fs_lock = threading.Lock()
 # Used only by in-memory filesystem mode to represent empty directories.
@@ -8759,6 +8759,7 @@ Change Mode<br>
                     tempbody = json.loads(body)
                     if isinstance(tempbody, dict):
                         targetfile = tempbody.get('filename', "")
+                        overrideconfig = tempbody.get('overrideconfig', "")
                         targetModel = tempbody.get('modelName', "")
                 except Exception:
                     targetfile = ""
@@ -8766,6 +8767,7 @@ Change Mode<br>
                     if targetfile=="unload_model" or targetfile=="initial_model": #special request to simply unload model or swap back top intial model
                         print("Admin: Received request to unload model")
                         global_memory["restart_target"] = targetfile
+                        global_memory["restart_override_config_target"] = ""
                         global_memory["restart_model"] = ""
                         resp = {"success": True}
                     else:
@@ -8776,6 +8778,7 @@ Change Mode<br>
                             global_memory["restart_override_config_target"] = "" # Jail enforcement
                             if targetfile and overrideconfig:
                                 overrideconfigfilepath = os.path.abspath(os.path.join(dirpath, overrideconfig))
+                                allowed_files = get_current_admindir_list()
                                 if (overrideconfig in allowed_files and os.path.commonpath([dirpath, overrideconfigfilepath]) == dirpath and os.path.exists(overrideconfigfilepath)):
                                     print(f"Admin: Override base config set to {overrideconfig}")
                                     global_memory["restart_override_config_target"] = overrideconfig
@@ -12643,7 +12646,7 @@ def main(launch_args, default_args):
             input()
     else:  # manager command queue for admin mode
         with multiprocessing.Manager() as mp_manager:
-            global_memory = mp_manager.dict({"tunnel_url": "", "restart_target": "", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "swapReqType": None, "autoswapmode": False, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}})
+            global_memory = mp_manager.dict({"tunnel_url": "", "restart_target": "", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "swapReqType": None, "autoswapmode": False, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}, "restart_override_config_target": ""})
 
             if args.remotetunnel and not args.prompt and not args.benchmark and not args.cli:
                 setuptunnel(global_memory, True if args.sdmodel else False)
@@ -12687,6 +12690,7 @@ def main(launch_args, default_args):
                     if fault_recovery_mode and global_memory["load_complete"]:
                         fault_recovery_mode = False
                     restart_target = global_memory["restart_target"]
+                    restart_override_config_target = global_memory["restart_override_config_target"]
                     restart_model = global_memory["restart_model"]
                     last_active = global_memory["last_active_timestamp"]
                     if last_active and args.adminunloadtimeout>0:
@@ -12713,7 +12717,8 @@ def main(launch_args, default_args):
                         time.sleep(0.5) #sleep for 0.5s then restart
                         if args.admin and args.admindir:
                             dirpath = os.path.abspath(args.admindir)
-                            targetfilepath = os.path.join(dirpath, restart_target)
+                            targetfilepath = os.path.abspath(os.path.join(dirpath, restart_target))
+                            targetfilepath2 = os.path.abspath(os.path.join(dirpath, restart_override_config_target)) if restart_override_config_target else ""
                             defaultargs = vars(default_args)
                             if (os.path.exists(targetfilepath) or restart_target=="unload_model" or restart_target=="initial_model"):
                                 print("Terminating old process...")
@@ -12734,8 +12739,8 @@ def main(launch_args, default_args):
                                     reload_from_new_args(defaultargs)
                                     args.model_param = targetfilepath
                                 elif targetfilepath and targetfilepath2 and restart_override_config_target!="":
-                                    reload_new_config(targetfilepath2,defaultargs)
-                                    reload_new_config(targetfilepath,vars(args),True)
+                                    reload_new_config(targetfilepath,defaultargs)
+                                    reload_new_config(targetfilepath2,vars(args),True)
                                 else:
                                     reload_new_config(targetfilepath,defaultargs)
 

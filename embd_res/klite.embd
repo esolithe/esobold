@@ -14390,7 +14390,8 @@ Current version indicated by LITEVER below.
 						el.textContent = values[i];
 						el.value = values[i];
 						dropdown.appendChild(el);
-					} 
+					}
+					change_admin_config_selection()
 					document.getElementById("admincontainer").classList.remove("hidden")
 				}
 				else
@@ -14478,27 +14479,32 @@ Current version indicated by LITEVER below.
 	function change_admin_config_selection()
 	{
 		let targetfile = document.getElementById("adminconfigdropdown").value;
-		if(targetfile && targetfile.endsWith(".gguf"))
+		if(targetfile)
 		{
 			let overridedropdown = document.getElementById("adminconfigoverridedropdown");
 			var dropdown = document.getElementById("adminconfigdropdown");
-			for (var i = overridedropdown.options.length; i >= 0; i--) {
-				var option = overridedropdown.options[i];
-				overridedropdown.remove(option);
-			}
-			var el = document.createElement("option");
-			el.textContent = "Default Config";
-			el.value = "";
-			overridedropdown.appendChild(el);
-			for(var i=0;i<dropdown.options.length;++i)
+			if (!!overridedropdown)
 			{
-				let str = dropdown.options[i].value;
-				if(str.endsWith(".gguf") || str=="unload_model")
-				{continue;}
+				for (var i = overridedropdown.options.length; i >= 0; i--) {
+					var option = overridedropdown.options[i];
+					overridedropdown.remove(option);
+				}
+			
 				var el = document.createElement("option");
-				el.textContent = str;
-				el.value = str;
+				el.textContent = "Default Config";
+				el.value = "";
 				overridedropdown.appendChild(el);
+
+				for(var i=0;i<dropdown.options.length;++i)
+				{
+					let str = dropdown.options[i].value;
+					if(str.endsWith(".gguf") || str=="unload_model")
+					{continue;}
+					var el = document.createElement("option");
+					el.textContent = str;
+					el.value = str;
+					overridedropdown.appendChild(el);
+				}
 			}
 		}
 	}
@@ -14516,9 +14522,10 @@ Current version indicated by LITEVER below.
 
 		let header = {'Content-Type': 'application/json'};
 		let payload = {"filename": targetfile};
-		if(document.getElementById("adminconfigoverridedropdown").value && document.getElementById("adminconfigoverridedropdown").value!="")
+		let configOverride = document.getElementById("adminconfigoverridedropdown");
+		if(!!configOverride && configOverride.value && configOverride.value!="")
 		{
-			payload["overrideconfig"] = document.getElementById("adminconfigoverridedropdown").value;
+			payload["overrideconfig"] = configOverride.value;
 		}
 		payload["modelName"] = modelName
 
@@ -31951,11 +31958,11 @@ Current version indicated by LITEVER below.
 			<div>
 				<b class="color_white" style="padding: 5px;">Change Loaded Model / Config:</b><br>
 				<div style="padding: 5px;">
-					<label for="adminconfigdropdown" id="adminconfigdropdownlabel" style="color: white">Select New Target: </label>
+					<label for="adminconfigdropdown" id="adminconfigdropdownlabel" style="color: white">Select Base Config:</label>
 					<select title="Select New Config" style="padding:4px;" class="form-control" id="adminconfigdropdown" onchange="change_admin_config_selection()">
 					</select>
-					<label for="adminconfigdropdown" id="adminconfigdropdownlabel" style="color: white">Select Base Config: </label>
-					<select title="Override Config" style="padding:4px;" class="form-control" id="adminconfigdropdown">
+					<label for="adminconfigoverridedropdown" id="adminconfigoverridedropdownlabel" style="color: white">Select Override Config: </label>
+					<select title="Override Config" style="padding:4px;" class="form-control" id="adminconfigoverridedropdown">
 					</select>
 					<label for="adminmodeldropdown" id="adminmodeldropdownlabel" style="color: white"></label>
 					<select title="Select New Model" style="padding:4px;" class="form-control" id="adminmodeldropdown">
