@@ -20274,7 +20274,8 @@ Current version indicated by LITEVER below.
 				{
 					let gameText = concat_gametext(true).replace(/\xA0/g, ' ').trim();
 					let maxAllowedCharacters = getMaxAllowedCharacters(gameText, maxctxlen, maxgenamt);
-					if (documentdb_data!="" || gameText.length > maxAllowedCharacters)
+					let searchDocumentsEnabled = documentdb_searchdocuments && is_using_kcpp_with_searchable_docs() && window.fsClient;
+					if (documentdb_data!="" || gameText.length > maxAllowedCharacters || searchDocumentsEnabled)
 					{
 						const recentTextLimit = documentdb_searchrange;
 						let skippedActiveContext = gameText;
@@ -20297,7 +20298,7 @@ Current version indicated by LITEVER below.
 						let ltmSnippets = yield DatabaseMinisearch(fullDocument,ltmSearchQuery,recentTextStr);
 
 						// Merge document directory search results if enabled
-						if (documentdb_searchdocuments && is_using_kcpp_with_searchable_docs() && window.fsClient)
+						if (searchDocumentsEnabled)
 						{
 							try {
 								let docSnippets = yield window.fsClient.search_all_documents(ltmSearchQuery, documentdb_numresults);
