@@ -112,7 +112,7 @@ let renderEsoboldAgentTools = () => {
 
         groupedCommands.forEach((command) => {
             let enabledStatus = command?.enabled ? "enabled" : "disabled"
-            let description = command?.description ? command.description.substr(0, 180) : "No description"
+            let description = command?.description ? command.description : "No description"
             let commandDomId = sanitizeToolDomId(command.name)
             let isChecked = !disabledToolsSet.has(command.name)
             toolsHtml += `
