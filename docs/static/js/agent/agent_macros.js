@@ -566,6 +566,9 @@ export const buildMacroCommands = (ctx) => {
 				}
 				for (let { path, subAgentRunState } of subAgentRunStates) {
 					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, `executing sub-agent loop for path: ${path}`))
+					if (typeof agentRunState.agentVisualiser === "function") {
+						await agentRunState.agentVisualiser(objRefAssign({}, agentRunState, {agentRunState}))
+					}
 					await window.execAgentCycle(subAgentRunState)
 					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, `sub-agent loop complete for path: ${path}`))
 				}
