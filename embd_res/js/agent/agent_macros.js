@@ -313,96 +313,92 @@ export const buildMacroCommands = (ctx) => {
 			},
 			"enabled": true,
 			"executor": async (action) => {
-				try {
-					let macroName = `${action?.args?.macroName || ""}`.trim()
-					let macroExecutionPrompt = `${action?.args?.prompt || ""}`.trim()
-					let availableMacros = getAvailableAgentMacros()
-					let macroDefinition = availableMacros[macroName]
-					if (!isPlainObject(macroDefinition)) {
-						addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "run failed: macro was not found."))
-						return false
-					}
-					if (macroExecutionPrompt === null || macroExecutionPrompt.length === 0) {
-						addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "run failed: no prompt provided for this execution."))
-						return false
-					}
-
-					let validationResult = validateAgentMacroDefinition(macroName, macroDefinition, agentRunState)
-					if (!validationResult.valid) {
-						addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, `run failed: ${validationResult.error}`))
-						return false
-					}
-
-					if (!isPlainObject(agentRunState._executedMacroNames)) {
-						agentRunState._executedMacroNames = {}
-					}
-					agentRunState._executedMacroNames[macroName] = (agentRunState._executedMacroNames[macroName] || 0) + 1
-					if (agentRunState._executedMacroNames[macroName] > 3) {
-						addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "run failed: exceeded recursion limit."))
-						return false
-					}
-
-					let subAgentRunState = {
-						planToUse: macroDefinition.planToUse,
-						systemPrompt: agentRunState.systemPrompt,
-						agentVisualiser: agentRunState.agentVisualiser,
-						agentInitialiser: agentRunState.agentInitialiser,
-						agentFinaliser: agentRunState.agentFinaliser,
-						skipTaskCompletionCheck: true,
-						_executedMacroNames: { ...agentRunState._executedMacroNames },
-						configOverrides: {
-							...(isPlainObject(agentRunState.configOverrides) ? agentRunState.configOverrides : {}),
-							...(isPlainObject(macroDefinition.configOverrides) ? macroDefinition.configOverrides : {})
-						}
-					}
-
-					if (macroExecutionPrompt.length > 0) {
-						subAgentRunState.agentInputPrompt = macroExecutionPrompt
-						subAgentRunState.initialPrompt = ""
-					}
-
-					if (typeof macroDefinition.agentPrompt === "string" && macroDefinition.agentPrompt.trim().length > 0) {
-						subAgentRunState.agentPrompt = macroDefinition.agentPrompt
-					} else if (agentRunState.agentPrompt) {
-						subAgentRunState.agentPrompt = agentRunState.agentPrompt
-					}
-
-					if (typeof macroDefinition.agentName === "string" && macroDefinition.agentName.trim().length > 0) {
-						subAgentRunState.agentName = macroDefinition.agentName
-					} else if (agentRunState.agentName) {
-						subAgentRunState.agentName = agentRunState.agentName
-					}
-
-					if (typeof macroDefinition.printToConsole === "boolean") {
-						subAgentRunState.printToConsole = macroDefinition.printToConsole
-					} else {
-						subAgentRunState.printToConsole = agentRunState.printToConsole
-					}
-
-					if (typeof macroDefinition.wordCountEnabled === "boolean") {
-						subAgentRunState.wordCountEnabled = macroDefinition.wordCountEnabled
-					} else {
-						subAgentRunState.wordCountEnabled = !!agentRunState.wordCountEnabled
-					}
-
-					if (typeof macroDefinition.surpressMessagesToUser === "boolean") {
-						subAgentRunState.surpressMessagesToUser = macroDefinition.surpressMessagesToUser
-					} else {
-						subAgentRunState.surpressMessagesToUser = agentRunState.surpressMessagesToUser
-					}
-
-					if (typeof macroDefinition.isUsingWhitelist === "boolean") {
-						subAgentRunState.isUsingWhitelist = macroDefinition.isUsingWhitelist
-					} else {
-						subAgentRunState.isUsingWhitelist = agentRunState.isUsingWhitelist
-					}
-
-					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "executing as sub-agent loop."))
+				let macroName = `${action?.args?.macroName || ""}`.trim()
+				let macroExecutionPrompt = `${action?.args?.prompt || ""}`.trim()
+				let availableMacros = getAvailableAgentMacros()
+				let macroDefinition = availableMacros[macroName]
+				if (!isPlainObject(macroDefinition)) {
+					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "run failed: macro was not found."))
+					return false
 				}
-				finally {
-					if (typeof agentRunState.agentVisualiser === "function") {
-						await agentRunState.agentVisualiser(objRefAssign({}, agentRunState, {agentRunState}))
+				if (macroExecutionPrompt === null || macroExecutionPrompt.length === 0) {
+					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "run failed: no prompt provided for this execution."))
+					return false
+				}
+
+				let validationResult = validateAgentMacroDefinition(macroName, macroDefinition, agentRunState)
+				if (!validationResult.valid) {
+					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, `run failed: ${validationResult.error}`))
+					return false
+				}
+
+				if (!isPlainObject(agentRunState._executedMacroNames)) {
+					agentRunState._executedMacroNames = {}
+				}
+				agentRunState._executedMacroNames[macroName] = (agentRunState._executedMacroNames[macroName] || 0) + 1
+				if (agentRunState._executedMacroNames[macroName] > 3) {
+					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "run failed: exceeded recursion limit."))
+					return false
+				}
+
+				let subAgentRunState = {
+					planToUse: macroDefinition.planToUse,
+					systemPrompt: agentRunState.systemPrompt,
+					agentVisualiser: agentRunState.agentVisualiser,
+					agentInitialiser: agentRunState.agentInitialiser,
+					agentFinaliser: agentRunState.agentFinaliser,
+					skipTaskCompletionCheck: true,
+					_executedMacroNames: { ...agentRunState._executedMacroNames },
+					configOverrides: {
+						...(isPlainObject(agentRunState.configOverrides) ? agentRunState.configOverrides : {}),
+						...(isPlainObject(macroDefinition.configOverrides) ? macroDefinition.configOverrides : {})
 					}
+				}
+
+				if (macroExecutionPrompt.length > 0) {
+					subAgentRunState.agentInputPrompt = macroExecutionPrompt
+					subAgentRunState.initialPrompt = ""
+				}
+
+				if (typeof macroDefinition.agentPrompt === "string" && macroDefinition.agentPrompt.trim().length > 0) {
+					subAgentRunState.agentPrompt = macroDefinition.agentPrompt
+				} else if (agentRunState.agentPrompt) {
+					subAgentRunState.agentPrompt = agentRunState.agentPrompt
+				}
+
+				if (typeof macroDefinition.agentName === "string" && macroDefinition.agentName.trim().length > 0) {
+					subAgentRunState.agentName = macroDefinition.agentName
+				} else if (agentRunState.agentName) {
+					subAgentRunState.agentName = agentRunState.agentName
+				}
+
+				if (typeof macroDefinition.printToConsole === "boolean") {
+					subAgentRunState.printToConsole = macroDefinition.printToConsole
+				} else {
+					subAgentRunState.printToConsole = agentRunState.printToConsole
+				}
+
+				if (typeof macroDefinition.wordCountEnabled === "boolean") {
+					subAgentRunState.wordCountEnabled = macroDefinition.wordCountEnabled
+				} else {
+					subAgentRunState.wordCountEnabled = !!agentRunState.wordCountEnabled
+				}
+
+				if (typeof macroDefinition.surpressMessagesToUser === "boolean") {
+					subAgentRunState.surpressMessagesToUser = macroDefinition.surpressMessagesToUser
+				} else {
+					subAgentRunState.surpressMessagesToUser = agentRunState.surpressMessagesToUser
+				}
+
+				if (typeof macroDefinition.isUsingWhitelist === "boolean") {
+					subAgentRunState.isUsingWhitelist = macroDefinition.isUsingWhitelist
+				} else {
+					subAgentRunState.isUsingWhitelist = agentRunState.isUsingWhitelist
+				}
+
+				addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "executing as sub-agent loop."))
+				if (typeof agentRunState.agentVisualiser === "function") {
+					await agentRunState.agentVisualiser(objRefAssign({}, agentRunState, {agentRunState}))
 				}
 				await window.execAgentCycle(subAgentRunState)
 				addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "sub-agent loop complete."))
