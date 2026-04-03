@@ -177,7 +177,7 @@ export const buildMacroCommands = (ctx) => {
 					optional: true
 				},
 				"macroDefinition": {
-					description: "<macro definition object. Required: planToUse.responsePlanOverview and planToUse.orderOfActions. Optional: planToUse.whoToRespondAs, agentPrompt, agentName, configOverrides, printToConsole, wordCountEnabled, surpressMessagesToUser, isUsingWhitelist>",
+					description: "<macro definition object. Required: planToUse.responsePlanOverview and planToUse.orderOfActions. Optional: planToUse.whoToRespondAs, agentPrompt, agentName, wordCountEnabled, isUsingWhitelist>",
 					format: {
 						type: "object",
 						properties: {
@@ -247,10 +247,10 @@ export const buildMacroCommands = (ctx) => {
 								description: "Optional boolean to enable word counts for this macro run.",
 								type: "boolean"
 							},
-							"surpressMessagesToUser": {
-								description: "Optional boolean to suppress visible user messages for this macro run.",
-								type: "boolean"
-							},
+							// "surpressMessagesToUser": {
+							// 	description: "Optional boolean to suppress visible user messages for this macro run.",
+							// 	type: "boolean"
+							// },
 							"isUsingWhitelist": {
 								description: "Optional boolean. true = only explicitly whitelisted commands can run; false = normal enabled commands.",
 								type: "boolean"
@@ -287,6 +287,8 @@ export const buildMacroCommands = (ctx) => {
 					return false
 				}
 
+				macroDefinition.surpressMessagesToUser = false // Force surpressMessagesToUser to false for macro creation logs to ensure the user sees the result of their macro creation attempt in the UI. This does not affect the surpressMessagesToUser setting when the macro is executed.;
+				macroDefinition.printToConsole = !!macroDefinition.printToConsole // Ensure printToConsole is a boolean after the confirmation dialog
 				let saveMacroResult = saveAgentMacroDefinition(macroName, macroDefinition, overwrite)
 				if (!saveMacroResult.success) {
 					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, `create failed: ${saveMacroResult.error}`))
@@ -372,11 +374,11 @@ export const buildMacroCommands = (ctx) => {
 					subAgentRunState.agentName = agentRunState.agentName
 				}
 
-				if (typeof macroDefinition.printToConsole === "boolean") {
-					subAgentRunState.printToConsole = macroDefinition.printToConsole
-				} else {
-					subAgentRunState.printToConsole = agentRunState.printToConsole
-				}
+				// if (typeof macroDefinition.printToConsole === "boolean") {
+				// 	subAgentRunState.printToConsole = macroDefinition.printToConsole
+				// } else {
+				// 	subAgentRunState.printToConsole = agentRunState.printToConsole
+				// }
 
 				if (typeof macroDefinition.wordCountEnabled === "boolean") {
 					subAgentRunState.wordCountEnabled = macroDefinition.wordCountEnabled
@@ -384,11 +386,11 @@ export const buildMacroCommands = (ctx) => {
 					subAgentRunState.wordCountEnabled = !!agentRunState.wordCountEnabled
 				}
 
-				if (typeof macroDefinition.surpressMessagesToUser === "boolean") {
-					subAgentRunState.surpressMessagesToUser = macroDefinition.surpressMessagesToUser
-				} else {
-					subAgentRunState.surpressMessagesToUser = agentRunState.surpressMessagesToUser
-				}
+				// if (typeof macroDefinition.surpressMessagesToUser === "boolean") {
+				// 	subAgentRunState.surpressMessagesToUser = macroDefinition.surpressMessagesToUser
+				// } else {
+				// 	subAgentRunState.surpressMessagesToUser = agentRunState.surpressMessagesToUser
+				// }
 
 				if (typeof macroDefinition.isUsingWhitelist === "boolean") {
 					subAgentRunState.isUsingWhitelist = macroDefinition.isUsingWhitelist
