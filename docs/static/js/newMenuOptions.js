@@ -305,7 +305,7 @@ window.addEventListener('load', () => {
         localsettings.legacySaveMechanisms = false
     }
     if (localsettings?.showContextUsageChart == undefined) {
-        localsettings.showContextUsageChart = false
+        localsettings.showContextUsageChart = true
     }
     if (localsettings?.customThemeColours == undefined) {
         localsettings.customThemeColours = {}
@@ -552,14 +552,6 @@ window.addEventListener('load', () => {
 
     let { settingsBox } = createNewSettingsSection("esobold", "Esobold")
 
-    settingsBox.appendChild(createNewSubSection("Editor settings", true))
-
-    settingLabelElem = createSettingElemBool("useNewEditor", "Use new editor", "Uses the new editor (including a WYSIWYG and markdown view) - has issues with HTML tags and may break")
-    settingsBox.append(settingLabelElem)
-
-    settingLabelElem = createSettingElemBool("fullScreenEditorForInputs", "Full screen editor for inputs", "Adds buttons to open a full screen editor for inputs (experimental)")
-    settingsBox.append(settingLabelElem)
-
     settingsBox.appendChild(createNewSubSection("World tree settings"))
 
     settingLabelElem = createSettingElemBool("worldTreePrune", "Prune branches on world tree", "Prune branches on world tree to make it easier to navigate.")
@@ -582,13 +574,7 @@ window.addEventListener('load', () => {
     settingLabelElem = createSettingElemBool("legacySaveMechanisms", "Save options (legacy)", "Shows buttons for saving to slots and server using the non-data manager UI (legacy)")
     settingsBox.append(settingLabelElem)
 
-    settingLabelElem = createSettingElemBool("showContextUsageChart", "Show context usage chart", "Shows a floating chart of context usage percentages in the top-right corner.")
-    settingsBox.append(settingLabelElem)
-
     settingsBox.appendChild(createNewSubSection("Misc settings"))
-
-    settingLabelElem = createSettingElemBool("corpoHideLeftPanel", "Left panel in Corpo Theme starts minimised", "If this option is enabled, the left panel in Corpo gets minimised automatically.")
-    settingsBox.append(settingLabelElem)
 
     settingLabelElem = createSettingElemButton("libraryMods", "Mods", "Open the third-party mods manager to browse and apply community mods.", () => modManager.showModListWarning())
     settingsBox.append(settingLabelElem)
@@ -608,6 +594,20 @@ window.addEventListener('load', () => {
     settingsBox = document.querySelector("#settingsmenuappearance > .settingitem")
     settingsBox.appendChild(createNewSubSection("Esobold theme settings"))
     settingLabelElem = createSettingElemButton("customThemeColours", "Modify theme colours", "Allows modification of the colours used in the default theme", showThemePopup)
+    settingsBox.append(settingLabelElem)
+
+    settingLabelElem = createSettingElemBool("showContextUsageChart", "Show context usage chart", "Shows a compact context usage bar next to the connection status. Click it to open a detailed usage popup.")
+    settingsBox.append(settingLabelElem)
+
+    settingLabelElem = createSettingElemBool("corpoHideLeftPanel", "Left panel in Corpo Theme starts minimised", "If this option is enabled, the left panel in Corpo gets minimised automatically.")
+    settingsBox.append(settingLabelElem)
+
+    settingsBox.appendChild(createNewSubSection("Editor settings", false))
+
+    settingLabelElem = createSettingElemBool("useNewEditor", "Use new editor", "Uses the new editor (including a WYSIWYG and markdown view) - has issues with HTML tags and may break")
+    settingsBox.append(settingLabelElem)
+
+    settingLabelElem = createSettingElemBool("fullScreenEditorForInputs", "Full screen editor for inputs", "Adds buttons to open a full screen editor for inputs (experimental)")
     settingsBox.append(settingLabelElem)
 
     createStopThinkingButton()
