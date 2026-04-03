@@ -582,7 +582,7 @@ window.addEventListener('load', () => {
     settingLabelElem = createSettingElemBool("legacySaveMechanisms", "Save options (legacy)", "Shows buttons for saving to slots and server using the non-data manager UI (legacy)")
     settingsBox.append(settingLabelElem)
 
-    settingLabelElem = createSettingElemBool("showContextUsageChart", "Show context usage chart", "Shows a floating chart of context usage percentages in the top-right corner.")
+    settingLabelElem = createSettingElemBool("showContextUsageChart", "Show context usage chart", "Shows a compact context usage bar next to the connection status. Click it to open a detailed usage popup.")
     settingsBox.append(settingLabelElem)
 
     settingsBox.appendChild(createNewSubSection("Misc settings"))
