@@ -469,12 +469,16 @@ class ContextUsage {
             return;
         }
 
+        inlineContainer.classList.remove("hidden");
+
         if (!entries.length) {
-            inlineContainer.classList.add("hidden");
+            inlineBar.innerHTML = "";
+            inlineBar.classList.add("context-usage-inline-bar-waiting");
+            inlineContainer.title = "Waiting for first request";
             return;
         }
 
-        inlineContainer.classList.remove("hidden");
+        inlineBar.classList.remove("context-usage-inline-bar-waiting");
         inlineContainer.title = `Context usage\n${this.getUsageSummaryText(entries)}\nClick for details`;
         this.renderStackedBar(inlineBar, entries, false);
     }
@@ -522,3 +526,7 @@ class ContextUsage {
 }
 
 window.contextUsage = new ContextUsage();
+
+window.addEventListener("load", () => {
+    contextUsage.renderContextUsage();
+});
