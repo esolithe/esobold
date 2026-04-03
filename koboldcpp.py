@@ -5896,6 +5896,16 @@ def fs_batch_apply(items, item_handler, item_key="path"):
             if not isinstance(payload, dict):
                 payload = {}
             payload.setdefault(item_key, item)
+            try:
+                if (payload[item_key] is not None and payload[item_key]['content']):
+                    content = payload[item_key]['content']
+                    if isinstance(content, bytes):
+                        payload[item_key]['content'] = "<binary content>"
+                    else:
+                        payload[item_key]['content'] = f"{content[0:50]}..."
+            except Exception:
+                # Ignore any issues with content truncation for logging
+                pass
             payload["success"] = True
             results.append(payload)
         except Exception as e:
