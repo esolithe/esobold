@@ -2491,7 +2491,7 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
         {
             std::string toadd = "";
             for (int i = 0; i < inputs.moecpu; ++i) {
-                std::string tmp = string_format("blk\\.%d\\.ffn_(up|down|gate)_exps=CPU", i);
+                std::string tmp = string_format("blk\\.%d\\.ffn_(up|down|gate|gate_up)_(ch|)exps=CPU", i);
                 if(i>0)
                 {
                     tmp = "," + tmp;
