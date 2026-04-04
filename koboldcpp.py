@@ -80,7 +80,7 @@ dry_seq_break_max = 128
 extra_images_max = 4 # for kontext/qwen img
 
 # global vars
-KcppVersion = "1.111"
+KcppVersion = "1.111.1"
 showdebug = True
 kcpp_instance = None #global running instance
 global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "swapReqType": None, "autoswapmode": False, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}, "restart_override_config_target": ""}
@@ -1317,7 +1317,7 @@ def get_current_admindir_list():
 
 
 def dump_gguf_metadata(file_path): #if you're gonna copy this into your own project at least credit concedo
-    chunk_size = 1024*1024*12  # read first 12mb of file
+    chunk_size = 1024*1024*20  # read first 20mb of file
     try:
         data = None
         fptr = 0
@@ -3530,7 +3530,7 @@ def is_ipv6_supported():
     except Exception:
         return False
 
-def toolcall_to_normalized_json(text): #convert weird formats into standard tool call json
+def toolcall_to_normalized_json(text,start_tag,end_tag): #convert weird formats into standard tool call json
     text = text.strip()
     def parse_qwen35(text: str) -> str:
         fn_match = re.search(r"<function=(.*?)>", text)
@@ -3598,10 +3598,34 @@ def toolcall_to_normalized_json(text): #convert weird formats into standard tool
         if not results:
             return text
         return json.dumps(results) if len(results) > 1 else json.dumps(results[0])
+    def parse_gemma4(text: str) -> str:
+        text = text.replace('<|"|>', '"')
+        fn_match = re.match(r'^([a-zA-Z_][a-zA-Z0-9_]*)\{(.*)\}$', text.strip(), re.DOTALL)
+        if not fn_match:
+            return text
+        fn_name = fn_match.group(1)
+        body = fn_match.group(2).strip()
+        if not body:
+            return json.dumps({"name": fn_name, "arguments": {}})
+        try:   # Try to parse body as JSON object by wrapping it
+            args = json.loads('{' + body + '}')
+            return json.dumps({"name": fn_name, "arguments": args})
+        except Exception:
+            pass
+        normalized = re.sub(r'([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'"\1":', body)
+        try:
+            args = json.loads('{' + normalized + '}')
+            return json.dumps({"name": fn_name, "arguments": args})
+        except Exception:
+            pass
+        return text
 
+    # gemma4 takes precedence, since it can contain valid json fragments
+    if end_tag=="<tool_call|>":
+        return parse_gemma4(text)
 
     #if we are already valid JSON, return
-    check_ok = extract_json_from_string(text)
+    check_ok = extract_json_from_string(text, True)
     if check_ok and len(check_ok)>0:
         return text #is valid JSON or parsable
 
@@ -3636,6 +3660,7 @@ def repack_toolcall_tags(text: str):
         ("<|tool_call_begin|>", "<|tool_call_end|>"),
         ("<｜tool▁call▁begin｜>", "<｜tool▁call▁end｜>"),
         ("<minimax:tool_call>", "</minimax:tool_call>"),
+        ("<|tool_call>call:", "<tool_call|>"),
     ]
     found = False
     for start, end in tcpairs:
@@ -3644,7 +3669,7 @@ def repack_toolcall_tags(text: str):
         if matches:
             found = True
             for match in matches:
-                normalizedtc = toolcall_to_normalized_json(match.strip())
+                normalizedtc = toolcall_to_normalized_json(match.strip(),start,end)
                 sub_tool_calls = extract_json_from_string(normalizedtc)
                 tool_calls.extend(sub_tool_calls)
             break
@@ -3747,7 +3772,7 @@ def normalize_tool_call(obj): # Normalize various tool call formats to OpenAI fo
     return obj
 
 # Used to parse json for openai tool calls
-def extract_json_from_string(input_string):
+def extract_json_from_string(input_string, check_strict=False):
     parsed_json = None
     input_string = remove_outer_tags(input_string) #if we detected wrapper tags, remove them
 
@@ -3764,17 +3789,18 @@ def extract_json_from_string(input_string):
     except Exception:
         pass
     try:
-        # Now use regular expression to match JSON objects or arrays in case part is valid json and part is not
-        json_pattern = r'(\{.*?\}|\[.*?\])'  # was json_pattern = r'(\{.*\}|\[.*\])'
-        potential_jsons = re.findall(json_pattern, input_string, re.DOTALL)
-        for potential_json in potential_jsons:
-            try:
-                parsed_json = json.loads(potential_json)
-                if not isinstance(parsed_json, list):
-                    parsed_json = [parsed_json]
-                return parsed_json
-            except Exception:
-                continue
+        if not check_strict: #only allow when not strict mode
+            # Now use regular expression to match JSON objects or arrays in case part is valid json and part is not
+            json_pattern = r'(\{.*?\}|\[.*?\])'  # was json_pattern = r'(\{.*\}|\[.*\])'
+            potential_jsons = re.findall(json_pattern, input_string, re.DOTALL)
+            for potential_json in potential_jsons:
+                try:
+                    parsed_json = json.loads(potential_json)
+                    if not isinstance(parsed_json, list):
+                        parsed_json = [parsed_json]
+                    return parsed_json
+                except Exception:
+                    continue
     except Exception:
         pass
     return []
@@ -4099,7 +4125,8 @@ ws ::= | " " | "\n" [ \t]{0,20}
         #tool calls only possible if forced, or if ending with assistant tag
         adapter_obj = {} if chatcompl_adapter is None else chatcompl_adapter
         assistant_message_start = adapter_obj.get("assistant_start", "\n### Response:\n")
-        used_tool_json = determine_tool_json_to_use(genparams, genparams.get('prompt', ""), assistant_message_start, True)
+        assistant_message_gen = adapter_obj.get("assistant_gen", assistant_message_start)
+        used_tool_json = determine_tool_json_to_use(genparams, genparams.get('prompt', ""), assistant_message_gen, True)
         if used_tool_json and not genparams.get('grammar', ""):
             toolparamjson = None
             toolname = None
@@ -4119,8 +4146,7 @@ ws ::= | " " | "\n" [ \t]{0,20}
             except Exception:
                 pass
             tool_json_formatting_instruction = f"\nPlease use the provided schema to fill the parameters to create a function call for {toolname}, in the following format: " + json.dumps([{"id": "call_001", "type": "function", "function": {"name": f"{toolname}", "arguments": {"first property key": "first property value", "second property key": "second property value"}}}], indent=0)
-            genparams["prompt"] += f"\n\nJSON Schema:\n{used_tool_json}\n\n{tool_json_formatting_instruction}{assistant_message_start}"
-
+            genparams["prompt"] += f"\n\nJSON Schema:\n{used_tool_json}\n\n{tool_json_formatting_instruction}{assistant_message_gen}"
 
     elif api_format==3 or api_format==4 or api_format==7:
         default_adapter = {} if chatcompl_adapter is None else chatcompl_adapter
@@ -4462,6 +4488,10 @@ ws ::= | " " | "\n" [ \t]{0,20}
                 memory = memory.replace("{{[OUTPUT_END]}}", assistant_message_end)
                 memory = memory.replace("{{[SYSTEM_END]}}", system_message_end)
             else:
+                if "{{[INPUT]}}" in memory:
+                    memory = memory.replace("{{[INPUT]}}", user_message_start, 1)
+                else:
+                    prompt = prompt.replace("{{[INPUT]}}", user_message_start, 1)
                 prompt = prompt.replace("{{[INPUT]}}", assistant_message_end + user_message_start)
                 prompt = prompt.replace("{{[OUTPUT]}}", user_message_end + assistant_message_start)
                 prompt = prompt.replace("{{[SYSTEM]}}", system_message_start)
@@ -9263,6 +9293,26 @@ Change Mode<br>
 
                             # Send content if present
                             if content_text:
+                                reasoning_txt = ""
+                                thinkstrips = ["<think>"]
+                                thinksplitters = ["</think>"]
+                                for tsp in thinksplitters:
+                                    if tsp in content_text:
+                                        parts = content_text.split(tsp, 1)
+                                        reasoning_txt = parts[0]
+                                        content_text = parts[1]
+                                        for ts in thinkstrips:
+                                            reasoning_txt = reasoning_txt.replace(ts, "")
+                                if reasoning_txt:
+                                    chunk_content = json.dumps({
+                                        "id": "koboldcpp",
+                                        "object": "chat.completion.chunk",
+                                        "created": int(time.time()),
+                                        "model": modelNameToReturn,
+                                        "choices": [{"index": 0, "finish_reason": None, "delta": {"reasoning_content": reasoning_txt}}]
+                                    })
+                                    self.wfile.write(f"data: {chunk_content}\n\n".encode())
+                                    self.wfile.flush()
                                 chunk_content = json.dumps({
                                     "id": "koboldcpp",
                                     "object": "chat.completion.chunk",
@@ -13998,7 +14048,7 @@ if __name__ == '__main__':
     advparser.add_argument("--draftamount","--draft-max","--draft-n", metavar=('[tokens]'), help="How many tokens to draft per chunk before verifying results", type=int, default=default_draft_amount)
     advparser.add_argument("--draftgpulayers","--gpu-layers-draft","--n-gpu-layers-draft","-ngld", metavar=('[layers]'), help="How many layers to offload to GPU for the draft model (default=full offload)", type=int, default=999)
     advparser.add_argument("--draftgpusplit", help="GPU layer distribution ratio for draft model (default=same as main). Only works if multi-GPUs selected for MAIN model and tensor_split is set!", metavar=('[Ratios]'), type=float, nargs='+')
-    advparser.add_argument("--password", metavar=('[API key]'), help="Enter a password required to use this instance. This key will be required for all text endpoints. Image endpoints are not secured.", default=None)
+    advparser.add_argument("--password", metavar=('[API key]'), help="Enter a password required to use this instance. This key will be required for all text endpoints. Image endpoints are not secured. Can also be set with env var KOBOLDCPP_PASSWORD", default=os.getenv('KOBOLDCPP_PASSWORD',None))
     advparser.add_argument("--ratelimit", metavar=('[seconds]'), help="If enabled, rate limit generative request by IP address. Each IP can only send a new request once per X seconds.", type=int, default=0)
     advparser.add_argument("--ignoremissing", help="Ignores all missing non-essential files, just skipping them instead.", action='store_true')
     advparser.add_argument("--chatcompletionsadapter", metavar=('[filename]'), help="Select an optional ChatCompletions Adapter JSON file to force custom instruct tags.", default="AutoGuess")
@@ -14094,7 +14144,7 @@ if __name__ == '__main__':
 
     admingroup = parser.add_argument_group('Administration Commands')
     admingroup.add_argument("--admin", help="Enables admin mode, allowing you to unload and reload different configurations or models.", action='store_true')
-    admingroup.add_argument("--adminpassword", metavar=('[password]'), help="Require a password to access admin functions. You are strongly advised to use one for publically accessible instances!", default=None)
+    admingroup.add_argument("--adminpassword", metavar=('[password]'), help="Require a password to access admin functions. You are strongly advised to use one for publically accessible instances! Can also be set with env var KOBOLDCPP_ADMINPASSWORD", default=os.getenv('KOBOLDCPP_ADMINPASSWORD',None))
     admingroup.add_argument("--admindir", metavar=('[directory]'), help="Specify a directory to look for .kcpps configs in, which can be used to swap models.", default="")
     admingroup.add_argument("--adminunloadtimeout", help="Set an idle timeout in seconds after which KoboldCpp will automatically unload the current model.", type=int, default=0)
     admingroup.add_argument("--admintextmodelsdir", metavar=('[directory]'), help="Used with remote control config switching. By passing in this argument, models in the directory will by available for restarting operations.", default="")
