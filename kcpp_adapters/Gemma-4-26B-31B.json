@@ -3,6 +3,7 @@
   "system_end": "<turn|>\n",
   "user_start": "<|turn>user\n",
   "user_end": "<turn|>\n",
-  "assistant_start": "<|turn>model\n<|channel>thought\n<channel|>",
+  "assistant_start": "<|turn>model\n",
+  "assistant_gen":  "<|turn>model\n<|channel>thought\n<channel|>",
   "assistant_end": "<turn|>\n"
 }

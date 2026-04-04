@@ -3522,7 +3522,8 @@ ws ::= | " " | "\n" [ \t]{0,20}
         #tool calls only possible if forced, or if ending with assistant tag
         adapter_obj = {} if chatcompl_adapter is None else chatcompl_adapter
         assistant_message_start = adapter_obj.get("assistant_start", "\n### Response:\n")
-        used_tool_json = determine_tool_json_to_use(genparams, genparams.get('prompt', ""), assistant_message_start, True)
+        assistant_message_gen = adapter_obj.get("assistant_gen", assistant_message_start)
+        used_tool_json = determine_tool_json_to_use(genparams, genparams.get('prompt', ""), assistant_message_gen, True)
         if used_tool_json and not genparams.get('grammar', ""):
             toolparamjson = None
             toolname = None
@@ -3542,8 +3543,7 @@ ws ::= | " " | "\n" [ \t]{0,20}
             except Exception:
                 pass
             tool_json_formatting_instruction = f"\nPlease use the provided schema to fill the parameters to create a function call for {toolname}, in the following format: " + json.dumps([{"id": "call_001", "type": "function", "function": {"name": f"{toolname}", "arguments": {"first property key": "first property value", "second property key": "second property value"}}}], indent=0)
-            genparams["prompt"] += f"\n\nJSON Schema:\n{used_tool_json}\n\n{tool_json_formatting_instruction}{assistant_message_start}"
-
+            genparams["prompt"] += f"\n\nJSON Schema:\n{used_tool_json}\n\n{tool_json_formatting_instruction}{assistant_message_gen}"
 
     elif api_format==3 or api_format==4 or api_format==7:
         default_adapter = {} if chatcompl_adapter is None else chatcompl_adapter
