@@ -83,7 +83,7 @@ extra_images_max = 4 # for kontext/qwen img
 KcppVersion = "1.111.1"
 showdebug = True
 kcpp_instance = None #global running instance
-global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "swapReqType": None, "autoswapmode": False, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}, "restart_override_config_target": ""}
+global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "current_override":"", "swapReqType": None, "autoswapmode": False, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}, "restart_override_config_target": ""}
 using_gui_launcher = False
 fs_lock = threading.Lock()
 # Used only by in-memory filesystem mode to represent empty directories.
@@ -6148,7 +6148,7 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
 
             if (global_memory["swapReqType"] is not None and swapModeChanged):
                 with proxy_reload_lock:
-                    reqbody = json.dumps({"filename":global_memory["current_model"]})
+                    reqbody = json.dumps({"filename":global_memory["current_model"], "overrideconfig": global_memory["current_override"]})
                     reqheaders = {
                         'Content-Type': 'application/json',
                         'Content-Length': str(len(reqbody)),
@@ -12760,7 +12760,7 @@ def main(launch_args, default_args):
             input()
     else:  # manager command queue for admin mode
         with multiprocessing.Manager() as mp_manager:
-            global_memory = mp_manager.dict({"tunnel_url": "", "restart_target": "", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "swapReqType": None, "autoswapmode": False, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}, "restart_override_config_target": ""})
+            global_memory = mp_manager.dict({"tunnel_url": "", "restart_target": "", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "current_override":"", "swapReqType": None, "autoswapmode": False, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}, "restart_override_config_target": ""})
 
             if args.remotetunnel and not args.prompt and not args.benchmark and not args.cli:
                 setuptunnel(global_memory, True if args.sdmodel else False)
@@ -12876,7 +12876,12 @@ def main(launch_args, default_args):
                                 kcpp_instance.daemon = True
                                 kcpp_instance.start()
                                 global_memory["restart_target"] = ""
+                                if (restart_override_config_target and restart_override_config_target!=""):
+                                    global_memory["current_override"] = restart_override_config_target
+                                else:
+                                    global_memory["current_override"] = ""
                                 global_memory["restart_model"] = ""
+                                global_memory["restart_override_config_target"] = ""
                                 global_memory["current_model"] = restart_target
                                 time.sleep(3)
                     else:
