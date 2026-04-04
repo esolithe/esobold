@@ -31981,11 +31981,11 @@ Current version indicated by LITEVER below.
 			<div>
 				<b class="color_white" style="padding: 5px;">Change Loaded Model / Config:</b><br>
 				<div style="padding: 5px;">
-					<label for="adminconfigdropdown" id="adminconfigdropdownlabel" style="color: white">Select Base Config:</label>
-					<select title="Select New Config" style="padding:4px;" class="form-control" id="adminconfigdropdown">
+					<label for="adminconfigdropdown" id="adminconfigdropdownlabel" style="color: white">Select Primary Target: </label>
+					<select title="Select Primary Target" style="padding:4px;" class="form-control" id="adminconfigdropdown">
 					</select>
-					<label for="adminconfigoverridedropdown" id="adminconfigoverridedropdownlabel" style="color: white">Select Override Config: </label>
-					<select title="Override Config" style="padding:4px;" class="form-control" id="adminconfigoverridedropdown">
+					<label for="adminconfigoverridedropdown" id="adminconfigoverridedropdownlabel" style="color: white">Select Secondary Target (optional): </label>
+					<select title="Select Secondary Target" style="padding:4px;" class="form-control" id="adminconfigoverridedropdown">
 					</select>
 					<label for="adminmodeldropdown" id="adminmodeldropdownlabel" style="color: white"></label>
 					<select title="Select New Model" style="padding:4px;" class="form-control" id="adminmodeldropdown">
