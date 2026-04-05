@@ -3051,7 +3051,7 @@ def repack_toolcall_tags(text: str):
     text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
     text = re.sub(r'<thinking>.*?</thinking>', '', text, flags=re.DOTALL)
     text = re.sub(r'<reasoning>.*?</reasoning>', '', text, flags=re.DOTALL)
-    text = re.sub(r'<\|channel>thought.*?<channel|>', '', text, flags=re.DOTALL)
+    text = re.sub(r'<\|channel>thought.*?<channel\|>', '', text, flags=re.DOTALL)
     text = text.strip()
     tcpairs = [
         ("<tool_call>", "</tool_call>"),
