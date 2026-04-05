@@ -2791,6 +2791,7 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
                     || t.first == "<end_of_utterance>" // smoldocling
                     || t.first == "<eos>" // kcpp: added for gemma4
                     || t.first == "<turn|>" // gemma4
+                    || t.first == "<|tool_response>" // gemma4
                     || t.first == "<｜end▁of▁sentence｜>" // deepseek-ocr
                ) {
                 special_eog_ids.insert(t.second);

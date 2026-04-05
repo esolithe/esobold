@@ -16,7 +16,7 @@
 
 #include <chrono>
 #include <filesystem>
-#include "llama-arch.h"
+#include "src/llama-arch.h"
 
 static auto bench_timer = std::chrono::high_resolution_clock().now();
 

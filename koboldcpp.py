@@ -3653,6 +3653,7 @@ def repack_toolcall_tags(text: str):
     text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
     text = re.sub(r'<thinking>.*?</thinking>', '', text, flags=re.DOTALL)
     text = re.sub(r'<reasoning>.*?</reasoning>', '', text, flags=re.DOTALL)
+    text = re.sub(r'<\|channel>thought.*?<channel\|>', '', text, flags=re.DOTALL)
     text = text.strip()
     tcpairs = [
         ("<tool_call>", "</tool_call>"),
@@ -3694,7 +3695,7 @@ def format_jinja(messages_orig, tools, chat_template_kwargs=None):
         messages = json.loads(json.dumps(messages_orig))
         for m in messages:
             if m.get("content") is None:
-                del m["content"]
+                m["content"] = ""
         for m in messages: # Fix tool_calls arguments and content if parsable
             if m.get("tool_calls"):
                 for tc in m["tool_calls"]:
@@ -4230,7 +4231,7 @@ ws ::= | " " | "\n" [ \t]{0,20}
                 jinja_output = format_jinja(messages_array,jinjatools,jinjakwargs)
             if jinja_output:
                 messages_string = jinja_output
-                if jinja_output.rstrip().endswith("<think>"): #the prompt template already forced a start think.
+                if jinja_output.rstrip().endswith("<think>") or jinja_output.rstrip().endswith("<|channel>thought") : #the prompt template already forced a start think.
                     genparams["already_started_thinking"] = True
                 if jinjatools and len(jinjatools)>0:
                     genparams["using_openai_tools"] = True
@@ -4348,7 +4349,7 @@ ws ::= | " " | "\n" [ \t]{0,20}
                 if (latest_turn_was_assistant and continue_assistant_turn): #allow continue a prefill, chop off end
                     messages_string = messages_string[:-(len(assistant_message_gen)+len(assistant_message_end))]
             genparams["prompt"] = messages_string
-            if messages_string.rstrip().endswith("<think>"): #the prompt template already forced a start think.
+            if messages_string.rstrip().endswith("<think>") or messages_string.rstrip().endswith("<|channel>thought") : #the prompt template already forced a start think.
                 genparams["already_started_thinking"] = True
             if len(images_added)>0:
                 genparams["images"] = images_added
@@ -4470,8 +4471,10 @@ ws ::= | " " | "\n" [ \t]{0,20}
         assistant_message_gen = adapter_obj.get("assistant_gen", assistant_message_start)
         if isinstance(prompt, str): #needed because comfy SD uses same field name
             if assistant_message_gen and assistant_message_gen!=assistant_message_start: #replace final output tag with unspaced (gen) version if exists
-                if prompt.rstrip().endswith("{{[OUTPUT]}}"):
+                if "{{[OUTPUT]}}" in prompt:
                     prompt = replace_last_in_string(prompt,"{{[OUTPUT]}}",assistant_message_gen)
+                elif "{{[OUTPUT]}}" in memory:
+                    memory = replace_last_in_string(memory,"{{[OUTPUT]}}",assistant_message_gen)
                 elif assistant_message_start and prompt.rstrip().endswith(assistant_message_start):
                     prompt = replace_last_in_string(prompt, assistant_message_start, assistant_message_gen)
             if "{{[INPUT_END]}}" in prompt or "{{[OUTPUT_END]}}" in prompt:
@@ -6808,12 +6811,14 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         if api_format == 4 and using_openai_tools: # if tools, do not send anything else - OAI tool calls will be handled with fakestreaming!
             return
 
+        think_tag_buf = ""
         encap_in_thinking = False
         if genparams.get('already_started_thinking', False):
             encap_in_thinking = True
         encap_first_loop = True
         thinkpairs = [{"start":"<|channel|>analysis<|message|>","end":"<|start|>assistant<|channel|>final<|message|>"},
-                      {"start":"<think>","end":"</think>"}]
+                      {"start":"<think>","end":"</think>"},
+                      {"start":"<|channel>thought","end":"<channel|>"}]
         responses_first_loop = True
         anthropic_first_loop = True
         rseq_num = 0
@@ -6850,6 +6855,21 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                         tokenStr += tokenSeg
 
                 if tokenStr!="" or streamDone:
+                    # split think tag handling
+                    tokenStr = think_tag_buf + tokenStr
+                    think_tag_buf = ""
+                    if not streamDone and genparams.get('encapsulate_thinking', True):
+                        tail = ""
+                        for pair in thinkpairs:
+                            for tag in (pair["start"], pair["end"]):
+                                for n in range(1, len(tag)):
+                                    if tokenStr.endswith(tag[:n]) and len(tag[:n]) > len(tail):
+                                        tail = tag[:n]
+                        if tail:
+                            think_tag_buf = tail
+                            tokenStr = tokenStr[:-len(tail)]
+                    # end split think tag handling
+
                     sseq = genparams.get('stop_sequence', [])
                     trimstop = genparams.get('trim_stop', True)
                     if trimstop and not streamDone and string_contains_or_overlaps_sequence_substring(tokenStr,sseq):
@@ -9294,8 +9314,8 @@ Change Mode<br>
                             # Send content if present
                             if content_text:
                                 reasoning_txt = ""
-                                thinkstrips = ["<think>"]
-                                thinksplitters = ["</think>"]
+                                thinkstrips = ["<think>","<|channel>thought"]
+                                thinksplitters = ["</think>","<channel|>"]
                                 for tsp in thinksplitters:
                                     if tsp in content_text:
                                         parts = content_text.split(tsp, 1)
@@ -14057,7 +14077,7 @@ if __name__ == '__main__':
     advparser.add_argument("--draftamount","--draft-max","--draft-n", metavar=('[tokens]'), help="How many tokens to draft per chunk before verifying results", type=int, default=default_draft_amount)
     advparser.add_argument("--draftgpulayers","--gpu-layers-draft","--n-gpu-layers-draft","-ngld", metavar=('[layers]'), help="How many layers to offload to GPU for the draft model (default=full offload)", type=int, default=999)
     advparser.add_argument("--draftgpusplit", help="GPU layer distribution ratio for draft model (default=same as main). Only works if multi-GPUs selected for MAIN model and tensor_split is set!", metavar=('[Ratios]'), type=float, nargs='+')
-    advparser.add_argument("--password", metavar=('[API key]'), help="Enter a password required to use this instance. This key will be required for all text endpoints. Image endpoints are not secured. Can also be set with env var KOBOLDCPP_PASSWORD", default=os.getenv('KOBOLDCPP_PASSWORD',None))
+    advparser.add_argument("--password", metavar=('[API key]'), help="Enter a password required to use this instance. This key will be required for all text endpoints. Image endpoints are not secured. Can also be set with env var KCPP_PASSWORD", default=os.getenv('KCPP_PASSWORD',None))
     advparser.add_argument("--ratelimit", metavar=('[seconds]'), help="If enabled, rate limit generative request by IP address. Each IP can only send a new request once per X seconds.", type=int, default=0)
     advparser.add_argument("--ignoremissing", help="Ignores all missing non-essential files, just skipping them instead.", action='store_true')
     advparser.add_argument("--chatcompletionsadapter", metavar=('[filename]'), help="Select an optional ChatCompletions Adapter JSON file to force custom instruct tags.", default="AutoGuess")
@@ -14153,7 +14173,7 @@ if __name__ == '__main__':
 
     admingroup = parser.add_argument_group('Administration Commands')
     admingroup.add_argument("--admin", help="Enables admin mode, allowing you to unload and reload different configurations or models.", action='store_true')
-    admingroup.add_argument("--adminpassword", metavar=('[password]'), help="Require a password to access admin functions. You are strongly advised to use one for publically accessible instances! Can also be set with env var KOBOLDCPP_ADMINPASSWORD", default=os.getenv('KOBOLDCPP_ADMINPASSWORD',None))
+    admingroup.add_argument("--adminpassword", metavar=('[password]'), help="Require a password to access admin functions. You are strongly advised to use one for publically accessible instances! Can also be set with env var KCPP_ADMINPASSWORD", default=os.getenv('KCPP_ADMINPASSWORD',None))
     admingroup.add_argument("--admindir", metavar=('[directory]'), help="Specify a directory to look for .kcpps configs in, which can be used to swap models.", default="")
     admingroup.add_argument("--adminunloadtimeout", help="Set an idle timeout in seconds after which KoboldCpp will automatically unload the current model.", type=int, default=0)
     admingroup.add_argument("--admintextmodelsdir", metavar=('[directory]'), help="Used with remote control config switching. By passing in this argument, models in the directory will by available for restarting operations.", default="")

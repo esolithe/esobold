@@ -2030,11 +2030,12 @@ bool DoContextShifting(llama_context * ctx, llama_context * draft_ctx, std::vect
         int found = ArrFindIndexOf(current_context_tokens,shared);
         if(found>=0 && found > trimstart)
         {
+            bool ok = true;
             if(!dryrun)
             {
                 //extract the unwanted tokens out from context and KV
                 int diff = found - trimstart;
-                llama_memory_seq_rm(llama_get_memory(ctx), 0, trimstart, trimstart + diff);
+                ok = llama_memory_seq_rm(llama_get_memory(ctx), 0, trimstart, trimstart + diff);
                 llama_memory_seq_add(llama_get_memory(ctx), 0, trimstart + diff, -1, -diff);
                 if(draft_ctx)
                 {
@@ -2045,7 +2046,14 @@ bool DoContextShifting(llama_context * ctx, llama_context * draft_ctx, std::vect
                 {
                     current_context_tokens[i - diff] = current_context_tokens[i];
                 }
-                printf("\n[Context Shifting: Erased %d tokens at position %d]", diff, trimstart + 1);
+                if(ok)
+                {
+                    printf("\n[Context Shifting: Erased %d tokens at position %d]", diff, trimstart + 1);
+                }
+                else
+                {
+                    printf("\n[Warning: Context Shifting FAILED to erase %d tokens at position %d]", diff, trimstart + 1);
+                }
                 current_context_tokens.resize(current_context_tokens.size() - diff);
             }
             return true;
@@ -2483,7 +2491,7 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
         {
             std::string toadd = "";
             for (int i = 0; i < inputs.moecpu; ++i) {
-                std::string tmp = string_format("blk\\.%d\\.ffn_(up|down|gate)_exps=CPU", i);
+                std::string tmp = string_format("blk\\.%d\\.ffn_(up|down|gate|gate_up)_(ch|)exps=CPU", i);
                 if(i>0)
                 {
                     tmp = "," + tmp;

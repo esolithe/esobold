@@ -12,7 +12,7 @@
 #include <vector>
 
 #include "expose.h"
-#include "llama-arch.h"
+#include "src/llama-arch.h"
 
 enum FileFormat
 {
