@@ -2548,6 +2548,13 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
             model_params.tensor_buft_overrides = tenos.data();
         }
 
+        //set some ctx params early so autofit can use them.
+        llama_ctx_params.flash_attn_type = (kcpp_data->flash_attn?LLAMA_FLASH_ATTN_TYPE_ENABLED:LLAMA_FLASH_ATTN_TYPE_DISABLED);
+        llama_ctx_params.swa_full = kcpp_data->swa_full;
+        llama_ctx_params.type_k = (inputs.quant_k==2?GGML_TYPE_Q4_0:(inputs.quant_k==1?GGML_TYPE_Q8_0:(inputs.quant_k==3?GGML_TYPE_BF16:GGML_TYPE_F16)));
+        llama_ctx_params.type_v = (inputs.quant_v==2?GGML_TYPE_Q4_0:(inputs.quant_v==1?GGML_TYPE_Q8_0:(inputs.quant_v==3?GGML_TYPE_BF16:GGML_TYPE_F16)));
+
+
         //apply overrides from autofit
         float tensor_split_temp[128] = {0}; //temp buffer for autofit
         std::vector<size_t> fit_params_target = std::vector<size_t>(llama_max_devices(),1024*1024*1024);
@@ -2665,11 +2672,6 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
             printf("\nRWKV6 Overriding EOS and BOS IDs to 0\n");
             llamamodel->vocab.set_eos_bos(0,0);
         }
-
-        llama_ctx_params.flash_attn_type = (kcpp_data->flash_attn?LLAMA_FLASH_ATTN_TYPE_ENABLED:LLAMA_FLASH_ATTN_TYPE_DISABLED);
-        llama_ctx_params.swa_full = kcpp_data->swa_full;
-        llama_ctx_params.type_k = (inputs.quant_k==2?GGML_TYPE_Q4_0:(inputs.quant_k==1?GGML_TYPE_Q8_0:(inputs.quant_k==3?GGML_TYPE_BF16:GGML_TYPE_F16)));
-        llama_ctx_params.type_v = (inputs.quant_v==2?GGML_TYPE_Q4_0:(inputs.quant_v==1?GGML_TYPE_Q8_0:(inputs.quant_v==3?GGML_TYPE_BF16:GGML_TYPE_F16)));
 
         llama_ctx_v4 = llama_init_from_model(llamamodel, llama_ctx_params);
         if(load_guidance)
