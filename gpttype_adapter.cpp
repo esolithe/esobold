@@ -2548,6 +2548,13 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
             model_params.tensor_buft_overrides = tenos.data();
         }
 
+        //set some ctx params early so autofit can use them.
+        llama_ctx_params.flash_attn_type = (kcpp_data->flash_attn?LLAMA_FLASH_ATTN_TYPE_ENABLED:LLAMA_FLASH_ATTN_TYPE_DISABLED);
+        llama_ctx_params.swa_full = kcpp_data->swa_full;
+        llama_ctx_params.type_k = (inputs.quant_k==2?GGML_TYPE_Q4_0:(inputs.quant_k==1?GGML_TYPE_Q8_0:(inputs.quant_k==3?GGML_TYPE_BF16:GGML_TYPE_F16)));
+        llama_ctx_params.type_v = (inputs.quant_v==2?GGML_TYPE_Q4_0:(inputs.quant_v==1?GGML_TYPE_Q8_0:(inputs.quant_v==3?GGML_TYPE_BF16:GGML_TYPE_F16)));
+
+
         //apply overrides from autofit
         float tensor_split_temp[128] = {0}; //temp buffer for autofit
         std::vector<size_t> fit_params_target = std::vector<size_t>(llama_max_devices(),1024*1024*1024);
@@ -2665,11 +2672,6 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
             printf("\nRWKV6 Overriding EOS and BOS IDs to 0\n");
             llamamodel->vocab.set_eos_bos(0,0);
         }
-
-        llama_ctx_params.flash_attn_type = (kcpp_data->flash_attn?LLAMA_FLASH_ATTN_TYPE_ENABLED:LLAMA_FLASH_ATTN_TYPE_DISABLED);
-        llama_ctx_params.swa_full = kcpp_data->swa_full;
-        llama_ctx_params.type_k = (inputs.quant_k==2?GGML_TYPE_Q4_0:(inputs.quant_k==1?GGML_TYPE_Q8_0:(inputs.quant_k==3?GGML_TYPE_BF16:GGML_TYPE_F16)));
-        llama_ctx_params.type_v = (inputs.quant_v==2?GGML_TYPE_Q4_0:(inputs.quant_v==1?GGML_TYPE_Q8_0:(inputs.quant_v==3?GGML_TYPE_BF16:GGML_TYPE_F16)));
 
         llama_ctx_v4 = llama_init_from_model(llamamodel, llama_ctx_params);
         if(load_guidance)
@@ -3843,6 +3845,28 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                     addedmemory.erase(0, 1);
                 }
                 addedmemory = "[gMASK]<sop> " + addedmemory;
+            }
+        }
+    }
+
+    // Round two, gemma4 boogalo
+    // If it breaks your stuff you can blame me again (Or thank me because you can actually use gemma 31B stable now). - Henk
+    // For the record, the GLM4 one didn't break anyone and everyone forgot GLM4 needed this :D
+    if (file_format == FileFormat::GGUF_GENERIC && (file_format_meta.model_architecture == llm_arch::LLM_ARCH_GEMMA4)) {
+        std::string temp = gpttype_get_chat_template();
+        if (temp.find("<|channel>thought") != std::string::npos) {
+            const std::string channel_open  = "<|channel>";
+            const std::string channel_close = "<channel|>";
+            const std::string channel_prefix = channel_open + channel_close;
+
+            const std::string fullbody = addedmemory + kcpp_data->prompt;
+
+            const bool has_open  = fullbody.find(channel_open)  != std::string::npos;
+            const bool has_close = fullbody.find(channel_close) != std::string::npos;
+
+            // If neither opening nor closing tag is present anywhere, prepend both
+            if (!has_close) { //edit: even if we have open, lacking a close can break some cases. Add it.
+                addedmemory = channel_prefix + addedmemory;
             }
         }
     }

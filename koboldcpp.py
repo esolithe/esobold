@@ -80,7 +80,7 @@ dry_seq_break_max = 128
 extra_images_max = 4 # for kontext/qwen img
 
 # global vars
-KcppVersion = "1.111.1"
+KcppVersion = "1.111.2"
 showdebug = True
 kcpp_instance = None #global running instance
 global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "current_override":"", "swapReqType": None, "autoswapmode": False, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}, "restart_override_config_target": "", "current_model_override": ""}
@@ -3706,29 +3706,26 @@ def format_jinja(messages_orig, tools, chat_template_kwargs=None):
                             func["arguments"] = json.loads(args)
                         except Exception:
                             pass
-            # Fix tool content for some templates
-            # if m.get("role") == "tool" and isinstance(m.get("content"), str):
-            #     try:
-            #         m["content"] = json.loads(m["content"])
-            #     except Exception:
-            #         pass
         jinja_env.globals['strftime_now'] = strftime_now
         jinja_env.globals['raise_exception'] = raise_exception
         jinja_env.filters["tojson"] = tojson
         jinja_compiled_template = jinja_env.from_string(cached_chat_template)
         text = None
-        last_assist_msg = messages[-1]["content"]
+        messages_for_render = []
+        assist_should_prefill = False
         chat_template_kwargs = chat_template_kwargs or {}
-        assist_should_prefill = (messages and messages[-1]["role"] == "assistant" and last_assist_msg and isinstance(last_assist_msg, str) and len(last_assist_msg.strip())>0) #avoid single character newline or space content
+        last_assist_msg = ""
+        if messages:
+            last_assist_msg = messages[-1]["content"]
+            assist_should_prefill = (messages and messages[-1]["role"] == "assistant" and last_assist_msg and isinstance(last_assist_msg, str) and len(last_assist_msg.strip())>0) #avoid single character newline or space content
+            last_assist_msg = "" if not assist_should_prefill else last_assist_msg
+            messages_for_render = messages[:-1] if assist_should_prefill else messages
         if tools and len(tools)>0:
-            text = jinja_compiled_template.render(messages=messages, tools=tools, add_generation_prompt=True, bos_token="", eos_token="", **chat_template_kwargs)
+            text = jinja_compiled_template.render(messages=messages_for_render, tools=tools, add_generation_prompt=True, bos_token="", eos_token="", **chat_template_kwargs)
         else:
-            text = jinja_compiled_template.render(messages=messages, add_generation_prompt=True, bos_token="", eos_token="", **chat_template_kwargs)
-
-        if assist_should_prefill and text: # handle prefill continuations
-            lastindex = text.rfind(last_assist_msg)
-            if lastindex != -1:
-                text = text[:lastindex + len(last_assist_msg)]
+            text = jinja_compiled_template.render(messages=messages_for_render, add_generation_prompt=True, bos_token="", eos_token="", **chat_template_kwargs)
+        if assist_should_prefill and text and last_assist_msg: # handle prefill continuations
+            text = text + last_assist_msg
         return text if text else None
     except Exception as e:
         print(f"Jinja formatting failed: {e}")
@@ -6894,16 +6891,18 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                             delta = {'role': 'assistant'}
                             if genparams.get('encapsulate_thinking', True):
                                 if encap_in_thinking:
-                                    # We are already inside a thinking block. thinkpairs has already been reduced to [pair], so we just check the active one.
-                                    active_pair = thinkpairs[0]
-                                    if active_pair["end"] in tokenStr:
-                                        encap_in_thinking = False
-                                        out1, out2 = tokenStr.split(active_pair["end"], 1)
-                                        if out1:
-                                            delta['reasoning_content'] = out1
-                                        if out2:
-                                            delta['content'] = out2
-                                    else:
+                                    foundend = False
+                                    for pair in thinkpairs:
+                                        if pair["end"] in tokenStr:
+                                            encap_in_thinking = False
+                                            foundend = True
+                                            out1, out2 = tokenStr.split(pair["end"], 1)
+                                            if out1:
+                                                delta['reasoning_content'] = out1
+                                            if out2:
+                                                delta['content'] = out2
+                                            break
+                                    if not foundend:
                                         # Still thinking
                                         delta['reasoning_content'] = tokenStr
                                 else:
