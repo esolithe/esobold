@@ -18,8 +18,7 @@
     font-size: 0.85em;
     border-radius: 6px;
     max-height: 6em;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    overflow-y: auto;
     white-space: pre-wrap;
     word-break: break-word;
     pointer-events: none;

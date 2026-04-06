@@ -1221,6 +1221,12 @@ let runAgentCycle = async (agentRunState = {}) => {
                 let validCommands = getEnabledCommands(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist).map(c => c.name)
                 let plannedCommandName = currentOrderOfActionsOverall.length > i ? currentOrderOfActionsOverall[i] : null
                 let plannedCommand = plannedCommandName ? getCommands(agentRunState).find(c => c.name === plannedCommandName) : null
+
+                // After exhausting all planned steps, stop - don't fall into free-choice mode
+                if (currentOrderOfActionsOverall.length > 0 && !plannedCommand) {
+                    break
+                }
+
                 let execTools, execToolChoice
 
                 if (plannedCommand) {
@@ -1752,7 +1758,10 @@ let createStopThinkingButton = () => {
 let updateAgentStreamingDisplay = (text) => {
     document.querySelectorAll(".agentStreamingDisplay").forEach(elem => {
         elem.textContent = text || ""
-        if (text) elem.classList.remove("hidden")
+        if (text) {
+            elem.classList.remove("hidden")
+            elem.scrollTop = elem.scrollHeight
+        }
         else elem.classList.add("hidden")
     })
 }
@@ -2272,6 +2281,9 @@ let getTaskCompletionCheckGrammar = async () => {
 }
 
 let checkIfTaskComplete = async (agentRunState) => {
+    if (!!localsettings?.agentUseOAITools) {
+        return checkIfTaskCompleteOAI(agentRunState)
+    }
     try {
         let latestActions = getLastActions(20)
         let latestActionsText = latestActions.map(action => `${action.source}: ${action.msg}`).join("\n")
@@ -2286,6 +2298,54 @@ let checkIfTaskComplete = async (agentRunState) => {
             let parsed = JSON.parse(response)
             if (typeof parsed?.isTaskComplete === "boolean") {
                 return parsed;
+            }
+        }
+    }
+    catch {
+        // suppress completion checker errors
+    }
+    return null
+}
+
+let checkIfTaskCompleteOAI = async (agentRunState) => {
+    try {
+        let latestActions = getLastActions(20)
+        let latestActionsText = latestActions.map(action => `${action.source}: ${action.msg}`).join("\n")
+        let objective = agentRunState?.agentInputPrompt || agentRunState?.initialPrompt || ""
+
+        let completionTool = [{
+            type: "function",
+            function: {
+                name: "report_task_completion",
+                description: "Report whether the current task objective has been completed.",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        isTaskComplete: {
+                            type: "boolean",
+                            description: "True if the task objective has been fully completed, false otherwise."
+                        },
+                        objectiveForContinuing: {
+                            type: "string",
+                            description: "If the task is not complete, provide a concise objective the agent should aim to complete in the next cycle. Leave empty if the task is complete."
+                        }
+                    },
+                    required: ["isTaskComplete"]
+                }
+            }
+        }]
+
+        let messages = [
+            { role: "system", content: "You are validating whether the current task objective has been completed." },
+            { role: "user", content: `Task objective:\n${objective}\n\nRecent actions and outputs:\n${latestActionsText}\n\nDecide if the task is complete.` }
+        ]
+
+        let result = await callOAIChatCompletions(messages, completionTool, { type: "function", function: { name: "report_task_completion" } })
+        if (result?.tool_calls?.length > 0) {
+            let args = {}
+            try { args = JSON.parse(result.tool_calls[0].function.arguments) } catch (e) { }
+            if (typeof args?.isTaskComplete === "boolean") {
+                return args
             }
         }
     }
