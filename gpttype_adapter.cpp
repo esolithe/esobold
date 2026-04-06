@@ -3857,12 +3857,14 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
             const std::string channel_close = "<channel|>";
             const std::string channel_prefix = channel_open + channel_close;
 
-            const bool has_open  = kcpp_data->prompt.find(channel_open)  != std::string::npos;
-            const bool has_close = kcpp_data->prompt.find(channel_close) != std::string::npos;
+            const std::string fullbody = addedmemory + kcpp_data->prompt;
+
+            const bool has_open  = fullbody.find(channel_open)  != std::string::npos;
+            const bool has_close = fullbody.find(channel_close) != std::string::npos;
 
             // If neither opening nor closing tag is present anywhere, prepend both
             if (!has_open && !has_close) {
-                kcpp_data->prompt = channel_prefix + kcpp_data->prompt;
+                addedmemory = channel_prefix + addedmemory;
             }
         }
     }
