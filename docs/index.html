@@ -12,7 +12,7 @@ Current version indicated by LITEVER below.
 -->
 <head>
 	<script id="init-config">
-	const LITEVER = 326;
+	const LITEVER = 327;
 	const urlParams = new URLSearchParams(window.location.search);
 	var localflag = urlParams.get('local'); //this will be replaced automatically in embedded kcpp
 	const STORAGE_PREFIX = (localflag?"e_":"")+"kaihordewebui_";
@@ -3178,6 +3178,7 @@ Current version indicated by LITEVER below.
 	// whitelisted auto selected horde model names
 	const defaultmodels = ["gpt4all","supercot","pygmalion-6","pygmalion-v8","pygmalion-2","hermes","airoboros","chrono","wizard","mantis","vicuna","manticore","alpaca","myth","xwin","spicyboros","mlewd","mxlewd","westlake","anubis","skyfall","llama2","llama3","llama-2","llama-3-","llama-3.","mistral","maid","mixtral","estopia","fighter","fimbul","euryale","nemo","gemma","lunaris","stheno","magnum","cydonia","qwen2.5-32b","behemoth","exaone","glm4","glm-4","tutu","deepseek","tlacuilo","rocinante","-14B","-32B","-27B","-35B"];
 	const ignoredmodels = ["tinyllama","debug-","-1b","-270m"]; //blacklisted model names
+	const hardcoded_think_closers = ["</think>","<channel|>"];
 
 	const instructstartplaceholder = "\n{{[INPUT]}}\n";
 	const instructendplaceholder = "\n{{[OUTPUT]}}\n";
@@ -5516,14 +5517,14 @@ Current version indicated by LITEVER below.
 		const safeStop = escapeRegExp(localsettings.stop_thinking_tag);
 		return `${safeStart}([\\s\\S]*?)${safeStop}`;
 	}
-	function get_orphaned_thinking_regex()
+	function get_orphaned_thinking_regex(tag)
 	{
-		if(!localsettings.start_thinking_tag || !localsettings.stop_thinking_tag)
+		if(!tag)
 		{
 			return "";
 		}
 		const safeStart = escapeRegExp(get_instructendplaceholder());
-		const safeStop = escapeRegExp(localsettings.stop_thinking_tag);
+		const safeStop = escapeRegExp(tag);
 		return `${safeStart}([\\s\\S]*?)${safeStop}`;
 	}
 
@@ -5743,12 +5744,12 @@ Current version indicated by LITEVER below.
 			let promptEtIndex = prompt.lastIndexOf(et);
 			if(prompt && promptEtIndex!=-1 && localsettings.instruct_gentag)
 			{
-				prompt = replaceLast(prompt,et,localsettings.instruct_gentag);
+				prompt = replaceLast(prompt,et,localsettings.instruct_gentag.replaceAll("\\n", "\n"));
 				replaceDone = true;
 			}
 			if(!replaceDone && memory && memoryEtIndex!=-1 && localsettings.instruct_gentag)
 			{
-				memory = replaceLast(memory,et,localsettings.instruct_gentag);
+				memory = replaceLast(memory,et,localsettings.instruct_gentag.replaceAll("\\n", "\n"));
 				replaceDone = true;
 			}
 		}
@@ -7323,7 +7324,7 @@ Current version indicated by LITEVER below.
 						pending_toolcall_objs.push(pending_toolcall_last_obj);
 						pending_toolcall_last_obj = null;
 					}
-					if((synchro_polled_response=="" || (synchro_polled_response.includes("<think>") && synchro_polled_response.includes("</think>"))) && last_stop_reason=="tool_calls" && pending_toolcall_objs!=null && pending_toolcall_objs.length>0)
+					if(last_stop_reason=="tool_calls" && pending_toolcall_objs!=null && pending_toolcall_objs.length>0)
 					{
 						//a tool call was triggered instead
 						synchro_polled_resptoolcalls = [];
@@ -9436,10 +9437,7 @@ Current version indicated by LITEVER below.
 		}
 
 		if (localsettings.eos_ban_mode == 0) {
-			if (localsettings.opmode == 1) {
-				return true; //story mode always ban
-			}
-			else if (localsettings.opmode == 3 && !localsettings.allow_continue_chat) {
+			if (localsettings.opmode == 3 && !localsettings.allow_continue_chat) {
 				return false; //chat mode always unban unless cont allowed
 			}
 			else if (!input_was_empty) //if user input is not empty, ALWAYS unban EOS.
@@ -18150,13 +18148,23 @@ Current version indicated by LITEVER below.
 				}
 				else
 				{
-					if(localsettings.handle_mismatched_think && !inputtxt.includes(localsettings.start_thinking_tag) && inputtxt.includes(localsettings.stop_thinking_tag))
+					if(localsettings.opmode==4 && localsettings.handle_mismatched_think && !inputtxt.includes(localsettings.start_thinking_tag))
 					{
-						let chunks = inputtxt.split(localsettings.stop_thinking_tag);
-						if(chunks.length==2) //exactly 2 parts
+						let orphans = hardcoded_think_closers.slice();
+						orphans.push(localsettings.stop_thinking_tag);
+						for(let t=0;t<orphans.length;++t)
 						{
-							matches.push(chunks[0]);
-							inputtxt = `%ExpandBtn%${chunks[1]}`;
+							let currtag = orphans[t];
+							if(currtag && inputtxt.includes(currtag))
+							{
+								let chunks = inputtxt.split(currtag);
+								if(chunks.length==2) //exactly 2 parts
+								{
+									matches.push(chunks[0]);
+									inputtxt = `%ExpandBtn%${chunks[1]}`;
+									break;
+								}
+							}
 						}
 					}
 				}
@@ -18172,7 +18180,9 @@ Current version indicated by LITEVER below.
 				let matchiter = 0;
 				inputtxt = inputtxt.replace(/%ExpandBtn%(?:\n{0,2})?/g, function (m) {
 					let curr = matches[matchiter];
-					let expandedhtml = `<span><button type="button" title="Show Thoughts" class="btn btn-primary" style="font-size: var(--theme_font_size_medium);padding:2px 2px;" onclick="toggle_hide_thinking(this)">Show Thoughts (${curr.length} characters)</button><span class="color_lightgreen hidden"><br>${escape_html(curr)}\n</span><br></span>`;
+					curr = escape_html(curr);
+					curr = unescape_html_alternate(curr);
+					let expandedhtml = `<span><button type="button" title="Show Thoughts" class="btn btn-primary" style="font-size: var(--theme_font_size_medium);padding:2px 2px;" onclick="toggle_hide_thinking(this)">Show Thoughts (${curr.length} characters)</button><span class="color_lightgreen hidden"><br>${(curr)}\n</span><br></span>`;
 					if(!curr || curr.trim()=="" || curr.trim()=="/nothink" || curr.trim()==`${localsettings.start_thinking_tag}${localsettings.stop_thinking_tag}`)
 					{
 						expandedhtml = `<span><button type="button" title="No Thoughts" class="btn btn-primary" style="font-size: var(--theme_font_size_medium);padding:2px 2px;" onclick="">No Thoughts</button><br></span>`;
@@ -20050,11 +20060,21 @@ Current version indicated by LITEVER below.
 					truncated_context = truncated_context.replace(pat, "");
 
 					//fallback, check for orphaned think tags and remove those as well
-					if(localsettings.opmode==4 && localsettings.stop_thinking_tag && truncated_context.includes(localsettings.stop_thinking_tag))
+					if(localsettings.opmode==4)
 					{
-						let endmatcher = get_instructendplaceholder();
-						let pat = new RegExp(get_orphaned_thinking_regex(), "gm");
-						truncated_context = truncated_context.replace(pat, endmatcher);
+						let orphans = hardcoded_think_closers.slice();
+						orphans.push(localsettings.stop_thinking_tag);
+						for(let t=0;t<orphans.length;++t)
+						{
+							let currtag = orphans[t];
+							if(localsettings.opmode==4 && currtag && truncated_context.includes(currtag))
+							{
+								let endmatcher = get_instructendplaceholder();
+								let pat = new RegExp(get_orphaned_thinking_regex(currtag), "gm");
+								truncated_context = truncated_context.replace(pat, endmatcher);
+								break;
+							}
+						}
 					}
 				}
 				else if(localsettings.strip_thinking_mode==1) //strip except recent
@@ -20067,11 +20087,21 @@ Current version indicated by LITEVER below.
 						let pat = new RegExp(get_thinking_regex(), "gm");	// Remove all thinking before splitpoint
 						beforePart = beforePart.replace(pat, "");
 
-						//fallback, check for orphaned think tags and remove those as well
-						if(localsettings.opmode==4 && localsettings.stop_thinking_tag && beforePart.includes(localsettings.stop_thinking_tag))
+						if(localsettings.opmode==4)
 						{
-							let pat = new RegExp(get_orphaned_thinking_regex(), "gm");
-							beforePart = beforePart.replace(pat, endmatcher);
+							//fallback, check for orphaned think tags and remove those as well
+							let orphans = hardcoded_think_closers.slice();
+							orphans.push(localsettings.stop_thinking_tag);
+							for(let t=0;t<orphans.length;++t)
+							{
+								let currtag = orphans[t];
+								if(localsettings.opmode==4 && currtag && beforePart.includes(currtag))
+								{
+									let pat = new RegExp(get_orphaned_thinking_regex(currtag), "gm");
+									beforePart = beforePart.replace(pat, endmatcher);
+									break;
+								}
+							}
 						}
 
 						truncated_context = beforePart + afterPart; // Combine and done
@@ -20801,22 +20831,8 @@ Current version indicated by LITEVER below.
 				{
 					seqs.push(me + "\:");
 				}
-				if(localsettings.chatopponent!="")
-				{
-					//NOTE: we do not add our opponents name as a stop sequence IF thinking is forced
-					//the model just gets too confused and is likely to repeat the tag.
-					if(localsettings.think_injected!=1)
-					{
-						let m_opps = localsettings.chatopponent.split("||$||");
-						for(let i=0;i<m_opps.length;++i)
-						{
-							if(m_opps[i] && m_opps[i].trim()!="")
-							{
-								seqs.push(m_opps[i] + "\:");
-							}
-						}
-					}
-				}
+				//NOTE: we do not add our opponents name as a stop sequence
+				//the model just gets too confused and is likely to repeat the tag.
 			}
 		}
 		//special case for GPT-OSS, never use it as a stop sequence or stuff gets messed
@@ -21256,6 +21272,14 @@ Current version indicated by LITEVER below.
 							mhistory.splice(1, 1);
 						}
 
+						//if the final turn is the assistant chatname only, we shift that into the user turn, that helps support models that reject prefills
+						if(mhistory.length>2 && !mhistory[mhistory.length-1].myturn && mhistory[mhistory.length-2].myturn &&
+						mhistory[mhistory.length-2].msg && mhistory[mhistory.length-1].msg == `${localsettings.chatopponent}:`)
+						{
+							mhistory[mhistory.length-2].msg += `\n(Continue ${localsettings.chatopponent}'s reply')`;
+							mhistory.pop();
+						}
+
 						if(mhistory.length>0 && mainoaibody.length>1 && mainoaibody[1].type && mainoaibody[1].type!="text")
 						{
 							mhistory[0].msg = [{type: 'text', text: mhistory[0].msg}];
@@ -21386,7 +21410,7 @@ Current version indicated by LITEVER below.
 				//pollinations always uses the exact same url for text gen regardless
 				if(targetep.toLowerCase().includes("text.pollinations.ai"))
 				{
-					targetep = apply_proxy_url(pollinations_text_endpoint);
+					targetep = apply_proxy_url(pollinations_text_endpoint,true);
 					oai_payload.private = true;
 					oai_payload.referrer = "koboldai";
 					oai_payload.seed = Math.floor(Math.random() * 99999999);
@@ -22760,7 +22784,7 @@ Current version indicated by LITEVER below.
 
 		//allow trim incomplete sentences
 		//do not trim if instruct mode AND stop token reached
-		let donottrim = ((localsettings.opmode == 4||localsettings.opmode == 3) && last_stop_reason=="stop");
+		let donottrim = (last_stop_reason=="stop");
 		if (!donottrim && localsettings.trimsentences == true) {
 			//also, to prevent a trim from bisecting a chat name, if a response contains a chatname, do not trim
 			donottrim = false;
@@ -23012,11 +23036,11 @@ Current version indicated by LITEVER below.
 						gentxt = gentxt.slice(et2.length);
 						found = gentxt.indexOf(et2);
 					}
-					if (found != -1) //if found, truncate to it
-					{
-						splitresponse = gentxt.split(et2);
-						gentxt = splitresponse[0];
-					}
+					// if (found != -1) //if found, truncate to it
+					// {
+					// 	splitresponse = gentxt.split(et2);
+					// 	gentxt = splitresponse[0];
+					// }
 				}
 			}
 		}
@@ -30473,13 +30497,13 @@ Current version indicated by LITEVER below.
 
 							<div style="display:flex;width:100%;">
 								<div class="settinglabel settingcell">
-									<div title="Sampler Order" class="justifyleft" style="width:100%">Sampler Order <span class="helpicon">?<span class="helptext">
+									<div class="justifyleft" style="width:100%">Sampler Order <span class="helpicon">?<span class="helptext">
 									The order by which all 7 samplers are applied, separated by commas. 0=top_k, 1=top_a, 2=top_p, 3=tfs, 4=typ, 5=temp, 6=rep_pen</span></span></div>
 									<div class="justifyleft" style="width:100%;">
 									<input title="Sampler Order List" class="settinglabel miniinput" type="text" placeholder="CSV" value="" id="sampler_order" onblur="validate_samplers()"></div>
 								</div>
 								<div class="settinglabel settingcell">
-									<div title="Top N Sigma" class="justifyleft" style="width:100%">T.NSigma <span class="helpicon">?<span class="helptext">
+									<div class="justifyleft" style="width:100%">T.NSigma <span class="helpicon">?<span class="helptext">
 										Top N-Sigma. 0 to deactivate. Range 0 to 5. Not supported on Horde.</span></span></div>
 									<div id="nsigmasupporteddiv" style="display:flex;">
 									<div class="justifyleft" style="width:100%">
@@ -30521,7 +30545,7 @@ Current version indicated by LITEVER below.
 									</div>
 								</div>
 								<div class="settinglabel settingcell">
-									<div title="XTC" class="justifyleft" style="width:100%">XTC <span class="helpicon">?<span class="helptext">
+									<div class="justifyleft" style="width:100%">XTC <span class="helpicon">?<span class="helptext">
 										Enables Exclude Top Choices (XTC) Sampling. May not be available depending on backend, not supported on Horde.</span></span></div>
 										<div class="justifyleft" style="width:100%">
 										<div id="xtcsupporteddiv" style="display:flex;">
@@ -30543,7 +30567,7 @@ Current version indicated by LITEVER below.
 
 							<div style="display:flex;width:100%;">
 								<div class="settinglabel settingcell">
-									<div title="Adaptive-P" class="justifyleft" style="width:100%">Adapt.P. <span class="helpicon">?<span class="helptext">
+									<div class="justifyleft" style="width:100%">Adapt.P. <span class="helpicon">?<span class="helptext">
 										Enables Adaptive-P Sampling. Target ranges 0.0 to 1.0, 0 to deactivate. Decay ranges from 0.0 to 1.0. Not supported on Horde.</span></span></div>
 										<div class="justifyleft" style="width:100%">
 										<div id="adaptpsupporteddiv" style="display:flex;">
@@ -30562,7 +30586,7 @@ Current version indicated by LITEVER below.
 									</div>
 								</div>
 								<div class="settinglabel settingcell">
-									<div title="Mirostat" class="justifyleft" style="width:100%">Mirostat <span class="helpicon">?<span class="helptext">
+									<div class="justifyleft" style="width:100%">Mirostat <span class="helpicon">?<span class="helptext">
 										Replaces your samplers with mirostat, an alternative sampling method. May not be available depending on backend, not supported on Horde.</span></span></div>
 										<div class="justifyleft" style="width:100%">
 										<div id="mirosupporteddiv" style="display:flex;">
@@ -32140,8 +32164,8 @@ Current version indicated by LITEVER below.
 				<div>
 					<div style="vertical-align: middle;">
 						<div>
-							<span class="color_red">Also Reset Memory and World Info? </span>
-							<input type="checkbox" id="new_session_erase_memory" style="vertical-align: top;">
+							<span class="color_red"><b>Also Reset Memory and World Info? </b></span>
+							<input type="checkbox" id="new_session_erase_memory" style="vertical-align: text-bottom;">
 						</div>
 					</div>
 				</div>
