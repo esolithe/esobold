@@ -1223,7 +1223,12 @@ let runAgentCycle = async (agentRunState = {}) => {
                 let plannedCommand = plannedCommandName ? getCommands(agentRunState).find(c => c.name === plannedCommandName) : null
 
                 // After exhausting all planned steps, stop - don't fall into free-choice mode
-                if (currentOrderOfActionsOverall.length > 0 && !plannedCommand) {
+                if (currentOrderOfActionsOverall.length > 0 && !plannedCommandName) {
+                    break
+                }
+                // If a command was planned but can't be found, log and skip
+                if (plannedCommandName && !plannedCommand) {
+                    addThought(currentChainOfThought, createSysPrompt, `Planned command not found: ${plannedCommandName}`)
                     break
                 }
 
@@ -1279,7 +1284,7 @@ let runAgentCycle = async (agentRunState = {}) => {
                     break
                 }
 
-                if (!validCommands.includes(tc.function.name) && tc.function.name !== "plan_actions") {
+                if (!validCommands.includes(tc.function.name) && tc.function.name !== "plan_actions" && tc.function.name !== "stop_thinking") {
                     addThought(currentChainOfThought, createSysPrompt, `Invalid command requested: ${tc.function.name}`)
                     break
                 }

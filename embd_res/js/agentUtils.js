@@ -565,16 +565,15 @@ let commandsToOAITools = (commands) => {
 			}
 		}
 
+		let params = { type: 'object', properties }
+		if (required.length > 0) params.required = required
+
 		return {
 			type: 'function',
 			function: {
 				name: command.name,
 				description: command.description,
-				parameters: {
-					type: 'object',
-					properties,
-					required: required.length > 0 ? required : undefined
-				}
+				parameters: params
 			}
 		}
 	})
