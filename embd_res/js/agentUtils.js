@@ -541,7 +541,7 @@ let commandsToOAITools = (commands) => {
 				let prop = {}
 				if (typeof argDef === 'object') {
 					if (argDef.description) prop.description = argDef.description
-					if (argDef.format && typeof argDef.format === 'object') {
+					if (argDef.format) {
 						let fmt = typeof argDef.format === 'string' ? JSON.parse(argDef.format) : argDef.format
 						Object.assign(prop, fmt)
 					} else if (argDef.type) {

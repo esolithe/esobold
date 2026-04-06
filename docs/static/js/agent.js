@@ -1163,7 +1163,7 @@ let runAgentCycle = async (agentRunState = {}) => {
                 return toolResultText
             }
 
-            let planningPrompt = "The last action from the user is the instruction. If you need to ask the user for a response, use userInput as the final action. Produces a list of actions to respond to this instruction."
+            let planningPrompt = "The last action from the user is the instruction. If you need to ask the user for a response, use userInput as the final action. Produce a list of actions to respond to this instruction."
             if (!!agentRunState?.agentName) {
                 planningPrompt += ` You must respond as ${agentRunState.agentName} when using the send_message or userInput actions.`
             } else if (localsettings.inject_chatnames_instruct) {
