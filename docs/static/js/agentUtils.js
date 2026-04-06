@@ -527,3 +527,55 @@ let getCommandsAsText = (commands = getEnabledCommands()) => {
 }
 
 let checkFinalThoughtsPrompt = `Action: {"command":{"name":"thought","args":{"message":"I must make sure that I respond to the user with \"send_message\""}}}`
+
+let commandsToOAITools = (commands) => {
+	return commands.map(command => {
+		let properties = {}
+		let required = []
+
+		if (command.args !== null) {
+			for (let argName in command.args) {
+				let argDef = command.args[argName]
+				if (argDef?.skip) continue
+
+				let prop = {}
+				if (typeof argDef === 'object') {
+					if (argDef.description) prop.description = argDef.description
+					if (argDef.format && typeof argDef.format === 'object') {
+						let fmt = typeof argDef.format === 'string' ? JSON.parse(argDef.format) : argDef.format
+						Object.assign(prop, fmt)
+					} else if (argDef.type) {
+						prop.type = argDef.type
+						if (argDef.enum) prop.enum = argDef.enum
+						if (argDef.type === 'array') {
+							prop.items = { type: argDef.itemType || 'string' }
+							if (argDef.minItems !== undefined) prop.minItems = argDef.minItems
+							if (argDef.maxItems !== undefined) prop.maxItems = argDef.maxItems
+						}
+						if (argDef.pattern) prop.pattern = argDef.pattern
+					} else {
+						prop.type = 'string'
+					}
+				} else {
+					prop.type = 'string'
+				}
+
+				properties[argName] = prop
+				if (!argDef?.optional) required.push(argName)
+			}
+		}
+
+		return {
+			type: 'function',
+			function: {
+				name: command.name,
+				description: command.description,
+				parameters: {
+					type: 'object',
+					properties,
+					required: required.length > 0 ? required : undefined
+				}
+			}
+		}
+	})
+}

@@ -60,6 +60,232 @@ let generateResponseToInstruction = async (prompt) => {
     return await generateAndGetTextFromPrompt(formattedPrompt)
 }
 
+let generateAndStreamFromKCPP = async (prompt, grammar, bannedTokens, onToken) => {
+    let payload = createGeneratePayload(prompt)
+    if (!!grammar) {
+        payload.grammar = grammar
+        payload["grammar_retain_state"] = false
+        payload["banned_tokens"] = ["{}"].concat(bannedTokens).concat(localsettings.tokenbans.split("||$||"))
+    }
+    concat_gametext(true, "", "", "", false, true)
+    payload.params = {}
+    payload = finalize_submit_payload(payload, !!prompt)
+
+    let accum = ""
+    await new Promise((resolve, reject) => {
+        let reqOpt = {
+            method: 'POST',
+            headers: get_kobold_header(),
+            body: JSON.stringify(payload)
+        }
+        if (globalabortcontroller) reqOpt.signal = globalabortcontroller.signal
+
+        fetch(apply_proxy_url(custom_kobold_endpoint + "/api/extra/generate/stream"), reqOpt)
+            .then(resp => {
+                if (!resp.ok) return resp.text().then(t => { throw new Error("Stream failed: " + t) })
+                return resp
+            })
+            .then(resp => {
+                resp.body
+                    .pipeThrough(new TextDecoderStream())
+                    .pipeThrough(new TransformStream({
+                        start(ctrl) { ctrl.buf = '' },
+                        transform(chunk, ctrl) {
+                            ctrl.buf += chunk
+                            let evs = [], m
+                            while ((m = /^event: (.*)\ndata: (.*)(\r?\n){2}/m.exec(ctrl.buf)) !== null) {
+                                try { evs.push({ event: m[1], data: JSON.parse(m[2]) }) } catch (e) { }
+                                ctrl.buf = ctrl.buf.substring(m.index + m[0].length)
+                            }
+                            if (evs.length) ctrl.enqueue(evs)
+                        }
+                    }))
+                    .pipeTo(new WritableStream({
+                        write(events) {
+                            for (let ev of events) {
+                                if (ev.event === 'message' && ev.data?.token !== undefined) {
+                                    accum += ev.data.token
+                                    if (ev.data.token && typeof onToken === 'function') onToken(ev.data.token)
+                                }
+                            }
+                        },
+                        close() { resolve(accum) },
+                        abort(err) { reject(err) }
+                    }))
+            })
+            .catch(reject)
+    })
+    return accum
+}
+
+let callOAIChatCompletions = async (messages, tools, toolChoice) => {
+    let payload = {
+        model: (localsettings.custom_oai_model || ""),
+        messages,
+        tools,
+        tool_choice: toolChoice || "auto",
+        temperature: localsettings.temperature,
+        max_tokens: localsettings.max_length,
+        stream: false
+    }
+    let reqOpt = {
+        method: 'POST',
+        headers: get_kobold_header(),
+        body: JSON.stringify(payload)
+    }
+    if (globalabortcontroller) reqOpt.signal = globalabortcontroller.signal
+
+    let resp = await fetch(apply_proxy_url(custom_kobold_endpoint + "/v1/chat/completions"), reqOpt)
+        .then(r => r.json())
+
+    if (!resp?.choices || !resp.choices.length) return null
+    let choice = resp.choices[0]
+    let message = choice.message
+    return {
+        content: message.content || null,
+        tool_calls: message.tool_calls || null,
+        finish_reason: choice.finish_reason
+    }
+}
+
+let callOAIChatCompletionsStream = async (messages, tools, toolChoice, onToken) => {
+    let payload = {
+        model: (localsettings.custom_oai_model || ""),
+        messages,
+        tools,
+        tool_choice: toolChoice || "auto",
+        temperature: localsettings.temperature,
+        max_tokens: localsettings.max_length,
+        stream: true
+    }
+    let reqOpt = {
+        method: 'POST',
+        headers: get_kobold_header(),
+        body: JSON.stringify(payload)
+    }
+    if (globalabortcontroller) reqOpt.signal = globalabortcontroller.signal
+
+    let content = ""
+    let tool_calls_accum = []
+    let finish_reason = null
+
+    await new Promise((resolve, reject) => {
+        fetch(apply_proxy_url(custom_kobold_endpoint + "/v1/chat/completions"), reqOpt)
+            .then(resp => {
+                if (!resp.ok) return resp.text().then(t => { throw new Error("OAI stream failed: " + t) })
+                return resp
+            })
+            .then(resp => {
+                resp.body
+                    .pipeThrough(new TextDecoderStream())
+                    .pipeThrough(new TransformStream({
+                        start(ctrl) { ctrl.buf = '' },
+                        transform(chunk, ctrl) {
+                            ctrl.buf += chunk
+                            let evs = [], m
+                            while ((m = /^data: ?(.*)(\r?\n){2}/m.exec(ctrl.buf)) !== null) {
+                                let raw = m[1].trim()
+                                if (raw !== '[DONE]') {
+                                    try { evs.push(JSON.parse(raw)) } catch (e) { }
+                                }
+                                ctrl.buf = ctrl.buf.substring(m.index + m[0].length)
+                            }
+                            if (evs.length) ctrl.enqueue(evs)
+                        }
+                    }))
+                    .pipeTo(new WritableStream({
+                        write(events) {
+                            for (let ev of events) {
+                                let delta = ev?.choices?.[0]?.delta
+                                if (!delta) continue
+                                if (delta.content) {
+                                    content += delta.content
+                                    if (typeof onToken === 'function') onToken(delta.content)
+                                }
+                                if (delta.tool_calls) {
+                                    for (let tc of delta.tool_calls) {
+                                        let idx = tc.index || 0
+                                        if (!tool_calls_accum[idx]) {
+                                            tool_calls_accum[idx] = {
+                                                id: tc.id || "",
+                                                type: "function",
+                                                function: { name: "", arguments: "" }
+                                            }
+                                        }
+                                        if (tc.id) tool_calls_accum[idx].id = tc.id
+                                        if (tc.function?.name) tool_calls_accum[idx].function.name += tc.function.name
+                                        if (tc.function?.arguments) tool_calls_accum[idx].function.arguments += tc.function.arguments
+                                    }
+                                }
+                                if (ev?.choices?.[0]?.finish_reason) {
+                                    finish_reason = ev.choices[0].finish_reason
+                                }
+                            }
+                        },
+                        close() { resolve() },
+                        abort(err) { reject(err) }
+                    }))
+            })
+            .catch(reject)
+    })
+
+    return {
+        content: content || null,
+        tool_calls: tool_calls_accum.length > 0 ? tool_calls_accum : null,
+        finish_reason
+    }
+}
+
+let buildOAIBaseMessages = (agentRunState, textDBResults) => {
+    let messages = []
+
+    let systemParts = []
+    if (agentRunState.systemPrompt) {
+        systemParts.push(`Setting overview:\n\n${agentRunState.systemPrompt}`)
+    }
+    let truncated_context = concat_gametext(true, "", "", "", false, true)
+    let worldInfoContent = getWorldInfoForAgent(agentRunState, truncated_context, 4000)
+    if (worldInfoContent) systemParts.push(worldInfoContent)
+    if (textDBResults) systemParts.push(textDBResults)
+
+    let state = getDocumentFromTextDB('State')
+    if (state) systemParts.push(`Current state: ${state}`)
+
+    let currentAgentWIs = current_wi.filter(wi => !!wi?.wigroup && wi.wigroup === "Agent").map(wi => wi?.comment)
+    if (currentAgentWIs.length > 0) {
+        systemParts.push(`Current unique identifiers for world info: ${currentAgentWIs.join(", ")}`)
+    }
+    let availableAgentMacros = getAvailableAgentMacros()
+    if (Object.keys(availableAgentMacros).length > 0) {
+        systemParts.push(`All available agent macros: ${Object.keys(availableAgentMacros).join(", ")}`)
+    }
+    systemParts.push(`Current date/time (UTC): ${new Date().toUTCString()}`)
+    systemParts.push(`System prompt for all responses: ${agentRunState.agentPrompt}`)
+
+    if (systemParts.length > 0) {
+        messages.push({ role: "system", content: systemParts.join("\n\n") })
+    }
+
+    let history = getLastActions(maxActionsInHistory, agentRunState.excludeSpecificMessagePrefixes || [])
+    history.forEach(turn => {
+        let role = turn.myturn ? "user" : "assistant"
+        if (turn.source === "system") role = "system"
+        messages.push({ role, content: turn.msg })
+    })
+
+    if (agentRunState.initialPrompt) {
+        let lastMsg = messages[messages.length - 1]
+        let promptContent = agentRunState.initialUser
+            ? `${agentRunState.initialUser}: ${agentRunState.initialPrompt}`
+            : agentRunState.initialPrompt
+        if (!lastMsg || lastMsg.role !== "user" || !lastMsg.content.includes(agentRunState.initialPrompt)) {
+            messages.push({ role: "user", content: promptContent })
+        }
+    }
+
+    return messages
+}
+
 let split = (input, ...delimiters) => {
     let output = [], currentString = input, i = 0
 
@@ -910,6 +1136,165 @@ let runAgentCycle = async (agentRunState = {}) => {
             addThought(currentChainOfThought, createAIPrompt, getActionSummaryText(completePlanObject, null, false))
         }
 
+        if (!!localsettings?.agentUseOAITools) {
+            // ── OAI Tools mode ──────────────────────────────────────────────────────────
+            let oaiMessages = buildOAIBaseMessages(agentRunState, textDBResults)
+            let isCompleted = false
+
+            let executeOAICommand = async (commandName, commandArgs, toolCallId, promptOverview) => {
+                let action = { name: commandName, args: commandArgs }
+                let command = [...getReasoningCommand(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist), ...getCommands(agentRunState)].find(c => c.name === commandName)
+                addThought(currentChainOfThought, createAIPrompt, getActionSummaryText(action, promptOverview, !!agentRunState?.wordCountEnabled))
+
+                let toolResultText = "Done."
+                if (!!command && command?.executor !== undefined) {
+                    try {
+                        let res = await command.executor(action)
+                        if (res === true) isCompleted = true
+                        if (typeof res === "string") toolResultText = res
+                    } catch (e) {
+                        toolResultText = `Error: ${e}`
+                        agentRunState.errors.push(e)
+                    }
+                }
+                if (typeof agentVisualiser === "function") {
+                    await agentVisualiser(objRefAssign({ agentRunState }, agentRunState))
+                }
+                return toolResultText
+            }
+
+            let planningPrompt = "The last action from the user is the instruction. If you need to ask the user for a response, use userInput as the final action. Produces a list of actions to respond to this instruction."
+            if (!!agentRunState?.agentName) {
+                planningPrompt += ` You must respond as ${agentRunState.agentName} when using the send_message or userInput actions.`
+            } else if (localsettings.inject_chatnames_instruct) {
+                planningPrompt += ` You must respond as ${localsettings.chatopponent.split("||$||").join(" or ")} when using the send_message or userInput actions.`
+            }
+
+            if (!agentRunState?.planToUse) {
+                // Planning step: use plan_actions as the only tool
+                let planningTools = commandsToOAITools(getReasoningCommand(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist))
+                let planningMessages = [...oaiMessages, { role: "user", content: planningPrompt }]
+
+                clearAgentStreamingDisplay()
+                let streamAccum = ""
+                let planResult = await (localsettings?.agentStreamThinking
+                    ? callOAIChatCompletionsStream(planningMessages, planningTools, { type: "function", function: { name: "plan_actions" } }, (tok) => {
+                        streamAccum += tok
+                        updateAgentStreamingDisplay(streamAccum)
+                    })
+                    : callOAIChatCompletions(planningMessages, planningTools, { type: "function", function: { name: "plan_actions" } })
+                ).catch(e => { agentRunState.errors.push(e); return null })
+                clearAgentStreamingDisplay()
+
+                if (!planResult || !planResult.tool_calls || planResult.tool_calls.length === 0) {
+                    addThought(currentChainOfThought, createSysPrompt, "Chain of thought complete", true)
+                    isCompleted = true
+                } else {
+                    let tc = planResult.tool_calls[0]
+                    let planArgs = {}
+                    try { planArgs = JSON.parse(tc.function.arguments) } catch (e) { }
+
+                    if (!!planArgs?.orderOfActions) {
+                        currentOrderOfActionsOverall = planArgs.orderOfActions.map(a => a.action)
+                        currentOrderOfActionDescriptionsOverall = planArgs.orderOfActions.map(a => a.objective)
+                        if (!agentRunState?.agentName && localsettings.inject_chatnames_instruct && !!planArgs?.whoToRespondAs) {
+                            agentRunState.agentName = planArgs.whoToRespondAs
+                        }
+                        objRefOverride(agentRunState, { currentOrderOfActionsOverall, currentOrderOfActionDescriptionsOverall })
+                    }
+
+                    let planSummaryAction = { name: "plan_actions", args: planArgs }
+                    addThought(currentChainOfThought, createAIPrompt, getActionSummaryText(planSummaryAction, null, false))
+                    if (typeof agentVisualiser === "function") {
+                        await agentVisualiser(objRefAssign({ agentRunState }, agentRunState))
+                    }
+
+                    oaiMessages.push({ role: "assistant", content: planResult.content || null, tool_calls: planResult.tool_calls })
+                    oaiMessages.push({ role: "tool", content: JSON.stringify(planArgs), tool_call_id: tc.id || "plan_call" })
+                }
+            }
+
+            // Execution steps
+            for (let i = 0; i < Number(localsettings.agentCOTMax) && !isCompleted && agentRunState.endCurrent === false; i++) {
+                Array(...document.getElementsByClassName("stopThinking")).forEach(elem => elem.classList.remove("hidden"))
+
+                let validCommands = getEnabledCommands(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist).map(c => c.name)
+                let plannedCommandName = currentOrderOfActionsOverall.length > i ? currentOrderOfActionsOverall[i] : null
+                let plannedCommand = plannedCommandName ? getCommands(agentRunState).find(c => c.name === plannedCommandName) : null
+                let execTools, execToolChoice
+
+                if (plannedCommand) {
+                    execTools = commandsToOAITools([plannedCommand])
+                    execToolChoice = { type: "function", function: { name: plannedCommand.name } }
+                } else {
+                    let enabledCmds = getEnabledCommands(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist)
+                    execTools = commandsToOAITools(enabledCmds)
+                    execToolChoice = "auto"
+                }
+
+                let promptOverview = currentOrderOfActionDescriptionsOverall.length > i ? currentOrderOfActionDescriptionsOverall[i] : null
+                if (promptOverview) {
+                    oaiMessages = oaiMessages.filter(m => !m._agentObjective)
+                    oaiMessages.push({ role: "user", content: `Objective for this action: ${promptOverview}`, _agentObjective: true })
+                }
+
+                clearAgentStreamingDisplay()
+                let streamAccum = ""
+                let execResult = await (localsettings?.agentStreamThinking
+                    ? callOAIChatCompletionsStream(oaiMessages, execTools, execToolChoice, (tok) => {
+                        streamAccum += tok
+                        updateAgentStreamingDisplay(streamAccum)
+                    })
+                    : callOAIChatCompletions(oaiMessages, execTools, execToolChoice)
+                ).catch(e => { agentRunState.errors.push(e); return null })
+                clearAgentStreamingDisplay()
+
+                if (!execResult) break
+
+                if (execResult.content && (!execResult.tool_calls || execResult.tool_calls.length === 0)) {
+                    // Model responded with content, not a tool call - treat as send_message
+                    addThought(currentChainOfThought, createAIPrompt, execResult.content)
+                    oaiMessages.push({ role: "assistant", content: execResult.content })
+                    if (typeof agentVisualiser === "function") {
+                        await agentVisualiser(objRefAssign({ agentRunState }, agentRunState))
+                    }
+                    isCompleted = true
+                    break
+                }
+
+                if (!execResult.tool_calls || execResult.tool_calls.length === 0) break
+
+                let tc = execResult.tool_calls[0]
+                let cmdArgs = {}
+                try { cmdArgs = JSON.parse(tc.function.arguments) } catch (e) { }
+
+                if (tc.function.name === "stop_thinking") {
+                    isCompleted = true
+                    break
+                }
+
+                if (!validCommands.includes(tc.function.name) && tc.function.name !== "plan_actions") {
+                    addThought(currentChainOfThought, createSysPrompt, `Invalid command requested: ${tc.function.name}`)
+                    break
+                }
+
+                let toolResult = await executeOAICommand(tc.function.name, cmdArgs, tc.id, promptOverview)
+
+                oaiMessages = oaiMessages.filter(m => !m._agentObjective)
+                oaiMessages.push({ role: "assistant", content: execResult.content || null, tool_calls: execResult.tool_calls })
+                oaiMessages.push({ role: "tool", content: toolResult, tool_call_id: tc.id || "tool_call" })
+
+                if (printToConsole) logger.printPendingLogs()
+            }
+
+            if (!isCompleted) {
+                addThought(currentChainOfThought, createSysPrompt, "Chain of thought complete", true)
+                if (typeof agentVisualiser === "function") {
+                    await agentVisualiser(objRefAssign({ agentRunState }, agentRunState))
+                }
+            }
+        } else {
+        let isCompleted = false
         for (let i = !!agentRunState?.planToUse ? 1 : 0; i < Number(localsettings.agentCOTMax) + 1 && (currentOrderOfActionsOverall.length === 0 || i < currentOrderOfActionsOverall.length + 1) && agentRunState.endCurrent === false; i++) {
             Array(...document.getElementsByClassName("stopThinking")).forEach(elem => elem.classList.remove("hidden"))
 
@@ -1044,7 +1429,16 @@ let runAgentCycle = async (agentRunState = {}) => {
                 contextUsage.setUsage("context", finalAgentHistory.length);
                 contextUsage.renderContextUsage();
             }
-            let resp = await generateAndGetTextFromPrompt(finalAgentHistory, jsonGrammar, [], recentActions.map(JSON.stringify))
+            clearAgentStreamingDisplay()
+            let streamAccum = ""
+            let resp = await (localsettings?.agentStreamThinking && is_using_kcpp_with_sse()
+                ? generateAndStreamFromKCPP(finalAgentHistory, jsonGrammar, recentActions.map(JSON.stringify), (tok) => {
+                    streamAccum += tok
+                    updateAgentStreamingDisplay(streamAccum)
+                })
+                : generateAndGetTextFromPrompt(finalAgentHistory, jsonGrammar, [], recentActions.map(JSON.stringify))
+            )
+            clearAgentStreamingDisplay()
 
             try {
                 if (resp.trim() == "") {
@@ -1169,6 +1563,7 @@ let runAgentCycle = async (agentRunState = {}) => {
                 logger.printPendingLogs()
             }
         }
+        } // end standard (non-OAI-tools) loop
 
         if (previousConfig.config !== originalConfiguration.config || previousConfig.model !== originalConfiguration.model) {
             await reloadUtils.reloadAndWait(originalConfiguration.config, originalConfiguration.model)
@@ -1346,7 +1741,24 @@ let createStopThinkingButton = () => {
             elem.style.bottom = "0px";
         }
         elem.onclick = () => stopAgentThinking();
+
+        let streamElem = document.createElement("div");
+        streamElem.classList.add("agentStreamingDisplay", "hidden");
+        streamElem.dataset.inputId = id;
+        document.getElementById(id).parentElement.appendChild(streamElem);
     })
+}
+
+let updateAgentStreamingDisplay = (text) => {
+    document.querySelectorAll(".agentStreamingDisplay").forEach(elem => {
+        elem.textContent = text || ""
+        if (text) elem.classList.remove("hidden")
+        else elem.classList.add("hidden")
+    })
+}
+
+let clearAgentStreamingDisplay = () => {
+    updateAgentStreamingDisplay("")
 }
 
 let removeChoiceContainer = () => {

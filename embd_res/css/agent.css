@@ -5,3 +5,23 @@
     border-radius: 10px;
     padding: 5px;
 }
+
+.agentStreamingDisplay {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 100%;
+    margin-bottom: 4px;
+    padding: 6px 10px;
+    background: rgba(0, 0, 0, 0.75);
+    color: #ccc;
+    font-size: 0.85em;
+    border-radius: 6px;
+    max-height: 6em;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: pre-wrap;
+    word-break: break-word;
+    pointer-events: none;
+    z-index: 10;
+}

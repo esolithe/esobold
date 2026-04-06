@@ -192,6 +192,8 @@ display_settings = () => {
     document.getElementById("agentAutoContinue").checked = localsettings.agentAutoContinue;
     document.getElementById("agentCOTRepeatsMax").value = localsettings.agentCOTRepeatsMax;
     document.getElementById("agentCOTRepeatsMaxnumeric").value = localsettings.agentCOTRepeatsMax;
+    document.getElementById("agentUseOAITools").checked = localsettings.agentUseOAITools;
+    document.getElementById("agentStreamThinking").checked = localsettings.agentStreamThinking;
     document.getElementById("disableSaveCompressionLocally").checked = localsettings.disableSaveCompressionLocally;
     document.getElementById("enableRunningMemory").checked = localsettings.enableRunningMemory;
     document.getElementById("worldTreePrune").checked = localsettings.worldTreePrune;
@@ -223,6 +225,8 @@ confirm_settings = () => {
     localsettings.agentCOTMax = document.getElementById("agentCOTMax").value;
     localsettings.agentAutoContinue = (document.getElementById("agentAutoContinue").checked ? true : false);
     localsettings.agentCOTRepeatsMax = document.getElementById("agentCOTRepeatsMax").value;
+    localsettings.agentUseOAITools = (document.getElementById("agentUseOAITools").checked ? true : false);
+    localsettings.agentStreamThinking = (document.getElementById("agentStreamThinking").checked ? true : false);
     localsettings.disableSaveCompressionLocally = (document.getElementById("disableSaveCompressionLocally").checked ? true : false);
     localsettings.enableRunningMemory = (document.getElementById("enableRunningMemory").checked ? true : false);
     localsettings.worldTreePrune = (document.getElementById("worldTreePrune").checked ? true : false);
@@ -279,6 +283,12 @@ window.addEventListener('load', () => {
     }
     if (localsettings?.agentAutoContinue == undefined) {
         localsettings.agentAutoContinue = true
+    }
+    if (localsettings?.agentUseOAITools == undefined) {
+        localsettings.agentUseOAITools = false
+    }
+    if (localsettings?.agentStreamThinking == undefined) {
+        localsettings.agentStreamThinking = false
     }
     if (localsettings?.disableSaveCompressionLocally == undefined) {
         localsettings.disableSaveCompressionLocally = true
@@ -538,6 +548,12 @@ window.addEventListener('load', () => {
     lastSettingContainer.before(settingLabelElem)
 
     settingLabelElem = createSettingElemBool("agentAutoContinue", "Agent continues until completion (experimental)", "After prompting the agent, the maximum amount of actions the agent can take within a single plan are based on the maximum agent actions. If this option is ticked, and the agent thinks the task is not complete it will automatically create a new plan and continue. If this option is unticked, the user will be prompted to decide how to proceed.")
+    lastSettingContainer.before(settingLabelElem)
+
+    settingLabelElem = createSettingElemBool("agentUseOAITools", "Use OpenAI tools for command selection", "When enabled, the agent uses the OpenAI-compatible /v1/chat/completions endpoint with tool calling to select commands, instead of grammar-constrained generation. Requires a KoboldCpp endpoint that supports the OpenAI tools API. The agent performs a planning step (using plan_actions as a tool) followed by executing each planned step.")
+    lastSettingContainer.before(settingLabelElem)
+
+    settingLabelElem = createSettingElemBool("agentStreamThinking", "Stream agent thinking", "When enabled, shows the LLM output tokens as they are generated during each agent step, rather than waiting for the full response. For the standard mode this requires KoboldCpp SSE streaming support (v1.40+). For OAI tools mode, streaming is used automatically.")
     lastSettingContainer.before(settingLabelElem)
 
     // Hidden as this is no longer is in use for now
