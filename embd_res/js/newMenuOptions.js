@@ -288,7 +288,7 @@ window.addEventListener('load', () => {
         localsettings.agentUseOAITools = false
     }
     if (localsettings?.agentStreamThinking == undefined) {
-        localsettings.agentStreamThinking = false
+        localsettings.agentStreamThinking = true
     }
     if (localsettings?.disableSaveCompressionLocally == undefined) {
         localsettings.disableSaveCompressionLocally = true
