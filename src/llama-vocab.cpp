@@ -3064,8 +3064,9 @@ uint8_t llama_vocab::impl::token_to_byte(llama_token id) const {
             return strtol(buf.c_str(), NULL, 16);
         }
         case LLAMA_VOCAB_TYPE_BPE: {
-            GGML_ASSERT_CONTINUE(false);
-            return unicode_utf8_to_byte(token_data.text); // TODO: why is this here after GGML_ASSERT?
+            // Gemma4 uses BPE with SPM-style byte fallback tokens (<0xXX>)
+            auto buf = token_data.text.substr(3, 2);
+            return strtol(buf.c_str(), NULL, 16);
         }
         case LLAMA_VOCAB_TYPE_WPM: {
             GGML_ABORT("fatal error");
@@ -3577,6 +3578,10 @@ int32_t llama_vocab::impl::token_to_piece(llama_token token, char * buf, int32_t
                     }
                     std::string result = llama_decode_text(token_text);
                     return _try_copy(result.data(), result.size());
+                }
+                if (attr & LLAMA_TOKEN_ATTR_BYTE) {
+                    char byte = (char) token_to_byte(token);
+                    return _try_copy((char*) &byte, 1);
                 }
                 break;
             }

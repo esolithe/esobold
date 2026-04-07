@@ -71,6 +71,7 @@ default_genlen = 1024
 overridekv_max = 16
 default_autofit_padding = 1024
 lora_filenames_max = 4
+multiuser_concurrent_limit = 10
 
 # abuse prevention
 stop_token_max = 256
@@ -9014,8 +9015,8 @@ Change Mode<br>
         muint = int(args.multiuser)
         if muint<=0 and ((args.whispermodel and args.whispermodel!="") or (args.sdmodel and args.sdmodel!="") or (args.ttsmodel and args.ttsmodel!="") or (args.embeddingsmodel and args.embeddingsmodel!="")):
             muint = 2 # this prevents errors when using voice/img together with text
-        multiuserlimit = ((muint-1) if muint > 1 else 6)
-        #backwards compatibility for up to 7 concurrent requests, use default limit of 7 if multiuser set to 1
+        multiuserlimit = ((muint-1) if muint > 1 else multiuser_concurrent_limit)
+        #backwards compatibility for up to X concurrent requests, use default limit of X if multiuser set to 1
         if muint > 0 and requestsinqueue < multiuserlimit:
             reqblocking = True
             requestsinqueue += 1
