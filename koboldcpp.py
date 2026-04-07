@@ -6084,7 +6084,7 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
         is_wake_request = self.path in wake_requests
 
         autoswapEnabled = global_memory["autoswapmode"] is not None and global_memory["autoswapmode"]
-        if is_post and (is_completions_path or is_chat_completions_path or (not autoswapEnabled and is_wake_request)):
+        if is_post and (is_completions_path or is_chat_completions_path) and not autoswapEnabled:
             model_name = ""
             if body:
                 try:
