@@ -525,43 +525,46 @@ window.addEventListener('load', () => {
     }
     let lastSettingContainer = document.querySelector("#inject_chatnames_instruct").closest(".settinglabel")
 
-    lastSettingContainer.before(createNewSubSection("Esobold agent mode settings"))
+    let agentElems = []
+    agentElems.push(createNewSubSection("Esobold agent mode settings"))
     let settingLabelElem = createSettingElemBool("agentBehaviour", "Agent behaviour (experimental)", "Allows the AI to use multiple generations and certain tools to see if it can improve results.  This can include web search (if enabled), dice rolling, and formula evaluation.  This mode requires instruct start and end tags for all roles. Image and TTS only is enabled for local KCPP users.")
     settingLabelElem.onclick = () => {
         // if (document.getElementById("agentBehaviour").checked == true && document.getElementById("separate_end_tags").checked != true) {
         //     document.getElementById("separate_end_tags").click()
         // }
     }
-    lastSettingContainer.before(settingLabelElem)
+    agentElems.push(settingLabelElem)
 
     settingLabelElem = createSettingElemBool("agentHideCOT", "Hide agent COT", "Hides agent thinking steps (such as searches)")
-    lastSettingContainer.before(settingLabelElem)
+    agentElems.push(settingLabelElem)
 
     settingLabelElem = createSettingElemRange("agentCOTMax", "Maximum agent actions per plan", "Defines the maximum number of actions the agent can plan ahead", 1, 20, 1, 5)
-    lastSettingContainer.before(settingLabelElem)
+    agentElems.push(settingLabelElem)
 
     settingLabelElem = createSettingElemBool("agentStopOnRequestForInput", "Can agent ask for input?", "Determines if the agent can ask the user for input while executing the plan")
-    lastSettingContainer.before(settingLabelElem)
+    agentElems.push(settingLabelElem)
 
     settingLabelElem = createSettingElementTextArea("agentSavedMacros", "Macros which can be used to trigger the agent with custom logic.", "Macros which can be used to trigger the agent with custom logic. Macros can be invoked by 'macroName::prompt'.")
     settingLabelElem.querySelector("#agentSavedMacros").classList.add("fullScreenTextEditNoAuto")
-    lastSettingContainer.before(settingLabelElem)
+    agentElems.push(settingLabelElem)
 
     settingLabelElem = createSettingElemBool("agentAutoContinue", "Agent continues until completion (experimental)", "After prompting the agent, the maximum amount of actions the agent can take within a single plan are based on the maximum agent actions. If this option is ticked, and the agent thinks the task is not complete it will automatically create a new plan and continue. If this option is unticked, the user will be prompted to decide how to proceed.")
-    lastSettingContainer.before(settingLabelElem)
+    agentElems.push(settingLabelElem)
 
     settingLabelElem = createSettingElemBool("agentUseOAITools", "Use OpenAI tools for command selection", "When enabled, the agent uses the OpenAI-compatible /v1/chat/completions endpoint with tool calling to select commands, instead of grammar-constrained generation. Requires a KoboldCpp endpoint that supports the OpenAI tools API. The agent performs a planning step (using plan_actions as a tool) followed by executing each planned step.")
-    lastSettingContainer.before(settingLabelElem)
+    agentElems.push(settingLabelElem)
 
     settingLabelElem = createSettingElemBool("agentStreamThinking", "Stream agent thinking", "When enabled, shows the LLM output tokens as they are generated during each agent step, rather than waiting for the full response. For the standard mode this requires KoboldCpp SSE streaming support (v1.40+). For OAI tools mode, streaming is used automatically.")
-    lastSettingContainer.before(settingLabelElem)
+    agentElems.push(settingLabelElem)
 
     // Hidden as this is no longer is in use for now
     settingLabelElem = createSettingElemRange("agentCOTRepeatsMax", "Maximum repeated agent actions of a type", "Defines the maximum number of actions the agent can take of the same type without a user input", 1, 20, 1, 1)
     settingLabelElem.style.display = "none"
-    lastSettingContainer.before(settingLabelElem)
+    agentElems.push(settingLabelElem)
 
-    lastSettingContainer.before(createNewSubSection("Chat name settings"))
+    agentElems.reverse().forEach(elem => {
+        lastSettingContainer.after(elem)
+    })
 
     lastSettingContainer = document.querySelector("#settingsmenuadvanced > .settingitem")
     let toolsSettingsBox = document.querySelector("#settingsmenutools > .settingitem")
