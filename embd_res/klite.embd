@@ -29566,7 +29566,7 @@ Current version indicated by LITEVER below.
 				<button type="button" class="btn actbtn btn-primary mainnav" id="btn_actbranch" onclick="btn_branch(this)">Branch</button>
 				<button type="button" class="btn actbtn btn-primary mainnav" id="btn_addmedia" onclick="add_media_btn_menu()">Add File</button>
 				<button type="button" class="btn actbtn btn-primary mainnav slim btnicon-websearch hidden" id="btn_togglesearch" onclick="toggle_websearch()">&nbsp;</button>
-				<button type="button" class="btn actbtn btn-primary mainnav btnicon-agent slim inactive" id="btn_toggleAgent" onclick="toggleAgent()" tabindex="0">&nbsp;</button>
+				<button type="button" class="btn actbtn btn-primary mainnav btnicon-agent slim inactive" id="btn_toggleAgent" tabindex="0">&nbsp;</button>
 			</div>
 			<div class="borderbox flex push-right">
 				<input type="checkbox" id="allowediting" class="mainnav" onclick="toggle_editable()">
@@ -29615,7 +29615,7 @@ Current version indicated by LITEVER below.
 						<button type="button" class="btn actbtn btn-primary mainnav" id="btn_actbranch2" onclick="btn_branch(this)">Branch</button>
 						<button type="button" class="btn actbtn btn-primary mainnav" id="btn_addmedia2" onclick="add_media_btn_menu()">Add File</button>
 						<button type="button" class="btn actbtn btn-primary mainnav slim btnicon-websearch hidden" id="btn_togglesearch2" onclick="toggle_websearch()">&nbsp;</button>
-						<button type="button" class="btn actbtn btn-primary mainnav btnicon-agent slim inactive" id="btn_toggleAgentAesthetic" onclick="toggleAgent()" tabindex="0">&nbsp;</button>
+						<button type="button" class="btn actbtn btn-primary mainnav btnicon-agent slim inactive" id="btn_toggleAgentAesthetic" tabindex="0">&nbsp;</button>
 						<button type="button" class="btn actbtn btn-primary mainnav" id="btn_editmode" onclick="btn_editmode()">Edit</button>
 					</div>
 				</div>
