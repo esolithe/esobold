@@ -3858,14 +3858,18 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
             const std::string channel_open  = "<|channel>";
             const std::string channel_close = "<channel|>";
             const std::string channel_prefix = channel_open + channel_close;
+            const std::string systhink = "<|think|>";
 
             const std::string fullbody = addedmemory + kcpp_data->prompt;
 
             const bool has_open  = fullbody.find(channel_open)  != std::string::npos;
             const bool has_close = fullbody.find(channel_close) != std::string::npos;
+            const bool has_systhink = fullbody.find(systhink) != std::string::npos;
+            const bool ends_with_turn = kcpp_string_ends_with(kcpp_rstrip(fullbody),"<|turn>model");
+            const bool acceptable_jinja_exception = (ends_with_turn && has_systhink);
 
             // If neither opening nor closing tag is present anywhere, prepend both
-            if (!has_close) { //edit: even if we have open, lacking a close can break some cases. Add it.
+            if (!has_open && !has_close && !acceptable_jinja_exception) {
                 addedmemory = channel_prefix + addedmemory;
             }
         }
