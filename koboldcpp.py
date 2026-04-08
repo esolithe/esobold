@@ -11164,10 +11164,11 @@ def show_gui():
     opticlaw_tab = tabcontent["Opticlaw"]
     makelabel(opticlaw_tab, "Opticlaw AI Agent", 0, 0, tooltiptxt="Opticlaw is a modular, token-efficient AI agent framework that runs alongside KoboldCpp.")
     makecheckbox(opticlaw_tab, "Enable Opticlaw", opticlaw_var, 1, tooltiptxt="Launch the Opticlaw AI agent automatically when KoboldCpp starts.")
-    makelabelentry(opticlaw_tab, "Config File:", opticlaw_configfile_var, 3, 220, tooltip="Path to the Opticlaw config YAML file. A default config will be generated at this path if the file is absent.\nLeave blank to use the default location in esoExtras/opticlaw/config/config.yml")
-    makefileentry(opticlaw_tab, "Data Directory:", "Select Opticlaw data directory", opticlaw_datadir_var, 5, width=220, dialog_type=2, tooltiptxt="Overrides the data_dir field in the Opticlaw config.\nLeave blank to use the value already in the config.")
-    makefileentry(opticlaw_tab, "Sandbox Folder:", "Select Opticlaw sandbox folder", opticlaw_sandboxfolder_var, 9, width=220, dialog_type=2, tooltiptxt="Overrides the sandbox_folder field in the Opticlaw config.\nLeave blank to use the value already in the config.")
-    makelabelentry(opticlaw_tab, "API URL:", opticlaw_apiurl_var, 13, 220, tooltip=f"Overrides the API URL in the Opticlaw config.\nLeave blank to use the value already in the config.\nExample: https://localhost:{defaultport}/v1")
+    # makelabelentry(opticlaw_tab, "Config File (required):", opticlaw_configfile_var, 3, 220, tooltip="Path to the Opticlaw config YAML file. A default config will be generated at this path if the file is absent.\nLeave blank to use the default location in esoExtras/opticlaw/config/config.yml")
+    makefileentry(opticlaw_tab, "Config File (required):", "Select Opticlaw config file", opticlaw_configfile_var, 3, width=220, dialog_type=0, tooltiptxt="Path to the Opticlaw config YAML file. A default config will be generated at this path if the file is absent.")
+    makefileentry(opticlaw_tab, "Data Directory (required):", "Select Opticlaw data directory", opticlaw_datadir_var, 5, width=220, dialog_type=2, tooltiptxt="Overrides the data_dir field in the Opticlaw config.")
+    makefileentry(opticlaw_tab, "Sandbox Folder (required):", "Select Opticlaw sandbox folder", opticlaw_sandboxfolder_var, 7, width=220, dialog_type=2, tooltiptxt="Overrides the sandbox_folder field in the Opticlaw config.")
+    makelabelentry(opticlaw_tab, "OAI API URL (optional):", opticlaw_apiurl_var, 9, 220, tooltip=f"Overrides the API URL in the Opticlaw config.\nLeave blank to use the value already in the config.\nExample: https://localhost:{defaultport}/v1")
 
     # refresh
     runopts_var.trace_add("write", changerunmode)
@@ -12691,7 +12692,7 @@ def prepare_opticlaw_config(launch_args):
 
     # Default opticlaw config template
     default_cfg = {
-        "data_dir": "~/Documents/data",
+        "data_dir": "./data",
         "api": {
             "key": "KEY_HERE",
             "max_context": 8192,
@@ -12726,7 +12727,7 @@ def prepare_opticlaw_config(launch_args):
                 "channel", "chats", "context", "identity", "memory",
                 "models", "notes", "scheduler", "system", "time", "tokens",
             ],
-            "settings": {"files": {"sandbox_folder": "~/Documents/sandbox"}},
+            "settings": {"files": {"sandbox_folder": "./sandbox"}},
         },
     }
 
