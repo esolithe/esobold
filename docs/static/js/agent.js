@@ -122,7 +122,12 @@ let generateFromPromptOAI = async (messages, grammar = "") => {
     if (globalabortcontroller) {
         reqOpt.signal = globalabortcontroller.signal
     }
-    let resp = await fetch(targetep, reqOpt).then(r => r.json())
+    let resp = await fetch(targetep, reqOpt).then(r => {
+        if (!r.ok) {
+            return null
+        }
+        return r.json()
+    }).catch(() => null)
     if (resp?.choices && resp.choices.length > 0) {
         return resp.choices[0]?.message?.content || ""
     }
@@ -1108,7 +1113,7 @@ let runAgentCycle = async (agentRunState = {}) => {
             {
                 history = insertAuthorsNoteToContext(history, anToInclude)
             }
-            let isAgentUsingOAI = custom_oai_key != "" && custom_kobold_endpoint == ""
+            let isAgentUsingOAI = custom_oai_key !== "" && custom_kobold_endpoint === ""
             let resp
             if (isAgentUsingOAI) {
                 // For OAI mode: parse history (before placeholder replacement) into OAI messages,
