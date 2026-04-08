@@ -12701,8 +12701,8 @@ def prepare_opticlaw_config(launch_args):
             "insecure_skip_tls_verify": True,
         },
         "channels": {
-            "disabled": ["discord", "matrix", "telegram"],
-            "enabled": ["cli", "webui"],
+            "disabled": ["discord", "matrix", "telegram", "cli"],
+            "enabled": ["webui"],
             "settings": {
                 "discord": {"token": "TOKEN_HERE"},
                 "matrix": {
@@ -12787,14 +12787,6 @@ def launch_opticlaw(launch_args):
     if not configPath:
         print("Warning: Opticlaw config preparation failed. Skipping launch.")
         return None
-    # Find Python interpreter (frozen builds may need system Python)
-    if getattr(sys, "frozen", False):
-        python_exe = shutil.which("python3") or shutil.which("python")
-        if not python_exe:
-            print("Warning: Could not find a Python interpreter to launch Opticlaw. Skipping.")
-            return None
-    else:
-        python_exe = sys.executable
 
     try:
         def read_stream(stream, callback):
@@ -12816,7 +12808,7 @@ def launch_opticlaw(launch_args):
             print(f"[Subprocess Error] {line}")
         
         proc = subprocess.Popen(
-            [python_exe, opticlaw_main, "--config", configPath],
+            [sys.executable, opticlaw_main, "--config", configPath],
             cwd=opticlaw_dir,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
