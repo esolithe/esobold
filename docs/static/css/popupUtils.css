@@ -59,6 +59,31 @@
 		transform: scale(1.05);
 	}
 
+	.containAndScaleImage.tile.quick_start_selected {
+		outline: 3px solid var(--theme_color_fg);
+		box-shadow: 0 0 0 2px rgba(0,0,0,0.2), 0 0 14px rgba(255,255,255,0.2);
+	}
+
+	.quick_start_preview_grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
+		gap: 8px;
+		width: 100%;
+	}
+
+	.containAndScaleImage.tile.quick_start_preview_tile {
+		height: 86px;
+		width: 86px;
+		border-radius: 12px;
+		background-size: cover;
+		background-position: center;
+	}
+
+	.containAndScaleImage.tile.quick_start_preview_tile.quick_start_preview_tile_empty {
+		opacity: 0.85;
+		cursor: default;
+	}
+
 	.containAndScaleImage.tile>b {
 	    color: white;
 	    background-color: rgba(0,0,0,0.65);
