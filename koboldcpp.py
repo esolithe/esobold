@@ -6097,15 +6097,25 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
         hasReloaded = False
         if is_post and (is_completions_path or is_chat_completions_path):
             model_name = ""
+            isValidModelRequest = False
             if body:
                 try:
                     request_json = json.loads(body.decode("utf-8"))
                     model_name = request_json.get("model")
+                    if model_name and model_name!="":
+                        if model_name=="unload_model" or model_name=="initial_model": #special request to simply unload model or swap back top intial model
+                            isValidModelRequest = True
+                        else:
+                            dirpath = os.path.abspath(args.admindir)
+                            targetfilepath = os.path.join(dirpath, targetfile)
+                            opts = [f for f in os.listdir(dirpath) if (f.lower().endswith(".kcpps") or f.lower().endswith(".kcppt") or f.lower().endswith(".gguf")) and os.path.isfile(os.path.join(dirpath, f))]
+                            if targetfile in opts and os.path.exists(targetfilepath):
+                                isValidModelRequest = True
                 except Exception:
                     pass
 
             was_auto_unloaded = (global_memory["triggered_sleeping"] and global_memory["current_model"]=="unload_model")
-            if (model_name and model_name != global_memory["current_model"]) or (was_auto_unloaded and not autoswapEnabled):
+            if (isValidModelRequest and model_name and model_name != global_memory["current_model"]) or (was_auto_unloaded and not autoswapEnabled):
                 hasReloaded = True
                 with proxy_reload_lock:
                     whitelist = get_current_admindir_list() # see if its an allowed swap
