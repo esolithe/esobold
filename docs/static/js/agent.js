@@ -60,6 +60,75 @@ let generateResponseToInstruction = async (prompt) => {
     return await generateAndGetTextFromPrompt(formattedPrompt)
 }
 
+// Parse a kobold-format history string (with literal {{[SYSTEM]}}/{{[INPUT]}}/{{[OUTPUT]}} tags)
+// into an OAI messages array. Must be called BEFORE replace_placeholders() converts the tags.
+let parseAgentHistoryToOAIMessages = (historyStr) => {
+    let turns = repack_instruct_turns(
+        historyStr,
+        instructstartplaceholder,   // "\n{{[INPUT]}}\n"
+        instructendplaceholder,     // "\n{{[OUTPUT]}}\n"
+        instructsysplaceholder,     // "\n{{[SYSTEM]}}\n"
+        false,                      // allow_blank
+        false                       // filterOutActions - keep all content for generation
+    )
+    let messages = []
+    for (let turn of turns) {
+        let content = turn.msg
+            .replaceAll(instructsysplaceholder_end, "")
+            .replaceAll(instructstartplaceholder_end, "")
+            .replaceAll(instructendplaceholder_end, "")
+            .replaceAll(instructsysplaceholder_end.trim(), "")
+            .replaceAll(instructstartplaceholder_end.trim(), "")
+            .replaceAll(instructendplaceholder_end.trim(), "")
+            .trim()
+        if (content === "") continue
+        let role
+        if (turn.source === "system") {
+            role = "system"
+        } else if (turn.myturn) {
+            role = "user"
+        } else {
+            role = "assistant"
+        }
+        messages.push({ role, content })
+    }
+    return messages
+}
+
+// Send an agent generation request to an OAI-compatible chat completions endpoint.
+// Returns the response text, or null on failure.
+let generateFromPromptOAI = async (messages, grammar = "") => {
+    let oai_payload = {
+        "max_tokens": localsettings.max_length,
+        "model": custom_oai_model,
+        "temperature": localsettings.temperature,
+        "top_p": localsettings.top_p,
+        "messages": messages,
+    }
+    let stops = get_stop_sequences().slice(0, 4)
+    if (stops && stops.length > 0) {
+        oai_payload.stop = stops
+    }
+    if (!!grammar) {
+        oai_payload.response_format = { type: "json_object" }
+    }
+    let targetep = apply_proxy_url(custom_oai_endpoint + oai_submit_endpoint_chat)
+    let reqOpt = {
+        method: 'POST',
+        headers: get_oai_header(custom_oai_key),
+        body: JSON.stringify(oai_payload),
+        referrerPolicy: 'no-referrer',
+    }
+    if (globalabortcontroller) {
+        reqOpt.signal = globalabortcontroller.signal
+    }
+    let resp = await fetch(targetep, reqOpt).then(r => r.json())
+    if (resp?.choices && resp.choices.length > 0) {
+        return resp.choices[0]?.message?.content || ""
+    }
+    return null
+}
+
 let split = (input, ...delimiters) => {
     let output = [], currentString = input, i = 0
 
@@ -1039,12 +1108,29 @@ let runAgentCycle = async (agentRunState = {}) => {
             {
                 history = insertAuthorsNoteToContext(history, anToInclude)
             }
-            let finalAgentHistory = replace_placeholders(history)
-            if (window?.contextUsage) {
-                contextUsage.setUsage("context", finalAgentHistory.length);
-                contextUsage.renderContextUsage();
+            let isAgentUsingOAI = custom_oai_key != "" && custom_kobold_endpoint == ""
+            let resp
+            if (isAgentUsingOAI) {
+                // For OAI mode: parse history (before placeholder replacement) into OAI messages,
+                // then apply placeholder replacement to each message's content individually.
+                // This preserves the {{[SYSTEM]}}/{{[INPUT]}}/{{[OUTPUT]}} structure needed for
+                // correct role assignment, which would be lost if replace_placeholders ran first.
+                let oaiMessages = parseAgentHistoryToOAIMessages(history)
+                oaiMessages = oaiMessages.map(msg => ({ role: msg.role, content: replace_placeholders(msg.content) }))
+                let totalOAILen = oaiMessages.reduce((acc, msg) => acc + msg.content.length, 0)
+                if (window?.contextUsage) {
+                    contextUsage.setUsage("context", totalOAILen);
+                    contextUsage.renderContextUsage();
+                }
+                resp = await generateFromPromptOAI(oaiMessages, jsonGrammar)
+            } else {
+                let finalAgentHistory = replace_placeholders(history)
+                if (window?.contextUsage) {
+                    contextUsage.setUsage("context", finalAgentHistory.length);
+                    contextUsage.renderContextUsage();
+                }
+                resp = await generateAndGetTextFromPrompt(finalAgentHistory, jsonGrammar, [], recentActions.map(JSON.stringify))
             }
-            let resp = await generateAndGetTextFromPrompt(finalAgentHistory, jsonGrammar, [], recentActions.map(JSON.stringify))
 
             try {
                 if (resp.trim() == "") {
