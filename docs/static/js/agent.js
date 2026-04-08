@@ -244,7 +244,7 @@ let buildOAIBaseMessages = (agentRunState, textDBResults) => {
         systemParts.push(`Setting overview:\n\n${agentRunState.systemPrompt}`)
     }
     let truncated_context = concat_gametext(true, "", "", "", false, true)
-    let worldInfoContent = getWorldInfoForAgent(agentRunState, truncated_context, 4000)
+    let worldInfoContent = getWorldInfoForAgent(agentRunState, truncated_context, max_wi_len)
     if (worldInfoContent) systemParts.push(worldInfoContent)
     if (textDBResults) systemParts.push(textDBResults)
 
@@ -724,16 +724,19 @@ let genericAgentInitialiser = async (agentRunState) => {
 let genericAgentVisualiser = async (visualiserParams) => {
     logAgentFunctionCall("visualiser", visualiserParams)
     let { currentChainOfThought, interactionId, cotProcessedUntil, printToConsole, agentRunState } = visualiserParams
-    let cotIndex = cotProcessedUntil || 0
+    let cotIndex = cotProcessedUntil || agentRunState?.cotProcessedUntil || 0
+    let currCOT = currentChainOfThought || agentRunState?.currentChainOfThought || []
 
-    currentChainOfThought.slice(cotIndex).forEach(elem => {
-        let { wrappedPrompt, onlyAdd } = elem;
-        if (!onlyAdd) {
-            gametext_arr.push(wrappedPrompt.replace(/\\\\/g, ""))
-            render_gametext()
-        }
-    })
-    agentRunState.cotProcessedUntil = currentChainOfThought.length
+    if (!!agentRunState && currCOT.length > 0) {
+        currentChainOfThought.slice(cotIndex).forEach(elem => {
+            let { wrappedPrompt, onlyAdd } = elem;
+            if (!onlyAdd) {
+                gametext_arr.push(wrappedPrompt.replace(/\\\\/g, ""))
+                render_gametext()
+            }
+        })
+        agentRunState.cotProcessedUntil = currentChainOfThought.length
+    }
 }
 
 let genericAgentFinaliser = async (agentRunState) => {
@@ -1438,7 +1441,7 @@ let runAgentCycle = async (agentRunState = {}) => {
             let finalAgentHistory = replace_placeholders(history)
             if (window?.contextUsage) {
                 contextUsage.setUsage("context", finalAgentHistory.length);
-                contextUsage.renderContextUsage();
+                await contextUsage.renderContextUsage();
             }
             clearAgentStreamingDisplay()
             let streamAccum = ""
@@ -1688,6 +1691,28 @@ restart_new_game = (save = true, keep_memory = false) => {
     originalRestartNewGame(save, keep_memory)
 }
 
+window.interactByDuration = (elem, durationCallback) => {
+  let startTime;
+  elem.addEventListener('mousedown', () => {
+    startTime = new Date()
+  })
+  elem.addEventListener('mouseup', () => {
+    let endTime = new Date(),
+      duration = endTime - startTime
+    durationCallback(duration)
+  })
+}
+
+let toggleAgentCOT = () => {
+    populate_regex_replacers()
+
+    display_settings();
+    document.getElementById("agentHideCOT").checked = !document.getElementById("agentHideCOT").checked
+    confirm_settings();
+    updateAgentButtonVisibility();
+    render_gametext();
+}
+
 let toggleAgent = () => {
     populate_regex_replacers()
 
@@ -1704,6 +1729,19 @@ let toggleAgent = () => {
     updateAgentButtonVisibility();
     render_gametext();
 }
+
+window.addEventListener("load", () => {
+    let durationHandler = (duration) => {
+        if (duration >= 500) {
+            toggleAgentCOT()
+        }
+        else {
+            toggleAgent()
+        }
+    }
+    interactByDuration(document.querySelector("#btn_toggleAgent"), durationHandler)
+    interactByDuration(document.querySelector("#btn_toggleAgentAesthetic"), durationHandler)
+})
 
 let stopAgentThinking = async (agentRunState = null) => {
     if (agentRunState !== null) {
@@ -1727,6 +1765,7 @@ let stopAgentThinking = async (agentRunState = null) => {
             clearInterval(window.intervalIdForBackgroundAgent)
         }
         Array(...document.getElementsByClassName("stopThinking")).forEach(elem => elem.classList.add("hidden"))
+        clearAgentStreamingDisplay()
     }
     submit_multiplayer(true)
 }
