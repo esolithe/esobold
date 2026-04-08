@@ -244,7 +244,7 @@ let buildOAIBaseMessages = (agentRunState, textDBResults) => {
         systemParts.push(`Setting overview:\n\n${agentRunState.systemPrompt}`)
     }
     let truncated_context = concat_gametext(true, "", "", "", false, true)
-    let worldInfoContent = getWorldInfoForAgent(agentRunState, truncated_context, 4000)
+    let worldInfoContent = getWorldInfoForAgent(agentRunState, truncated_context, max_wi_len)
     if (worldInfoContent) systemParts.push(worldInfoContent)
     if (textDBResults) systemParts.push(textDBResults)
 
@@ -1441,7 +1441,7 @@ let runAgentCycle = async (agentRunState = {}) => {
             let finalAgentHistory = replace_placeholders(history)
             if (window?.contextUsage) {
                 contextUsage.setUsage("context", finalAgentHistory.length);
-                contextUsage.renderContextUsage();
+                await contextUsage.renderContextUsage();
             }
             clearAgentStreamingDisplay()
             let streamAccum = ""
@@ -1765,6 +1765,7 @@ let stopAgentThinking = async (agentRunState = null) => {
             clearInterval(window.intervalIdForBackgroundAgent)
         }
         Array(...document.getElementsByClassName("stopThinking")).forEach(elem => elem.classList.add("hidden"))
+        clearAgentStreamingDisplay()
     }
     submit_multiplayer(true)
 }

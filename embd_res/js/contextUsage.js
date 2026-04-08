@@ -39,6 +39,7 @@ class ContextUsage {
     reset() {
         this.contextUsage = {};
         this.hierarchy = {};
+        this.lastTokenUsage = undefined;
     }
 
     setUsage(type, usage) {
@@ -59,6 +60,24 @@ class ContextUsage {
             acc += this.getUsage(usageType);
             return acc;
         }, 0)
+    }
+
+    lastTokenUsage = undefined
+    async getActualLastTokensUsed() {
+        if (this.lastTokenUsage !== undefined) {
+            return this.lastTokenUsage;
+        }
+        if (!custom_kobold_endpoint || !koboldcpp_perf_endpoint) {
+            return Math.ceil(this.getAllUsage() / 3);
+        }
+        try {
+            this.lastTokenUsage = (await fetch(apply_proxy_url(custom_kobold_endpoint + koboldcpp_perf_endpoint)).then(res => res.json().catch(() => undefined)))?.last_input_count;
+            return this.lastTokenUsage;
+        }
+        catch (e) {
+            console.log("Error fetching actual token usage, falling back to estimated usage", e);
+            return Math.ceil(this.getAllUsage() / 3);
+        }
     }
     
     getAllUsageAsHierarchy(currentHierarchy = {}, currentType = null, parentUsage = null, parentPercentage = null) {
@@ -109,7 +128,10 @@ class ContextUsage {
         return flatPercentages;
     }
 
-    getFlatStatsOfTotal(scalingPercentage = 100, scalingTokensTotal = Math.ceil(this.getAllUsage() / 3)) {
+    async getFlatStatsOfTotal(scalingPercentage = 100, scalingTokensTotal = undefined) {
+        if (scalingTokensTotal === undefined) {
+            scalingTokensTotal = await this.getActualLastTokensUsed();
+        }
         let usageStats = this.getFlatPercentagesOfTotal();
         Object.keys(usageStats).forEach(key => {
             if (usageStats[key] < 0.00001) {
@@ -125,14 +147,18 @@ class ContextUsage {
         return usageStats;
     }
 
-    getFlatStatsOfTotalIncludingFree() {
-        let maxTokens = localsettings.max_context_length;
-        let usedTokens = Math.ceil(this.getAllUsage() / 3), usedPercentage = usedTokens / maxTokens;
-        let usageStats = this.getFlatStatsOfTotal(usedPercentage * 100, usedTokens);
-        let freeTokens = Math.max(0, maxTokens - usedTokens);
+    async getFlatStatsOfTotalIncludingFree() {
+        let maxTokens = localsettings.max_context_length, maxLength = localsettings?.max_length || 0, availableTokens = maxTokens - maxLength;
+        let usedTokens = await this.getActualLastTokensUsed(), usedPercentage = usedTokens / availableTokens;
+        let usageStats = await this.getFlatStatsOfTotal(usedPercentage * 100, usedTokens);
+        let freeTokens = Math.max(0, availableTokens - usedTokens);
         usageStats["Free"] = {
             percentage: freeTokens / maxTokens * 100,
             tokens: freeTokens
+        };
+        usageStats["Output capacity"] = {
+            percentage: maxLength / maxTokens * 100,
+            tokens: maxLength
         };
         return usageStats;
     }
@@ -182,8 +208,8 @@ class ContextUsage {
         return this.sectionDescriptions[type] || `Usage section: ${this.getDisplayName(type)}`;
     }
 
-    getSortedDisplayEntries() {
-        let usageStats = this.shouldIncludeFreeContext() ? this.getFlatStatsOfTotalIncludingFree() : this.getFlatStatsOfTotal();
+    async getSortedDisplayEntries() {
+        let usageStats = this.shouldIncludeFreeContext() ? await this.getFlatStatsOfTotalIncludingFree() : await this.getFlatStatsOfTotal();
         return Object.entries(usageStats)
             .map(([name, stats]) => ({
                 name,
@@ -483,7 +509,7 @@ class ContextUsage {
         this.renderStackedBar(inlineBar, entries, false);
     }
 
-    openPopup() {
+    async openPopup() {
         let popup = this.createPopupIfNeeded();
         if (!popup) {
             return;
@@ -491,7 +517,7 @@ class ContextUsage {
 
         this.isPopupOpen = true;
         popup.classList.remove("hidden");
-        this.renderDetailedView(this.getSortedDisplayEntries());
+        this.renderDetailedView(await this.getSortedDisplayEntries());
     }
 
     closePopup() {
@@ -504,9 +530,9 @@ class ContextUsage {
         popup.classList.add("hidden");
     }
 
-    renderContextUsage() {
+    async renderContextUsage() {
         let showChart = this.shouldShowPopup();
-        let entries = showChart ? this.getSortedDisplayEntries() : [];
+        let entries = showChart ? await this.getSortedDisplayEntries() : [];
 
         if (!showChart) {
             let inlineContainer = document.getElementById(this.inlineContainerId);
