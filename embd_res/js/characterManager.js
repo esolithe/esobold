@@ -838,22 +838,355 @@ let toggleCharacterFavorite = async (name) => {
     return !!target.favorite
 }
 
+const QUICK_START_SELECTION_CONFIG = {
+    save: {
+        label: "Save",
+        itemType: "Save",
+        isMulti: false,
+        initialSection: "Saves"
+    },
+    mainCharacter: {
+        label: "Main character",
+        itemType: "Character",
+        isMulti: false,
+        initialSection: "Characters"
+    },
+    additionalCharacters: {
+        label: "Additional characters",
+        itemType: "Character",
+        isMulti: true,
+        initialSection: "Characters"
+    },
+    playerCharacter: {
+        label: "Player character",
+        itemType: "Character",
+        isMulti: false,
+        initialSection: "Characters"
+    },
+    worldInfo: {
+        label: "World info",
+        itemType: "World Info",
+        isMulti: true,
+        initialSection: "World Info"
+    }
+}
+
+let quickStartSelection = {
+    save: null,
+    mainCharacter: null,
+    additionalCharacters: [],
+    playerCharacter: null,
+    worldInfo: []
+}
+
+window.quickStartLibrarySelectionContext = null
+
+let getQuickStartSelectionForRole = (role) => {
+    if (!Object.prototype.hasOwnProperty.call(quickStartSelection, role)) {
+        return []
+    }
+    let value = quickStartSelection[role]
+    return Array.isArray(value) ? [...value] : (!!value ? [value] : [])
+}
+
+let isQuickStartNameSelected = (role, name) => {
+    return getQuickStartSelectionForRole(role).includes(name)
+}
+
+let clearQuickStartSelectionForRole = (role) => {
+    let config = QUICK_START_SELECTION_CONFIG[role]
+    if (!config) {
+        return
+    }
+    quickStartSelection[role] = config.isMulti ? [] : null
+}
+
+let clearAllQuickStartSelections = () => {
+    Object.keys(QUICK_START_SELECTION_CONFIG).forEach(role => clearQuickStartSelectionForRole(role))
+}
+
+let toggleQuickStartSelectionForRole = (role, name) => {
+    let config = QUICK_START_SELECTION_CONFIG[role]
+    if (!config) {
+        return false
+    }
+
+    if (config.isMulti) {
+        let current = getQuickStartSelectionForRole(role)
+        if (current.includes(name)) {
+            quickStartSelection[role] = current.filter(curr => curr !== name)
+            return false
+        }
+        current.push(name)
+        quickStartSelection[role] = current
+        return true
+    }
+
+    if (quickStartSelection[role] === name) {
+        quickStartSelection[role] = null
+        return false
+    }
+    quickStartSelection[role] = name
+    return true
+}
+
+let doesQuickStartHaveSelections = () => {
+    return Object.keys(QUICK_START_SELECTION_CONFIG).some(role => getQuickStartSelectionForRole(role).length > 0)
+}
+
+let loadWorldInfoFromLibraryByName = async (name) => {
+    let charData = await getCharacterData(name)
+    let wiToAdd = charData?.data
+    if (!Array.isArray(wiToAdd)) {
+        return false
+    }
+    current_wi = current_wi.filter(wi => wi?.folder !== name)
+    current_wi.push(...wiToAdd)
+    return true
+}
+
+let lastObjForRendering = undefined
+let applyQuickStartSelection = async () => {
+    if (!doesQuickStartHaveSelections()) {
+        popupUtils.reset()
+        return
+    }
+
+    waitingToast.setText("Applying Quick Start")
+    waitingToast.show()
+
+    let shouldRefreshManualWIChanges = false
+    let nonFatalErrors = []
+
+    try {
+        let waitForRenderGametext = () => {
+            let ogRender = render_gametext
+            return {promise: new Promise(resolve => {
+                render_gametext = (...args) => {
+                    ogRender(...args)
+                    render_gametext = ogRender
+                    resolve()
+                }
+            }), ogRender};
+        }
+        if (lastObjForRendering !== undefined) {
+            render_gametext = lastObjForRendering.ogRender
+            lastObjForRendering = undefined
+        }
+        if (!!quickStartSelection.save) {
+            try {
+                let saveData = await getCharacterData(quickStartSelection.save)
+                if (!!saveData?.data) {
+                    try {
+                        lastObjForRendering = waitForRenderGametext()
+                        kai_json_load(saveData.data, false)
+                        await lastObjForRendering.promise
+                    }
+                    finally {
+                        render_gametext = lastObjForRendering.ogRender
+                        lastObjForRendering = undefined
+                    }                    
+                }
+            }
+            catch (e) {
+                nonFatalErrors.push(`Could not load save: ${quickStartSelection.save}`)
+                console.error(e)
+            }
+        }
+
+        if (!!quickStartSelection.mainCharacter) {
+            try {
+                let characterData = await getCharacterData(quickStartSelection.mainCharacter)
+                if (!!characterData?.data) {
+                    try {
+                        lastObjForRendering= waitForRenderGametext()
+                        load_tavern_obj(characterData.data)
+                        await lastObjForRendering.promise
+                    }
+                    finally {
+                        render_gametext = lastObjForRendering.ogRender
+                        lastObjForRendering = undefined
+                    }    
+                }
+            }
+            catch (e) {
+                nonFatalErrors.push(`Could not load main character: ${quickStartSelection.mainCharacter}`)
+                console.error(e)
+            }
+        }
+
+        for (let i = 0; i < quickStartSelection.additionalCharacters.length; i++) {
+            let name = quickStartSelection.additionalCharacters[i]
+            try {
+                await window.loadByCharacterNameIntoWI(name)
+                shouldRefreshManualWIChanges = true
+            }
+            catch (e) {
+                nonFatalErrors.push(`Could not add additional character to WI: ${name}`)
+                console.error(e)
+            }
+        }
+
+        if (!!quickStartSelection.playerCharacter) {
+            try {
+                localsettings.chatname = quickStartSelection.playerCharacter
+                await window.loadByCharacterNameIntoWI(quickStartSelection.playerCharacter)
+                shouldRefreshManualWIChanges = true
+            }
+            catch (e) {
+                nonFatalErrors.push(`Could not add player character to WI: ${quickStartSelection.playerCharacter}`)
+                console.error(e)
+            }
+        }
+
+        for (let i = 0; i < quickStartSelection.worldInfo.length; i++) {
+            let name = quickStartSelection.worldInfo[i]
+            try {
+                let loaded = await loadWorldInfoFromLibraryByName(name)
+                if (loaded) {
+                    shouldRefreshManualWIChanges = true
+                }
+            }
+            catch (e) {
+                nonFatalErrors.push(`Could not load world info: ${name}`)
+                console.error(e)
+            }
+        }
+
+        if (shouldRefreshManualWIChanges) {
+            try {
+                update_for_sidepanel()
+                render_gametext(true)
+            }
+            catch (e) {
+                console.error(e)
+            }
+        }
+    }
+    finally {
+        waitingToast.hide()
+        popupUtils.reset()
+    }
+
+    if (nonFatalErrors.length > 0) {
+        handleError(nonFatalErrors.join("\n"))
+    }
+}
+
+let openLibraryForQuickStartRole = (role) => {
+    let roleConfig = QUICK_START_SELECTION_CONFIG[role]
+    if (!roleConfig) {
+        return
+    }
+    window.quickStartLibrarySelectionContext = {
+        role,
+        itemType: roleConfig.itemType,
+        initialSection: roleConfig.initialSection
+    }
+    showCharacterList(undefined, true, false, window.quickStartLibrarySelectionContext)
+}
+
+let showQuickStartPopup = () => {
+    let contents = createDetailsContent("Quick Start")
+
+    let getSelectionText = (role) => {
+        let selected = getQuickStartSelectionForRole(role)
+        if (selected.length === 0) {
+            return "(none selected)"
+        }
+        if (selected.length <= 3) {
+            return selected.join(", ")
+        }
+        return `${selected.slice(0, 3).join(", ")} (+${selected.length - 3} more)`
+    }
+
+    let addChooserSection = (role, sectionLabel) => {
+        let row = document.createElement("div")
+        row.style.width = "100%"
+        row.style.display = "flex"
+        row.style.alignItems = "center"
+        row.style.justifyContent = "space-between"
+        row.style.gap = "10px"
+        row.style.flexWrap = "wrap"
+
+        let summary = document.createElement("span")
+        summary.innerText = getSelectionText(role)
+        summary.style.flex = "1"
+        summary.style.minWidth = "220px"
+        row.appendChild(summary)
+
+        let actions = document.createElement("div")
+        actions.style.display = "flex"
+        actions.style.gap = "10px"
+        actions.style.flexWrap = "wrap"
+
+        let chooseButton = document.createElement("button")
+        chooseButton.type = "button"
+        chooseButton.classList.add("btn", "btn-primary")
+        chooseButton.textContent = "Select in Library"
+        chooseButton.addEventListener("click", () => {
+            popupUtils.reset()
+            openLibraryForQuickStartRole(role)
+        })
+        actions.appendChild(chooseButton)
+
+        let clearButton = document.createElement("button")
+        clearButton.type = "button"
+        clearButton.classList.add("btn", "btn-primary")
+        clearButton.textContent = "Clear"
+        clearButton.addEventListener("click", () => {
+            clearQuickStartSelectionForRole(role)
+            showQuickStartPopup()
+        })
+        actions.appendChild(clearButton)
+
+        row.appendChild(actions)
+        createSection(contents, sectionLabel, row)
+    }
+
+    let totalSelected = Object.keys(QUICK_START_SELECTION_CONFIG)
+        .map(role => getQuickStartSelectionForRole(role).length)
+        .reduce((sum, count) => sum + count, 0)
+
+    createSection(contents, "Note", "Selections are optional. Use Library to select / deselect items. You can import from Library and then return here.")
+    createSection(contents, "Selected items", `${totalSelected}`)
+    addChooserSection("save", "Base save")
+    addChooserSection("mainCharacter", "Main character (for intros)")
+    addChooserSection("additionalCharacters", "Additional characters (as WI)")
+    addChooserSection("playerCharacter", "Player character")
+    addChooserSection("worldInfo", "World info")
+
+    popupUtils.reset().title("Quick Start").content(contents).css("min-height", "50%").css("min-width", "60%")
+        .button("Confirm", async () => {
+            popupUtils.reset()
+            await applyQuickStartSelection()
+        })
+        .button("Clear all", () => {
+            clearAllQuickStartSelections()
+            showQuickStartPopup()
+        })
+        .button("Close", () => popupUtils.reset())
+        .show()
+}
+
+window.showQuickStartPopup = showQuickStartPopup
+
 // Navigate back to the Library, waiting for any pending background processing to finish first
 let waitForLibraryAndShow = () => {
     setTimeout(() => {
          if (!window?.debounce_pending_updateCharacterListFromAll && !window?.pending_encrypt) {
-            showCharacterList(undefined, false, true)
+            showCharacterList(undefined, false, true, window.quickStartLibrarySelectionContext)
             return
         }
         let interval = setInterval(() => {
             if (!window?.debounce_pending_updateCharacterListFromAll && !window?.pending_encrypt) {
                 clearInterval(interval)
-                showCharacterList(undefined, false, true)
+                showCharacterList(undefined, false, true, window.quickStartLibrarySelectionContext)
             }
         }, 100)
     }, 300);
 }
-let showCharacterList = async (event = undefined, serverLoad = false, isReturn = false) => {
+let showCharacterList = async (event = undefined, serverLoad = false, isReturn = false, quickStartSelectionContext = undefined) => {
     // Still processing characters
     if (!!window?.debounce_pending_updateCharacterListFromAll || !!window?.pending_encrypt)
     {
@@ -872,7 +1205,53 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
         await loadAllCharacterManagerData()
     }
 
+    if (!!quickStartSelectionContext) {
+        window.quickStartLibrarySelectionContext = quickStartSelectionContext
+    }
+    let activeQuickStartSelectionContext = window.quickStartLibrarySelectionContext
+    let isQuickStartSelectionMode = !!activeQuickStartSelectionContext
+
     let containers = []
+
+    let applyQuickStartTileStyle = (tileElem, itemType, name) => {
+        let tileLabel = tileElem.querySelector("b")
+        let baseLabel = isCharacterFavorite(name) ? `★ ${name}` : name
+        if (!isQuickStartSelectionMode || activeQuickStartSelectionContext?.itemType !== itemType) {
+            tileElem.classList.remove("quick_start_selected")
+            if (!!tileLabel) {
+                tileLabel.innerText = baseLabel
+            }
+            return
+        }
+
+        if (isQuickStartNameSelected(activeQuickStartSelectionContext.role, name)) {
+            tileElem.classList.add("quick_start_selected")
+            if (!!tileLabel) {
+                tileLabel.innerText = `✓ ${baseLabel}`
+            }
+            tileElem.title = `${name} (Selected)`
+        } else {
+            tileElem.classList.remove("quick_start_selected")
+            if (!!tileLabel) {
+                tileLabel.innerText = baseLabel
+            }
+            tileElem.title = name
+        }
+    }
+
+    let refreshQuickStartTileStyles = () => {
+        if (!isQuickStartSelectionMode) {
+            return
+        }
+        let allTiles = [...document.querySelectorAll("#popupContainer .tile")]
+        allTiles.forEach(tile => {
+            let itemType = tile.dataset?.quickStartItemType
+            let name = tile.dataset?.quickStartItemName
+            if (!!itemType && !!name) {
+                applyQuickStartTileStyle(tile, itemType, name)
+            }
+        })
+    }
 
     let createIcon = (name, image) => {
         let charIcon = document.createElement("span");
@@ -1121,7 +1500,19 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
             let { name, thumbnail } = allCharacterNames[i], itemType = getTypeFromAllCharacterData(allCharacterNames[i]);
             if (itemType !== type) continue
             let charIcon = createIcon(name, !!thumbnail ? `url(${thumbnail})` : undefined)
+            charIcon.dataset.quickStartItemType = itemType
+            charIcon.dataset.quickStartItemName = name
+            applyQuickStartTileStyle(charIcon, itemType, name)
             charIcon.onclick = async () => {
+                if (isQuickStartSelectionMode) {
+                    if (activeQuickStartSelectionContext?.itemType !== itemType) {
+                        handleError(`Please select from ${activeQuickStartSelectionContext?.initialSection || activeQuickStartSelectionContext?.itemType}`)
+                        return
+                    }
+                    toggleQuickStartSelectionForRole(activeQuickStartSelectionContext.role, name)
+                    refreshQuickStartTileStyles()
+                    return
+                }
                 popupUtils.reset()
                 if (itemType === "Character") {
                     let contents = document.createElement("span");
@@ -1644,6 +2035,9 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
     const LIBRARY_SECTION_KEY = "esobold_library_section"
     let savedSection = localStorage.getItem(LIBRARY_SECTION_KEY)
     let initialSection = DROPDOWN_OPTIONS.some(o => o.label === savedSection) ? savedSection : DROPDOWN_OPTIONS[0].label
+    if (isQuickStartSelectionMode && !!activeQuickStartSelectionContext?.initialSection) {
+        initialSection = activeQuickStartSelectionContext.initialSection
+    }
 
     for (let opt of DROPDOWN_OPTIONS) {
         let optElem = document.createElement("option")
@@ -1656,6 +2050,15 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
         typeSelect.appendChild(optElem)
     }
     toolbarRow.appendChild(typeSelect)
+
+    if (isQuickStartSelectionMode) {
+        let selectionHint = document.createElement("span")
+        selectionHint.classList.add("settinglabel")
+        selectionHint.style.flexGrow = "1"
+        selectionHint.style.minWidth = "240px"
+        selectionHint.innerText = `Quick Start: click tiles to select/deselect ${activeQuickStartSelectionContext?.itemType}`
+        toolbarRow.appendChild(selectionHint)
+    }
 
     // Search input (hidden for Bulk / Server options views)
     let searchInput = document.createElement("input")
@@ -1715,7 +2118,9 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
     }
 
     typeSelect.addEventListener("change", () => {
-        localStorage.setItem(LIBRARY_SECTION_KEY, typeSelect.value)
+        if (!isQuickStartSelectionMode) {
+            localStorage.setItem(LIBRARY_SECTION_KEY, typeSelect.value)
+        }
         updateView(typeSelect.value)
     })
 
@@ -1727,14 +2132,25 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
     popupUtils.content(serverContainer)
 
     // Close button — close popup first, then prompt to sync if changes occurred
-    popupUtils.resetButtonGroup().button("Close", () => {
-        popupUtils.reset()
-        if (libraryChangesOccurred && is_using_kcpp_with_server_saving()) {
-            msgboxYesNo("Changes were made to the library. Would you like to sync to the server now?", "Library",
-                () => { putAllCharacterManagerData() },
-                null)
-        }
-    }).show()
+    let buttonGroup = popupUtils.resetButtonGroup()
+    if (isQuickStartSelectionMode) {
+        buttonGroup.button("Back to Quick Start", () => {
+            popupUtils.reset()
+            window.quickStartLibrarySelectionContext = null
+            showQuickStartPopup()
+        })
+    } else {
+        buttonGroup.button("Close", () => {
+            popupUtils.reset()
+            window.quickStartLibrarySelectionContext = null
+            if (libraryChangesOccurred && is_using_kcpp_with_server_saving()) {
+                msgboxYesNo("Changes were made to the library. Would you like to sync to the server now?", "Library",
+                    () => { putAllCharacterManagerData() },
+                    null)
+            }
+        })
+    }
+    buttonGroup.show()
 
     // Apply initial view (from localStorage if available, otherwise first option)
     updateView(initialSection)
