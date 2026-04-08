@@ -843,31 +843,36 @@ const QUICK_START_SELECTION_CONFIG = {
         label: "Save",
         itemType: "Save",
         isMulti: false,
-        initialSection: "Saves"
+        initialSection: "Saves",
+        helpText: "Optional. Loads the selected save first and uses it as the starting story state."
     },
     mainCharacter: {
         label: "Main character",
         itemType: "Character",
         isMulti: false,
-        initialSection: "Characters"
+        initialSection: "Characters",
+        helpText: "Optional. Loads this character after the save. Used for character intros and scene setup."
     },
     additionalCharacters: {
         label: "Additional characters",
         itemType: "Character",
         isMulti: true,
-        initialSection: "Characters"
+        initialSection: "Characters",
+        helpText: "Optional. Adds selected characters as world info entries without replacing the main character."
     },
     playerCharacter: {
         label: "Player character",
         itemType: "Character",
         isMulti: false,
-        initialSection: "Characters"
+        initialSection: "Characters",
+        helpText: "Optional. Sets your player name from this character, then adds that character as world info."
     },
     worldInfo: {
         label: "World info",
         itemType: "World Info",
         isMulti: true,
-        initialSection: "World Info"
+        initialSection: "World Info",
+        helpText: "Optional. Loads selected world info or lorebook entries at the end of Quick Start."
     }
 }
 
@@ -1097,18 +1102,79 @@ let openLibraryForQuickStartRole = (role) => {
 let showQuickStartPopup = () => {
     let contents = createDetailsContent("Quick Start")
 
-    let getSelectionText = (role) => {
+    let createQuickStartSection = (sectionLabel, helpText, contentElem) => {
+        let sectionContainer = document.createElement("div")
+        sectionContainer.style = "width: 100%; display: flex; flex-direction: column; padding: 10px; gap: 8px;"
+
+        let headerRow = document.createElement("div")
+        headerRow.style = "display: flex; align-items: center; gap: 8px;"
+
+        let titleElem = document.createElement("span")
+        titleElem.innerText = sectionLabel
+        titleElem.style = "font-weight: bold;"
+        headerRow.appendChild(titleElem)
+
+        let helpElem = document.createElement("span")
+        helpElem.classList.add("helpicon")
+        helpElem.innerText = "?"
+        let helpTextElem = document.createElement("span")
+        helpTextElem.classList.add("helptext")
+        helpTextElem.innerText = helpText
+        helpElem.appendChild(helpTextElem)
+        headerRow.appendChild(helpElem)
+
+        sectionContainer.appendChild(headerRow)
+        sectionContainer.appendChild(contentElem)
+        contents.appendChild(sectionContainer)
+    }
+
+    let createSelectionTile = (name, image = undefined, onClick = undefined) => {
+        let tile = document.createElement("span")
+        let tileText = document.createElement("b")
+        tile.classList.add("containAndScaleImage", "tile", "quick_start_preview_tile")
+        tile.style.backgroundImage = !!image ? image : "var(--img_esobold)"
+        tile.title = name
+        tileText.innerText = name
+        tile.appendChild(tileText)
+        if (!!onClick) {
+            tile.addEventListener("click", onClick)
+        }
+        return tile
+    }
+
+    let createSelectionTilesPreview = (role) => {
         let selected = getQuickStartSelectionForRole(role)
+        let tilesWrap = document.createElement("div")
+        tilesWrap.classList.add("quick_start_preview_grid")
+
         if (selected.length === 0) {
-            return "(none selected)"
+            let noneTile = createSelectionTile("(none selected)", "url('/static/img/folder.svg')")
+            noneTile.classList.add("quick_start_preview_tile_empty")
+            tilesWrap.appendChild(noneTile)
+            return tilesWrap
         }
-        if (selected.length <= 3) {
-            return selected.join(", ")
-        }
-        return `${selected.slice(0, 3).join(", ")} (+${selected.length - 3} more)`
+
+        selected.forEach(name => {
+            let meta = getCharacterMetaByName(name)
+            let image = !!meta?.thumbnail ? `url(${meta.thumbnail})` : undefined
+            let tile = createSelectionTile(name, image, () => {
+                toggleQuickStartSelectionForRole(role, name)
+                showQuickStartPopup()
+            })
+            tile.title = `${name} (click to deselect)`
+            tilesWrap.appendChild(tile)
+        })
+
+        return tilesWrap
     }
 
     let addChooserSection = (role, sectionLabel) => {
+        let sectionWrap = document.createElement("div")
+        sectionWrap.style.width = "100%"
+        sectionWrap.style.display = "flex"
+        sectionWrap.style.flexDirection = "column"
+        sectionWrap.style.gap = "8px"
+
         let row = document.createElement("div")
         row.style.width = "100%"
         row.style.display = "flex"
@@ -1116,12 +1182,6 @@ let showQuickStartPopup = () => {
         row.style.justifyContent = "space-between"
         row.style.gap = "10px"
         row.style.flexWrap = "wrap"
-
-        let summary = document.createElement("span")
-        summary.innerText = getSelectionText(role)
-        summary.style.flex = "1"
-        summary.style.minWidth = "220px"
-        row.appendChild(summary)
 
         let actions = document.createElement("div")
         actions.style.display = "flex"
@@ -1149,7 +1209,9 @@ let showQuickStartPopup = () => {
         actions.appendChild(clearButton)
 
         row.appendChild(actions)
-        createSection(contents, sectionLabel, row)
+        sectionWrap.appendChild(createSelectionTilesPreview(role))
+        sectionWrap.appendChild(row)
+        createQuickStartSection(sectionLabel, QUICK_START_SELECTION_CONFIG[role]?.helpText || "Select items from Library. Click selected tiles here to deselect.", sectionWrap)
     }
 
     let totalSelected = Object.keys(QUICK_START_SELECTION_CONFIG)
