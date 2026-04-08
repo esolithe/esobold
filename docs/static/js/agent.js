@@ -236,17 +236,87 @@ let callOAIChatCompletionsStream = async (messages, tools, toolChoice, onToken) 
     }
 }
 
-let buildOAIBaseMessages = (agentRunState, textDBResults) => {
+let buildAgentContextState = (agentRunState, textDBResults, currentChainOfThought, commands, promptOverview) => {
+    let truncated_context = concat_gametext(true, "", "", "", false, true)
+    truncated_context = truncated_context.replace(/\xA0/g, ' ')
+
+    let maxctxlen = localsettings.max_context_length
+    let maxgenamt = localsettings.max_length
+    let max_allowed_characters = getMaxAllowedCharacters(truncated_context, maxctxlen, maxgenamt)
+    let max_mem_len = Math.floor(max_allowed_characters * 0.8)
+    let max_anote_len = Math.floor(max_allowed_characters * 0.6)
+    let max_wi_len = Math.floor(max_allowed_characters * 0.5)
+
+    let systemPromptText = !!agentRunState?.systemPrompt ? substring_to_boundary(agentRunState.systemPrompt, max_mem_len) : ""
+    let worldInfoForAgent = getWorldInfoForAgent(agentRunState, truncated_context, max_wi_len)
+    let wiAndTextDbText = substring_to_boundary((worldInfoForAgent || "") + "\n\n" + (textDBResults || ""), max_wi_len)
+    let authorsNoteText = !!current_anote ? substring_to_boundary(current_anotetemplate.replace("<|>", current_anote), max_anote_len) : ""
+
+    let history = getInitialAgentPrompt(agentRunState, max_mem_len)
+    let wiToInclude = createSysPrompt(wiAndTextDbText)
+    let anToInclude = !!authorsNoteText ? createSysPrompt(authorsNoteText) : ""
+    let finalAgentPrompt = getFinalAgentPrompt(agentRunState, commands, promptOverview)
+    let maxLengthOfCot = max_allowed_characters - history.length - wiToInclude.length - anToInclude.length - finalAgentPrompt.length
+    let cotAsText = ""
+    for (let j = currentChainOfThought.length - 1; j >= 0; j--) {
+        if (!!(currentChainOfThought[j]?.onlyDisplay)) {
+            continue
+        }
+        if (cotAsText.length + currentChainOfThought[j].wrappedPrompt.length > maxLengthOfCot) {
+            break
+        }
+        cotAsText = currentChainOfThought[j].wrappedPrompt + cotAsText
+    }
+    let agentRequestBody = substring_to_boundary(current_temp_memory + cotAsText, maxLengthOfCot)
+
+    return {
+        truncated_context,
+        max_allowed_characters,
+        max_mem_len,
+        max_anote_len,
+        max_wi_len,
+        maxLengthOfCot,
+        systemPromptText,
+        history,
+        worldInfoForAgent,
+        wiAndTextDbText,
+        authorsNoteText,
+        wiToInclude,
+        anToInclude,
+        finalAgentPrompt,
+        agentRequestBody
+    }
+}
+
+let buildOAIBaseMessages = (agentRunState, contextState, persistedMessages = [], appendedMessages = []) => {
     let messages = []
 
     let systemParts = []
-    if (agentRunState.systemPrompt) {
-        systemParts.push(`Setting overview:\n\n${agentRunState.systemPrompt}`)
+    if (!!contextState?.systemPromptText) {
+        systemParts.push(`Setting overview:\n\n${contextState.systemPromptText}`)
     }
-    let truncated_context = concat_gametext(true, "", "", "", false, true)
-    let worldInfoContent = getWorldInfoForAgent(agentRunState, truncated_context, max_wi_len)
-    if (worldInfoContent) systemParts.push(worldInfoContent)
-    if (textDBResults) systemParts.push(textDBResults)
+
+    let contextBlock = contextState?.agentRequestBody || ""
+    let wiBlock = contextState?.wiAndTextDbText || ""
+    if (wi_insertlocation === "0") {
+        if (wiBlock) systemParts.push(wiBlock)
+        if (contextBlock) systemParts.push(contextBlock)
+    }
+    else {
+        if (contextBlock) systemParts.push(contextBlock)
+        if (wiBlock) systemParts.push(wiBlock)
+    }
+
+    let isANoteTurnBased = "turn" === anote_strength
+    if (!!contextState?.authorsNoteText) {
+        if (isANoteTurnBased && systemParts.length > 0) {
+            let mergedContext = insertAuthorsNoteToContext(systemParts.join("\n\n"), `\n\n${contextState.authorsNoteText}`)
+            systemParts = [mergedContext]
+        }
+        else {
+            systemParts.push(contextState.authorsNoteText)
+        }
+    }
 
     let state = getDocumentFromTextDB('State')
     if (state) systemParts.push(`Current state: ${state}`)
@@ -261,6 +331,10 @@ let buildOAIBaseMessages = (agentRunState, textDBResults) => {
     }
     systemParts.push(`Current date/time (UTC): ${new Date().toUTCString()}`)
     systemParts.push(`System prompt for all responses: ${agentRunState.agentPrompt}`)
+
+    if (!!contextState?.finalAgentPrompt) {
+        systemParts.push(contextState.finalAgentPrompt)
+    }
 
     if (systemParts.length > 0) {
         messages.push({ role: "system", content: systemParts.join("\n\n") })
@@ -283,7 +357,42 @@ let buildOAIBaseMessages = (agentRunState, textDBResults) => {
         }
     }
 
-    return messages
+    if (Array.isArray(persistedMessages) && persistedMessages.length > 0) {
+        messages = messages.concat(persistedMessages)
+    }
+
+    if (Array.isArray(appendedMessages) && appendedMessages.length > 0) {
+        messages = messages.concat(appendedMessages)
+    }
+
+    let getMessageLength = (message) => `${message?.content || ""}`.length
+    let totalMessageLength = messages.reduce((sum, message) => sum + getMessageLength(message), 0)
+    while (messages.length > 1 && totalMessageLength > contextState.max_allowed_characters) {
+        totalMessageLength -= getMessageLength(messages[1])
+        messages.splice(1, 1)
+    }
+
+    return {
+        messages,
+        oaiContext: contextState
+    }
+}
+
+let updateAgentContextUsage = async (contextState, textDBResults) => {
+    if (!window?.contextUsage || !contextState) {
+        return
+    }
+    contextUsage.reset()
+    contextUsage.setUsage("tempMemory", current_temp_memory.length)
+    contextUsage.setUsage("textDB", (textDBResults || "").length)
+    contextUsage.setUsage("worldInfo", (contextState.worldInfoForAgent || "").length)
+    contextUsage.calculateOverspillUsage("worldInfo", "textDB", contextState.max_wi_len)
+    contextUsage.setUsage("memory", (contextState.history || "").length)
+    contextUsage.setUsage("authorsNote", (contextState.anToInclude || "").length)
+    contextUsage.setUsage("systemPrompt", (contextState.finalAgentPrompt || "").length)
+    contextUsage.setUsage("context", (contextState.agentRequestBody || "").length)
+    contextUsage.calculateOverspillUsage("context", "tempMemory", contextState.maxLengthOfCot)
+    await contextUsage.renderContextUsage()
 }
 
 let split = (input, ...delimiters) => {
@@ -1141,7 +1250,7 @@ let runAgentCycle = async (agentRunState = {}) => {
 
         if (!!localsettings?.agentUseOAITools) {
             // ── OAI Tools mode ──────────────────────────────────────────────────────────
-            let oaiMessages = buildOAIBaseMessages(agentRunState, textDBResults)
+            let oaiPersistedMessages = []
             let isCompleted = false
 
             let executeOAICommand = async (commandName, commandArgs, toolCallId, promptOverview) => {
@@ -1176,7 +1285,20 @@ let runAgentCycle = async (agentRunState = {}) => {
             if (!agentRunState?.planToUse) {
                 // Planning step: use plan_actions as the only tool
                 let planningTools = commandsToOAITools(getReasoningCommand(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist))
-                let planningMessages = [...oaiMessages, { role: "user", content: planningPrompt }]
+                currentChainOfThought = currentChainOfThought.splice(-maxActionsInHistory)
+                recentActions = recentActions.splice(-maxActionsInHistory)
+                objRefOverride(agentRunState, { currentChainOfThought, recentActions })
+
+                let planningContext = buildAgentContextState(
+                    agentRunState,
+                    textDBResults,
+                    currentChainOfThought,
+                    getReasoningCommand(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist),
+                    planningPrompt
+                )
+                let planningBuild = buildOAIBaseMessages(agentRunState, planningContext, oaiPersistedMessages, [{ role: "user", content: planningPrompt }])
+                await updateAgentContextUsage(planningBuild.oaiContext, textDBResults)
+                let planningMessages = planningBuild.messages
 
                 clearAgentStreamingDisplay()
                 let streamAccum = ""
@@ -1187,6 +1309,7 @@ let runAgentCycle = async (agentRunState = {}) => {
                     })
                     : callOAIChatCompletions(planningMessages, planningTools, { type: "function", function: { name: "plan_actions" } })
                 ).catch(e => { agentRunState.errors.push(e); return null })
+                await contextUsage.triggerRerenderFromServerPerfEndpoint()
                 clearAgentStreamingDisplay()
 
                 if (!planResult || !planResult.tool_calls || planResult.tool_calls.length === 0) {
@@ -1212,8 +1335,8 @@ let runAgentCycle = async (agentRunState = {}) => {
                         await agentVisualiser(objRefAssign({ agentRunState }, agentRunState))
                     }
 
-                    oaiMessages.push({ role: "assistant", content: planResult.content || null, tool_calls: planResult.tool_calls })
-                    oaiMessages.push({ role: "tool", content: JSON.stringify(planArgs), tool_call_id: tc.id || "plan_call" })
+                    oaiPersistedMessages.push({ role: "assistant", content: planResult.content || null, tool_calls: planResult.tool_calls })
+                    oaiPersistedMessages.push({ role: "tool", content: JSON.stringify(planArgs), tool_call_id: tc.id || "plan_call" })
                 }
             }
 
@@ -1247,10 +1370,21 @@ let runAgentCycle = async (agentRunState = {}) => {
                 }
 
                 let promptOverview = currentOrderOfActionDescriptionsOverall.length > i ? currentOrderOfActionDescriptionsOverall[i] : null
-                if (promptOverview) {
-                    oaiMessages = oaiMessages.filter(m => !m._agentObjective)
-                    oaiMessages.push({ role: "user", content: `Objective for this action: ${promptOverview}`, _agentObjective: true })
-                }
+                currentChainOfThought = currentChainOfThought.splice(-maxActionsInHistory)
+                recentActions = recentActions.splice(-maxActionsInHistory)
+                objRefOverride(agentRunState, { currentChainOfThought, recentActions })
+
+                let contextCommands = plannedCommand ? [plannedCommand] : getEnabledCommands(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist)
+                let executionContext = buildAgentContextState(
+                    agentRunState,
+                    textDBResults,
+                    currentChainOfThought,
+                    contextCommands,
+                    promptOverview
+                )
+                let oaiBuild = buildOAIBaseMessages(agentRunState, executionContext, oaiPersistedMessages, promptOverview ? [{ role: "user", content: `Objective for this action: ${promptOverview}` }] : [])
+                await updateAgentContextUsage(oaiBuild.oaiContext, textDBResults)
+                let oaiMessages = oaiBuild.messages
 
                 clearAgentStreamingDisplay()
                 let streamAccum = ""
@@ -1261,6 +1395,7 @@ let runAgentCycle = async (agentRunState = {}) => {
                     })
                     : callOAIChatCompletions(oaiMessages, execTools, execToolChoice)
                 ).catch(e => { agentRunState.errors.push(e); return null })
+                await contextUsage.triggerRerenderFromServerPerfEndpoint()
                 clearAgentStreamingDisplay()
 
                 if (!execResult) break
@@ -1268,7 +1403,7 @@ let runAgentCycle = async (agentRunState = {}) => {
                 if (execResult.content && (!execResult.tool_calls || execResult.tool_calls.length === 0)) {
                     // Model responded with content, not a tool call - treat as send_message
                     addThought(currentChainOfThought, createAIPrompt, execResult.content)
-                    oaiMessages.push({ role: "assistant", content: execResult.content })
+                    oaiPersistedMessages.push({ role: "assistant", content: execResult.content })
                     if (typeof agentVisualiser === "function") {
                         await agentVisualiser(objRefAssign({ agentRunState }, agentRunState))
                     }
@@ -1294,9 +1429,8 @@ let runAgentCycle = async (agentRunState = {}) => {
 
                 let toolResult = await executeOAICommand(tc.function.name, cmdArgs, tc.id, promptOverview)
 
-                oaiMessages = oaiMessages.filter(m => !m._agentObjective)
-                oaiMessages.push({ role: "assistant", content: execResult.content || null, tool_calls: execResult.tool_calls })
-                oaiMessages.push({ role: "tool", content: toolResult, tool_call_id: tc.id || "tool_call" })
+                oaiPersistedMessages.push({ role: "assistant", content: execResult.content || null, tool_calls: execResult.tool_calls })
+                oaiPersistedMessages.push({ role: "tool", content: toolResult, tool_call_id: tc.id || "tool_call" })
 
                 if (printToConsole) logger.printPendingLogs()
             }
@@ -1356,23 +1490,6 @@ let runAgentCycle = async (agentRunState = {}) => {
             recentActions = recentActions.splice(-maxActionsInHistory)
             objRefOverride(agentRunState, { currentChainOfThought, recentActions })
 
-            // All content			
-            let truncated_context = concat_gametext(true, "", "", "", false, true); //no need to truncate if memory is empty
-            truncated_context = truncated_context.replace(/\xA0/g, ' '); //replace non breaking space nbsp
-
-            // Context quantities
-            let maxctxlen = localsettings.max_context_length;
-            let maxgenamt = localsettings.max_length;
-            let max_allowed_characters = getMaxAllowedCharacters(truncated_context, maxctxlen, maxgenamt);
-            let max_mem_len = Math.floor(max_allowed_characters * 0.8);
-            let max_anote_len = Math.floor(max_allowed_characters * 0.6);
-            let max_wi_len = Math.floor(max_allowed_characters * 0.5);
-
-            let history = getInitialAgentPrompt(agentRunState, max_mem_len)
-            let worldInfoForAgent = getWorldInfoForAgent(agentRunState, truncated_context, max_wi_len)
-            let wiToInclude = createSysPrompt(substring_to_boundary(worldInfoForAgent + "\n\n" + textDBResults, max_wi_len))
-            let anToInclude = !!current_anote ? createSysPrompt(substring_to_boundary(current_anotetemplate.replace("<|>", current_anote), max_anote_len)) : ""
-
             let promptOverview = currentOrderOfActionDescriptionsOverall.length > 0 ? currentOrderOfActionDescriptionsOverall[i - 1] : null
             if (i === 0) {
                 let planningPrompt = "The last action from the user is the instruction. If you need to ask the user for a response, the action userInput must be used and be put as the final action in the order. When handling images always use actions to get information when needed especially for descriptions. Use describe_clicked_image only for images the user clicks in chat, and use describe_fs_image only when a fs file path is available. Produces a list of actions to respond to this instruction."
@@ -1385,33 +1502,13 @@ let runAgentCycle = async (agentRunState = {}) => {
                 promptOverview = planningPrompt
             }
 
-            let finalAgentPrompt = getFinalAgentPrompt(agentRunState, nextAction, promptOverview)
-
-            let cotAsText = "", maxLengthOfCot = max_allowed_characters - history.length - wiToInclude.length - anToInclude.length - finalAgentPrompt.length
-            for (let j = currentChainOfThought.length - 1; j >= 0; j--) {
-                if (!!(currentChainOfThought[j]?.onlyDisplay)) {
-                    continue
-                }
-                if (cotAsText.length + currentChainOfThought[j].wrappedPrompt.length > maxLengthOfCot) {
-                    break
-                }
-                cotAsText = currentChainOfThought[j].wrappedPrompt + cotAsText
-            }
-
-            let agentRequestBody = substring_to_boundary(current_temp_memory + cotAsText, maxLengthOfCot)
-
-            if (window?.contextUsage) {
-                contextUsage.reset();
-                contextUsage.setUsage("tempMemory", current_temp_memory.length);
-                contextUsage.setUsage("textDB", textDBResults.length);
-                contextUsage.setUsage("worldInfo", worldInfoForAgent.length);
-                contextUsage.calculateOverspillUsage("worldInfo", "textDB", max_wi_len);
-                contextUsage.setUsage("memory", history.length);
-                contextUsage.setUsage("authorsNote", anToInclude.length);
-                contextUsage.setUsage("systemPrompt", finalAgentPrompt.length);
-                contextUsage.setUsage("context", agentRequestBody.length);
-                contextUsage.calculateOverspillUsage("context", "tempMemory", maxLengthOfCot);
-            }
+            let contextState = buildAgentContextState(agentRunState, textDBResults, currentChainOfThought, nextAction, promptOverview)
+            let history = contextState.history
+            let wiToInclude = contextState.wiToInclude
+            let anToInclude = contextState.anToInclude
+            let finalAgentPrompt = contextState.finalAgentPrompt
+            let agentRequestBody = contextState.agentRequestBody
+            await updateAgentContextUsage(contextState, textDBResults)
 
             if (wi_insertlocation === "0") // WI after memory
             {
@@ -1452,6 +1549,7 @@ let runAgentCycle = async (agentRunState = {}) => {
                 })
                 : generateAndGetTextFromPrompt(finalAgentHistory, jsonGrammar, [], recentActions.map(JSON.stringify))
             )
+            await contextUsage.triggerRerenderFromServerPerfEndpoint()
             clearAgentStreamingDisplay()
 
             try {
@@ -1765,6 +1863,7 @@ let stopAgentThinking = async (agentRunState = null) => {
             clearInterval(window.intervalIdForBackgroundAgent)
         }
         Array(...document.getElementsByClassName("stopThinking")).forEach(elem => elem.classList.add("hidden"))
+        await contextUsage.triggerRerenderFromServerPerfEndpoint()
         clearAgentStreamingDisplay()
     }
     submit_multiplayer(true)

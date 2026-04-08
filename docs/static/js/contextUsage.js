@@ -62,22 +62,33 @@ class ContextUsage {
         }, 0)
     }
 
+    isPerfEndpointAvailable() {
+        return !!custom_kobold_endpoint && !!koboldcpp_perf_endpoint;
+    }
+
     lastTokenUsage = undefined
-    async getActualLastTokensUsed() {
-        if (this.lastTokenUsage !== undefined) {
-            return this.lastTokenUsage;
+    async getActualLastTokensUsed(triggerUpdate = false) {
+        if (this.isPerfEndpointAvailable()) {
+            if (this.lastTokenUsage !== undefined && !triggerUpdate) {
+                return this.lastTokenUsage;
+            }
+            if (triggerUpdate) {
+                try {
+                    this.lastTokenUsage = (await fetch(apply_proxy_url(custom_kobold_endpoint + koboldcpp_perf_endpoint)).then(res => res.json().catch(() => undefined)))?.last_input_count;
+                    if (this.lastTokenUsage == 0) {
+                        this.lastTokenUsage = undefined;
+                    }
+                    else {
+                        return this.lastTokenUsage;
+                    }
+                }
+                catch (e) {
+                    console.log("Error fetching actual token usage, falling back to estimated usage", e);
+                }
+            }
+            
         }
-        if (!custom_kobold_endpoint || !koboldcpp_perf_endpoint) {
-            return Math.ceil(this.getAllUsage() / 3);
-        }
-        try {
-            this.lastTokenUsage = (await fetch(apply_proxy_url(custom_kobold_endpoint + koboldcpp_perf_endpoint)).then(res => res.json().catch(() => undefined)))?.last_input_count;
-            return this.lastTokenUsage;
-        }
-        catch (e) {
-            console.log("Error fetching actual token usage, falling back to estimated usage", e);
-            return Math.ceil(this.getAllUsage() / 3);
-        }
+        return Math.ceil(this.getAllUsage() / 3);
     }
     
     getAllUsageAsHierarchy(currentHierarchy = {}, currentType = null, parentUsage = null, parentPercentage = null) {
@@ -549,6 +560,11 @@ class ContextUsage {
             this.openPopup();
         }
     }
+
+    async triggerRerenderFromServerPerfEndpoint() {
+        await contextUsage.getActualLastTokensUsed(true);
+        await contextUsage.renderContextUsage();
+    }
 }
 
 window.contextUsage = new ContextUsage();
@@ -556,3 +572,10 @@ window.contextUsage = new ContextUsage();
 window.addEventListener("load", () => {
     contextUsage.renderContextUsage();
 });
+
+let ogHandle_incoming_text = window.handle_incoming_text;
+
+handle_incoming_text = (gentxt, genworker, genmdl, genkudos) => {
+    ogHandle_incoming_text(gentxt, genworker, genmdl, genkudos);
+    contextUsage.triggerRerenderFromServerPerfEndpoint();
+}
