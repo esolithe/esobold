@@ -22,20 +22,20 @@
 #include <string>
 #include <vector>
 
-// Config (mirrors dit.cuh DiTConfig)
+// Config (populated from GGUF metadata by dit_ggml_load)
 struct DiTGGMLConfig {
-    int hidden_size        = 2048;
-    int intermediate_size  = 6144;
-    int n_heads            = 16;
-    int n_kv_heads         = 8;
-    int head_dim           = 128;
-    int n_layers           = 24;
-    int in_channels        = 192;           // after context concat
-    int out_channels       = 64;            // audio_acoustic_hidden_dim
-    int patch_size         = 2;
-    int sliding_window     = 128;
-    float rope_theta       = 1000000.0f;
-    float rms_norm_eps     = 1e-6f;
+    int   hidden_size;
+    int   intermediate_size;
+    int   n_heads;
+    int   n_kv_heads;
+    int   head_dim;
+    int   n_layers;
+    int   in_channels;
+    int   out_channels;
+    int   patch_size;
+    int   sliding_window;
+    float rope_theta;
+    float rms_norm_eps;
 };
 
 // Layer weights
@@ -241,8 +241,7 @@ static struct ggml_tensor * dit_load_proj_out_w(
 }
 
 // Load full DiT model from GGUF
-static bool dit_ggml_load(DiTGGML * m, const char * gguf_path, DiTGGMLConfig cfg) {
-    m->cfg = cfg;
+static bool dit_ggml_load(DiTGGML * m, const char * gguf_path, DiTGGMLConfig & cfg) {
 
     GGUFModel gf;
     if (!gf_load(&gf, gguf_path)) {
@@ -250,7 +249,31 @@ static bool dit_ggml_load(DiTGGML * m, const char * gguf_path, DiTGGMLConfig cfg
         return false;
     }
 
-    // Count tensors: temb(6*2) + proj_in(2) + cond_emb(2) + layers(19*24) + output(4) + null_cond(1) + scalar_one(1) = 476
+     // config from GGUF metadata (all keys required)
+    cfg.n_layers          = (int) gf_get_u32(gf, "acestep-dit.block_count");
+    cfg.hidden_size       = (int) gf_get_u32(gf, "acestep-dit.embedding_length");
+    cfg.intermediate_size = (int) gf_get_u32(gf, "acestep-dit.feed_forward_length");
+    cfg.n_heads           = (int) gf_get_u32(gf, "acestep-dit.attention.head_count");
+    cfg.n_kv_heads        = (int) gf_get_u32(gf, "acestep-dit.attention.head_count_kv");
+    cfg.head_dim          = (int) gf_get_u32(gf, "acestep-dit.attention.key_length");
+    cfg.in_channels       = (int) gf_get_u32(gf, "acestep.in_channels");
+    cfg.out_channels      = (int) gf_get_u32(gf, "acestep.audio_acoustic_hidden_dim");
+    cfg.patch_size        = (int) gf_get_u32(gf, "acestep.patch_size");
+    cfg.sliding_window    = (int) gf_get_u32(gf, "acestep.sliding_window");
+    cfg.rope_theta        = gf_get_f32(gf, "acestep-dit.rope.freq_base");
+    cfg.rms_norm_eps      = gf_get_f32(gf, "acestep-dit.attention.layer_norm_rms_epsilon");
+
+    if (!cfg.n_layers || !cfg.hidden_size || !cfg.intermediate_size || !cfg.n_heads || !cfg.n_kv_heads ||
+        !cfg.head_dim || !cfg.in_channels || !cfg.out_channels || !cfg.patch_size || !cfg.sliding_window ||
+        cfg.rope_theta <= 0.0f || cfg.rms_norm_eps <= 0.0f) {
+        fprintf(stderr, "[Load] FATAL: incomplete DiT config in GGUF\n");
+        gf_close(&gf);
+        return false;
+    }
+
+    m->cfg = cfg;
+
+    // tensor count: temb(6*2) + proj_in(2) + cond_emb(2) + layers(19*N) + output(4) + null_cond(1) + scalar_one(1)
     int n_tensors = 6 * 2 + 2 + 2 + 19 * cfg.n_layers + 4 + 1 + 1;
     wctx_init(&m->wctx, n_tensors);
 
