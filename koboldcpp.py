@@ -3609,13 +3609,13 @@ def toolcall_to_normalized_json(text,start_tag,end_tag): #convert weird formats 
         if not body:
             return json.dumps({"name": fn_name, "arguments": {}})
         try:   # Try to parse body as JSON object by wrapping it
-            args = json.loads('{' + body + '}')
+            args = json.loads('{' + body + '}',strict=False)
             return json.dumps({"name": fn_name, "arguments": args})
         except Exception:
             pass
         normalized = re.sub(r'([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'"\1":', body)
         try:
-            args = json.loads('{' + normalized + '}')
+            args = json.loads('{' + normalized + '}',strict=False)
             return json.dumps({"name": fn_name, "arguments": args})
         except Exception:
             pass
@@ -3794,7 +3794,7 @@ def extract_json_from_string(input_string, check_strict=False):
             potential_jsons = re.findall(json_pattern, input_string, re.DOTALL)
             for potential_json in potential_jsons:
                 try:
-                    parsed_json = json.loads(potential_json)
+                    parsed_json = json.loads(potential_json, strict=False)
                     if not isinstance(parsed_json, list):
                         parsed_json = [parsed_json]
                     return parsed_json
