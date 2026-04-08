@@ -12753,10 +12753,10 @@ def prepare_opticlaw_config(launch_args):
     # Apply overrides from KoboldCpp args
     if launch_args.opticlaw_datadir:
         cfg["data_dir"] = launch_args.opticlaw_datadir
-    if launch_args.opticlaw_apiurl:
-        cfg.setdefault("api", {})["url"] = launch_args.opticlaw_apiurl
     if launch_args.opticlaw_sandboxfolder:
         cfg.setdefault("modules", {}).setdefault("settings", {}).setdefault("files", {})["sandbox_folder"] = launch_args.opticlaw_sandboxfolder
+    if launch_args.opticlaw_apiurl:
+        cfg.setdefault("api", {})["url"] = launch_args.opticlaw_apiurl
 
     # Ensure config directory exists and save
     os.makedirs(os.path.dirname(config_path), exist_ok=True)
@@ -12782,6 +12782,10 @@ def launch_opticlaw(launch_args):
     opticlaw_main = os.path.join(opticlaw_dir, "main.py")
     if not os.path.exists(opticlaw_main):
         print(f"Warning: Opticlaw main.py not found at '{opticlaw_main}'. Is the submodule checked out?")
+        return None
+    
+    if not (launch_args.opticlaw_configfile and launch_args.opticlaw_datadir and launch_args.opticlaw_sandboxfolder):
+        print("Warning: Missing required Opticlaw launch arguments. Skipping.")
         return None
 
     prepare_opticlaw_config(launch_args)
