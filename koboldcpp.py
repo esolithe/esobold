@@ -12764,17 +12764,11 @@ def prepare_opticlaw_config(launch_args):
         with open(config_path, "w", encoding="utf-8") as f:
             yaml.dump(cfg, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
         print(f"Opticlaw config saved to: {config_path}")
+        return config_path
     except Exception as e:
         print(f"Warning: Could not save opticlaw config: {e}")
-
-    # If config_path differs from the opticlaw default, copy into the opticlaw config dir
-    default_opticlaw_cfg = os.path.join(config_dir, "config.yml")
-    if os.path.abspath(config_path) != os.path.abspath(default_opticlaw_cfg):
-        os.makedirs(config_dir, exist_ok=True)
-        try:
-            shutil.copy2(config_path, default_opticlaw_cfg)
-        except Exception as e:
-            print(f"Warning: Could not copy opticlaw config to opticlaw directory: {e}")
+        return None
+    
 
 def launch_opticlaw(launch_args):
     """Launch the Opticlaw AI agent as a subprocess."""
@@ -12788,8 +12782,11 @@ def launch_opticlaw(launch_args):
         print("Warning: Missing required Opticlaw launch arguments. Skipping.")
         return None
 
-    prepare_opticlaw_config(launch_args)
+    configPath = prepare_opticlaw_config(launch_args)
 
+    if not configPath:
+        print("Warning: Opticlaw config preparation failed. Skipping launch.")
+        return None
     # Find Python interpreter (frozen builds may need system Python)
     if getattr(sys, "frozen", False):
         python_exe = shutil.which("python3") or shutil.which("python")
@@ -12800,13 +12797,35 @@ def launch_opticlaw(launch_args):
         python_exe = sys.executable
 
     try:
+        def read_stream(stream, callback):
+            """Read from a stream (stdout/stderr) and call a callback with each line."""
+            if stream is None:
+                return
+            for line in stream:
+                lineContent = line.strip()
+                if lineContent and len(lineContent) > 0:
+                    callback(lineContent)
+            stream.close()
+        
+        def log_output(line):
+            """Callback to handle captured output."""
+            print(f"[Subprocess Output] {line}")
+        
+        def log_error(line):
+            """Callback to handle captured errors."""
+            print(f"[Subprocess Error] {line}")
+        
         proc = subprocess.Popen(
-            [python_exe, opticlaw_main],
+            [python_exe, opticlaw_main, "--config", configPath],
             cwd=opticlaw_dir,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1
         )
         print(f"Opticlaw started (PID {proc.pid})")
+        threading.Thread(target=read_stream, args=(proc.stdout, log_output), daemon=True).start()
+        threading.Thread(target=read_stream, args=(proc.stderr, log_error), daemon=True).start()
         return proc
     except Exception as e:
         print(f"Warning: Failed to launch Opticlaw: {e}")
