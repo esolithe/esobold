@@ -112,7 +112,7 @@ let renderEsoboldAgentTools = () => {
 
         groupedCommands.forEach((command) => {
             let enabledStatus = command?.enabled ? "enabled" : "disabled"
-            let description = command?.description ? command.description.substr(0, 180) : "No description"
+            let description = command?.description ? command.description : "No description"
             let commandDomId = sanitizeToolDomId(command.name)
             let isChecked = !disabledToolsSet.has(command.name)
             toolsHtml += `
@@ -192,6 +192,8 @@ display_settings = () => {
     document.getElementById("agentAutoContinue").checked = localsettings.agentAutoContinue;
     document.getElementById("agentCOTRepeatsMax").value = localsettings.agentCOTRepeatsMax;
     document.getElementById("agentCOTRepeatsMaxnumeric").value = localsettings.agentCOTRepeatsMax;
+    document.getElementById("agentUseOAITools").checked = localsettings.agentUseOAITools;
+    document.getElementById("agentStreamThinking").checked = localsettings.agentStreamThinking;
     document.getElementById("disableSaveCompressionLocally").checked = localsettings.disableSaveCompressionLocally;
     document.getElementById("enableRunningMemory").checked = localsettings.enableRunningMemory;
     document.getElementById("worldTreePrune").checked = localsettings.worldTreePrune;
@@ -223,6 +225,8 @@ confirm_settings = () => {
     localsettings.agentCOTMax = document.getElementById("agentCOTMax").value;
     localsettings.agentAutoContinue = (document.getElementById("agentAutoContinue").checked ? true : false);
     localsettings.agentCOTRepeatsMax = document.getElementById("agentCOTRepeatsMax").value;
+    localsettings.agentUseOAITools = (document.getElementById("agentUseOAITools").checked ? true : false);
+    localsettings.agentStreamThinking = (document.getElementById("agentStreamThinking").checked ? true : false);
     localsettings.disableSaveCompressionLocally = (document.getElementById("disableSaveCompressionLocally").checked ? true : false);
     localsettings.enableRunningMemory = (document.getElementById("enableRunningMemory").checked ? true : false);
     localsettings.worldTreePrune = (document.getElementById("worldTreePrune").checked ? true : false);
@@ -280,6 +284,12 @@ window.addEventListener('load', () => {
     if (localsettings?.agentAutoContinue == undefined) {
         localsettings.agentAutoContinue = true
     }
+    if (localsettings?.agentUseOAITools == undefined) {
+        localsettings.agentUseOAITools = false
+    }
+    if (localsettings?.agentStreamThinking == undefined) {
+        localsettings.agentStreamThinking = true
+    }
     if (localsettings?.disableSaveCompressionLocally == undefined) {
         localsettings.disableSaveCompressionLocally = true
     }
@@ -305,7 +315,7 @@ window.addEventListener('load', () => {
         localsettings.legacySaveMechanisms = false
     }
     if (localsettings?.showContextUsageChart == undefined) {
-        localsettings.showContextUsageChart = false
+        localsettings.showContextUsageChart = true
     }
     if (localsettings?.customThemeColours == undefined) {
         localsettings.customThemeColours = {}
@@ -515,50 +525,51 @@ window.addEventListener('load', () => {
     }
     let lastSettingContainer = document.querySelector("#inject_chatnames_instruct").closest(".settinglabel")
 
-    lastSettingContainer.before(createNewSubSection("Esobold agent mode settings"))
+    let agentElems = []
+    agentElems.push(createNewSubSection("Esobold agent mode settings"))
     let settingLabelElem = createSettingElemBool("agentBehaviour", "Agent behaviour (experimental)", "Allows the AI to use multiple generations and certain tools to see if it can improve results.  This can include web search (if enabled), dice rolling, and formula evaluation.  This mode requires instruct start and end tags for all roles. Image and TTS only is enabled for local KCPP users.")
     settingLabelElem.onclick = () => {
         // if (document.getElementById("agentBehaviour").checked == true && document.getElementById("separate_end_tags").checked != true) {
         //     document.getElementById("separate_end_tags").click()
         // }
     }
-    lastSettingContainer.before(settingLabelElem)
+    agentElems.push(settingLabelElem)
 
     settingLabelElem = createSettingElemBool("agentHideCOT", "Hide agent COT", "Hides agent thinking steps (such as searches)")
-    lastSettingContainer.before(settingLabelElem)
+    agentElems.push(settingLabelElem)
 
     settingLabelElem = createSettingElemRange("agentCOTMax", "Maximum agent actions per plan", "Defines the maximum number of actions the agent can plan ahead", 1, 20, 1, 5)
-    lastSettingContainer.before(settingLabelElem)
+    agentElems.push(settingLabelElem)
 
     settingLabelElem = createSettingElemBool("agentStopOnRequestForInput", "Can agent ask for input?", "Determines if the agent can ask the user for input while executing the plan")
-    lastSettingContainer.before(settingLabelElem)
+    agentElems.push(settingLabelElem)
 
     settingLabelElem = createSettingElementTextArea("agentSavedMacros", "Macros which can be used to trigger the agent with custom logic.", "Macros which can be used to trigger the agent with custom logic. Macros can be invoked by 'macroName::prompt'.")
     settingLabelElem.querySelector("#agentSavedMacros").classList.add("fullScreenTextEditNoAuto")
-    lastSettingContainer.before(settingLabelElem)
+    agentElems.push(settingLabelElem)
 
     settingLabelElem = createSettingElemBool("agentAutoContinue", "Agent continues until completion (experimental)", "After prompting the agent, the maximum amount of actions the agent can take within a single plan are based on the maximum agent actions. If this option is ticked, and the agent thinks the task is not complete it will automatically create a new plan and continue. If this option is unticked, the user will be prompted to decide how to proceed.")
-    lastSettingContainer.before(settingLabelElem)
+    agentElems.push(settingLabelElem)
+
+    settingLabelElem = createSettingElemBool("agentUseOAITools", "Use OpenAI tools for command selection", "When enabled, the agent uses the OpenAI-compatible /v1/chat/completions endpoint with tool calling to select commands, instead of grammar-constrained generation. Requires a KoboldCpp endpoint that supports the OpenAI tools API. The agent performs a planning step (using plan_actions as a tool) followed by executing each planned step.")
+    agentElems.push(settingLabelElem)
+
+    settingLabelElem = createSettingElemBool("agentStreamThinking", "Stream agent thinking", "When enabled, shows the LLM output tokens as they are generated during each agent step, rather than waiting for the full response. For the standard mode this requires KoboldCpp SSE streaming support (v1.40+). For OAI tools mode, streaming is used automatically.")
+    agentElems.push(settingLabelElem)
 
     // Hidden as this is no longer is in use for now
     settingLabelElem = createSettingElemRange("agentCOTRepeatsMax", "Maximum repeated agent actions of a type", "Defines the maximum number of actions the agent can take of the same type without a user input", 1, 20, 1, 1)
     settingLabelElem.style.display = "none"
-    lastSettingContainer.before(settingLabelElem)
+    agentElems.push(settingLabelElem)
 
-    lastSettingContainer.before(createNewSubSection("Chat name settings"))
+    agentElems.reverse().forEach(elem => {
+        lastSettingContainer.after(elem)
+    })
 
     lastSettingContainer = document.querySelector("#settingsmenuadvanced > .settingitem")
     let toolsSettingsBox = document.querySelector("#settingsmenutools > .settingitem")
 
     let { settingsBox } = createNewSettingsSection("esobold", "Esobold")
-
-    settingsBox.appendChild(createNewSubSection("Editor settings", true))
-
-    settingLabelElem = createSettingElemBool("useNewEditor", "Use new editor", "Uses the new editor (including a WYSIWYG and markdown view) - has issues with HTML tags and may break")
-    settingsBox.append(settingLabelElem)
-
-    settingLabelElem = createSettingElemBool("fullScreenEditorForInputs", "Full screen editor for inputs", "Adds buttons to open a full screen editor for inputs (experimental)")
-    settingsBox.append(settingLabelElem)
 
     settingsBox.appendChild(createNewSubSection("World tree settings"))
 
@@ -582,13 +593,7 @@ window.addEventListener('load', () => {
     settingLabelElem = createSettingElemBool("legacySaveMechanisms", "Save options (legacy)", "Shows buttons for saving to slots and server using the non-data manager UI (legacy)")
     settingsBox.append(settingLabelElem)
 
-    settingLabelElem = createSettingElemBool("showContextUsageChart", "Show context usage chart", "Shows a floating chart of context usage percentages in the top-right corner.")
-    settingsBox.append(settingLabelElem)
-
     settingsBox.appendChild(createNewSubSection("Misc settings"))
-
-    settingLabelElem = createSettingElemBool("corpoHideLeftPanel", "Left panel in Corpo Theme starts minimised", "If this option is enabled, the left panel in Corpo gets minimised automatically.")
-    settingsBox.append(settingLabelElem)
 
     settingLabelElem = createSettingElemButton("libraryMods", "Mods", "Open the third-party mods manager to browse and apply community mods.", () => modManager.showModListWarning())
     settingsBox.append(settingLabelElem)
@@ -608,6 +613,20 @@ window.addEventListener('load', () => {
     settingsBox = document.querySelector("#settingsmenuappearance > .settingitem")
     settingsBox.appendChild(createNewSubSection("Esobold theme settings"))
     settingLabelElem = createSettingElemButton("customThemeColours", "Modify theme colours", "Allows modification of the colours used in the default theme", showThemePopup)
+    settingsBox.append(settingLabelElem)
+
+    settingLabelElem = createSettingElemBool("showContextUsageChart", "Show context usage chart", "Shows a compact context usage bar next to the connection status. Click it to open a detailed usage popup.")
+    settingsBox.append(settingLabelElem)
+
+    settingLabelElem = createSettingElemBool("corpoHideLeftPanel", "Left panel in Corpo Theme starts minimised", "If this option is enabled, the left panel in Corpo gets minimised automatically.")
+    settingsBox.append(settingLabelElem)
+
+    settingsBox.appendChild(createNewSubSection("Editor settings", false))
+
+    settingLabelElem = createSettingElemBool("useNewEditor", "Use new editor", "Uses the new editor (including a WYSIWYG and markdown view) - has issues with HTML tags and may break")
+    settingsBox.append(settingLabelElem)
+
+    settingLabelElem = createSettingElemBool("fullScreenEditorForInputs", "Full screen editor for inputs", "Adds buttons to open a full screen editor for inputs (experimental)")
     settingsBox.append(settingLabelElem)
 
     createStopThinkingButton()

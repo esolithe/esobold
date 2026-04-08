@@ -232,6 +232,56 @@ def gendefaults_parse_meta_field(*args, **kwargs):
     return koboldcpp.gendefaults_parse_meta_field(*args, **kwargs)
 
 
+
+
+def fs_replace_regex_test():
+    '''
+    >>> import koboldcpp
+    >>> koboldcpp.global_memory["fs"] = {"files": {"/hello.txt": {"content": b"Hello World", "modified": "", "size": 11}}, "current_size_bytes": 11, "max_size_bytes": 1048576, "source_dir": "", "mode": "memory", "initialized": True}
+    >>> _ = koboldcpp.fs_replace_regex("/hello.txt", r"World", "Python")
+    >>> koboldcpp.global_memory["fs"]["files"]["/hello.txt"]["content"]
+    b'Hello Python'
+
+    >>> koboldcpp.global_memory["fs"] = {"files": {"/data.txt": {"content": b"foo bar foo", "modified": "", "size": 11}}, "current_size_bytes": 11, "max_size_bytes": 1048576, "source_dir": "", "mode": "memory", "initialized": True}
+    >>> _ = koboldcpp.fs_replace_regex("/data.txt", r"foo", "baz")
+    >>> koboldcpp.global_memory["fs"]["files"]["/data.txt"]["content"]
+    b'baz bar baz'
+
+    >>> koboldcpp.global_memory["fs"] = {"files": {"/nums.txt": {"content": b"2024-01-15", "modified": "", "size": 10}}, "current_size_bytes": 10, "max_size_bytes": 1048576, "source_dir": "", "mode": "memory", "initialized": True}
+    >>> _ = koboldcpp.fs_replace_regex("/nums.txt", r"(\\d{4})-(\\d{2})-(\\d{2})", r"\\3/\\2/\\1")
+    >>> koboldcpp.global_memory["fs"]["files"]["/nums.txt"]["content"]
+    b'15/01/2024'
+    '''
+    pass
+
+def fs_move_dir_test():
+    '''
+    >>> import koboldcpp
+    >>> koboldcpp.global_memory["fs"] = {"files": {"/src/a.txt": {"content": b"a", "modified": "", "size": 1}, "/src/b.txt": {"content": b"b", "modified": "", "size": 1}}, "current_size_bytes": 2, "max_size_bytes": 1048576, "source_dir": "", "mode": "memory", "initialized": True}
+    >>> _ = koboldcpp.fs_move_file("/src", "/dst")
+    >>> sorted(koboldcpp.global_memory["fs"]["files"].keys())
+    ['/dst/a.txt', '/dst/b.txt']
+
+    >>> koboldcpp.global_memory["fs"] = {"files": {"/mydir/sub/x.txt": {"content": b"x", "modified": "", "size": 1}}, "current_size_bytes": 1, "max_size_bytes": 1048576, "source_dir": "", "mode": "memory", "initialized": True}
+    >>> _ = koboldcpp.fs_move_file("/mydir", "/newdir")
+    >>> list(koboldcpp.global_memory["fs"]["files"].keys())
+    ['/newdir/sub/x.txt']
+    '''
+    pass
+
+def fs_copy_dir_test():
+    '''
+    >>> import koboldcpp
+    >>> koboldcpp.global_memory["fs"] = {"files": {"/orig/a.txt": {"content": b"a", "modified": "", "size": 1}, "/orig/b.txt": {"content": b"b", "modified": "", "size": 1}}, "current_size_bytes": 2, "max_size_bytes": 1048576, "source_dir": "", "mode": "memory", "initialized": True}
+    >>> _ = koboldcpp.fs_copy_file("/orig", "/copy")
+    >>> sorted(koboldcpp.global_memory["fs"]["files"].keys())
+    ['/copy/a.txt', '/copy/b.txt', '/orig/a.txt', '/orig/b.txt']
+    >>> koboldcpp.global_memory["fs"]["files"]["/copy/a.txt"]["content"]
+    b'a'
+    '''
+    pass
+
+
 if __name__ == '__main__':
     import doctest
     failures, _ = doctest.testmod()

@@ -34,7 +34,7 @@ jobs:
       - name: Install python dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install customtkinter==5.2.0 pyinstaller==5.12.0 psutil==5.9.5 jinja2==3.1.6 pdfplumber PyMuPdf tqdm
+          pip install customtkinter==5.2.0 pyinstaller==5.12.0 psutil==5.9.5 jinja2==3.1.6 pdfplumber PyMuPdf tqdm chardet
 
       - name: Display full Visual Studio info Before
         run: |
@@ -136,7 +136,7 @@ jobs:
         run: |
           echo "If you cannot compile vulkan shaders yourself with glslc, you can manually patch in precompiled vulkan shader source files. Copy ggml-vulkan-shaders.cpp and ggml-vulkan-shaders.hpp to the ggml/src subdirectory in KoboldCpp source files before building." > vulkan-readme.txt
 
-      - name: Upload to GitHub Release
+      - name: Upload to GitHub Rolling Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

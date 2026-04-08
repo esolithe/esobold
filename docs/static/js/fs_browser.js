@@ -168,7 +168,13 @@
         try {
             const r = await fetch('/api/extra/fs/metadata?path=' + encodeURIComponent(path));
             if (!r.ok) return null;
-            return await r.json();
+            const data = await r.json();
+            // The metadata endpoint uses fs_batch_apply, which wraps the result as
+            // { success, results: [ { path, size_bytes, last_modified, ... } ] }
+            if (Array.isArray(data?.results) && data.results.length > 0 && data.results[0]?.success) {
+                return data.results[0];
+            }
+            return null;
         } catch (_) { return null; }
     }
 
@@ -188,6 +194,14 @@
                 const data = await r.json();
                 allPaths = Array.isArray(data.files) ? data.files : (Array.isArray(data.paths) ? data.paths : []);
                 allDirectories = Array.isArray(data.directories) ? data.directories : [];
+            } else {
+                const errText = await r.text().catch(() => '');
+                let errMsg = `HTTP ${r.status}`;
+                try { errMsg = JSON.parse(errText)?.error || errMsg; } catch (_) {}
+                tbody.innerHTML = `<tr><td colspan="4" style="color:var(--danger)">Failed to load file list: ${esc(errMsg)}</td></tr>`;
+                listContainer.hidden = false;
+                emptyNotice.hidden = true;
+                return;
             }
         } catch (e) {
             tbody.innerHTML = `<tr><td colspan="4" style="color:var(--danger)">Failed to load file list: ${esc(String(e))}</td></tr>`;
@@ -259,7 +273,7 @@
                     const r = await fetch('/api/extra/fs/delete', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ path }),
+                        body: JSON.stringify({ operations: [{ path }] }),
                     });
                     const data = await r.json();
                     if (data.success) {
@@ -283,7 +297,7 @@
                     const r = await fetch('/api/extra/fs/rmdir', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ path }),
+                        body: JSON.stringify({ operations: [{ path }] }),
                     });
                     const data = await r.json();
                     if (data.success) {
@@ -376,7 +390,7 @@
             const r = await fetch('/api/extra/fs/mkdir', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ path: targetPath }),
+                body: JSON.stringify({ operations: [{ path: targetPath }] }),
             });
             const data = await r.json();
             if (!r.ok || data.success === false) {

@@ -177,7 +177,7 @@ export const buildMacroCommands = (ctx) => {
 					optional: true
 				},
 				"macroDefinition": {
-					description: "<macro definition object. Required: planToUse.responsePlanOverview and planToUse.orderOfActions. Optional: planToUse.whoToRespondAs, agentPrompt, agentName, configOverrides, printToConsole, wordCountEnabled, surpressMessagesToUser, isUsingWhitelist>",
+					description: "<macro definition object. Required: planToUse.responsePlanOverview and planToUse.orderOfActions. Optional: planToUse.whoToRespondAs, agentPrompt, agentName, wordCountEnabled, isUsingWhitelist>",
 					format: {
 						type: "object",
 						properties: {
@@ -247,10 +247,10 @@ export const buildMacroCommands = (ctx) => {
 								description: "Optional boolean to enable word counts for this macro run.",
 								type: "boolean"
 							},
-							"surpressMessagesToUser": {
-								description: "Optional boolean to suppress visible user messages for this macro run.",
-								type: "boolean"
-							},
+							// "surpressMessagesToUser": {
+							// 	description: "Optional boolean to suppress visible user messages for this macro run.",
+							// 	type: "boolean"
+							// },
 							"isUsingWhitelist": {
 								description: "Optional boolean. true = only explicitly whitelisted commands can run; false = normal enabled commands.",
 								type: "boolean"
@@ -287,6 +287,8 @@ export const buildMacroCommands = (ctx) => {
 					return false
 				}
 
+				macroDefinition.surpressMessagesToUser = false // Force surpressMessagesToUser to false for macro creation logs to ensure the user sees the result of their macro creation attempt in the UI. This does not affect the surpressMessagesToUser setting when the macro is executed.;
+				macroDefinition.printToConsole = !!macroDefinition.printToConsole // Ensure printToConsole is a boolean after the confirmation dialog
 				let saveMacroResult = saveAgentMacroDefinition(macroName, macroDefinition, overwrite)
 				if (!saveMacroResult.success) {
 					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, `create failed: ${saveMacroResult.error}`))
@@ -313,17 +315,130 @@ export const buildMacroCommands = (ctx) => {
 			},
 			"enabled": true,
 			"executor": async (action) => {
+				let macroName = `${action?.args?.macroName || ""}`.trim()
+				let macroExecutionPrompt = `${action?.args?.prompt || ""}`.trim()
+				let availableMacros = getAvailableAgentMacros()
+				let macroDefinition = availableMacros[macroName]
+				if (!isPlainObject(macroDefinition)) {
+					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "run failed: macro was not found."))
+					return false
+				}
+				if (macroExecutionPrompt === null || macroExecutionPrompt.length === 0) {
+					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "run failed: no prompt provided for this execution."))
+					return false
+				}
+
+				let validationResult = validateAgentMacroDefinition(macroName, macroDefinition, agentRunState)
+				if (!validationResult.valid) {
+					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, `run failed: ${validationResult.error}`))
+					return false
+				}
+
+				if (!isPlainObject(agentRunState._executedMacroNames)) {
+					agentRunState._executedMacroNames = {}
+				}
+				agentRunState._executedMacroNames[macroName] = (agentRunState._executedMacroNames[macroName] || 0) + 1
+				if (agentRunState._executedMacroNames[macroName] > 3) {
+					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "run failed: exceeded recursion limit."))
+					return false
+				}
+
+				let subAgentRunState = {
+					planToUse: macroDefinition.planToUse,
+					systemPrompt: agentRunState.systemPrompt,
+					agentVisualiser: agentRunState.agentVisualiser,
+					agentInitialiser: agentRunState.agentInitialiser,
+					agentFinaliser: agentRunState.agentFinaliser,
+					skipTaskCompletionCheck: true,
+					_executedMacroNames: { ...agentRunState._executedMacroNames },
+					configOverrides: {
+						...(isPlainObject(agentRunState.configOverrides) ? agentRunState.configOverrides : {}),
+						...(isPlainObject(macroDefinition.configOverrides) ? macroDefinition.configOverrides : {})
+					}
+				}
+
+				if (macroExecutionPrompt.length > 0) {
+					subAgentRunState.agentInputPrompt = macroExecutionPrompt
+					subAgentRunState.initialPrompt = ""
+				}
+
+				if (typeof macroDefinition.agentPrompt === "string" && macroDefinition.agentPrompt.trim().length > 0) {
+					subAgentRunState.agentPrompt = macroDefinition.agentPrompt
+				} else if (agentRunState.agentPrompt) {
+					subAgentRunState.agentPrompt = agentRunState.agentPrompt
+				}
+
+				if (typeof macroDefinition.agentName === "string" && macroDefinition.agentName.trim().length > 0) {
+					subAgentRunState.agentName = macroDefinition.agentName
+				} else if (agentRunState.agentName) {
+					subAgentRunState.agentName = agentRunState.agentName
+				}
+
+				// if (typeof macroDefinition.printToConsole === "boolean") {
+				// 	subAgentRunState.printToConsole = macroDefinition.printToConsole
+				// } else {
+				// 	subAgentRunState.printToConsole = agentRunState.printToConsole
+				// }
+
+				if (typeof macroDefinition.wordCountEnabled === "boolean") {
+					subAgentRunState.wordCountEnabled = macroDefinition.wordCountEnabled
+				} else {
+					subAgentRunState.wordCountEnabled = !!agentRunState.wordCountEnabled
+				}
+
+				// if (typeof macroDefinition.surpressMessagesToUser === "boolean") {
+				// 	subAgentRunState.surpressMessagesToUser = macroDefinition.surpressMessagesToUser
+				// } else {
+				// 	subAgentRunState.surpressMessagesToUser = agentRunState.surpressMessagesToUser
+				// }
+
+				if (typeof macroDefinition.isUsingWhitelist === "boolean") {
+					subAgentRunState.isUsingWhitelist = macroDefinition.isUsingWhitelist
+				} else {
+					subAgentRunState.isUsingWhitelist = agentRunState.isUsingWhitelist
+				}
+
+				addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "executing as sub-agent loop."))
+				if (typeof agentRunState.agentVisualiser === "function") {
+					await agentRunState.agentVisualiser(objRefAssign({}, agentRunState, {agentRunState}))
+				}
+				await window.execAgentCycle(subAgentRunState)
+				addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "sub-agent loop complete."))
+				return false
+			}
+		},
+		{
+			"name": "run_macro_on_files",
+			"description": "Runs a saved macro once for each file in the given list of paths. Directories are expanded to all files within them. Each file is processed as a separate subagent run with the agent input set to 'Run the macro on path: {path}'.",
+			"args": {
+				"paths": {
+					description: "<list of file or directory paths to process>",
+					type: "array",
+					items: { type: "string" }
+				},
+				"macroName": {
+					description: "<macro name>",
+					type: "string",
+					pattern: "^[A-Za-z0-9_]+$"
+				},
+				"prompt": {
+					description: "<optional additional instruction appended to each macro execution input>",
+					type: "string",
+					optional: true
+				}
+			},
+			"enabled": true,
+			"executor": async (action) => {
+				let macroName = `${action?.args?.macroName || ""}`.trim()
+				let subAgentRunStates = []
 				try {
-					let macroName = `${action?.args?.macroName || ""}`.trim()
-					let macroExecutionPrompt = `${action?.args?.prompt || ""}`.trim()
+					let extraPrompt = `${action?.args?.prompt || ""}`.trim()
+					let inputPaths = Array.isArray(action?.args?.paths) ? action.args.paths : []
+
 					let availableMacros = getAvailableAgentMacros()
 					let macroDefinition = availableMacros[macroName]
 					if (!isPlainObject(macroDefinition)) {
 						addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "run failed: macro was not found."))
-						return false
-					}
-					if (macroExecutionPrompt === null || macroExecutionPrompt.length === 0) {
-						addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "run failed: no prompt provided for this execution."))
 						return false
 					}
 
@@ -342,70 +457,119 @@ export const buildMacroCommands = (ctx) => {
 						return false
 					}
 
-					let subAgentRunState = {
-						planToUse: macroDefinition.planToUse,
-						systemPrompt: agentRunState.systemPrompt,
-						agentVisualiser: agentRunState.agentVisualiser,
-						agentInitialiser: agentRunState.agentInitialiser,
-						agentFinaliser: agentRunState.agentFinaliser,
-						skipTaskCompletionCheck: true,
-						_executedMacroNames: { ...agentRunState._executedMacroNames },
-						configOverrides: {
-							...(isPlainObject(agentRunState.configOverrides) ? agentRunState.configOverrides : {}),
-							...(isPlainObject(macroDefinition.configOverrides) ? macroDefinition.configOverrides : {})
+					// Flatten directories: replace each directory path with the files it contains
+					let flattenedPaths = []
+					for (let inputPath of inputPaths) {
+						let normalized = `${inputPath || ""}`.trim()
+						if (!normalized) {
+							continue
+						}
+						let expandedFiles = null
+						try {
+							if (typeof window?.fsClient?.listEntries === "function") {
+								let dirPattern = normalized.endsWith("/") ? `${normalized}*` : `${normalized}/*`
+								let listing = await window.fsClient.listEntries(dirPattern)
+								let dirFiles = Array.isArray(listing?.files) ? listing.files.map(p => `${p || ""}`.trim()).filter(p => !!p) : []
+								if (dirFiles.length > 0) {
+									expandedFiles = dirFiles
+								}
+							}
+						}
+						catch (_e) {
+							// treat as file if listing fails
+						}
+						if (expandedFiles !== null) {
+							flattenedPaths.push(...expandedFiles)
+						} else {
+							flattenedPaths.push(normalized)
 						}
 					}
 
-					if (macroExecutionPrompt.length > 0) {
-						subAgentRunState.agentInputPrompt = macroExecutionPrompt
-						subAgentRunState.initialPrompt = ""
+					// Deduplicate
+					let distinctPaths = [...new Set(flattenedPaths)]
+
+					if (distinctPaths.length === 0) {
+						addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "run failed: no paths to process."))
+						return false
 					}
 
-					if (typeof macroDefinition.agentPrompt === "string" && macroDefinition.agentPrompt.trim().length > 0) {
-						subAgentRunState.agentPrompt = macroDefinition.agentPrompt
-					} else if (agentRunState.agentPrompt) {
-						subAgentRunState.agentPrompt = agentRunState.agentPrompt
+					// Build one subAgentRunState per path
+					for (let path of distinctPaths) {
+						let macroExecutionPrompt = `Run the macro on path: ${path}`
+						if (extraPrompt.length > 0) {
+							macroExecutionPrompt += `\n${extraPrompt}`
+						}
+
+						let subAgentRunState = {
+							planToUse: macroDefinition.planToUse,
+							systemPrompt: agentRunState.systemPrompt,
+							agentVisualiser: agentRunState.agentVisualiser,
+							agentInitialiser: agentRunState.agentInitialiser,
+							agentFinaliser: agentRunState.agentFinaliser,
+							skipTaskCompletionCheck: true,
+							_executedMacroNames: { ...agentRunState._executedMacroNames },
+							configOverrides: {
+								...(isPlainObject(agentRunState.configOverrides) ? agentRunState.configOverrides : {}),
+								...(isPlainObject(macroDefinition.configOverrides) ? macroDefinition.configOverrides : {})
+							},
+							agentInputPrompt: macroExecutionPrompt,
+							initialPrompt: ""
+						}
+
+						if (typeof macroDefinition.agentPrompt === "string" && macroDefinition.agentPrompt.trim().length > 0) {
+							subAgentRunState.agentPrompt = macroDefinition.agentPrompt
+						} else if (agentRunState.agentPrompt) {
+							subAgentRunState.agentPrompt = agentRunState.agentPrompt
+						}
+
+						if (typeof macroDefinition.agentName === "string" && macroDefinition.agentName.trim().length > 0) {
+							subAgentRunState.agentName = macroDefinition.agentName
+						} else if (agentRunState.agentName) {
+							subAgentRunState.agentName = agentRunState.agentName
+						}
+
+						if (typeof macroDefinition.printToConsole === "boolean") {
+							subAgentRunState.printToConsole = macroDefinition.printToConsole
+						} else {
+							subAgentRunState.printToConsole = agentRunState.printToConsole
+						}
+
+						if (typeof macroDefinition.wordCountEnabled === "boolean") {
+							subAgentRunState.wordCountEnabled = macroDefinition.wordCountEnabled
+						} else {
+							subAgentRunState.wordCountEnabled = !!agentRunState.wordCountEnabled
+						}
+
+						if (typeof macroDefinition.surpressMessagesToUser === "boolean") {
+							subAgentRunState.surpressMessagesToUser = macroDefinition.surpressMessagesToUser
+						} else {
+							subAgentRunState.surpressMessagesToUser = agentRunState.surpressMessagesToUser
+						}
+
+						if (typeof macroDefinition.isUsingWhitelist === "boolean") {
+							subAgentRunState.isUsingWhitelist = macroDefinition.isUsingWhitelist
+						} else {
+							subAgentRunState.isUsingWhitelist = agentRunState.isUsingWhitelist
+						}
+
+						subAgentRunStates.push({ path, subAgentRunState })
 					}
 
-					if (typeof macroDefinition.agentName === "string" && macroDefinition.agentName.trim().length > 0) {
-						subAgentRunState.agentName = macroDefinition.agentName
-					} else if (agentRunState.agentName) {
-						subAgentRunState.agentName = agentRunState.agentName
-					}
-
-					if (typeof macroDefinition.printToConsole === "boolean") {
-						subAgentRunState.printToConsole = macroDefinition.printToConsole
-					} else {
-						subAgentRunState.printToConsole = agentRunState.printToConsole
-					}
-
-					if (typeof macroDefinition.wordCountEnabled === "boolean") {
-						subAgentRunState.wordCountEnabled = macroDefinition.wordCountEnabled
-					} else {
-						subAgentRunState.wordCountEnabled = !!agentRunState.wordCountEnabled
-					}
-
-					if (typeof macroDefinition.surpressMessagesToUser === "boolean") {
-						subAgentRunState.surpressMessagesToUser = macroDefinition.surpressMessagesToUser
-					} else {
-						subAgentRunState.surpressMessagesToUser = agentRunState.surpressMessagesToUser
-					}
-
-					if (typeof macroDefinition.isUsingWhitelist === "boolean") {
-						subAgentRunState.isUsingWhitelist = macroDefinition.isUsingWhitelist
-					} else {
-						subAgentRunState.isUsingWhitelist = agentRunState.isUsingWhitelist
-					}
-
-					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "executing as sub-agent loop."))
+					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, `running on ${distinctPaths.length} file(s).`))
 				}
 				finally {
 					if (typeof agentRunState.agentVisualiser === "function") {
 						await agentRunState.agentVisualiser(objRefAssign({}, agentRunState, {agentRunState}))
 					}
 				}
-				await window.execAgentCycle(subAgentRunState)
-				addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "sub-agent loop complete."))
+				for (let { path, subAgentRunState } of subAgentRunStates) {
+					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, `executing sub-agent loop for path: ${path}`))
+					if (typeof agentRunState.agentVisualiser === "function") {
+						await agentRunState.agentVisualiser(objRefAssign({}, agentRunState, {agentRunState}))
+					}
+					await window.execAgentCycle(subAgentRunState)
+					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, `sub-agent loop complete for path: ${path}`))
+				}
 				return false
 			}
 		},

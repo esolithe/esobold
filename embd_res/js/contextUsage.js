@@ -1,18 +1,45 @@
 class ContextUsage {
     contextUsage = {};
     hierarchy = {};
+    inlineContainerId = "contextUsageInline";
+    inlineBarId = "contextUsageInlineBar";
     popupId = "contextUsagePopup";
     popupChartId = "contextUsageChart";
     popupHeaderId = "contextUsageHeader";
     popupStatusId = "contextUsageStatus";
     popupControlsId = "contextUsageControls";
+    popupCloseId = "contextUsageClose";
     includeFreeCheckboxId = "contextUsageIncludeFree";
     popupInitialised = false;
-    currentRenderToken = 0;
+    isPopupOpen = false;
+
+    sectionColors = {
+        context: "#4E79A7",
+        tempMemory: "#F28E2B",
+        memory: "#E15759",
+        authorsNote: "#76B7B2",
+        worldInfo: "#59A14F",
+        textDB: "#EDC949",
+        systemPrompt: "#AF7AA1",
+        Free: "#9CA3AF",
+        default: "#8A8F9A"
+    };
+
+    sectionDescriptions = {
+        context: "Recent chat context kept for generation",
+        tempMemory: "Temporary memory blocks",
+        memory: "Story memory / long-running memory",
+        authorsNote: "Author's note context",
+        worldInfo: "World info entries",
+        textDB: "Text database / lore retrieval",
+        systemPrompt: "System instructions and prompt framing",
+        Free: "Unused context capacity"
+    };
 
     reset() {
         this.contextUsage = {};
         this.hierarchy = {};
+        this.lastTokenUsage = undefined;
     }
 
     setUsage(type, usage) {
@@ -33,6 +60,35 @@ class ContextUsage {
             acc += this.getUsage(usageType);
             return acc;
         }, 0)
+    }
+
+    isPerfEndpointAvailable() {
+        return !!custom_kobold_endpoint && !!koboldcpp_perf_endpoint;
+    }
+
+    lastTokenUsage = undefined
+    async getActualLastTokensUsed(triggerUpdate = false) {
+        if (this.isPerfEndpointAvailable()) {
+            if (this.lastTokenUsage !== undefined && !triggerUpdate) {
+                return this.lastTokenUsage;
+            }
+            if (triggerUpdate) {
+                try {
+                    this.lastTokenUsage = (await fetch(apply_proxy_url(custom_kobold_endpoint + koboldcpp_perf_endpoint)).then(res => res.json().catch(() => undefined)))?.last_input_count;
+                    if (this.lastTokenUsage == 0) {
+                        this.lastTokenUsage = undefined;
+                    }
+                    else {
+                        return this.lastTokenUsage;
+                    }
+                }
+                catch (e) {
+                    console.log("Error fetching actual token usage, falling back to estimated usage", e);
+                }
+            }
+            
+        }
+        return Math.ceil(this.getAllUsage() / 3);
     }
     
     getAllUsageAsHierarchy(currentHierarchy = {}, currentType = null, parentUsage = null, parentPercentage = null) {
@@ -83,7 +139,10 @@ class ContextUsage {
         return flatPercentages;
     }
 
-    getFlatStatsOfTotal(scalingPercentage = 100, scalingTokensTotal = Math.ceil(this.getAllUsage() / 3)) {
+    async getFlatStatsOfTotal(scalingPercentage = 100, scalingTokensTotal = undefined) {
+        if (scalingTokensTotal === undefined) {
+            scalingTokensTotal = await this.getActualLastTokensUsed();
+        }
         let usageStats = this.getFlatPercentagesOfTotal();
         Object.keys(usageStats).forEach(key => {
             if (usageStats[key] < 0.00001) {
@@ -99,14 +158,18 @@ class ContextUsage {
         return usageStats;
     }
 
-    getFlatStatsOfTotalIncludingFree() {
-        let maxTokens = localsettings.max_context_length;
-        let usedTokens = Math.ceil(this.getAllUsage() / 3), usedPercentage = usedTokens / maxTokens;
-        let usageStats = this.getFlatStatsOfTotal(usedPercentage * 100, usedTokens);
-        let freeTokens = Math.max(0, maxTokens - usedTokens);
+    async getFlatStatsOfTotalIncludingFree() {
+        let maxTokens = localsettings.max_context_length, maxLength = localsettings?.max_length || 0, availableTokens = maxTokens - maxLength;
+        let usedTokens = await this.getActualLastTokensUsed(), usedPercentage = usedTokens / availableTokens;
+        let usageStats = await this.getFlatStatsOfTotal(usedPercentage * 100, usedTokens);
+        let freeTokens = Math.max(0, availableTokens - usedTokens);
         usageStats["Free"] = {
             percentage: freeTokens / maxTokens * 100,
             tokens: freeTokens
+        };
+        usageStats["Output capacity"] = {
+            percentage: maxLength / maxTokens * 100,
+            tokens: maxLength
         };
         return usageStats;
     }
@@ -137,6 +200,77 @@ class ContextUsage {
         return !!localsettings?.showContextUsageChart;
     }
 
+    getDisplayName(type) {
+        if (!type) {
+            return "Unknown";
+        }
+        return `${type}`
+            .replace(/([a-z])([A-Z])/g, "$1 $2")
+            .replace(/_/g, " ")
+            .replace(/\s+/g, " ")
+            .trim();
+    }
+
+    getSectionColor(type) {
+        return this.sectionColors[type] || this.sectionColors.default;
+    }
+
+    getSectionDescription(type) {
+        return this.sectionDescriptions[type] || `Usage section: ${this.getDisplayName(type)}`;
+    }
+
+    async getSortedDisplayEntries() {
+        let usageStats = this.shouldIncludeFreeContext() ? await this.getFlatStatsOfTotalIncludingFree() : await this.getFlatStatsOfTotal();
+        return Object.entries(usageStats)
+            .map(([name, stats]) => ({
+                name,
+                percentage: Number(stats?.percentage || 0),
+                tokens: Number(stats?.tokens || 0)
+            }))
+            .filter((entry) => Number.isFinite(entry.percentage) && entry.percentage > 0.00001)
+            .sort((a, b) => b.percentage - a.percentage);
+    }
+
+    getUsageSummaryText(entries) {
+        let usedTokens = Math.ceil(this.getAllUsage() / 3);
+        let maxTokens = Number(localsettings?.max_context_length || 0);
+        if (!maxTokens || maxTokens <= 0) {
+            return `Using ~${usedTokens.toLocaleString()} tokens`;
+        }
+
+        let usedPercentage = Math.min(100, (usedTokens / maxTokens) * 100);
+        return `Using ~${usedTokens.toLocaleString()} / ${maxTokens.toLocaleString()} tokens (${usedPercentage.toFixed(2)}%) across ${entries.length} section${entries.length === 1 ? "" : "s"}.`;
+    }
+
+    createInlineBarIfNeeded() {
+        let existing = document.getElementById(this.inlineContainerId);
+        if (existing) {
+            return existing;
+        }
+
+        let connectStatusDiv = document.getElementById("connectstatusdiv");
+        if (!connectStatusDiv?.parentElement) {
+            return null;
+        }
+
+        let inlineContainer = document.createElement("div");
+        inlineContainer.id = this.inlineContainerId;
+        inlineContainer.classList.add("context-usage-inline", "hidden");
+
+        let inlineBar = document.createElement("div");
+        inlineBar.id = this.inlineBarId;
+        inlineBar.classList.add("context-usage-inline-bar");
+
+        inlineContainer.appendChild(inlineBar);
+        connectStatusDiv.insertAdjacentElement("beforebegin", inlineContainer)
+
+        inlineContainer.addEventListener("click", () => {
+            this.openPopup();
+        });
+
+        return inlineContainer;
+    }
+
     shouldIncludeFreeContext() {
         let checkbox = document.getElementById(this.includeFreeCheckboxId);
         return !!checkbox?.checked;
@@ -155,7 +289,20 @@ class ContextUsage {
         let header = document.createElement("div");
         header.id = this.popupHeaderId;
         header.classList.add("context-usage-popup-header");
-        header.innerText = "Context usage";
+
+        let title = document.createElement("span");
+        title.classList.add("context-usage-popup-title");
+        title.innerText = "Context usage details";
+
+        let closeButton = document.createElement("button");
+        closeButton.id = this.popupCloseId;
+        closeButton.classList.add("context-usage-popup-close");
+        closeButton.type = "button";
+        closeButton.innerText = "X";
+        closeButton.title = "Close context usage details";
+
+        header.appendChild(title);
+        header.appendChild(closeButton);
 
         let body = document.createElement("div");
         body.classList.add("context-usage-popup-body");
@@ -192,6 +339,11 @@ class ContextUsage {
 
         includeFreeCheckbox.addEventListener("change", () => {
             this.renderContextUsage();
+        });
+
+        closeButton.addEventListener("click", (event) => {
+            event.stopPropagation();
+            this.closePopup();
         });
 
         this.enablePopupDrag(popup, header);
@@ -263,87 +415,167 @@ class ContextUsage {
         status.classList.toggle("hidden", !text);
     }
 
-    getMermaidPieText() {
-        let usageStats = this.shouldIncludeFreeContext() ? this.getFlatStatsOfTotalIncludingFree() : this.getFlatStatsOfTotal();
-        let entries = Object.entries(usageStats)
-            .map(([name, stats]) => [name, Number(stats?.percentage), Number(stats?.tokens)])
-            .filter(([, percentage]) => Number.isFinite(percentage) && percentage > 0.00001)
-            .sort((a, b) => b[1] - a[1]);
-
-        if (entries.length === 0) {
-            return "";
-        }
-
-        let lines = ["pie showData", "title Context usage"]; 
-        entries.forEach(([name, percentage, tokens]) => {
-            let safeName = `${name || "Unknown"}`.replace(/"/g, "\\\"");
-            let estimatedTokens = Math.round(tokens);
-            lines.push(`\"${safeName} ${percentage.toFixed(2)}% (~${estimatedTokens} tokens)\" : ${percentage.toFixed(2)}`);
-        });
-
-        return lines.join("\n");
+    formatTooltip(entry) {
+        return `${this.getDisplayName(entry.name)}\n${this.getSectionDescription(entry.name)}\n${entry.percentage.toFixed(2)}% (~${Math.round(entry.tokens).toLocaleString()} tokens)`;
     }
 
-    async renderMermaidChart(mermaidText) {
+    renderStackedBar(targetElem, entries, includeLabels = false) {
+        if (!targetElem) {
+            return;
+        }
+
+        targetElem.innerHTML = "";
+        if (!entries.length) {
+            return;
+        }
+
+        entries.forEach((entry) => {
+            let section = document.createElement("div");
+            section.classList.add("context-usage-section");
+            if (includeLabels) {
+                section.classList.add("with-label");
+            }
+
+            section.style.width = `${Math.max(0.25, entry.percentage)}%`;
+            section.style.backgroundColor = this.getSectionColor(entry.name);
+            section.title = this.formatTooltip(entry);
+            section.setAttribute("aria-label", this.formatTooltip(entry));
+
+            if (includeLabels) {
+                let label = document.createElement("span");
+                label.classList.add("context-usage-section-label");
+                label.innerText = `${this.getDisplayName(entry.name)} ${entry.percentage.toFixed(1)}%`;
+                section.appendChild(label);
+            }
+
+            targetElem.appendChild(section);
+        });
+    }
+
+    renderDetailedView(entries) {
         let chartContainer = document.getElementById(this.popupChartId);
         if (!chartContainer) {
             return;
         }
 
-        if (!mermaidText) {
-            chartContainer.innerHTML = "";
+        chartContainer.innerHTML = "";
+
+        if (!entries.length) {
             this.setPopupStatus("No context usage data yet.");
             return;
         }
 
-        if (!window?.mermaid) {
-            chartContainer.innerHTML = "";
-            this.setPopupStatus("Mermaid is not available.");
+        this.setPopupStatus(this.getUsageSummaryText(entries));
+
+        let detailedBar = document.createElement("div");
+        detailedBar.classList.add("context-usage-detailed-bar");
+        this.renderStackedBar(detailedBar, entries, false);
+
+        let legend = document.createElement("div");
+        legend.classList.add("context-usage-legend");
+        entries.forEach((entry) => {
+            let item = document.createElement("div");
+            item.classList.add("context-usage-legend-item");
+            item.title = this.formatTooltip(entry);
+
+            let swatch = document.createElement("span");
+            swatch.classList.add("context-usage-legend-swatch");
+            swatch.style.backgroundColor = this.getSectionColor(entry.name);
+
+            let text = document.createElement("span");
+            text.classList.add("context-usage-legend-text");
+            text.innerText = `${this.getDisplayName(entry.name)} - ${entry.percentage.toFixed(2)}% (~${Math.round(entry.tokens).toLocaleString()} tokens)`;
+
+            item.appendChild(swatch);
+            item.appendChild(text);
+            legend.appendChild(item);
+        });
+
+        chartContainer.appendChild(detailedBar);
+        chartContainer.appendChild(legend);
+    }
+
+    renderInlineView(entries) {
+        let inlineContainer = this.createInlineBarIfNeeded();
+        if (!inlineContainer) {
             return;
         }
 
-        this.setPopupStatus("");
-        let renderToken = ++this.currentRenderToken;
-
-        try {
-            if (typeof mermaid.render === "function") {
-                let graphId = `context-usage-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
-                let rendered = await mermaid.render(graphId, mermaidText);
-                if (renderToken !== this.currentRenderToken) {
-                    return;
-                }
-                chartContainer.innerHTML = rendered.svg;
-                if (typeof rendered.bindFunctions === "function") {
-                    rendered.bindFunctions(chartContainer);
-                }
-                return;
-            }
-
-            chartContainer.innerHTML = `<pre class=\"mermaid\">${mermaidText}</pre>`;
-            await mermaid.run({ querySelector: `#${this.popupChartId} .mermaid` });
+        let inlineBar = document.getElementById(this.inlineBarId);
+        if (!inlineBar) {
+            return;
         }
-        catch (error) {
-            console.error("Failed to render context usage chart", error);
-            chartContainer.innerHTML = "";
-            this.setPopupStatus("Could not render context usage chart.");
+
+        inlineContainer.classList.remove("hidden");
+
+        if (!entries.length) {
+            inlineBar.innerHTML = "";
+            inlineBar.classList.add("context-usage-inline-bar-waiting");
+            inlineContainer.title = "Waiting for first request";
+            return;
         }
+
+        inlineBar.classList.remove("context-usage-inline-bar-waiting");
+        inlineContainer.title = `Context usage\n${this.getUsageSummaryText(entries)}\nClick for details`;
+        this.renderStackedBar(inlineBar, entries, false);
     }
 
-    async renderContextUsage() {
+    async openPopup() {
         let popup = this.createPopupIfNeeded();
         if (!popup) {
             return;
         }
 
-        if (!this.shouldShowPopup()) {
-            popup.classList.add("hidden");
+        this.isPopupOpen = true;
+        popup.classList.remove("hidden");
+        this.renderDetailedView(await this.getSortedDisplayEntries());
+    }
+
+    closePopup() {
+        let popup = document.getElementById(this.popupId);
+        if (!popup) {
             return;
         }
 
-        popup.classList.remove("hidden");
-        let mermaidText = this.getMermaidPieText();
-        await this.renderMermaidChart(mermaidText);
+        this.isPopupOpen = false;
+        popup.classList.add("hidden");
+    }
+
+    async renderContextUsage() {
+        let showChart = this.shouldShowPopup();
+        let entries = showChart ? await this.getSortedDisplayEntries() : [];
+
+        if (!showChart) {
+            let inlineContainer = document.getElementById(this.inlineContainerId);
+            if (inlineContainer) {
+                inlineContainer.classList.add("hidden");
+            }
+            this.closePopup();
+            return;
+        }
+
+        this.renderInlineView(entries);
+
+        if (this.isPopupOpen) {
+            this.openPopup();
+        }
+    }
+
+    async triggerRerenderFromServerPerfEndpoint() {
+        await contextUsage.getActualLastTokensUsed(true);
+        await contextUsage.renderContextUsage();
     }
 }
 
 window.contextUsage = new ContextUsage();
+
+window.addEventListener("load", () => {
+    contextUsage.renderContextUsage();
+});
+
+let ogHandle_incoming_text = window.handle_incoming_text;
+
+handle_incoming_text = (gentxt, genworker, genmdl, genkudos) => {
+    ogHandle_incoming_text(gentxt, genworker, genmdl, genkudos);
+    contextUsage.triggerRerenderFromServerPerfEndpoint();
+}

@@ -71,6 +71,7 @@ default_genlen = 1024
 overridekv_max = 16
 default_autofit_padding = 1024
 lora_filenames_max = 4
+multiuser_concurrent_limit = 10
 
 # abuse prevention
 stop_token_max = 256
@@ -80,10 +81,10 @@ dry_seq_break_max = 128
 extra_images_max = 4 # for kontext/qwen img
 
 # global vars
-KcppVersion = "1.111"
+KcppVersion = "1.111.2"
 showdebug = True
 kcpp_instance = None #global running instance
-global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "swapReqType": None, "autoswapmode": False, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}}
+global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "current_override":"", "swapReqType": None, "autoswapmode": False, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}, "restart_override_config_target": "", "current_model_override": ""}
 using_gui_launcher = False
 fs_lock = threading.Lock()
 # Used only by in-memory filesystem mode to represent empty directories.
@@ -1286,7 +1287,9 @@ def get_capabilities():
     had_admin_with_hf = args.adminallowhf
     admin_type = (2 if args.admin and args.admindir and args.adminpassword else (1 if args.admin and args.admindir else 0))
     has_router = True if args.routermode else False
-    return {"result":"KoboldCpp", "version":KcppVersion, "protected":has_password, "llm":has_llm, "txt2img":has_txt2img,"vision":visionSupport,"audio":audioSupport,"transcribe":has_whisper,"multiplayer":has_multiplayer,"websearch":has_search,"tts":has_tts, "embeddings":has_embeddings, "music":has_music, "fs":has_fs, "fsMode":fs_mode, "savedata":(savedata_obj is not None), "admin": admin_type, "router":has_router, "guidance": has_guidance, "jinja": has_jinja, "mcp":has_mcp, "hasServerSaving": has_server_saving, "hasAdminWithHF": had_admin_with_hf, "embeddingModel": embeddingModel}
+    _admindocsdir = str(getattr(args, "admindocsdir", "") or "").strip()
+    can_search_documents = has_embeddings and bool(_admindocsdir) and os.path.isdir(_admindocsdir)
+    return {"result":"KoboldCpp", "version":KcppVersion, "protected":has_password, "llm":has_llm, "txt2img":has_txt2img,"vision":visionSupport,"audio":audioSupport,"transcribe":has_whisper,"multiplayer":has_multiplayer,"websearch":has_search,"tts":has_tts, "embeddings":has_embeddings, "music":has_music, "fs":has_fs, "fsMode":fs_mode, "savedata":(savedata_obj is not None), "admin": admin_type, "router":has_router, "guidance": has_guidance, "jinja": has_jinja, "mcp":has_mcp, "hasServerSaving": has_server_saving, "hasAdminWithHF": had_admin_with_hf, "embeddingModel": embeddingModel, "canSearchDocuments": can_search_documents}
 
 
 def scan_directory(dirpath, valid_exts, depth):
@@ -1316,7 +1319,7 @@ def get_current_admindir_list():
 
 
 def dump_gguf_metadata(file_path): #if you're gonna copy this into your own project at least credit concedo
-    chunk_size = 1024*1024*12  # read first 12mb of file
+    chunk_size = 1024*1024*20  # read first 20mb of file
     try:
         data = None
         fptr = 0
@@ -3529,19 +3532,156 @@ def is_ipv6_supported():
     except Exception:
         return False
 
-def detect_toolcall_tags(text: str): #for use with jinja tool responses, detect the tool call tag if present, we'll use that to split.
-    if text is None:
-        return None
+def toolcall_to_normalized_json(text,start_tag,end_tag): #convert weird formats into standard tool call json
     text = text.strip()
-    m = re.match(r'<\s*([A-Za-z_][\w\-]*)\b[^>]*>', text, re.DOTALL)   # match first opening tag
-    if not m:
-        return None
-    tag = m.group(1)
-    if re.search(rf'</\s*{re.escape(tag)}\s*>\s*$', text, re.DOTALL): # ensure the string ends with the matching closing tag
-        return tag
-    return None
+    def parse_qwen35(text: str) -> str:
+        fn_match = re.search(r"<function=(.*?)>", text)
+        if not fn_match:
+            return text
+        fn_name = fn_match.group(1).strip()
+        params = {}
+        param_blocks = re.findall(r"<parameter=(.*?)>(.*?)</parameter>", text, re.DOTALL)
+        for key, value in param_blocks:
+            params[key.strip()] = value.strip()
+        return json.dumps({"name": fn_name, "arguments": params})
+    def parse_glm(text: str) -> str:
+        text = text.strip()
+        # Extract function name: it's the first thing before any <arg_key>
+        fn_match = re.match(r"^\s*([^\<\s]+)", text)
+        if not fn_match:
+            return text
+        fn_name = fn_match.group(1).strip()
+        # Extract all key/value pairs
+        keys = re.findall(r"<arg_key>(.*?)</arg_key>", text)
+        values = re.findall(r"<arg_value>(.*?)</arg_value>", text)
+        params = {}
+        for i in range(min(len(keys), len(values))):
+            params[keys[i].strip()] = values[i].strip()
+        return json.dumps({"name": fn_name, "arguments": params})
+    def parse_deepseek_r1_sep(text: str) -> str:
+        text = re.sub(r'<｜tool▁calls▁begin｜>(.*?)<｜tool▁calls▁end｜>', r'\1',
+                    text, flags=re.DOTALL).strip()
+        sep = '<｜tool▁sep｜>'
+        if sep not in text:
+            return text
+        parts = [p.strip() for p in text.split(sep) if p.strip()]
+        results = []
+        for part in parts:
+            lines = part.split('\n', 1)
+            fn_name = lines[0].strip()
+            args_block = lines[1] if len(lines) > 1 else '{}'
+            args_block = re.sub(r'^```(?:json)?\s*', '', args_block.strip())
+            args_block = re.sub(r'\s*```$', '', args_block.strip())
+            try:
+                results.append({"name": fn_name, "arguments": json.loads(args_block)})
+            except Exception:
+                pass
+        if not results:
+            return text
+        return json.dumps(results) if len(results) > 1 else json.dumps(results[0])
+    def parse_minimax(text: str) -> str:
+        results = []
+        for invoke in re.finditer(
+            r'<invoke\s+name=["\']?([^"\'>\s]+)["\']?>(.*?)</invoke>',
+            text, re.DOTALL
+        ):
+            fn_name = invoke.group(1).strip()
+            params = {}
+            for p in re.finditer(
+                r'<parameter\s+name=["\']?([^"\'>\s]+)["\']?>(.*?)</parameter>',
+                invoke.group(2), re.DOTALL
+            ):
+                val = p.group(2).strip()
+                try:
+                    params[p.group(1).strip()] = json.loads(val)
+                except Exception:
+                    params[p.group(1).strip()] = val
+            results.append({"name": fn_name, "arguments": params})
+        if not results:
+            return text
+        return json.dumps(results) if len(results) > 1 else json.dumps(results[0])
+    def parse_gemma4(text: str) -> str:
+        text = text.replace('<|"|>', '"')
+        fn_match = re.match(r'^([a-zA-Z_][a-zA-Z0-9_]*)\{(.*)\}$', text.strip(), re.DOTALL)
+        if not fn_match:
+            return text
+        fn_name = fn_match.group(1)
+        body = fn_match.group(2).strip()
+        if not body:
+            return json.dumps({"name": fn_name, "arguments": {}})
+        try:   # Try to parse body as JSON object by wrapping it
+            args = json.loads('{' + body + '}',strict=False)
+            return json.dumps({"name": fn_name, "arguments": args})
+        except Exception:
+            pass
+        normalized = re.sub(r'([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'"\1":', body)
+        try:
+            args = json.loads('{' + normalized + '}',strict=False)
+            return json.dumps({"name": fn_name, "arguments": args})
+        except Exception:
+            pass
+        return text
 
-def format_jinja(messages, tools, chat_template_kwargs=None):
+    # gemma4 takes precedence, since it can contain valid json fragments
+    if end_tag=="<tool_call|>":
+        return parse_gemma4(text)
+
+    #if we are already valid JSON, return
+    check_ok = extract_json_from_string(text, True)
+    if check_ok and len(check_ok)>0:
+        return text #is valid JSON or parsable
+
+    if "<arg_key>" in text and "<arg_value>" in text: # handle glm with args
+        return parse_glm(text)
+
+    if "<function=" in text: # handle qwen3.5
+        return parse_qwen35(text)
+
+    if "<invoke " in text: #minimax
+        return parse_minimax(text)
+
+    if '<｜tool▁sep｜>' in text: #deepseek
+        return parse_deepseek_r1_sep(text)
+
+    if ' ' not in text and '\n' not in text: # handle glm without args
+        return parse_glm(text)
+
+    return text #fallback
+
+def repack_toolcall_tags(text: str):
+    tool_calls = []
+    if not text:
+        return tool_calls
+    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+    text = re.sub(r'<thinking>.*?</thinking>', '', text, flags=re.DOTALL)
+    text = re.sub(r'<reasoning>.*?</reasoning>', '', text, flags=re.DOTALL)
+    text = re.sub(r'<\|channel>thought.*?<channel\|>', '', text, flags=re.DOTALL)
+    text = text.strip()
+    tcpairs = [
+        ("<tool_call>", "</tool_call>"),
+        ("<seed:tool_call>", "</seed:tool_call>"),
+        ("<|tool_call_begin|>", "<|tool_call_end|>"),
+        ("<｜tool▁call▁begin｜>", "<｜tool▁call▁end｜>"),
+        ("<minimax:tool_call>", "</minimax:tool_call>"),
+        ("<|tool_call>call:", "<tool_call|>"),
+    ]
+    found = False
+    for start, end in tcpairs:
+        pattern = re.escape(start) + r"(.*?)" + re.escape(end)
+        matches = re.findall(pattern, text, flags=re.DOTALL)
+        if matches:
+            found = True
+            for match in matches:
+                normalizedtc = toolcall_to_normalized_json(match.strip(),start,end)
+                sub_tool_calls = extract_json_from_string(normalizedtc)
+                tool_calls.extend(sub_tool_calls)
+            break
+    # fallback ONLY if no tags were found at all
+    if not found:
+        tool_calls = extract_json_from_string(text)
+    return tool_calls
+
+def format_jinja(messages_orig, tools, chat_template_kwargs=None):
     try:
         def strftime_now(format='%Y-%m-%d %H:%M:%S'):
             return datetime.now().strftime(format)
@@ -3554,9 +3694,10 @@ def format_jinja(messages, tools, chat_template_kwargs=None):
         from jinja2.sandbox import ImmutableSandboxedEnvironment
         jinja_env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True)
         # sanitize messages to remove none types
+        messages = json.loads(json.dumps(messages_orig))
         for m in messages:
             if m.get("content") is None:
-                del m["content"]
+                m["content"] = ""
         for m in messages: # Fix tool_calls arguments and content if parsable
             if m.get("tool_calls"):
                 for tc in m["tool_calls"]:
@@ -3567,29 +3708,26 @@ def format_jinja(messages, tools, chat_template_kwargs=None):
                             func["arguments"] = json.loads(args)
                         except Exception:
                             pass
-            # Fix tool content
-            if m.get("role") == "tool" and isinstance(m.get("content"), str):
-                try:
-                    m["content"] = json.loads(m["content"])
-                except Exception:
-                    pass
         jinja_env.globals['strftime_now'] = strftime_now
         jinja_env.globals['raise_exception'] = raise_exception
         jinja_env.filters["tojson"] = tojson
         jinja_compiled_template = jinja_env.from_string(cached_chat_template)
         text = None
-        last_assist_msg = messages[-1]["content"]
+        messages_for_render = []
+        assist_should_prefill = False
         chat_template_kwargs = chat_template_kwargs or {}
-        assist_should_prefill = (messages and messages[-1]["role"] == "assistant" and last_assist_msg and isinstance(last_assist_msg, str) and len(last_assist_msg.strip())>0) #avoid single character newline or space content
+        last_assist_msg = ""
+        if messages:
+            last_assist_msg = messages[-1]["content"]
+            assist_should_prefill = (messages and messages[-1]["role"] == "assistant" and last_assist_msg and isinstance(last_assist_msg, str) and len(last_assist_msg.strip())>0) #avoid single character newline or space content
+            last_assist_msg = "" if not assist_should_prefill else last_assist_msg
+            messages_for_render = messages[:-1] if assist_should_prefill else messages
         if tools and len(tools)>0:
-            text = jinja_compiled_template.render(messages=messages, tools=tools, add_generation_prompt=True, bos_token="", eos_token="", **chat_template_kwargs)
+            text = jinja_compiled_template.render(messages=messages_for_render, tools=tools, add_generation_prompt=True, bos_token="", eos_token="", **chat_template_kwargs)
         else:
-            text = jinja_compiled_template.render(messages=messages, add_generation_prompt=True, bos_token="", eos_token="", **chat_template_kwargs)
-
-        if assist_should_prefill and text: # handle prefill continuations
-            lastindex = text.rfind(last_assist_msg)
-            if lastindex != -1:
-                text = text[:lastindex + len(last_assist_msg)]
+            text = jinja_compiled_template.render(messages=messages_for_render, add_generation_prompt=True, bos_token="", eos_token="", **chat_template_kwargs)
+        if assist_should_prefill and text and last_assist_msg: # handle prefill continuations
+            text = text + last_assist_msg
         return text if text else None
     except Exception as e:
         print(f"Jinja formatting failed: {e}")
@@ -3634,7 +3772,7 @@ def normalize_tool_call(obj): # Normalize various tool call formats to OpenAI fo
     return obj
 
 # Used to parse json for openai tool calls
-def extract_json_from_string(input_string):
+def extract_json_from_string(input_string, check_strict=False):
     parsed_json = None
     input_string = remove_outer_tags(input_string) #if we detected wrapper tags, remove them
 
@@ -3651,17 +3789,18 @@ def extract_json_from_string(input_string):
     except Exception:
         pass
     try:
-        # Now use regular expression to match JSON objects or arrays in case part is valid json and part is not
-        json_pattern = r'(\{.*?\}|\[.*?\])'  # was json_pattern = r'(\{.*\}|\[.*\])'
-        potential_jsons = re.findall(json_pattern, input_string, re.DOTALL)
-        for potential_json in potential_jsons:
-            try:
-                parsed_json = json.loads(potential_json)
-                if not isinstance(parsed_json, list):
-                    parsed_json = [parsed_json]
-                return parsed_json
-            except Exception:
-                continue
+        if not check_strict: #only allow when not strict mode
+            # Now use regular expression to match JSON objects or arrays in case part is valid json and part is not
+            json_pattern = r'(\{.*?\}|\[.*?\])'  # was json_pattern = r'(\{.*\}|\[.*\])'
+            potential_jsons = re.findall(json_pattern, input_string, re.DOTALL)
+            for potential_json in potential_jsons:
+                try:
+                    parsed_json = json.loads(potential_json, strict=False)
+                    if not isinstance(parsed_json, list):
+                        parsed_json = [parsed_json]
+                    return parsed_json
+                except Exception:
+                    continue
     except Exception:
         pass
     return []
@@ -3986,7 +4125,8 @@ ws ::= | " " | "\n" [ \t]{0,20}
         #tool calls only possible if forced, or if ending with assistant tag
         adapter_obj = {} if chatcompl_adapter is None else chatcompl_adapter
         assistant_message_start = adapter_obj.get("assistant_start", "\n### Response:\n")
-        used_tool_json = determine_tool_json_to_use(genparams, genparams.get('prompt', ""), assistant_message_start, True)
+        assistant_message_gen = adapter_obj.get("assistant_gen", assistant_message_start)
+        used_tool_json = determine_tool_json_to_use(genparams, genparams.get('prompt', ""), assistant_message_gen, True)
         if used_tool_json and not genparams.get('grammar', ""):
             toolparamjson = None
             toolname = None
@@ -4006,8 +4146,7 @@ ws ::= | " " | "\n" [ \t]{0,20}
             except Exception:
                 pass
             tool_json_formatting_instruction = f"\nPlease use the provided schema to fill the parameters to create a function call for {toolname}, in the following format: " + json.dumps([{"id": "call_001", "type": "function", "function": {"name": f"{toolname}", "arguments": {"first property key": "first property value", "second property key": "second property value"}}}], indent=0)
-            genparams["prompt"] += f"\n\nJSON Schema:\n{used_tool_json}\n\n{tool_json_formatting_instruction}{assistant_message_start}"
-
+            genparams["prompt"] += f"\n\nJSON Schema:\n{used_tool_json}\n\n{tool_json_formatting_instruction}{assistant_message_gen}"
 
     elif api_format==3 or api_format==4 or api_format==7:
         default_adapter = {} if chatcompl_adapter is None else chatcompl_adapter
@@ -4091,7 +4230,7 @@ ws ::= | " " | "\n" [ \t]{0,20}
                 jinja_output = format_jinja(messages_array,jinjatools,jinjakwargs)
             if jinja_output:
                 messages_string = jinja_output
-                if jinja_output.rstrip().endswith("<think>"): #the prompt template already forced a start think.
+                if jinja_output.rstrip().endswith("<think>") or jinja_output.rstrip().endswith("<|channel>thought") : #the prompt template already forced a start think.
                     genparams["already_started_thinking"] = True
                 if jinjatools and len(jinjatools)>0:
                     genparams["using_openai_tools"] = True
@@ -4209,7 +4348,7 @@ ws ::= | " " | "\n" [ \t]{0,20}
                 if (latest_turn_was_assistant and continue_assistant_turn): #allow continue a prefill, chop off end
                     messages_string = messages_string[:-(len(assistant_message_gen)+len(assistant_message_end))]
             genparams["prompt"] = messages_string
-            if messages_string.rstrip().endswith("<think>"): #the prompt template already forced a start think.
+            if messages_string.rstrip().endswith("<think>") or messages_string.rstrip().endswith("<|channel>thought") : #the prompt template already forced a start think.
                 genparams["already_started_thinking"] = True
             if len(images_added)>0:
                 genparams["images"] = images_added
@@ -4331,8 +4470,10 @@ ws ::= | " " | "\n" [ \t]{0,20}
         assistant_message_gen = adapter_obj.get("assistant_gen", assistant_message_start)
         if isinstance(prompt, str): #needed because comfy SD uses same field name
             if assistant_message_gen and assistant_message_gen!=assistant_message_start: #replace final output tag with unspaced (gen) version if exists
-                if prompt.rstrip().endswith("{{[OUTPUT]}}"):
+                if "{{[OUTPUT]}}" in prompt:
                     prompt = replace_last_in_string(prompt,"{{[OUTPUT]}}",assistant_message_gen)
+                elif "{{[OUTPUT]}}" in memory:
+                    memory = replace_last_in_string(memory,"{{[OUTPUT]}}",assistant_message_gen)
                 elif assistant_message_start and prompt.rstrip().endswith(assistant_message_start):
                     prompt = replace_last_in_string(prompt, assistant_message_start, assistant_message_gen)
             if "{{[INPUT_END]}}" in prompt or "{{[OUTPUT_END]}}" in prompt:
@@ -4349,6 +4490,10 @@ ws ::= | " " | "\n" [ \t]{0,20}
                 memory = memory.replace("{{[OUTPUT_END]}}", assistant_message_end)
                 memory = memory.replace("{{[SYSTEM_END]}}", system_message_end)
             else:
+                if "{{[INPUT]}}" in memory:
+                    memory = memory.replace("{{[INPUT]}}", user_message_start, 1)
+                else:
+                    prompt = prompt.replace("{{[INPUT]}}", user_message_start, 1)
                 prompt = prompt.replace("{{[INPUT]}}", assistant_message_end + user_message_start)
                 prompt = prompt.replace("{{[OUTPUT]}}", user_message_end + assistant_message_start)
                 prompt = prompt.replace("{{[SYSTEM]}}", system_message_start)
@@ -4491,11 +4636,124 @@ def fs_normalize_path(raw_path, allow_root=False):
         raise ValueError("Filesystem path must target a file.")
     return normalized
 
+# Virtual read-only path prefixes exposed through the filesystem API
+FS_INTERNAL_READONLY_PREFIX = "/INTERNAL_READ_ONLY"
+FS_INTERNAL_READONLY_DOCS   = "/INTERNAL_READ_ONLY/Documents"
+FS_INTERNAL_READONLY_RES    = "/INTERNAL_READ_ONLY/Resources"
+FS_EMBEDDING_CACHE_PREFIX   = "/EmbeddingCache"
+FS_PDF_TEXT_CACHE_SUFFIX    = ".pdf.txt.cache"
+
+def fs_is_readonly_path(normalized_path):
+    """Return True when the path lives under /INTERNAL_READ_ONLY/."""
+    return (normalized_path == FS_INTERNAL_READONLY_PREFIX or
+            normalized_path.startswith(FS_INTERNAL_READONLY_PREFIX + "/"))
+
+def fs_resolve_readonly_disk_path(normalized_path):
+    """Map /INTERNAL_READ_ONLY/Documents/... or /INTERNAL_READ_ONLY/Resources/... to real disk paths.
+    Returns (abs_path, root_dir).
+    Raises FileNotFoundError when the base directory is not configured.
+    Raises ValueError on path traversal attempts."""
+    _script_dir = os.path.dirname(os.path.realpath(__file__))
+    parsed = globals().get("args", None)
+    if normalized_path == FS_INTERNAL_READONLY_DOCS or normalized_path.startswith(FS_INTERNAL_READONLY_DOCS + "/"):
+        base_dir = str(getattr(parsed, "admindocsdir", "") or "").strip()
+        if not base_dir:
+            raise FileNotFoundError("Documents directory (/INTERNAL_READ_ONLY/Documents) is not configured. Set --admindocsdir.")
+        root = os.path.realpath(os.path.abspath(base_dir))
+        rel = normalized_path[len(FS_INTERNAL_READONLY_DOCS):].lstrip("/")
+    elif normalized_path == FS_INTERNAL_READONLY_RES or normalized_path.startswith(FS_INTERNAL_READONLY_RES + "/"):
+        # Resources maps to the packaged embd_res folder alongside the script
+        root = os.path.realpath(os.path.abspath(os.path.join(_script_dir, "embd_res")))
+        if not os.path.isdir(root):
+            raise FileNotFoundError("Resources directory (/INTERNAL_READ_ONLY/Resources) is not available: embd_res not found.")
+        rel = normalized_path[len(FS_INTERNAL_READONLY_RES):].lstrip("/")
+    else:
+        raise FileNotFoundError(f"Filesystem path not found: {normalized_path}")
+    abs_path = os.path.realpath(os.path.abspath(os.path.join(root, rel))) if rel else root
+    if abs_path != root and not abs_path.startswith(root + os.sep):
+        raise ValueError("Invalid filesystem path.")
+    return abs_path, root
+
+def fs_is_docs_path(normalized_path):
+    """Return True when the path lives under /INTERNAL_READ_ONLY/Documents/."""
+    return (normalized_path == FS_INTERNAL_READONLY_DOCS or
+            normalized_path.startswith(FS_INTERNAL_READONLY_DOCS + "/"))
+
+def fs_is_res_path(normalized_path):
+    """Return True when the path lives under /INTERNAL_READ_ONLY/Resources/."""
+    return (normalized_path == FS_INTERNAL_READONLY_RES or
+            normalized_path.startswith(FS_INTERNAL_READONLY_RES + "/"))
+
+def fs_get_pdf_text_cache_paths(normalized_path):
+    """Return (cache_virtual_path, cache_disk_path) for a PDF text extraction cache.
+
+    The virtual and disk paths mirror the rules used for embedding caches:
+      - Resources (/INTERNAL_READ_ONLY/Resources/...): stored in the writable FS
+        under /EmbeddingCache/ with the .pdf.txt.cache suffix.
+      - Documents (/INTERNAL_READ_ONLY/Documents/...): stored on disk next to the
+        source file inside admindocsdir (cache_disk_path is set), with a matching
+        virtual path used as an in-memory mirror.
+      - All other paths: stored via the normal writable FS next to the source file.
+
+    Returns cache_disk_path=None when no physical disk path is applicable.
+    """
+    _in_docs = fs_is_docs_path(normalized_path)
+    _in_res  = fs_is_res_path(normalized_path)
+
+    if _in_res:
+        _res_rel  = normalized_path[len(FS_INTERNAL_READONLY_RES):].lstrip("/")
+        _res_stem = posixpath.splitext(_res_rel)[0]
+        cache_virtual_path = FS_EMBEDDING_CACHE_PREFIX + "/" + _res_stem + FS_PDF_TEXT_CACHE_SUFFIX
+    else:
+        cache_virtual_path = normalized_path + FS_PDF_TEXT_CACHE_SUFFIX
+
+    cache_disk_path = None
+    if _in_docs:
+        _parsed   = globals().get("args", None)
+        _docsdir  = str(getattr(_parsed, "admindocsdir", "") or "").strip()
+        if _docsdir:
+            _docsdir_abs = os.path.realpath(os.path.abspath(_docsdir))
+            _rel = normalized_path[len(FS_INTERNAL_READONLY_DOCS):].lstrip("/")
+            _candidate = os.path.realpath(os.path.abspath(
+                os.path.join(_docsdir_abs, _rel + FS_PDF_TEXT_CACHE_SUFFIX)))
+            if _candidate == _docsdir_abs or _candidate.startswith(_docsdir_abs + os.sep):
+                cache_disk_path = _candidate
+
+    return cache_virtual_path, cache_disk_path
+
+try:
+    import chardet as _chardet
+    _CHARDET_AVAILABLE = True
+except ImportError:
+    _chardet = None
+    _CHARDET_AVAILABLE = False
+
+_BINARY_SAMPLE_SIZE = 8192  # bytes to inspect when deciding text vs binary
+
 def fs_is_binary(content_bytes):
-    return b"\x00" in content_bytes
+    b = content_bytes if isinstance(content_bytes, (bytes, bytearray)) else bytes(content_bytes)
+    if not b:
+        return False
+    sample = b[:_BINARY_SAMPLE_SIZE]
+    if _CHARDET_AVAILABLE:
+        detected = _chardet.detect(sample)
+        enc = (detected.get("encoding") or "").lower()
+        # chardet returns encoding=None or encoding='binary' for non-text data
+        return not enc or enc == "binary"
+    # Fallback heuristic: count control bytes outside normal text whitespace
+    non_printable = sum(1 for byte in sample if byte <= 0x08 or (0x0e <= byte <= 0x1f))
+    return (non_printable / len(sample)) > 0.30
 
 def fs_decode_text(content_bytes):
-    return fs_to_bytes(content_bytes).decode("utf-8", "replace")
+    b = fs_to_bytes(content_bytes)
+    # Decode according to BOM so UTF-16/UTF-32 files round-trip correctly
+    if b.startswith(b'\xff\xfe\x00\x00') or b.startswith(b'\x00\x00\xfe\xff'):
+        return b.decode('utf-32', 'replace')
+    if b.startswith(b'\xff\xfe') or b.startswith(b'\xfe\xff'):
+        return b.decode('utf-16', 'replace')
+    if b.startswith(b'\xef\xbb\xbf'):
+        return b.decode('utf-8-sig', 'replace')
+    return b.decode('utf-8', 'replace')
 
 def fs_count_lines(content_bytes):
     if fs_is_binary(content_bytes):
@@ -4508,6 +4766,17 @@ def fs_set_state(fs_state):
 
 def fs_get_file(path):
     normalized_path = fs_normalize_path(path)
+    if fs_is_readonly_path(normalized_path):
+        abs_path, _ = fs_resolve_readonly_disk_path(normalized_path)
+        if not os.path.isfile(abs_path):
+            raise FileNotFoundError(f"Filesystem file not found: {normalized_path}")
+        with open(abs_path, mode="rb") as _fh:
+            content_bytes = _fh.read()
+        return normalized_path, {
+            "content": content_bytes,
+            "modified": datetime.fromtimestamp(os.path.getmtime(abs_path), timezone.utc).isoformat(),
+            "size": len(content_bytes),
+        }
     with fs_lock:
         fs = fs_snapshot_state()
     if fs_is_disk_mode(fs):
@@ -4529,6 +4798,8 @@ def fs_get_file(path):
 
 def fs_write_file(path, content, modified=None, isB64 = False):
     normalized_path = fs_normalize_path(path)
+    if fs_is_readonly_path(normalized_path):
+        raise ValueError(f"Path is read-only and cannot be written to: {normalized_path}")
     content_bytes = fs_to_bytes(content, isB64)
     with fs_lock:
         fs = fs_snapshot_state()
@@ -4563,6 +4834,8 @@ def fs_normalize_dir_path(raw_path, allow_root=False):
 
 def fs_create_directory(path):
     normalized_dir = fs_normalize_dir_path(path)
+    if fs_is_readonly_path(normalized_dir):
+        raise ValueError(f"Path is read-only and cannot be modified: {normalized_dir}")
     with fs_lock:
         fs = fs_snapshot_state()
     if fs_is_disk_mode(fs):
@@ -4575,6 +4848,8 @@ def fs_create_directory(path):
 
 def fs_delete_directory(path):
     normalized_dir = fs_normalize_dir_path(path)
+    if fs_is_readonly_path(normalized_dir):
+        raise ValueError(f"Path is read-only and cannot be deleted: {normalized_dir}")
     with fs_lock:
         fs = fs_snapshot_state()
     if fs_is_disk_mode(fs):
@@ -4607,6 +4882,8 @@ def fs_delete_directory(path):
 
 def fs_delete_file(path):
     normalized_path = fs_normalize_path(path)
+    if fs_is_readonly_path(normalized_path):
+        raise ValueError(f"Path is read-only and cannot be deleted: {normalized_path}")
     with fs_lock:
         fs = fs_snapshot_state()
     if fs_is_disk_mode(fs):
@@ -4629,69 +4906,147 @@ def fs_delete_file(path):
 def fs_copy_file(source_path, destination_path):
     normalized_source = fs_normalize_path(source_path)
     normalized_destination = fs_normalize_path(destination_path)
+    if fs_is_readonly_path(normalized_destination):
+        raise ValueError(f"Destination path is read-only and cannot be written to: {normalized_destination}")
+    # INTERNAL_READ_ONLY source: read via the virtual layer, then write to the destination
+    if fs_is_readonly_path(normalized_source):
+        _, source_entry = fs_get_file(normalized_source)
+        fs_write_file(normalized_destination, source_entry.get("content", b""))
+        return normalized_source, normalized_destination
     with fs_lock:
         fs = fs_snapshot_state()
     if fs_is_disk_mode(fs):
         _, source_abs, _ = fs_resolve_disk_path(normalized_source, fs_state=fs)
         _, destination_abs, _ = fs_resolve_disk_path(normalized_destination, fs_state=fs)
-        if not os.path.isfile(source_abs):
-            raise FileNotFoundError(f"Filesystem file not found: {normalized_source}")
-        os.makedirs(os.path.dirname(destination_abs), exist_ok=True)
-        shutil.copy2(source_abs, destination_abs)
+        if os.path.isfile(source_abs):
+            os.makedirs(os.path.dirname(destination_abs), exist_ok=True)
+            shutil.copy2(source_abs, destination_abs)
+        elif os.path.isdir(source_abs):
+            shutil.copytree(source_abs, destination_abs, dirs_exist_ok=True)
+        else:
+            raise FileNotFoundError(f"Filesystem file or directory not found: {normalized_source}")
         return normalized_source, normalized_destination
     with fs_lock:
         files = fs["files"]
-        if normalized_source not in files:
-            raise FileNotFoundError(f"Filesystem file not found: {normalized_source}")
-        source_entry = files[normalized_source]
-        destination_size = files.get(normalized_destination, {}).get("size", 0)
-        new_total = fs["current_size_bytes"] - destination_size + source_entry["size"]
-        max_size = fs["max_size_bytes"]
-        if max_size > 0 and new_total > max_size:
-            raise ValueError(f"Filesystem size limit exceeded ({new_total} > {max_size} bytes).")
-        files[normalized_destination] = {
-            "content": source_entry["content"],
-            "modified": datetime.now(timezone.utc).isoformat(),
-            "size": source_entry["size"],
-        }
-        fs["current_size_bytes"] = new_total
-        fs["initialized"] = True
-        fs_set_state(fs)
+        if normalized_source in files:
+            source_entry = files[normalized_source]
+            destination_size = files.get(normalized_destination, {}).get("size", 0)
+            new_total = fs["current_size_bytes"] - destination_size + source_entry["size"]
+            max_size = fs["max_size_bytes"]
+            if max_size > 0 and new_total > max_size:
+                raise ValueError(f"Filesystem size limit exceeded ({new_total} > {max_size} bytes).")
+            files[normalized_destination] = {
+                "content": source_entry["content"],
+                "modified": datetime.now(timezone.utc).isoformat(),
+                "size": source_entry["size"],
+            }
+            fs["current_size_bytes"] = new_total
+            fs["initialized"] = True
+            fs_set_state(fs)
+        else:
+            prefix = normalized_source + "/"
+            targets = [p for p in list(files.keys()) if p.startswith(prefix)]
+            if not targets:
+                raise FileNotFoundError(f"Filesystem file or directory not found: {normalized_source}")
+            copied_pairs = [(p, normalized_destination + p[len(normalized_source):]) for p in targets]
+            copy_size = sum(files[src].get("size", 0) for src, _ in copied_pairs)
+            overwritten_size = sum(files[dst].get("size", 0) for _, dst in copied_pairs if dst in files)
+            new_total = fs["current_size_bytes"] - overwritten_size + copy_size
+            max_size = fs["max_size_bytes"]
+            if max_size > 0 and new_total > max_size:
+                raise ValueError(f"Filesystem size limit exceeded ({new_total} > {max_size} bytes).")
+            new_entries = {
+                dst: {
+                    "content": files[src]["content"],
+                    "modified": datetime.now(timezone.utc).isoformat(),
+                    "size": files[src]["size"],
+                }
+                for src, dst in copied_pairs
+            }
+            files.update(new_entries)
+            fs["current_size_bytes"] = new_total
+            fs["initialized"] = True
+            fs_set_state(fs)
     return normalized_source, normalized_destination
 
 def fs_move_file(source_path, destination_path):
     normalized_source = fs_normalize_path(source_path)
     normalized_destination = fs_normalize_path(destination_path)
+    if fs_is_readonly_path(normalized_source):
+        raise ValueError(f"Source path is read-only and cannot be moved: {normalized_source}")
+    if fs_is_readonly_path(normalized_destination):
+        raise ValueError(f"Destination path is read-only and cannot be written to: {normalized_destination}")
     with fs_lock:
         fs = fs_snapshot_state()
     if fs_is_disk_mode(fs):
         _, source_abs, _ = fs_resolve_disk_path(normalized_source, fs_state=fs)
         _, destination_abs, _ = fs_resolve_disk_path(normalized_destination, fs_state=fs)
-        if not os.path.isfile(source_abs):
-            raise FileNotFoundError(f"Filesystem file not found: {normalized_source}")
-        os.makedirs(os.path.dirname(destination_abs), exist_ok=True)
-        shutil.move(source_abs, destination_abs)
+        if os.path.isfile(source_abs):
+            os.makedirs(os.path.dirname(destination_abs), exist_ok=True)
+            shutil.move(source_abs, destination_abs)
+        elif os.path.isdir(source_abs):
+            if os.path.dirname(destination_abs):
+                os.makedirs(os.path.dirname(destination_abs), exist_ok=True)
+            shutil.move(source_abs, destination_abs)
+        else:
+            raise FileNotFoundError(f"Filesystem file or directory not found: {normalized_source}")
         return normalized_source, normalized_destination
     with fs_lock:
         files = fs["files"]
-        if normalized_source not in files:
-            raise FileNotFoundError(f"Filesystem file not found: {normalized_source}")
-        source_entry = files[normalized_source]
-        destination_size = files.get(normalized_destination, {}).get("size", 0)
-        if normalized_destination != normalized_source:
-            del files[normalized_source]
-            new_total = fs["current_size_bytes"] - destination_size
+        if normalized_source in files:
+            source_entry = files[normalized_source]
+            destination_size = files.get(normalized_destination, {}).get("size", 0)
+            if normalized_destination != normalized_source:
+                del files[normalized_source]
+                new_total = fs["current_size_bytes"] - destination_size
+            else:
+                new_total = fs["current_size_bytes"]
+            files[normalized_destination] = {
+                "content": source_entry["content"],
+                "modified": datetime.now(timezone.utc).isoformat(),
+                "size": source_entry["size"],
+            }
+            fs["current_size_bytes"] = max(0, new_total)
+            fs["initialized"] = True
+            fs_set_state(fs)
         else:
-            new_total = fs["current_size_bytes"]
-        files[normalized_destination] = {
-            "content": source_entry["content"],
-            "modified": datetime.now(timezone.utc).isoformat(),
-            "size": source_entry["size"],
-        }
-        fs["current_size_bytes"] = max(0, new_total)
-        fs["initialized"] = True
-        fs_set_state(fs)
+            prefix = normalized_source + "/"
+            targets = sorted([p for p in list(files.keys()) if p.startswith(prefix)])
+            if not targets:
+                raise FileNotFoundError(f"Filesystem file or directory not found: {normalized_source}")
+            if normalized_source == normalized_destination:
+                return normalized_source, normalized_destination
+            moved_pairs = [(p, normalized_destination + p[len(normalized_source):]) for p in targets]
+            src_set = set(targets)
+            overwritten_size = sum(
+                files[dst].get("size", 0) for _, dst in moved_pairs if dst in files and dst not in src_set
+            )
+            new_entries = {
+                dst: {
+                    "content": files[src]["content"],
+                    "modified": datetime.now(timezone.utc).isoformat(),
+                    "size": files[src]["size"],
+                }
+                for src, dst in moved_pairs
+            }
+            for src in targets:
+                del files[src]
+            files.update(new_entries)
+            fs["current_size_bytes"] = max(0, fs["current_size_bytes"] - overwritten_size)
+            fs["initialized"] = True
+            fs_set_state(fs)
     return normalized_source, normalized_destination
+
+def fs_replace_regex(path, pattern, replacement):
+    normalized_path = fs_normalize_path(path)
+    _, entry = fs_get_file(normalized_path)
+    content_bytes = entry.get("content", b"")
+    if fs_is_binary(content_bytes):
+        raise ValueError(f"Filesystem file is binary and cannot have regex applied: {normalized_path}")
+    content_text = fs_decode_text(content_bytes)
+    new_text = re.sub(pattern, replacement, content_text)
+    fs_write_file(normalized_path, new_text)
+    return normalized_path
 
 def fs_match_glob(value, wildcard, case_insensitive=False):
     value_text = str(value or "")
@@ -4732,6 +5087,32 @@ def fs_list_entries(pattern="*", case_insensitive=False):
                 dir_paths.add(parent_dir)
                 parent_dir = posixpath.dirname(parent_dir) or "/"
 
+    # Overlay /INTERNAL_READ_ONLY/Documents and /INTERNAL_READ_ONLY/Resources
+    _parsed = globals().get("args", None)
+    _admindocsdir = str(getattr(_parsed, "admindocsdir", "") or "").strip()
+    if _admindocsdir and os.path.isdir(_admindocsdir):
+        dir_paths.add(FS_INTERNAL_READONLY_PREFIX)
+        dir_paths.add(FS_INTERNAL_READONLY_DOCS)
+        for _root, _dirnames, _filenames in os.walk(_admindocsdir):
+            for _dn in _dirnames:
+                _rel = os.path.relpath(os.path.join(_root, _dn), _admindocsdir).replace("\\", "/")
+                dir_paths.add(FS_INTERNAL_READONLY_DOCS + "/" + _rel.lstrip("/"))
+            for _fn in _filenames:
+                _rel = os.path.relpath(os.path.join(_root, _fn), _admindocsdir).replace("\\", "/")
+                file_paths.append(FS_INTERNAL_READONLY_DOCS + "/" + _rel.lstrip("/"))
+    _embddir = os.path.realpath(os.path.abspath(
+        os.path.join(os.path.dirname(os.path.realpath(__file__)), "embd_res")))
+    if os.path.isdir(_embddir):
+        dir_paths.add(FS_INTERNAL_READONLY_PREFIX)
+        dir_paths.add(FS_INTERNAL_READONLY_RES)
+        for _root, _dirnames, _filenames in os.walk(_embddir):
+            for _dn in _dirnames:
+                _rel = os.path.relpath(os.path.join(_root, _dn), _embddir).replace("\\", "/")
+                dir_paths.add(FS_INTERNAL_READONLY_RES + "/" + _rel.lstrip("/"))
+            for _fn in _filenames:
+                _rel = os.path.relpath(os.path.join(_root, _fn), _embddir).replace("\\", "/")
+                file_paths.append(FS_INTERNAL_READONLY_RES + "/" + _rel.lstrip("/"))
+
     file_paths.sort()
     directory_paths = sorted(dir_paths)
     return {
@@ -4750,10 +5131,13 @@ def fs_list_entries(pattern="*", case_insensitive=False):
 def fs_list_paths(pattern="*", case_insensitive=False):
     return fs_list_entries(pattern, case_insensitive).get("files", [])
 
-def fs_search_content(pattern="*", path_pattern="*", max_results=100, case_insensitive=False):
-    wildcard = pattern or "*"
+def fs_search_content_regex(pattern=".*", path_pattern="*", max_results=100, case_insensitive=False):
+    regex_pattern = str(pattern or ".*")
     path_glob = path_pattern or "*"
     max_hits = max(1, tryparseint(max_results, 100))
+    re_flags = re.IGNORECASE if case_insensitive else 0
+    matcher = re.compile(regex_pattern, re_flags)
+
     with fs_lock:
         fs = fs_snapshot_state()
     if fs_is_disk_mode(fs):
@@ -4774,6 +5158,7 @@ def fs_search_content(pattern="*", path_pattern="*", max_results=100, case_insen
         items.sort(key=lambda item: item[0])
     else:
         items = sorted(fs["files"].items())
+
     matches = []
     for path, entry in items:
         if posixpath.basename(path) == FS_DIR_MARKER_FILENAME:
@@ -4783,8 +5168,9 @@ def fs_search_content(pattern="*", path_pattern="*", max_results=100, case_insen
         content_bytes = entry.get("content", b"")
         if fs_is_binary(content_bytes):
             continue
+
         for line_number, line_content in enumerate(fs_decode_text(content_bytes).splitlines(), start=1):
-            if fs_match_glob(line_content, wildcard, case_insensitive):
+            if matcher.search(line_content):
                 matches.append({
                     "path": path,
                     "line_start": line_number,
@@ -4810,6 +5196,27 @@ def fs_read_lines(path, start_line=1, end_line=None):
 
 def fs_apply_line_updates(path, line_updates, start_line=1, append=False):
     normalized_path = fs_normalize_path(path)
+    with fs_lock:
+        fs = fs_snapshot_state()
+
+    # Fast path: in disk mode with a pure-append list of simple strings, write
+    # new lines directly to the end of the file without reading existing content.
+    if append and fs_is_disk_mode(fs) and isinstance(line_updates, list) and all(not isinstance(item, dict) for item in line_updates):
+        _, abs_path, _ = fs_resolve_disk_path(normalized_path, fs_state=fs)
+        os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+        new_text = "\n".join(str(item) for item in line_updates) + "\n"
+        with open(abs_path, "a+b") as fh:
+            # Ensure we're on a fresh line if the file already has content
+            fh.seek(0, 2)
+            if fh.tell() > 0:
+                fh.seek(-1, 2)
+                last_byte = fh.read(1)
+                if last_byte != b"\n":
+                    fh.write(b"\n")
+            fh.write(new_text.encode("utf-8"))
+        return normalized_path
+
+    # General path: read existing content, apply updates, write back.
     try:
         _, entry = fs_get_file(normalized_path)
         existing_bytes = entry.get("content", b"")
@@ -4877,6 +5284,65 @@ def fs_load_json_file(path):
         raise ValueError(f"Filesystem JSON file must contain an object: {normalized_path}")
     return normalized_path, parsed
 
+def fs_load_embeddings_cache_file(path):
+    """Load an embeddings cache file, supporting both JSONL (v2) and legacy JSON (v1) formats.
+    Returns (normalized_path, items_list, query_prefix, model_name, content_hash) where
+    items_list is a list of item dicts containing at least 'snippet', 'document', and
+    'embedding' keys, and content_hash is the SHA-256 hex digest of the source document
+    text stored in the JSONL meta line (None for legacy v1 caches)."""
+    normalized_path, entry = fs_get_file(path)
+    content_bytes = entry.get("content", b"")
+    if fs_is_binary(content_bytes):
+        raise ValueError(f"Embeddings cache file is binary: {normalized_path}")
+    raw_text = fs_decode_text(content_bytes).strip()
+    if not raw_text:
+        raise ValueError(f"Embeddings cache file is empty: {normalized_path}")
+
+    first_line = raw_text.split("\n")[0].strip()
+    # Detect JSONL (v2): first line is a meta object with "type":"meta"
+    if '"type"' in first_line and '"meta"' in first_line:
+        meta = None
+        items = {}  # keyed by hash for deduplication (last write wins)
+        for line in raw_text.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+                obj_type = obj.get("type", "")
+                if obj_type == "meta":
+                    meta = obj
+                elif obj_type == "item":
+                    h = obj.get("hash", "")
+                    if h:
+                        items[h] = obj
+            except Exception:
+                pass
+        if meta is None:
+            raise ValueError(f"JSONL embeddings cache is missing meta header: {normalized_path}")
+        active_model_name = fs_get_active_embedding_model_name()
+        cache_model = str(meta.get("model_name", "") or "").strip()
+        normalized_active = str(active_model_name or "").strip()
+        if normalized_active and cache_model and normalized_active != cache_model:
+            if not (normalized_active in cache_model or cache_model in normalized_active):
+                raise ValueError(f"No embedding cache found for active model: {normalized_active or 'unknown'}")
+        query_prefix = str(meta.get("query_prefix", "") or "")
+        content_hash = str(meta.get("content_hash", "") or "") or None
+        return normalized_path, list(items.values()), query_prefix, cache_model or active_model_name, content_hash
+
+    # Legacy JSON (v1)
+    parsed = json.loads(raw_text)
+    if not isinstance(parsed, dict):
+        raise ValueError(f"Embeddings cache file must contain a JSON object: {normalized_path}")
+    active_model_name = fs_get_active_embedding_model_name()
+    _, model_cache = fs_select_embedding_cache(parsed, active_model_name)
+    query_prefix = str(model_cache.get("query_prefix", "") or "")
+    model_name = str(model_cache.get("model_name", active_model_name) or active_model_name)
+    items_dict = model_cache.get("items", {})
+    if not isinstance(items_dict, dict):
+        return normalized_path, [], query_prefix, model_name, None
+    return normalized_path, list(items_dict.values()), query_prefix, model_name, None
+
 def fs_cosine_similarity(vec_a, vec_b):
     if not isinstance(vec_a, list) or not isinstance(vec_b, list):
         return 0.0
@@ -4922,19 +5388,15 @@ def fs_select_embedding_cache(cache_obj, active_model_name):
     raise ValueError(f"No embedding cache found for active model: {normalized_name or 'unknown'}")
 
 def fs_semantic_search_cache(embeddings_cache_path, search_query, max_results=5):
-    normalized_cache_path, cache_obj = fs_load_json_file(embeddings_cache_path)
+    normalized_cache_path, items_list, query_prefix, model_name, _ = fs_load_embeddings_cache_file(embeddings_cache_path)
     query_text = str(search_query or "").strip()
     if query_text == "":
         raise ValueError("Search query cannot be empty.")
 
-    active_model_name = fs_get_active_embedding_model_name()
-    _, model_cache = fs_select_embedding_cache(cache_obj, active_model_name)
-    query_prefix = str(model_cache.get("query_prefix", "") or "")
-    items = model_cache.get("items", {})
-    if not isinstance(items, dict) or len(items) == 0:
+    if not items_list:
         return {
             "cache_path": normalized_cache_path,
-            "model": str(model_cache.get("model_name", active_model_name) or active_model_name),
+            "model": model_name,
             "snippets": [],
         }
 
@@ -4948,7 +5410,7 @@ def fs_semantic_search_cache(embeddings_cache_path, search_query, max_results=5)
     query_embedding = query_embeddings[0]
 
     candidates = []
-    for item in items.values():
+    for item in items_list:
         if not isinstance(item, dict):
             continue
         embedding = item.get("embedding", [])
@@ -4964,7 +5426,7 @@ def fs_semantic_search_cache(embeddings_cache_path, search_query, max_results=5)
     if len(candidates) == 0:
         return {
             "cache_path": normalized_cache_path,
-            "model": str(model_cache.get("model_name", active_model_name) or active_model_name),
+            "model": model_name,
             "snippets": [],
         }
 
@@ -4987,9 +5449,364 @@ def fs_semantic_search_cache(embeddings_cache_path, search_query, max_results=5)
     scored_candidates.sort(key=lambda item: item.get("similarity", 0.0), reverse=True)
     return {
         "cache_path": normalized_cache_path,
-        "model": str(model_cache.get("model_name", active_model_name) or active_model_name),
+        "model": model_name,
         "snippets": scored_candidates[:max_hits],
     }
+
+def fs_extract_document_text(path):
+    """Extract plain text from a filesystem file.
+    Supports text/markdown files and PDF files (via PyMuPDF or pdfplumber).
+    For PDF files the extracted text is cached on disk or in the FS (using the
+    same placement rules as the embedding cache) so that subsequent calls skip
+    the expensive extraction step when the PDF content has not changed.
+    Returns the extracted text string.
+    Raises ValueError for binary files that are not PDFs."""
+    normalized_path, entry = fs_get_file(path)
+    content_bytes = entry.get("content", b"")
+    filename_lower = posixpath.basename(normalized_path).lower()
+    if filename_lower.endswith(".pdf"):
+        pdf_hash = hashlib.sha256(content_bytes).hexdigest()
+        cache_virtual_path, cache_disk_path = fs_get_pdf_text_cache_paths(normalized_path)
+        _in_docs = fs_is_docs_path(normalized_path)
+
+        # --- Try loading an existing PDF text cache ---
+        try:
+            cache_raw = None
+            if _in_docs and cache_disk_path and os.path.isfile(cache_disk_path):
+                utfprint(f"[SemanticSearch] Loading PDF text cache from disk: {cache_disk_path}")
+                with open(cache_disk_path, mode="rb") as _cf:
+                    cache_raw = _cf.read()
+                # Mirror into FS so the virtual path resolves
+                with fs_lock:
+                    _fs = fs_snapshot_state()
+                if not fs_is_disk_mode(_fs):
+                    _fs["files"][cache_virtual_path] = {
+                        "content": cache_raw,
+                        "modified": datetime.fromtimestamp(os.path.getmtime(cache_disk_path), timezone.utc).isoformat(),
+                        "size": len(cache_raw),
+                    }
+                    fs_set_state(_fs)
+            if cache_raw is None:
+                _, cache_entry = fs_get_file(cache_virtual_path)
+                cache_raw = cache_entry.get("content", b"")
+            cached_obj = json.loads(cache_raw.decode("utf-8"))
+            if isinstance(cached_obj, dict) and cached_obj.get("pdf_hash") == pdf_hash:
+                cached_text = cached_obj.get("text", "")
+                if cached_text and cached_text.strip():
+                    utfprint(f"[SemanticSearch] PDF text cache hit: {normalized_path}")
+                    return cached_text
+        except Exception:
+            pass  # Cache miss or unreadable — fall through to extraction
+
+        # --- Perform the (expensive) extraction ---
+        utfprint(f"[SemanticSearch] Extracting text from PDF: {normalized_path}")
+        extracted_text = None
+        try:
+            text = getTextFromPDFEncapsulatedPyMuPdf(content_bytes)
+            if text and text.strip():
+                extracted_text = text
+        except Exception as _e:
+            utfprint(f"[SemanticSearch] PyMuPDF extraction failed ({_e}), trying pdfplumber...")
+        if not extracted_text:
+            try:
+                text = getTextFromPDFEncapsulated(content_bytes)
+                if text and text.strip():
+                    extracted_text = text
+            except Exception as _e:
+                utfprint(f"[SemanticSearch] pdfplumber extraction failed: {_e}")
+        if not extracted_text:
+            raise ValueError(f"Could not extract text from PDF: {normalized_path}")
+
+        # --- Persist the PDF text cache ---
+        cache_content = json.dumps({"pdf_hash": pdf_hash, "text": extracted_text}, ensure_ascii=False)
+        if _in_docs and cache_disk_path:
+            try:
+                os.makedirs(os.path.dirname(cache_disk_path), exist_ok=True)
+                with open(cache_disk_path, mode="w", encoding="utf-8") as _cf:
+                    _cf.write(cache_content)
+                utfprint(f"[SemanticSearch] PDF text cached to disk: {cache_disk_path}")
+            except Exception as _ce:
+                utfprint(f"[SemanticSearch] Warning: could not write PDF text cache to disk: {_ce}")
+        else:
+            try:
+                fs_write_file(cache_virtual_path, cache_content)
+                utfprint(f"[SemanticSearch] PDF text cached to: {cache_virtual_path}")
+            except Exception as _ce:
+                utfprint(f"[SemanticSearch] Warning: could not cache PDF text: {_ce}")
+
+        return extracted_text
+    if fs_is_binary(content_bytes):
+        raise ValueError(f"File is binary and cannot be used as a text document: {normalized_path}")
+    return fs_decode_text(content_bytes)
+
+def fs_chunk_text(text, chunk_size=1024, overlap=500):
+    """Split text into overlapping character-based chunks.
+    chunk_size is the target number of characters per chunk; overlap is the number of
+    characters shared between adjacent chunks.  Returns a list of non-empty strings."""
+    raw = str(text or "")
+    if not raw.strip():
+        return []
+    step = max(1, chunk_size - overlap)
+    chunks = []
+    i = 0
+    while i < len(raw):
+        chunk = raw[i:i + chunk_size].strip()
+        if chunk:
+            chunks.append(chunk)
+        i += step
+    return chunks
+
+def fs_semantic_search_document(document_path, search_query, max_results=5, chunk_size=1024, overlap=500):
+    """Perform semantic search on a document file stored in the filesystem API.
+
+    Workflow:
+      1. Resolve the filesystem path and extract text (supports plain text and PDF).
+      2. Compute a SHA-256 content hash of the extracted text.
+      3. Determine the cache path:
+         - Documents under /INTERNAL_READ_ONLY/Documents: cache written directly
+           to the admindocsdir on disk (e.g. /path/to/docs/file.txt.embd.jsonl).
+         - Resources under /INTERNAL_READ_ONLY/Resources: cache stored in the
+           writable FS under /EmbeddingCache/ (e.g.
+           /INTERNAL_READ_ONLY/Resources/js/agent.js -> /EmbeddingCache/js/agent.embd.jsonl).
+         - All other paths: cache written via the normal writable filesystem API
+           (memory or direct-disk depending on --fsdirect), next to the source file.
+      4. If a cache exists and its stored content_hash matches the current document:
+         use the cache as-is (no re-embedding).
+      5. If a cache exists but the content_hash differs (document changed):
+         load the old per-chunk embeddings, rechunk the current text, reuse
+         embeddings for any chunk whose hash already exists in the cache, and
+         only embed the new/changed chunks (incremental update).
+      6. If no cache exists: embed all chunks from scratch.
+      7. Write the updated cache (with the new content_hash in the meta line).
+      8. Score all chunks against the query and return top results.
+    """
+    normalized_path = fs_normalize_path(document_path)
+    query_text = str(search_query or "").strip()
+    if not query_text:
+        raise ValueError("Search query cannot be empty.")
+
+    active_model = fs_get_active_embedding_model_name()
+
+    # Determine where the embedding cache lives
+    _in_docs = fs_is_docs_path(normalized_path)
+    _in_res  = fs_is_res_path(normalized_path)
+
+    if _in_res:
+        # Resources are read-only; store the cache in the writable /EmbeddingCache/ tree.
+        # Strip /INTERNAL_READ_ONLY/Resources, remove the file extension, add .embd.jsonl
+        _res_rel = normalized_path[len(FS_INTERNAL_READONLY_RES):].lstrip("/")
+        _res_stem = posixpath.splitext(_res_rel)[0]
+        cache_virtual_path = FS_EMBEDDING_CACHE_PREFIX + "/" + _res_stem + ".embd.jsonl"
+    else:
+        cache_virtual_path = normalized_path + ".embd.jsonl"
+
+    # For docs-dir documents we also track the physical cache path so we can
+    # write it directly to disk (bypassing the read-only virtual layer).
+    # The path is validated to stay within admindocsdir to prevent traversal.
+    cache_disk_path = None
+    if _in_docs:
+        _parsed = globals().get("args", None)
+        _docsdir = str(getattr(_parsed, "admindocsdir", "") or "").strip()
+        if _docsdir:
+            _docsdir_abs = os.path.realpath(os.path.abspath(_docsdir))
+            _rel = normalized_path[len(FS_INTERNAL_READONLY_DOCS):].lstrip("/")
+            _candidate = os.path.realpath(os.path.abspath(
+                os.path.join(_docsdir_abs, _rel + ".embd.jsonl")))
+            # Containment check — reject if outside docs root
+            if _candidate == _docsdir_abs or _candidate.startswith(_docsdir_abs + os.sep):
+                cache_disk_path = _candidate
+
+    # --- Extract text (always needed to compute the content hash) ---
+    utfprint(f"[SemanticSearch] Extracting text from document: {normalized_path}")
+    text = fs_extract_document_text(normalized_path)
+    if not text or not text.strip():
+        raise ValueError(f"Document is empty or could not be parsed: {normalized_path}")
+
+    content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+    # --- Try loading an existing cache ---
+    # existing_items_by_hash maps chunk_hash -> item dict for incremental reuse.
+    existing_items_by_hash = {}
+    cache_usable = False
+    try:
+        # For docs paths prefer reading the cache from disk directly if available
+        if _in_docs and cache_disk_path and os.path.isfile(cache_disk_path):
+            utfprint(f"[SemanticSearch] Loading cache from disk: {cache_disk_path}")
+            with open(cache_disk_path, mode="rb") as _cf:
+                _cache_bytes = _cf.read()
+            # Temporarily inject into FS so fs_load_embeddings_cache_file can read it
+            with fs_lock:
+                _fs = fs_snapshot_state()
+            if not fs_is_disk_mode(_fs):
+                _fs["files"][cache_virtual_path] = {
+                    "content": _cache_bytes,
+                    "modified": datetime.fromtimestamp(os.path.getmtime(cache_disk_path), timezone.utc).isoformat(),
+                    "size": len(_cache_bytes),
+                }
+                fs_set_state(_fs)
+        utfprint(f"[SemanticSearch] Checking for cached embeddings at: {cache_virtual_path}")
+        _, cached_items, _, _, cached_content_hash = fs_load_embeddings_cache_file(cache_virtual_path)
+
+        if cached_content_hash and cached_content_hash == content_hash:
+            # Document unchanged — the entire cache is still valid.
+            utfprint(f"[SemanticSearch] Cache is up-to-date (content hash matches), using as-is.")
+            cache_usable = True
+        else:
+            # Document changed (or old cache predates content-hash tracking).
+            if cached_content_hash:
+                utfprint(f"[SemanticSearch] Document changed (hash mismatch), updating cache incrementally.")
+            else:
+                utfprint(f"[SemanticSearch] Cache has no content hash; refreshing embeddings.")
+            for item in cached_items:
+                h = item.get("hash", "")
+                if h:
+                    existing_items_by_hash[h] = item
+    except (FileNotFoundError, ValueError):
+        pass  # No usable cache — full generation
+
+    if cache_usable:
+        # Delegate scoring to the standard cache search path (cache already in FS).
+        return fs_semantic_search_cache(cache_virtual_path, query_text, max_results)
+
+    # --- Chunk and embed (incremental where possible, otherwise full) ---
+    _chunk_size = max(1, tryparseint(chunk_size, 1024))
+    _overlap = max(0, tryparseint(overlap, 500))
+    chunks = fs_chunk_text(text, chunk_size=_chunk_size, overlap=_overlap)
+    reused_count = len([c for c in chunks
+                        if hashlib.sha256(c.encode("utf-8")).hexdigest()[:16] in existing_items_by_hash])
+    utfprint(f"[SemanticSearch] {len(chunks)} chunks; "
+             f"{reused_count} can be reused from cache, "
+             f"{len(chunks) - reused_count} need new embeddings.")
+    query_prefix = ""
+    items = []
+    new_count = 0
+    actual_reused = 0
+    for idx, chunk in enumerate(chunks):
+        h = hashlib.sha256(chunk.encode("utf-8")).hexdigest()[:16]
+        if h in existing_items_by_hash:
+            items.append(existing_items_by_hash[h])
+            actual_reused += 1
+        else:
+            if new_count % 10 == 0:
+                utfprint(f"[SemanticSearch] Embedding new chunk {new_count + 1} (chunk {idx + 1}/{len(chunks)})...")
+            emb_resp = embeddings_generate({"input": f"{query_prefix}{chunk}", "truncate": True})
+            emb_data = emb_resp.get("data", []) if isinstance(emb_resp, dict) else []
+            if not emb_data or not isinstance(emb_data[0], list) or len(emb_data[0]) == 0:
+                utfprint(f"[SemanticSearch] Warning: could not embed chunk {idx + 1}")
+                continue
+            items.append({
+                "hash": h,
+                "snippet": chunk,
+                "document": posixpath.basename(normalized_path),
+                "embedding": emb_data[0],
+            })
+            new_count += 1
+    utfprint(f"[SemanticSearch] Done: {new_count} new embeddings generated, {actual_reused} reused from cache.")
+
+    # --- Persist cache (includes content_hash in meta for future incremental checks) ---
+    if items:
+        meta_line = json.dumps({
+            "type": "meta",
+            "model_name": active_model,
+            "query_prefix": query_prefix,
+            "content_hash": content_hash,
+        })
+        item_lines = [json.dumps({"type": "item", **item}) for item in items]
+        cache_content = "\n".join([meta_line] + item_lines) + "\n"
+        if _in_docs and cache_disk_path:
+            # Write directly to disk in the docs directory
+            try:
+                os.makedirs(os.path.dirname(cache_disk_path), exist_ok=True)
+                with open(cache_disk_path, mode="w", encoding="utf-8") as _cf:
+                    _cf.write(cache_content)
+                utfprint(f"[SemanticSearch] Embeddings cached to disk: {cache_disk_path}")
+            except Exception as _ce:
+                utfprint(f"[SemanticSearch] Warning: could not write cache to disk: {_ce}")
+        else:
+            # For Resources paths this writes to /EmbeddingCache/... in the writable FS.
+            # For all other paths this writes next to the source file.
+            try:
+                fs_write_file(cache_virtual_path, cache_content)
+                utfprint(f"[SemanticSearch] Embeddings cached to: {cache_virtual_path}")
+            except Exception as _ce:
+                utfprint(f"[SemanticSearch] Warning: could not cache embeddings: {_ce}")
+
+    if not items:
+        return {"cache_path": cache_virtual_path, "model": active_model, "snippets": []}
+
+    # --- Score against query ---
+    q_resp = embeddings_generate({"input": f"{query_prefix}{query_text}", "truncate": True})
+    q_data = q_resp.get("data", []) if isinstance(q_resp, dict) else []
+    if not q_data or not isinstance(q_data[0], list) or len(q_data[0]) == 0:
+        raise ValueError("Could not generate search query embedding.")
+    query_embedding = q_data[0]
+
+    max_hits = max(1, min(20, tryparseint(max_results, 5)))
+
+    scored = [{
+        "snippet": item["snippet"],
+        "document": item.get("document"),
+        "similarity": fs_cosine_similarity(query_embedding, item["embedding"]),
+    } for item in items]
+    scored.sort(key=lambda x: x.get("similarity", 0.0), reverse=True)
+    return {
+        "cache_path": cache_virtual_path,
+        "model": active_model,
+        "snippets": scored[:max_hits],
+    }
+
+
+def fs_search_all_documents(search_query, max_results=5, chunk_size=1024, overlap=500):
+    """Perform semantic search across all documents in the configured docs directory.
+
+    Requires --admindocsdir to be configured (doc DB enabled).  Every file under
+    /INTERNAL_READ_ONLY/Documents/ is searched (cache files are excluded).
+    Results from all documents are merged, sorted by similarity, and the top
+    max_results snippets are returned.
+
+    Returns a dict with keys: model, snippets (list of {snippet, document, similarity}).
+    """
+    _parsed = globals().get("args", None)
+    _docsdir = str(getattr(_parsed, "admindocsdir", "") or "").strip()
+    if not _docsdir or not os.path.isdir(_docsdir):
+        raise ValueError("Document database is not enabled. Set --admindocsdir to a valid directory.")
+
+    query_text = str(search_query or "").strip()
+    if not query_text:
+        raise ValueError("Search query cannot be empty.")
+
+    # Collect all document paths under the docs directory, skipping cache files
+    _cache_suffixes = (".embd.jsonl", FS_PDF_TEXT_CACHE_SUFFIX)
+    all_docs = []
+    for _root, _, _filenames in os.walk(_docsdir):
+        for _fn in _filenames:
+            if any(_fn.endswith(s) for s in _cache_suffixes):
+                continue
+            _rel = os.path.relpath(os.path.join(_root, _fn), _docsdir).replace("\\", "/")
+            all_docs.append(FS_INTERNAL_READONLY_DOCS + "/" + _rel.lstrip("/"))
+
+    if not all_docs:
+        raise ValueError("No documents found in the document database.")
+
+    max_hits = max(1, min(20, tryparseint(max_results, 5)))
+    _chunk_size = max(1, tryparseint(chunk_size, 1024))
+    _overlap = max(0, tryparseint(overlap, 500))
+
+    all_snippets = []
+    active_model = fs_get_active_embedding_model_name()
+    for doc_path in all_docs:
+        try:
+            result = fs_semantic_search_document(doc_path, query_text, max_hits, _chunk_size, _overlap)
+            all_snippets.extend(result.get("snippets", []))
+        except Exception as _e:
+            utfprint(f"[SemanticSearch] Skipping {doc_path}: {_e}")
+
+    all_snippets.sort(key=lambda x: x.get("similarity", 0.0), reverse=True)
+    return {
+        "model": active_model,
+        "snippets": all_snippets[:max_hits],
+    }
+
 
 def fs_build_zip_bytes(dir_prefix=""):
     prefix = (fs_normalize_path(dir_prefix) + "/").lstrip("/") if dir_prefix and dir_prefix.strip("/") else ""
@@ -5102,6 +5919,30 @@ def fs_extract_zip(zip_bytes, target_dir):
             content = zf.read(info.filename)
             written.append(fs_write_file(dest, content))
     return written
+
+def fs_batch_apply(items, item_handler, item_key="path"):
+    results = []
+    for item in items:
+        try:
+            payload = item_handler(item)
+            if not isinstance(payload, dict):
+                payload = {}
+            payload.setdefault(item_key, item)
+            try:
+                if (payload[item_key] is not None and payload[item_key]['content']):
+                    content = payload[item_key]['content']
+                    if isinstance(content, bytes):
+                        payload[item_key]['content'] = "<binary content>"
+                    else:
+                        payload[item_key]['content'] = f"{content[0:50]}..."
+            except Exception:
+                # Ignore any issues with content truncation for logging
+                pass
+            payload["success"] = True
+            results.append(payload)
+        except Exception as e:
+            results.append({"success": False, item_key: item, "error": str(e)})
+    return {"success": all(r.get("success", False) for r in results), "results": results}
 
 def initialize_fs_from_args():
     configured_limit = max(0, tryparseint(getattr(args, "fsmaxsize", 0), 0)) * 1024 * 1024
@@ -5253,7 +6094,8 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
         is_wake_request = self.path in wake_requests
 
         autoswapEnabled = global_memory["autoswapmode"] is not None and global_memory["autoswapmode"]
-        if is_post and (is_completions_path or is_chat_completions_path or (not autoswapEnabled and is_wake_request)):
+        hasReloaded = False
+        if is_post and (is_completions_path or is_chat_completions_path):
             model_name = ""
             if body:
                 try:
@@ -5263,7 +6105,8 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                     pass
 
             was_auto_unloaded = (global_memory["triggered_sleeping"] and global_memory["current_model"]=="unload_model")
-            if (model_name and model_name != global_memory["current_model"]) or was_auto_unloaded:
+            if (model_name and model_name != global_memory["current_model"]) or (was_auto_unloaded and not autoswapEnabled):
+                hasReloaded = True
                 with proxy_reload_lock:
                     whitelist = get_current_admindir_list() # see if its an allowed swap
                     if was_auto_unloaded and not model_name:
@@ -5288,11 +6131,12 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                             self.send_error(504, "KoboldCpp model swap reload timed out")
                             return
                         time.sleep(0.1)
-        elif autoswapEnabled:
+        
+        if autoswapEnabled and not hasReloaded:
             textReqs = ["/api/extra/generate/stream","/api/extra/tokencount","/api/v1/generate","/sdapi/v1/interrogate","/v1/completions","/v1/chat/completions"]
             sttReqs = ["/api/extra/transcribe","/v1/audio/transcriptions"]
             ttsReqs = ["/api/extra/tts", "/v1/audio/speech"]
-            embedReqs = ["/api/extra/embeddings", "/v1/embeddings", "/api/extra/fs/semantic_search"]
+            embedReqs = ["/api/extra/embeddings", "/v1/embeddings", "/api/extra/fs/semantic_search", "/api/extra/fs/search_all_documents"]
             musicReqs = ["/api/extra/music/prepare","/api/extra/music/generate"]
             imageReqs = ["/sdapi/v1/txt2img", "/sdapi/v1/img2img", "/sdapi/v1/upscale"] # "/sdapi/v1/sd-models", "/sdapi/v1/options", "/sdapi/v1/samplers"
 
@@ -5318,7 +6162,7 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
 
             if (global_memory["swapReqType"] is not None and swapModeChanged):
                 with proxy_reload_lock:
-                    reqbody = json.dumps({"filename":global_memory["current_model"]})
+                    reqbody = json.dumps({"filename":global_memory["current_model"], "overrideconfig": global_memory["current_override"], "modelName": global_memory["current_model_override"]})
                     reqheaders = {
                         'Content-Type': 'application/json',
                         'Content-Length': str(len(reqbody)),
@@ -5769,6 +6613,11 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
 
     def prepare_basic_responses_body(self,resp_id,genparams):
         global friendlymodelname
+        global autoswapmode, textName, sttName, ttsName, embedName, musicName, imageName, mmprojName
+
+        modelNameToReturn = friendlymodelname
+        if autoswapmode and textName is not None:
+            modelNameToReturn = textName
         ret = {
             "id": resp_id,
             "object": "response",
@@ -5780,7 +6629,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             "parallel_tool_calls": False,
             "text": {"format": {"type": "text"},"verbosity": "medium"},
             "instructions": genparams.get('instructions', None),
-            "model": friendlymodelname,
+            "model": modelNameToReturn,
             "error": None,
             "metadata": {},
             "tools": genparams.get('tools', []),
@@ -5853,18 +6702,15 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             using_openai_tools = genparams.get('using_openai_tools', False)
             if using_openai_tools:
                 # first, check and potentially segment multiple tags for multi-tool calls
-                toolcalltagfound = detect_toolcall_tags(recvtxt)
-                if not toolcalltagfound:
-                    tool_calls = extract_json_from_string(recvtxt)
-                else: # we found tool call tags, split to extract all internal stuff
-                    splitting_str = recvtxt.replace(f"<{toolcalltagfound}>", "<TO_SPLIT>").replace(f"</{toolcalltagfound}>", "<TO_SPLIT>")
-                    chunks = [x.strip() for x in splitting_str.split("<TO_SPLIT>") if x]
-                    chunks = [x for x in chunks if x]
-                    for chunk in chunks: #for each potential toolcall, add it to the pile
-                        sub_tool_calls = extract_json_from_string(chunk)
-                        tool_calls.extend(sub_tool_calls)
+                tool_calls = repack_toolcall_tags(recvtxt)
                 if tool_calls and len(tool_calls)>0:
-                    tool_calls = [normalize_tool_call(obj) for obj in tool_calls]
+                    flat = []
+                    for obj in tool_calls:
+                        if isinstance(obj, list):
+                            flat.extend(obj)
+                        else:
+                            flat.append(obj)
+                    tool_calls = [normalize_tool_call(obj) for obj in flat]
                     for tc in tool_calls:
                         tcarg = tc.get("function",{}).get("arguments",None)
                         tc["id"] = f"call_{random.randint(10000, 99999)}"
@@ -5976,12 +6822,14 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         if api_format == 4 and using_openai_tools: # if tools, do not send anything else - OAI tool calls will be handled with fakestreaming!
             return
 
+        think_tag_buf = ""
         encap_in_thinking = False
         if genparams.get('already_started_thinking', False):
             encap_in_thinking = True
         encap_first_loop = True
         thinkpairs = [{"start":"<|channel|>analysis<|message|>","end":"<|start|>assistant<|channel|>final<|message|>"},
-                      {"start":"<think>","end":"</think>"}]
+                      {"start":"<think>","end":"</think>"},
+                      {"start":"<|channel>thought","end":"<channel|>"}]
         responses_first_loop = True
         anthropic_first_loop = True
         rseq_num = 0
@@ -6018,6 +6866,21 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                         tokenStr += tokenSeg
 
                 if tokenStr!="" or streamDone:
+                    # split think tag handling
+                    tokenStr = think_tag_buf + tokenStr
+                    think_tag_buf = ""
+                    if not streamDone and genparams.get('encapsulate_thinking', True):
+                        tail = ""
+                        for pair in thinkpairs:
+                            for tag in (pair["start"], pair["end"]):
+                                for n in range(1, len(tag)):
+                                    if tokenStr.endswith(tag[:n]) and len(tag[:n]) > len(tail):
+                                        tail = tag[:n]
+                        if tail:
+                            think_tag_buf = tail
+                            tokenStr = tokenStr[:-len(tail)]
+                    # end split think tag handling
+
                     sseq = genparams.get('stop_sequence', [])
                     trimstop = genparams.get('trim_stop', True)
                     if trimstop and not streamDone and string_contains_or_overlaps_sequence_substring(tokenStr,sseq):
@@ -6042,16 +6905,18 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                             delta = {'role': 'assistant'}
                             if genparams.get('encapsulate_thinking', True):
                                 if encap_in_thinking:
-                                    # We are already inside a thinking block. thinkpairs has already been reduced to [pair], so we just check the active one.
-                                    active_pair = thinkpairs[0]
-                                    if active_pair["end"] in tokenStr:
-                                        encap_in_thinking = False
-                                        out1, out2 = tokenStr.split(active_pair["end"], 1)
-                                        if out1:
-                                            delta['reasoning_content'] = out1
-                                        if out2:
-                                            delta['content'] = out2
-                                    else:
+                                    foundend = False
+                                    for pair in thinkpairs:
+                                        if pair["end"] in tokenStr:
+                                            encap_in_thinking = False
+                                            foundend = True
+                                            out1, out2 = tokenStr.split(pair["end"], 1)
+                                            if out1:
+                                                delta['reasoning_content'] = out1
+                                            if out2:
+                                                delta['content'] = out2
+                                            break
+                                    if not foundend:
                                         # Still thinking
                                         delta['reasoning_content'] = tokenStr
                                 else:
@@ -6260,6 +7125,52 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                 if token==target_password or (target_alt_password and target_alt_password!="" and token==target_alt_password):
                     auth_ok = True
         return auth_ok
+
+    def check_fs_basic_auth(self):
+        # Filesystem endpoints use HTTP Basic auth with any username and
+        # the admin password as the required password.
+        if not args.adminpassword or args.adminpassword == "":
+            return True
+        auth_header = self.headers.get('Authorization') or self.headers.get('authorization')
+        if auth_header is None or not auth_header.startswith('Basic '):
+            return False
+        encoded_token = auth_header[len('Basic '):].strip()
+        if encoded_token == "":
+            return False
+        try:
+            decoded = base64.b64decode(encoded_token, validate=True).decode('utf-8', 'replace')
+        except Exception:
+            return False
+        _, sep, password_value = decoded.partition(':')
+        if sep == "":
+            return False
+        return password_value == args.adminpassword
+
+    def is_fs_protected_path(self, request_path):
+        if not isinstance(request_path, str) or request_path == "":
+            return False
+        clean_path = request_path.split("?")[0].rstrip('/')
+        if clean_path in ["/fs", "/fs.zip"]:
+            return True
+        if clean_path.startswith('/fs/'):
+            return True
+        if clean_path.startswith('/api/extra/fs/'):
+            return True
+        return False
+
+    def secure_fs_endpoint(self): #returns false if auth fails. caller should exit
+        auth_ok = self.check_fs_basic_auth()
+        if auth_ok is False:
+            self.send_response(401)
+            self.send_header('WWW-Authenticate', 'Basic realm="KoboldCpp Filesystem"')
+            self.end_headers(content_type='application/json')
+            self.wfile.write(json.dumps({"detail": {
+                    "error": "Unauthorized",
+                    "msg": "Filesystem authentication is missing or invalid.",
+                    "type": "unauthorized",
+                }}).encode())
+            return False
+        return True
 
     def secure_endpoint(self): #returns false if auth fails. caller should exit
         #handle password stuff
@@ -6471,6 +7382,10 @@ Change Mode<br>
         if clean_path!="/lcpp" and clean_path.startswith("/lcpp/"):
             clean_path = clean_path[5:] #adapt lcpp paths to the root
 
+        if self.is_fs_protected_path(clean_path):
+            if not self.secure_fs_endpoint():
+                return None
+
         if (clean_path == "/opticlaw" or clean_path.startswith("/opticlaw/")) and args.opticlaw:
             opticlaw_redirect_url = f"http://localhost:{opticlaw_default_webui_port}/"
             self.send_response(302)
@@ -6562,6 +7477,11 @@ Change Mode<br>
                         content_type = detected_type
                         if content_type.startswith("text/"):
                             content_type += "; charset=utf-8"
+                    elif not fs_is_binary(response_body):
+                        # No recognized extension but content looks like text — serve
+                        # as plain text so the browser displays it inline rather than
+                        # forcing a download.
+                        content_type = "text/plain; charset=utf-8"
                 except (FileNotFoundError, ValueError):
                     try:
                         # Validate this is a reachable directory path (raises if invalid)
@@ -6610,18 +7530,22 @@ Change Mode<br>
                     "directories": entries.get("directories", []),
                 }).encode())
 
-        elif clean_path.endswith('/api/extra/fs/search'):
+        elif clean_path.endswith('/api/extra/fs/search_regex'):
             if not fs_is_enabled():
                 response_code = 503
                 response_body = (json.dumps({"error": "Filesystem is disabled. Set --fsmaxsize > 0 to enable it."}).encode())
             else:
                 parsed_url = urllib.parse.urlparse(self.path)
                 parsed_dict = urllib.parse.parse_qs(parsed_url.query)
-                pattern = str(parsed_dict.get('pattern', ['*'])[0])
+                pattern = str(parsed_dict.get('pattern', ['.*'])[0])
                 path_pattern = str(parsed_dict.get('path_pattern', ['*'])[0])
                 max_results = tryparseint(parsed_dict.get('max_results', [100])[0], 100)
                 case_insensitive_flag = str(parsed_dict.get('case_insensitive', ['0'])[0]).strip().lower() in ['1', 'true', 'yes', 'on']
-                response_body = (json.dumps({"matches": fs_search_content(pattern, path_pattern, max_results, case_insensitive_flag)}).encode())
+                try:
+                    response_body = (json.dumps({"matches": fs_search_content_regex(pattern, path_pattern, max_results, case_insensitive_flag)}).encode())
+                except re.error as e:
+                    response_code = 400
+                    response_body = (json.dumps({"error": f"Invalid regex pattern: {str(e)}"}).encode())
 
         elif clean_path.endswith('/api/extra/fs/metadata'):
             if not fs_is_enabled():
@@ -6631,7 +7555,10 @@ Change Mode<br>
                 parsed_url = urllib.parse.urlparse(self.path)
                 parsed_dict = urllib.parse.parse_qs(parsed_url.query)
                 try:
-                    response_body = (json.dumps(fs_metadata(parsed_dict.get('path', [''])[0])).encode())
+                    path_args = parsed_dict.get('path', [])
+                    if len(path_args) == 0:
+                        raise ValueError("path must be a non-empty array.")
+                    response_body = (json.dumps(fs_batch_apply(path_args, lambda p: fs_metadata(p))).encode())
                 except FileNotFoundError as e:
                     response_code = 404
                     response_body = (json.dumps({"error": str(e)}).encode())
@@ -6647,18 +7574,34 @@ Change Mode<br>
                 parsed_url = urllib.parse.urlparse(self.path)
                 parsed_dict = urllib.parse.parse_qs(parsed_url.query)
                 try:
-                    normalized_path, all_lines, selected_lines = fs_read_lines(
-                        parsed_dict.get('path', [''])[0],
-                        parsed_dict.get('start', [1])[0],
-                        parsed_dict.get('end', [None])[0],
-                    )
-                    response_body = (json.dumps({
-                        "path": normalized_path,
-                        "start_line": selected_lines[0]["line"] if selected_lines else 0,
-                        "end_line": selected_lines[-1]["line"] if selected_lines else 0,
-                        "total_lines": len(all_lines),
-                        "lines": selected_lines,
-                    }).encode())
+                    path_args = parsed_dict.get('path', [])
+                    if len(path_args) == 0:
+                        raise ValueError("path must be a non-empty array.")
+                    start_args = parsed_dict.get('start', [])
+                    end_args = parsed_dict.get('end', [])
+
+                    def _pick_query_arg(values, index, default_value, field_name):
+                        if len(values) == 0:
+                            return default_value
+                        if len(values) == 1:
+                            return values[0]
+                        if len(values) != len(path_args):
+                            raise ValueError(f"{field_name} must be omitted, have one value, or match path array length.")
+                        return values[index]
+
+                    def _read_for_index(index):
+                        p = path_args[index]
+                        start_line = _pick_query_arg(start_args, index, 1, "start")
+                        end_line = _pick_query_arg(end_args, index, None, "end")
+                        normalized_path, all_lines, selected_lines = fs_read_lines(p, start_line, end_line)
+                        return {
+                            "path": normalized_path,
+                            "start_line": selected_lines[0]["line"] if selected_lines else 0,
+                            "end_line": selected_lines[-1]["line"] if selected_lines else 0,
+                            "total_lines": len(all_lines),
+                            "lines": selected_lines,
+                        }
+                    response_body = (json.dumps(fs_batch_apply(list(range(len(path_args))), _read_for_index, item_key="index")).encode())
                 except FileNotFoundError as e:
                     response_code = 404
                     response_body = (json.dumps({"error": str(e)}).encode())
@@ -6674,12 +7617,17 @@ Change Mode<br>
                 parsed_url = urllib.parse.urlparse(self.path)
                 parsed_dict = urllib.parse.parse_qs(parsed_url.query)
                 try:
-                    normalized_path = fs_normalize_path(parsed_dict.get('path', [''])[0])
-                    fs_get_file(normalized_path)
-                    response_body = (json.dumps({
-                        "path": normalized_path,
-                        "url": self.build_external_url(f"/fs{normalized_path}"),
-                    }).encode())
+                    path_args = parsed_dict.get('path', [])
+                    if len(path_args) == 0:
+                        raise ValueError("path must be a non-empty array.")
+                    def _url_for_path(p):
+                        normalized_path = fs_normalize_path(p)
+                        fs_get_file(normalized_path)
+                        return {
+                            "path": normalized_path,
+                            "url": self.build_external_url(f"/fs{normalized_path}"),
+                        }
+                    response_body = (json.dumps(fs_batch_apply(path_args, _url_for_path)).encode())
                 except FileNotFoundError as e:
                     response_code = 404
                     response_body = (json.dumps({"error": str(e)}).encode())
@@ -7093,6 +8041,10 @@ Change Mode<br>
     def do_POST(self):
         global modelbusy, requestsinqueue, currentusergenkey, totalgens, pendingabortkey, lastuploadedcomfyimg, lastgeneratedcomfyimg, multiplayer_turn_major, multiplayer_turn_minor, multiplayer_story_data_compressed, multiplayer_dataformat, multiplayer_lastactive, net_save_slots, has_vision_support, savestate_limit, mcp_lock
         global autoswapmode, textName, sttName, ttsName, embedName, musicName, imageName, mmprojName
+        post_path = self.path.rstrip('/')
+        if self.is_fs_protected_path(post_path):
+            if not self.secure_fs_endpoint():
+                return
         contlenstr = self.headers['content-length']
         content_length = 0
         body = None
@@ -7168,13 +8120,31 @@ Change Mode<br>
             else:
                 try:
                     tempbody = json.loads(body)
-                    normalized_path = fs_apply_line_updates(
-                        tempbody.get('path', ''),
-                        tempbody.get('lines', []),
-                        tempbody.get('start_line', 1),
-                        tempbody.get('append', False),
-                    )
-                    response_body = (json.dumps({"success": True, "path": normalized_path, "metadata": fs_metadata(normalized_path)}).encode())
+                    operations = tempbody.get('operations', None)
+                    if not isinstance(operations, list) or len(operations) == 0:
+                        raise ValueError("operations must be a non-empty array.")
+
+                    def _apply_lines_for_op(op):
+                        if not isinstance(op, dict):
+                            raise ValueError("Each operations entry must be an object.")
+                        path_value = op.get('path', '')
+                        if not isinstance(path_value, str) or path_value.strip() == '':
+                            raise ValueError("Each operations entry must include a non-empty string 'path'.")
+                        current_lines = op.get('lines', [])
+                        if isinstance(current_lines, str):
+                            current_lines = [current_lines]
+                        if not isinstance(current_lines, list):
+                            raise ValueError("Each operations entry lines must be a string or an array of strings.")
+                        current_lines = [str(item) for item in current_lines]
+                        current_start_line = op.get('start_line', 1)
+                        current_append = op.get('append', False)
+                        norm = fs_apply_line_updates(path_value, current_lines, current_start_line, current_append)
+                        return {
+                            "path": norm,
+                            "metadata": fs_metadata(norm),
+                        }
+
+                    response_body = (json.dumps(fs_batch_apply(operations, _apply_lines_for_op, item_key="operation")).encode())
                 except FileNotFoundError as e:
                     response_code = 404
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
@@ -7192,8 +8162,19 @@ Change Mode<br>
             else:
                 try:
                     tempbody = json.loads(body)
-                    normalized_dir = fs_create_directory(tempbody.get('path', ''))
-                    response_body = (json.dumps({"success": True, "path": normalized_dir}).encode())
+                    operations = tempbody.get('operations', None)
+                    if not isinstance(operations, list) or len(operations) == 0:
+                        raise ValueError("operations must be a non-empty array.")
+
+                    def _mkdir_for_op(op):
+                        if not isinstance(op, dict):
+                            raise ValueError("Each operations entry must be an object.")
+                        path_value = op.get('path', '')
+                        if not isinstance(path_value, str) or path_value.strip() == '':
+                            raise ValueError("Each operations entry must include a non-empty string 'path'.")
+                        return {"path": fs_create_directory(path_value)}
+
+                    response_body = (json.dumps(fs_batch_apply(operations, _mkdir_for_op, item_key="operation")).encode())
                 except ValueError as e:
                     response_code = 507 if 'size limit exceeded' in str(e).lower() else 400
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
@@ -7208,8 +8189,20 @@ Change Mode<br>
             else:
                 try:
                     tempbody = json.loads(body)
-                    normalized_dir, removed = fs_delete_directory(tempbody.get('path', ''))
-                    response_body = (json.dumps({"success": True, "path": normalized_dir, "removed": removed}).encode())
+                    operations = tempbody.get('operations', None)
+                    if not isinstance(operations, list) or len(operations) == 0:
+                        raise ValueError("operations must be a non-empty array.")
+
+                    def _delete_dir_for_op(op):
+                        if not isinstance(op, dict):
+                            raise ValueError("Each operations entry must be an object.")
+                        path_value = op.get('path', '')
+                        if not isinstance(path_value, str) or path_value.strip() == '':
+                            raise ValueError("Each operations entry must include a non-empty string 'path'.")
+                        norm, removed = fs_delete_directory(path_value)
+                        return {"path": norm, "removed": removed}
+
+                    response_body = (json.dumps(fs_batch_apply(operations, _delete_dir_for_op, item_key="operation")).encode())
                 except FileNotFoundError as e:
                     response_code = 404
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
@@ -7224,8 +8217,19 @@ Change Mode<br>
             else:
                 try:
                     tempbody = json.loads(body)
-                    normalized_path = fs_delete_file(tempbody.get('path', ''))
-                    response_body = (json.dumps({"success": True, "path": normalized_path}).encode())
+                    operations = tempbody.get('operations', None)
+                    if not isinstance(operations, list) or len(operations) == 0:
+                        raise ValueError("operations must be a non-empty array.")
+
+                    def _delete_file_for_op(op):
+                        if not isinstance(op, dict):
+                            raise ValueError("Each operations entry must be an object.")
+                        path_value = op.get('path', '')
+                        if not isinstance(path_value, str) or path_value.strip() == '':
+                            raise ValueError("Each operations entry must include a non-empty string 'path'.")
+                        return {"path": fs_delete_file(path_value)}
+
+                    response_body = (json.dumps(fs_batch_apply(operations, _delete_file_for_op, item_key="operation")).encode())
                 except FileNotFoundError as e:
                     response_code = 404
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
@@ -7240,8 +8244,22 @@ Change Mode<br>
             else:
                 try:
                     tempbody = json.loads(body)
-                    normalized_path = fs_write_file(tempbody.get('path', ''), tempbody.get('content', ''), None, tempbody.get('isB64', False))
-                    response_body = (json.dumps({"success": True, "path": normalized_path, "metadata": fs_metadata(normalized_path)}).encode())
+                    operations = tempbody.get('operations', None)
+                    if not isinstance(operations, list) or len(operations) == 0:
+                        raise ValueError("operations must be a non-empty array.")
+
+                    def _write_for_op(op):
+                        if not isinstance(op, dict):
+                            raise ValueError("Each operations entry must be an object.")
+                        path_value = op.get('path', '')
+                        if not isinstance(path_value, str) or path_value.strip() == '':
+                            raise ValueError("Each operations entry must include a non-empty string 'path'.")
+                        content_value = op.get('content', '')
+                        is_b64_value = op.get('isB64', False)
+                        norm = fs_write_file(path_value, content_value, None, is_b64_value)
+                        return {"path": norm, "metadata": fs_metadata(norm)}
+
+                    response_body = (json.dumps(fs_batch_apply(operations, _write_for_op, item_key="operation")).encode())
                 except ValueError as e:
                     response_code = 507 if 'size limit exceeded' in str(e).lower() else 400
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
@@ -7256,10 +8274,29 @@ Change Mode<br>
             else:
                 try:
                     tempbody = json.loads(body)
-                    source_path, destination_path = fs_move_file(tempbody.get('source', ''), tempbody.get('destination', ''))
-                    response_body = (json.dumps({"success": True, "source": source_path, "destination": destination_path, "metadata": fs_metadata(destination_path)}).encode())
+                    operations = tempbody.get('operations', None)
+                    if isinstance(operations, list) and len(operations) > 0:
+                        results = []
+                        for op in operations:
+                            try:
+                                src, dst = fs_move_file(op.get('source', ''), op.get('destination', ''))
+                                try:
+                                    meta = fs_metadata(dst)
+                                except (FileNotFoundError, OSError):
+                                    meta = None
+                                results.append({"success": True, "source": src, "destination": dst, "metadata": meta})
+                            except FileNotFoundError as e:
+                                results.append({"success": False, "source": op.get('source', ''), "destination": op.get('destination', ''), "error": str(e)})
+                            except Exception as e:
+                                results.append({"success": False, "source": op.get('source', ''), "destination": op.get('destination', ''), "error": str(e)})
+                        response_body = (json.dumps({"success": all(r["success"] for r in results), "results": results}).encode())
+                    else:
+                        raise ValueError("operations must be a non-empty array.")
                 except FileNotFoundError as e:
                     response_code = 404
+                    response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+                except ValueError as e:
+                    response_code = 400
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
                 except Exception as e:
                     response_code = 400
@@ -7272,8 +8309,67 @@ Change Mode<br>
             else:
                 try:
                     tempbody = json.loads(body)
-                    source_path, destination_path = fs_copy_file(tempbody.get('source', ''), tempbody.get('destination', ''))
-                    response_body = (json.dumps({"success": True, "source": source_path, "destination": destination_path, "metadata": fs_metadata(destination_path)}).encode())
+                    operations = tempbody.get('operations', None)
+                    if isinstance(operations, list) and len(operations) > 0:
+                        results = []
+                        for op in operations:
+                            try:
+                                src, dst = fs_copy_file(op.get('source', ''), op.get('destination', ''))
+                                try:
+                                    meta = fs_metadata(dst)
+                                except (FileNotFoundError, OSError):
+                                    meta = None
+                                results.append({"success": True, "source": src, "destination": dst, "metadata": meta})
+                            except FileNotFoundError as e:
+                                results.append({"success": False, "source": op.get('source', ''), "destination": op.get('destination', ''), "error": str(e)})
+                            except ValueError as e:
+                                results.append({"success": False, "source": op.get('source', ''), "destination": op.get('destination', ''), "error": str(e)})
+                            except Exception as e:
+                                results.append({"success": False, "source": op.get('source', ''), "destination": op.get('destination', ''), "error": str(e)})
+                        response_body = (json.dumps({"success": all(r["success"] for r in results), "results": results}).encode())
+                    else:
+                        raise ValueError("operations must be a non-empty array.")
+                except FileNotFoundError as e:
+                    response_code = 404
+                    response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+                except ValueError as e:
+                    response_code = 507 if 'size limit exceeded' in str(e).lower() else 400
+                    response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+                except Exception as e:
+                    response_code = 400
+                    response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+
+        elif self.path.endswith('/api/extra/fs/replace_regex'):
+            if not fs_is_enabled():
+                response_code = 503
+                response_body = (json.dumps({"success": False, "error": "Filesystem is disabled. Set --fsmaxsize > 0 to enable it."}).encode())
+            else:
+                try:
+                    tempbody = json.loads(body)
+                    operations = tempbody.get('operations', None)
+                    if isinstance(operations, list) and len(operations) > 0:
+                        results = []
+                        for op in operations:
+                            try:
+                                if not isinstance(op, dict):
+                                    raise ValueError("Each operations entry must be an object.")
+                                if not isinstance(op.get('path', None), str) or op.get('path', '').strip() == '':
+                                    raise ValueError("Each operations entry must include a non-empty string 'path'.")
+                                if not isinstance(op.get('pattern', None), str):
+                                    raise ValueError("Each operations entry must include string 'pattern'.")
+                                if not isinstance(op.get('replacement', None), str):
+                                    raise ValueError("Each operations entry must include string 'replacement'.")
+                                norm = fs_replace_regex(op.get('path', ''), op.get('pattern', ''), op.get('replacement', ''))
+                                results.append({"success": True, "path": norm, "metadata": fs_metadata(norm)})
+                            except FileNotFoundError as e:
+                                results.append({"success": False, "path": op.get('path', ''), "error": str(e)})
+                            except ValueError as e:
+                                results.append({"success": False, "path": op.get('path', ''), "error": str(e)})
+                            except Exception as e:
+                                results.append({"success": False, "path": op.get('path', ''), "error": str(e)})
+                        response_body = (json.dumps({"success": all(r["success"] for r in results), "results": results}).encode())
+                    else:
+                        raise ValueError("operations must be a non-empty array.")
                 except FileNotFoundError as e:
                     response_code = 404
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
@@ -7291,11 +8387,26 @@ Change Mode<br>
             else:
                 try:
                     tempbody = json.loads(body)
-                    result = fs_semantic_search_cache(
-                        tempbody.get('embeddings_cache_path', ''),
-                        tempbody.get('search_query', ''),
-                        tempbody.get('max_results', 5),
-                    )
+                    document_path = tempbody.get('document_path', '')
+                    embeddings_cache_path = tempbody.get('embeddings_cache_path', '')
+                    search_query = tempbody.get('search_query', '')
+                    max_results = tempbody.get('max_results', 5)
+                    if document_path and document_path.strip():
+                        # New mode: extract text, generate/cache embeddings, and search
+                        result = fs_semantic_search_document(
+                            document_path,
+                            search_query,
+                            max_results,
+                            tempbody.get('chunk_size', 1024),
+                            tempbody.get('overlap', 500),
+                        )
+                    else:
+                        # Legacy mode: use a pre-built embeddings cache file
+                        result = fs_semantic_search_cache(
+                            embeddings_cache_path,
+                            search_query,
+                            max_results,
+                        )
                     result["success"] = True
                     response_body = (json.dumps(result).encode())
                 except FileNotFoundError as e:
@@ -7307,6 +8418,29 @@ Change Mode<br>
                 except Exception as e:
                     response_code = 400
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+
+        elif self.path.endswith('/api/extra/fs/search_all_documents'):
+            try:
+                tempbody = json.loads(body)
+                search_query = tempbody.get('search_query', '')
+                max_results = tempbody.get('max_results', 5)
+                result = fs_search_all_documents(
+                    search_query,
+                    max_results,
+                    tempbody.get('chunk_size', 1024),
+                    tempbody.get('overlap', 500),
+                )
+                result["success"] = True
+                response_body = (json.dumps(result).encode())
+            except FileNotFoundError as e:
+                response_code = 404
+                response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+            except ValueError as e:
+                response_code = 400
+                response_body = (json.dumps({"success": False, "error": str(e)}).encode())
+            except Exception as e:
+                response_code = 400
+                response_body = (json.dumps({"success": False, "error": str(e)}).encode())
 
         elif self.path.endswith('/api/extra/fs/upload'):
             if not fs_is_enabled():
@@ -7759,6 +8893,7 @@ Change Mode<br>
                     tempbody = json.loads(body)
                     if isinstance(tempbody, dict):
                         targetfile = tempbody.get('filename', "")
+                        overrideconfig = tempbody.get('overrideconfig', "")
                         targetModel = tempbody.get('modelName', "")
                 except Exception:
                     targetfile = ""
@@ -7766,6 +8901,7 @@ Change Mode<br>
                     if targetfile=="unload_model" or targetfile=="initial_model": #special request to simply unload model or swap back top intial model
                         print("Admin: Received request to unload model")
                         global_memory["restart_target"] = targetfile
+                        global_memory["restart_override_config_target"] = ""
                         global_memory["restart_model"] = ""
                         resp = {"success": True}
                     else:
@@ -7773,6 +8909,13 @@ Change Mode<br>
                         targetfilepath = os.path.join(dirpath, targetfile)
                         opts = [f for f in os.listdir(dirpath) if (f.lower().endswith(".kcpps") or f.lower().endswith(".kcppt") or f.lower().endswith(".gguf")) and os.path.isfile(os.path.join(dirpath, f))]
                         if targetfile in opts and os.path.exists(targetfilepath):
+                            global_memory["restart_override_config_target"] = "" # Jail enforcement
+                            if targetfile and overrideconfig:
+                                overrideconfigfilepath = os.path.abspath(os.path.join(dirpath, overrideconfig))
+                                allowed_files = get_current_admindir_list()
+                                if (overrideconfig in allowed_files and os.path.commonpath([dirpath, overrideconfigfilepath]) == dirpath and os.path.exists(overrideconfigfilepath)):
+                                    print(f"Admin: Override base config set to {overrideconfig}")
+                                    global_memory["restart_override_config_target"] = overrideconfig
                             # Now check targetModel
                             if targetModel and targetModel!="":
                                 dirpath = os.path.abspath(args.admintextmodelsdir)
@@ -7892,8 +9035,8 @@ Change Mode<br>
         muint = int(args.multiuser)
         if muint<=0 and ((args.whispermodel and args.whispermodel!="") or (args.sdmodel and args.sdmodel!="") or (args.ttsmodel and args.ttsmodel!="") or (args.embeddingsmodel and args.embeddingsmodel!="")):
             muint = 2 # this prevents errors when using voice/img together with text
-        multiuserlimit = ((muint-1) if muint > 1 else 6)
-        #backwards compatibility for up to 7 concurrent requests, use default limit of 7 if multiuser set to 1
+        multiuserlimit = ((muint-1) if muint > 1 else multiuser_concurrent_limit)
+        #backwards compatibility for up to X concurrent requests, use default limit of X if multiuser set to 1
         if muint > 0 and requestsinqueue < multiuserlimit:
             reqblocking = True
             requestsinqueue += 1
@@ -8190,6 +9333,26 @@ Change Mode<br>
 
                             # Send content if present
                             if content_text:
+                                reasoning_txt = ""
+                                thinkstrips = ["<think>","<|channel>thought"]
+                                thinksplitters = ["</think>","<channel|>"]
+                                for tsp in thinksplitters:
+                                    if tsp in content_text:
+                                        parts = content_text.split(tsp, 1)
+                                        reasoning_txt = parts[0]
+                                        content_text = parts[1]
+                                        for ts in thinkstrips:
+                                            reasoning_txt = reasoning_txt.replace(ts, "")
+                                if reasoning_txt:
+                                    chunk_content = json.dumps({
+                                        "id": "koboldcpp",
+                                        "object": "chat.completion.chunk",
+                                        "created": int(time.time()),
+                                        "model": modelNameToReturn,
+                                        "choices": [{"index": 0, "finish_reason": None, "delta": {"reasoning_content": reasoning_txt}}]
+                                    })
+                                    self.wfile.write(f"data: {chunk_content}\n\n".encode())
+                                    self.wfile.flush()
                                 chunk_content = json.dumps({
                                     "id": "koboldcpp",
                                     "object": "chat.completion.chunk",
@@ -9056,12 +10219,14 @@ def show_gui():
     admin_dir_var = ctk.StringVar()
     admin_text_model_dir_var = ctk.StringVar()
     admin_data_dir_var = ctk.StringVar()
+    admin_docs_dir_var = ctk.StringVar()
     admin_password_var = ctk.StringVar()
     singleinstance_var = ctk.IntVar(value=0)
     router_mode_var = ctk.IntVar(value=0)
     autoswap_mode_var = ctk.IntVar(value=0)
     admin_unload_timeout_var = ctk.StringVar(value=str(0))
     admin_allow_hf_var = ctk.IntVar(value=0)
+    developer_mode_var = ctk.IntVar(value=0)
 
     fs_maxsize_var = ctk.StringVar(value="0")
     fs_dir_var = ctk.StringVar(value="")
@@ -9873,7 +11038,7 @@ def show_gui():
     tts_model_var.trace_add("write", gui_changed_modelfile)
     makelabelentry(audio_tab, "TTS Threads:" , tts_threads_var, 5, 50,padx=100,singleline=True,tooltip="How many threads to use during TTS generation.\nIf left blank, uses same value as threads.")
     makelabelentry(audio_tab, "TTS Max Tokens:" , ttsmaxlen_var, 5, 50,padx=300,singleline=True,tooltip="Max allowed audiotokens to generate per TTS request.", labelpadx=190)
-    makecheckbox(audio_tab, "TTS Use GPU", ttsgpu_var, 9, 0,tooltiptxt="Uses the GPU for TTS. Currently only works on OuteTTS.")
+    makecheckbox(audio_tab, "TTS Use GPU", ttsgpu_var, 9, 0,tooltiptxt="Uses the GPU for TTS. Currently only works on certain models (OuteTTS/Q3TTS).")
     ttsgpu_var.trace_add("write", gui_changed_modelfile)
     makefileentry(audio_tab, "WavTokenizer Model (Required for some models):", "Select WavTokenizer GGUF Model File", wavtokenizer_var, 11, width=280, filetypes=[("*.gguf","*.gguf")], tooltiptxt="Select a WavTokenizer GGUF model file on disk to be loaded for Narration.")
     wavtokenizer_var.trace_add("write", gui_changed_modelfile)
@@ -9911,10 +11076,12 @@ def show_gui():
     makelabelentry(admin_tab, "Auto Unload Timeout:" , admin_unload_timeout_var, 7, 70,padx=(150),singleline=True,tooltip="Set an idle timeout in seconds after which KoboldCpp will automatically unload the current model.")
     makefileentry(admin_tab, "Model Directory:", "Select directory containing .gguf text model files to allow overriding configs with", admin_text_model_dir_var, 9, width=280, dialog_type=2, tooltiptxt="Specify a directory to look for .gguf text model files in, which can be used to swap models within a config.")
     makefileentry(admin_tab, "Data Directory:", "Select directory which will be used to store user data if desired", admin_data_dir_var, 11, width=280, dialog_type=2, tooltiptxt="Specify a directory to store user data in.")
-    makecheckbox(admin_tab, "Allow Model Download From HuggingFace", admin_allow_hf_var, 13, 0,tooltiptxt="Allows model downloading from HuggingFace within the Lite UI.")
-    makecheckbox(admin_tab, "SingleInstance Mode", singleinstance_var, 15, 0,tooltiptxt="Allows this server to be shut down by another KoboldCpp instance with singleinstance starting on the same port.")
-    router_mode_box = makecheckbox(admin_tab, "Router Mode", router_mode_var, 17, 0, command=togglerouter, tooltiptxt="Router mode uses a reverse proxy router, allowing you to easily hotswap models and configs within a single request. Requires admin mode.")
-    autoswap_mode_box = makecheckbox(admin_tab, "Autoswap Mode", autoswap_mode_var, 19, 0,tooltiptxt="Autoswap mode builds on router mode to allow switching of model types within the same config automatically. Requires admin mode and router mode. All models desired must be defined within the same config.")
+    makefileentry(admin_tab, "Documents Directory:", "Select directory containing text or PDF documents for semantic search", admin_docs_dir_var, 13, width=280, dialog_type=2, tooltiptxt="Specify a directory containing text or PDF files. Accessible read-only at /INTERNAL_READ_ONLY/Documents via filesystem API endpoints.")
+    makecheckbox(admin_tab, "Allow Model Download From HuggingFace", admin_allow_hf_var, 15, 0,tooltiptxt="Allows model downloading from HuggingFace within the Lite UI.")
+    makecheckbox(admin_tab, "SingleInstance Mode", singleinstance_var, 17, 0,tooltiptxt="Allows this server to be shut down by another KoboldCpp instance with singleinstance starting on the same port.")
+    makecheckbox(admin_tab, "Developer Mode", developer_mode_var, 19, 0,tooltiptxt="Enables developer utilities such as hot reloading of Kobold Lite from disk.")
+    router_mode_box = makecheckbox(admin_tab, "Router Mode", router_mode_var, 21, 0, command=togglerouter, tooltiptxt="Router mode uses a reverse proxy router, allowing you to easily hotswap models and configs within a single request. Requires admin mode.")
+    autoswap_mode_box = makecheckbox(admin_tab, "Autoswap Mode", autoswap_mode_var, 23, 0,tooltiptxt="Autoswap mode builds on router mode to allow switching of model types within the same config automatically. Requires admin mode and router mode. All models desired must be defined within the same config.")
 
     tempfs_tab = tabcontent["Filesystem"]
     def togglefsdiskmode(a,b,c):
@@ -10257,6 +11424,7 @@ def show_gui():
         args.admindir = admin_dir_var.get()
         args.admintextmodelsdir = admin_text_model_dir_var.get()
         args.admindatadir = admin_data_dir_var.get()
+        args.admindocsdir = admin_docs_dir_var.get()
         args.adminpassword = admin_password_var.get()
         args.singleinstance = (singleinstance_var.get()==1)
         args.routermode = (router_mode_var.get()==1 and admin_var.get()==1)
@@ -10267,6 +11435,7 @@ def show_gui():
         args.fsdirect = (fs_direct_var.get()==1)
         args.showgui = False #prevent showgui from leaking into configs, its cli only
         args.adminallowhf = (admin_allow_hf_var.get()==1 and not args.cli)
+        args.developerMode = (developer_mode_var.get()==1)
 
         args.opticlaw = (opticlaw_var.get()==1)
         args.opticlaw_configfile = opticlaw_configfile_var.get()
@@ -10533,10 +11702,12 @@ def show_gui():
         admin_dir_var.set(dict["admindir"] if ("admindir" in dict and dict["admindir"]) else "")
         admin_text_model_dir_var.set(dict["admintextmodelsdir"] if ("admintextmodelsdir" in dict and dict["admintextmodelsdir"]) else "")
         admin_data_dir_var.set(dict["admindatadir"] if ("admindatadir" in dict and dict["admindatadir"]) else "")
+        admin_docs_dir_var.set(dict["admindocsdir"] if ("admindocsdir" in dict and dict["admindocsdir"]) else "")
         admin_password_var.set(dict["adminpassword"] if ("adminpassword" in dict and dict["adminpassword"]) else "")
         admin_unload_timeout_var.set(dict["adminunloadtimeout"] if ("adminunloadtimeout" in dict and dict["adminunloadtimeout"]) else 0)
         singleinstance_var.set(dict["singleinstance"] if ("singleinstance" in dict) else 0)
         admin_allow_hf_var.set(dict["adminallowhf"] if ("adminallowhf" in dict) else 0)
+        developer_mode_var.set(1 if ("developerMode" in dict and dict["developerMode"]) else 0)
 
         fs_maxsize_var.set(str(dict["fsmaxsize"]) if ("fsmaxsize" in dict and dict["fsmaxsize"] is not None) else "0")
         fs_dir_var.set(dict["fsdir"] if ("fsdir" in dict and dict["fsdir"]) else "")
@@ -11106,7 +12277,7 @@ def reload_from_new_args(newargs):
         args.istemplate = False
         newargs = convert_invalid_args(newargs)
         for key, value in newargs.items(): #do not overwrite certain values
-            if key not in ["remotetunnel","showgui","port","host","port_param","admin","adminpassword","password","adminunloadtimeout","routermode","admindir","admintextmodelsdir","admindatadir","adminallowhf","developerMode","fsmaxsize","fsdir","fsdirect","ssl","nocertify","benchmark","prompt","config","downloaddir"]:
+            if key not in ["remotetunnel","showgui","port","host","port_param","admin","adminpassword","password","adminunloadtimeout","routermode","admindir","admintextmodelsdir","admindatadir","admindocsdir","adminallowhf","developerMode","fsmaxsize","fsdir","fsdirect","ssl","nocertify","benchmark","prompt","config","downloaddir"]:
                 setattr(args, key, value)
         setattr(args,"showgui",False)
         setattr(args,"benchmark",False)
@@ -11118,12 +12289,14 @@ def reload_from_new_args(newargs):
     except Exception as e:
         print(f"Reload New Config Failed: {e}")
 
-def reload_new_config(filename,defaultargs): #for changing config after launch
+def reload_new_config(filename,defaultargs,overwrite_blank=False): #for changing config after launch
     with open(filename, 'r', encoding='utf-8', errors='ignore') as f:
         try:
             config = json.load(f)
             for key, value in defaultargs.items():   # Fill missing defaults directly into config
                 if key not in config:
+                    config[key] = value
+                elif overwrite_blank and key in config and not config[key]:
                     config[key] = value
             reload_from_new_args(config)
         except Exception as e:
@@ -11792,7 +12965,7 @@ def main(launch_args, default_args):
             input()
     else:  # manager command queue for admin mode
         with multiprocessing.Manager() as mp_manager:
-            global_memory = mp_manager.dict({"tunnel_url": "", "restart_target": "", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "swapReqType": None, "autoswapmode": False, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}})
+            global_memory = mp_manager.dict({"tunnel_url": "", "restart_target": "", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "current_override":"", "swapReqType": None, "autoswapmode": False, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}, "restart_override_config_target": "", "current_model_override": ""})
 
             if args.opticlaw and not args.prompt and not args.benchmark and not args.cli:
                 launch_opticlaw(args)
@@ -11838,6 +13011,7 @@ def main(launch_args, default_args):
                     if fault_recovery_mode and global_memory["load_complete"]:
                         fault_recovery_mode = False
                     restart_target = global_memory["restart_target"]
+                    restart_override_config_target = global_memory["restart_override_config_target"]
                     restart_model = global_memory["restart_model"]
                     last_active = global_memory["last_active_timestamp"]
                     if last_active and args.adminunloadtimeout>0:
@@ -11864,7 +13038,8 @@ def main(launch_args, default_args):
                         time.sleep(0.5) #sleep for 0.5s then restart
                         if args.admin and args.admindir:
                             dirpath = os.path.abspath(args.admindir)
-                            targetfilepath = os.path.join(dirpath, restart_target)
+                            targetfilepath = os.path.abspath(os.path.join(dirpath, restart_target))
+                            targetfilepath2 = os.path.abspath(os.path.join(dirpath, restart_override_config_target)) if restart_override_config_target else ""
                             defaultargs = vars(default_args)
                             if (os.path.exists(targetfilepath) or restart_target=="unload_model" or restart_target=="initial_model"):
                                 print("Terminating old process...")
@@ -11884,6 +13059,9 @@ def main(launch_args, default_args):
                                 elif targetfilepath.endswith(".gguf"):
                                     reload_from_new_args(defaultargs)
                                     args.model_param = targetfilepath
+                                elif targetfilepath and targetfilepath2 and restart_override_config_target!="":
+                                    reload_new_config(targetfilepath,defaultargs)
+                                    reload_new_config(targetfilepath2,vars(args),True)
                                 else:
                                     reload_new_config(targetfilepath,defaultargs)
 
@@ -11905,7 +13083,16 @@ def main(launch_args, default_args):
                                 kcpp_instance.daemon = True
                                 kcpp_instance.start()
                                 global_memory["restart_target"] = ""
+                                if (restart_model and restart_model!=""):
+                                    global_memory["current_model_override"] = restart_model
+                                else:
+                                    global_memory["current_model_override"] = ""
+                                if (restart_override_config_target and restart_override_config_target!=""):
+                                    global_memory["current_override"] = restart_override_config_target
+                                else:
+                                    global_memory["current_override"] = ""
                                 global_memory["restart_model"] = ""
+                                global_memory["restart_override_config_target"] = ""
                                 global_memory["current_model"] = restart_target
                                 time.sleep(3)
                     else:
@@ -13077,7 +14264,7 @@ if __name__ == '__main__':
     advparser.add_argument("--draftamount","--draft-max","--draft-n", metavar=('[tokens]'), help="How many tokens to draft per chunk before verifying results", type=int, default=default_draft_amount)
     advparser.add_argument("--draftgpulayers","--gpu-layers-draft","--n-gpu-layers-draft","-ngld", metavar=('[layers]'), help="How many layers to offload to GPU for the draft model (default=full offload)", type=int, default=999)
     advparser.add_argument("--draftgpusplit", help="GPU layer distribution ratio for draft model (default=same as main). Only works if multi-GPUs selected for MAIN model and tensor_split is set!", metavar=('[Ratios]'), type=float, nargs='+')
-    advparser.add_argument("--password", metavar=('[API key]'), help="Enter a password required to use this instance. This key will be required for all text endpoints. Image endpoints are not secured.", default=None)
+    advparser.add_argument("--password", metavar=('[API key]'), help="Enter a password required to use this instance. This key will be required for all text endpoints. Image endpoints are not secured. Can also be set with env var KCPP_PASSWORD", default=os.getenv('KCPP_PASSWORD',None))
     advparser.add_argument("--ratelimit", metavar=('[seconds]'), help="If enabled, rate limit generative request by IP address. Each IP can only send a new request once per X seconds.", type=int, default=0)
     advparser.add_argument("--ignoremissing", help="Ignores all missing non-essential files, just skipping them instead.", action='store_true')
     advparser.add_argument("--chatcompletionsadapter", metavar=('[filename]'), help="Select an optional ChatCompletions Adapter JSON file to force custom instruct tags.", default="AutoGuess")
@@ -13173,11 +14360,12 @@ if __name__ == '__main__':
 
     admingroup = parser.add_argument_group('Administration Commands')
     admingroup.add_argument("--admin", help="Enables admin mode, allowing you to unload and reload different configurations or models.", action='store_true')
-    admingroup.add_argument("--adminpassword", metavar=('[password]'), help="Require a password to access admin functions. You are strongly advised to use one for publically accessible instances!", default=None)
+    admingroup.add_argument("--adminpassword", metavar=('[password]'), help="Require a password to access admin functions. You are strongly advised to use one for publically accessible instances! Can also be set with env var KCPP_ADMINPASSWORD", default=os.getenv('KCPP_ADMINPASSWORD',None))
     admingroup.add_argument("--admindir", metavar=('[directory]'), help="Specify a directory to look for .kcpps configs in, which can be used to swap models.", default="")
     admingroup.add_argument("--adminunloadtimeout", help="Set an idle timeout in seconds after which KoboldCpp will automatically unload the current model.", type=int, default=0)
     admingroup.add_argument("--admintextmodelsdir", metavar=('[directory]'), help="Used with remote control config switching. By passing in this argument, models in the directory will by available for restarting operations.", default="")
     admingroup.add_argument("--admindatadir", metavar=('[directory]'), help="Specify a directory to store user data in. By passing in this argument, users with the admin password will be able to save and load data from the server database.", default="")
+    admingroup.add_argument("--admindocsdir", metavar=('[directory]'), help="Specify a directory containing text or PDF documents. When set, the directory is accessible read-only at /INTERNAL_READ_ONLY/Documents via filesystem API endpoints.", default="")
     admingroup.add_argument("--adminallowhf", help="Enables downloading of HuggingFace models through the Lite UI.", action='store_true')
     admingroup.add_argument("--routermode", help="Router mode uses a reverse proxy router, allowing you to easily hotswap models and configs within a single request. Requires admin mode.", action='store_true')
     admingroup.add_argument("--autoswapmode", help="Autoswap mode builds on router mode to allow switching of model types within the same config automatically. Requires admin mode and router mode. All models desired must be defined within the same config.", action='store_true')

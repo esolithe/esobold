@@ -62,7 +62,7 @@ jobs:
           name: kcpp_linux_binary
           path: ${{ github.workspace }}/dist/
 
-      - name: Upload to GitHub Release
+      - name: Upload to GitHub Rolling Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

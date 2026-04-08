@@ -60,6 +60,341 @@ let generateResponseToInstruction = async (prompt) => {
     return await generateAndGetTextFromPrompt(formattedPrompt)
 }
 
+let generateAndStreamFromKCPP = async (prompt, grammar, bannedTokens, onToken) => {
+    let payload = createGeneratePayload(prompt)
+    if (!!grammar) {
+        payload.grammar = grammar
+        payload["grammar_retain_state"] = false
+        payload["banned_tokens"] = ["{}"].concat(bannedTokens).concat(localsettings.tokenbans.split("||$||"))
+    }
+    concat_gametext(true, "", "", "", false, true)
+    payload.params = {}
+    payload = finalize_submit_payload(payload, !!prompt)
+
+    let accum = ""
+    await new Promise((resolve, reject) => {
+        let reqOpt = {
+            method: 'POST',
+            headers: get_kobold_header(),
+            body: JSON.stringify(payload)
+        }
+        if (globalabortcontroller) reqOpt.signal = globalabortcontroller.signal
+
+        fetch(apply_proxy_url(custom_kobold_endpoint + "/api/extra/generate/stream"), reqOpt)
+            .then(resp => {
+                if (!resp.ok) return resp.text().then(t => { throw new Error("Stream failed: " + t) })
+                return resp
+            })
+            .then(resp => {
+                resp.body
+                    .pipeThrough(new TextDecoderStream())
+                    .pipeThrough(new TransformStream({
+                        start(ctrl) { ctrl.buf = '' },
+                        transform(chunk, ctrl) {
+                            ctrl.buf += chunk
+                            let evs = [], m
+                            while ((m = /^event: (.*)\ndata: (.*)(\r?\n){2}/m.exec(ctrl.buf)) !== null) {
+                                try { evs.push({ event: m[1], data: JSON.parse(m[2]) }) } catch (e) { }
+                                ctrl.buf = ctrl.buf.substring(m.index + m[0].length)
+                            }
+                            if (evs.length) ctrl.enqueue(evs)
+                        }
+                    }))
+                    .pipeTo(new WritableStream({
+                        write(events) {
+                            for (let ev of events) {
+                                if (ev.event === 'message' && ev.data?.token !== undefined) {
+                                    accum += ev.data.token
+                                    if (ev.data.token && typeof onToken === 'function') onToken(ev.data.token)
+                                }
+                            }
+                        },
+                        close() { resolve(accum) },
+                        abort(err) { reject(err) }
+                    }))
+            })
+            .catch(reject)
+    })
+    return accum
+}
+
+let callOAIChatCompletions = async (messages, tools, toolChoice) => {
+    let payload = {
+        model: (localsettings.custom_oai_model || ""),
+        messages,
+        tools,
+        tool_choice: toolChoice || "auto",
+        temperature: localsettings.temperature,
+        max_tokens: localsettings.max_length,
+        stream: false
+    }
+    let reqOpt = {
+        method: 'POST',
+        headers: get_kobold_header(),
+        body: JSON.stringify(payload)
+    }
+    if (globalabortcontroller) reqOpt.signal = globalabortcontroller.signal
+
+    let resp = await fetch(apply_proxy_url(custom_kobold_endpoint + "/v1/chat/completions"), reqOpt)
+        .then(r => r.json())
+
+    if (!resp?.choices || !resp.choices.length) return null
+    let choice = resp.choices[0]
+    let message = choice.message
+    return {
+        content: message.content || null,
+        tool_calls: message.tool_calls || null,
+        finish_reason: choice.finish_reason
+    }
+}
+
+let callOAIChatCompletionsStream = async (messages, tools, toolChoice, onToken) => {
+    let payload = {
+        model: (localsettings.custom_oai_model || ""),
+        messages,
+        tools,
+        tool_choice: toolChoice || "auto",
+        temperature: localsettings.temperature,
+        max_tokens: localsettings.max_length,
+        stream: true
+    }
+    let reqOpt = {
+        method: 'POST',
+        headers: get_kobold_header(),
+        body: JSON.stringify(payload)
+    }
+    if (globalabortcontroller) reqOpt.signal = globalabortcontroller.signal
+
+    let content = ""
+    let tool_calls_accum = []
+    let finish_reason = null
+
+    await new Promise((resolve, reject) => {
+        fetch(apply_proxy_url(custom_kobold_endpoint + "/v1/chat/completions"), reqOpt)
+            .then(resp => {
+                if (!resp.ok) return resp.text().then(t => { throw new Error("OAI stream failed: " + t) })
+                return resp
+            })
+            .then(resp => {
+                resp.body
+                    .pipeThrough(new TextDecoderStream())
+                    .pipeThrough(new TransformStream({
+                        start(ctrl) { ctrl.buf = '' },
+                        transform(chunk, ctrl) {
+                            ctrl.buf += chunk
+                            let evs = [], m
+                            while ((m = /^data: ?(.*)(\r?\n){2}/m.exec(ctrl.buf)) !== null) {
+                                let raw = m[1].trim()
+                                if (raw !== '[DONE]') {
+                                    try { evs.push(JSON.parse(raw)) } catch (e) { }
+                                }
+                                ctrl.buf = ctrl.buf.substring(m.index + m[0].length)
+                            }
+                            if (evs.length) ctrl.enqueue(evs)
+                        }
+                    }))
+                    .pipeTo(new WritableStream({
+                        write(events) {
+                            for (let ev of events) {
+                                let delta = ev?.choices?.[0]?.delta
+                                if (!delta) continue
+                                if (delta.content) {
+                                    content += delta.content
+                                    if (typeof onToken === 'function') onToken(delta.content)
+                                }
+                                if (delta.tool_calls) {
+                                    for (let tc of delta.tool_calls) {
+                                        let idx = tc.index || 0
+                                        if (!tool_calls_accum[idx]) {
+                                            tool_calls_accum[idx] = {
+                                                id: tc.id || "",
+                                                type: "function",
+                                                function: { name: "", arguments: "" }
+                                            }
+                                        }
+                                        if (tc.id) tool_calls_accum[idx].id = tc.id
+                                        if (tc.function?.name) tool_calls_accum[idx].function.name += tc.function.name
+                                        if (tc.function?.arguments) tool_calls_accum[idx].function.arguments += tc.function.arguments
+                                    }
+                                }
+                                if (ev?.choices?.[0]?.finish_reason) {
+                                    finish_reason = ev.choices[0].finish_reason
+                                }
+                            }
+                        },
+                        close() { resolve() },
+                        abort(err) { reject(err) }
+                    }))
+            })
+            .catch(reject)
+    })
+
+    return {
+        content: content || null,
+        tool_calls: tool_calls_accum.length > 0 ? tool_calls_accum : null,
+        finish_reason
+    }
+}
+
+let buildAgentContextState = (agentRunState, textDBResults, currentChainOfThought, commands, promptOverview) => {
+    let truncated_context = concat_gametext(true, "", "", "", false, true)
+    truncated_context = truncated_context.replace(/\xA0/g, ' ')
+
+    let maxctxlen = localsettings.max_context_length
+    let maxgenamt = localsettings.max_length
+    let max_allowed_characters = getMaxAllowedCharacters(truncated_context, maxctxlen, maxgenamt)
+    let max_mem_len = Math.floor(max_allowed_characters * 0.8)
+    let max_anote_len = Math.floor(max_allowed_characters * 0.6)
+    let max_wi_len = Math.floor(max_allowed_characters * 0.5)
+
+    let systemPromptText = !!agentRunState?.systemPrompt ? substring_to_boundary(agentRunState.systemPrompt, max_mem_len) : ""
+    let worldInfoForAgent = getWorldInfoForAgent(agentRunState, truncated_context, max_wi_len)
+    let wiAndTextDbText = substring_to_boundary((worldInfoForAgent || "") + "\n\n" + (textDBResults || ""), max_wi_len)
+    let authorsNoteText = !!current_anote ? substring_to_boundary(current_anotetemplate.replace("<|>", current_anote), max_anote_len) : ""
+
+    let history = getInitialAgentPrompt(agentRunState, max_mem_len)
+    let wiToInclude = createSysPrompt(wiAndTextDbText)
+    let anToInclude = !!authorsNoteText ? createSysPrompt(authorsNoteText) : ""
+    let finalAgentPrompt = getFinalAgentPrompt(agentRunState, commands, promptOverview)
+    let maxLengthOfCot = max_allowed_characters - history.length - wiToInclude.length - anToInclude.length - finalAgentPrompt.length
+    let cotAsText = ""
+    for (let j = currentChainOfThought.length - 1; j >= 0; j--) {
+        if (!!(currentChainOfThought[j]?.onlyDisplay)) {
+            continue
+        }
+        if (cotAsText.length + currentChainOfThought[j].wrappedPrompt.length > maxLengthOfCot) {
+            break
+        }
+        cotAsText = currentChainOfThought[j].wrappedPrompt + cotAsText
+    }
+    let agentRequestBody = substring_to_boundary(current_temp_memory + cotAsText, maxLengthOfCot)
+
+    return {
+        truncated_context,
+        max_allowed_characters,
+        max_mem_len,
+        max_anote_len,
+        max_wi_len,
+        maxLengthOfCot,
+        systemPromptText,
+        history,
+        worldInfoForAgent,
+        wiAndTextDbText,
+        authorsNoteText,
+        wiToInclude,
+        anToInclude,
+        finalAgentPrompt,
+        agentRequestBody
+    }
+}
+
+let buildOAIBaseMessages = (agentRunState, contextState, persistedMessages = [], appendedMessages = []) => {
+    let messages = []
+
+    let systemParts = []
+    if (!!contextState?.systemPromptText) {
+        systemParts.push(`Setting overview:\n\n${contextState.systemPromptText}`)
+    }
+
+    let contextBlock = contextState?.agentRequestBody || ""
+    let wiBlock = contextState?.wiAndTextDbText || ""
+    if (wi_insertlocation === "0") {
+        if (wiBlock) systemParts.push(wiBlock)
+        if (contextBlock) systemParts.push(contextBlock)
+    }
+    else {
+        if (contextBlock) systemParts.push(contextBlock)
+        if (wiBlock) systemParts.push(wiBlock)
+    }
+
+    let isANoteTurnBased = "turn" === anote_strength
+    if (!!contextState?.authorsNoteText) {
+        if (isANoteTurnBased && systemParts.length > 0) {
+            let mergedContext = insertAuthorsNoteToContext(systemParts.join("\n\n"), `\n\n${contextState.authorsNoteText}`)
+            systemParts = [mergedContext]
+        }
+        else {
+            systemParts.push(contextState.authorsNoteText)
+        }
+    }
+
+    let state = getDocumentFromTextDB('State')
+    if (state) systemParts.push(`Current state: ${state}`)
+
+    let currentAgentWIs = current_wi.filter(wi => !!wi?.wigroup && wi.wigroup === "Agent").map(wi => wi?.comment)
+    if (currentAgentWIs.length > 0) {
+        systemParts.push(`Current unique identifiers for world info: ${currentAgentWIs.join(", ")}`)
+    }
+    let availableAgentMacros = getAvailableAgentMacros()
+    if (Object.keys(availableAgentMacros).length > 0) {
+        systemParts.push(`All available agent macros: ${Object.keys(availableAgentMacros).join(", ")}`)
+    }
+    systemParts.push(`Current date/time (UTC): ${new Date().toUTCString()}`)
+    systemParts.push(`System prompt for all responses: ${agentRunState.agentPrompt}`)
+
+    if (!!contextState?.finalAgentPrompt) {
+        systemParts.push(contextState.finalAgentPrompt)
+    }
+
+    if (systemParts.length > 0) {
+        messages.push({ role: "system", content: systemParts.join("\n\n") })
+    }
+
+    let history = getLastActions(maxActionsInHistory, agentRunState.excludeSpecificMessagePrefixes || [])
+    history.forEach(turn => {
+        let role = turn.myturn ? "user" : "assistant"
+        if (turn.source === "system") role = "system"
+        messages.push({ role, content: turn.msg })
+    })
+
+    if (agentRunState.initialPrompt) {
+        let lastMsg = messages[messages.length - 1]
+        let promptContent = agentRunState.initialUser
+            ? `${agentRunState.initialUser}: ${agentRunState.initialPrompt}`
+            : agentRunState.initialPrompt
+        if (!lastMsg || lastMsg.role !== "user" || !lastMsg.content.includes(agentRunState.initialPrompt)) {
+            messages.push({ role: "user", content: promptContent })
+        }
+    }
+
+    if (Array.isArray(persistedMessages) && persistedMessages.length > 0) {
+        messages = messages.concat(persistedMessages)
+    }
+
+    if (Array.isArray(appendedMessages) && appendedMessages.length > 0) {
+        messages = messages.concat(appendedMessages)
+    }
+
+    let getMessageLength = (message) => `${message?.content || ""}`.length
+    let totalMessageLength = messages.reduce((sum, message) => sum + getMessageLength(message), 0)
+    while (messages.length > 1 && totalMessageLength > contextState.max_allowed_characters) {
+        totalMessageLength -= getMessageLength(messages[1])
+        messages.splice(1, 1)
+    }
+
+    return {
+        messages,
+        oaiContext: contextState
+    }
+}
+
+let updateAgentContextUsage = async (contextState, textDBResults) => {
+    if (!window?.contextUsage || !contextState) {
+        return
+    }
+    contextUsage.reset()
+    contextUsage.setUsage("tempMemory", current_temp_memory.length)
+    contextUsage.setUsage("textDB", (textDBResults || "").length)
+    contextUsage.setUsage("worldInfo", (contextState.worldInfoForAgent || "").length)
+    contextUsage.calculateOverspillUsage("worldInfo", "textDB", contextState.max_wi_len)
+    contextUsage.setUsage("memory", (contextState.history || "").length)
+    contextUsage.setUsage("authorsNote", (contextState.anToInclude || "").length)
+    contextUsage.setUsage("systemPrompt", (contextState.finalAgentPrompt || "").length)
+    contextUsage.setUsage("context", (contextState.agentRequestBody || "").length)
+    contextUsage.calculateOverspillUsage("context", "tempMemory", contextState.maxLengthOfCot)
+    await contextUsage.renderContextUsage()
+}
+
 let split = (input, ...delimiters) => {
     let output = [], currentString = input, i = 0
 
@@ -498,16 +833,19 @@ let genericAgentInitialiser = async (agentRunState) => {
 let genericAgentVisualiser = async (visualiserParams) => {
     logAgentFunctionCall("visualiser", visualiserParams)
     let { currentChainOfThought, interactionId, cotProcessedUntil, printToConsole, agentRunState } = visualiserParams
-    let cotIndex = cotProcessedUntil || 0
+    let cotIndex = cotProcessedUntil || agentRunState?.cotProcessedUntil || 0
+    let currCOT = currentChainOfThought || agentRunState?.currentChainOfThought || []
 
-    currentChainOfThought.slice(cotIndex).forEach(elem => {
-        let { wrappedPrompt, onlyAdd } = elem;
-        if (!onlyAdd) {
-            gametext_arr.push(wrappedPrompt.replace(/\\\\/g, ""))
-            render_gametext()
-        }
-    })
-    agentRunState.cotProcessedUntil = currentChainOfThought.length
+    if (!!agentRunState && currCOT.length > 0) {
+        currentChainOfThought.slice(cotIndex).forEach(elem => {
+            let { wrappedPrompt, onlyAdd } = elem;
+            if (!onlyAdd) {
+                gametext_arr.push(wrappedPrompt.replace(/\\\\/g, ""))
+                render_gametext()
+            }
+        })
+        agentRunState.cotProcessedUntil = currentChainOfThought.length
+    }
 }
 
 let genericAgentFinaliser = async (agentRunState) => {
@@ -814,12 +1152,38 @@ let runAgentCycle = async (agentRunState = {}) => {
         }
 
         objRefOverride(agentRunState, { initialPrompt })
+        let textDBSearchString = null
+        if (!!initialPrompt) {
+            textDBSearchString = initialPrompt.trim()
+        }
+        else if (typeof agentRunState?.agentInputPrompt === "string" && agentRunState.agentInputPrompt.trim().length > 0) {
+            textDBSearchString = agentRunState.agentInputPrompt.trim()
+        }
         if (!!initialPrompt && documentdb_provider != "0") {
             let contentToSearch = documentdb_data
             if (!!documentdb_searchhistory) {
                 contentToSearch += `\n\n[DOCUMENT BREAK][Chatlog history]${concat_gametext(true)}[DOCUMENT BREAK]`
             }
-            let ltmSnippets = await DatabaseMinisearch(contentToSearch, initialPrompt, "");
+            let ltmSnippets = await DatabaseMinisearch(contentToSearch, textDBSearchString, "");
+            let searchDocumentsEnabled = documentdb_searchdocuments && is_using_kcpp_with_searchable_docs() && window.fsClient;
+            // Merge document directory search results if enabled
+            if (searchDocumentsEnabled)
+            {
+                try {
+                    let docSnippets = await window.fsClient.search_all_documents(textDBSearchString, documentdb_numresults);
+                    if (Array.isArray(docSnippets) && docSnippets.length > 0)
+                    {
+                        // Normalise scores: text DB results use .similarity (embeddings) or .match (minisearch)
+                        const getScore = s => (s.similarity ?? s.match ?? 0);
+                        let combined = [...ltmSnippets, ...docSnippets];
+                        combined.sort((a, b) => getScore(b) - getScore(a));
+                        ltmSnippets = combined.slice(0, documentdb_numresults);
+                    }
+                } catch(docErr) {
+                    console.log("Document search failed:", docErr);
+                }
+            }
+
             for (let i = 0; i < ltmSnippets.length; ++i) {
                 textDBResults += getInfoSnippet(ltmSnippets[i]);
             }
@@ -884,6 +1248,201 @@ let runAgentCycle = async (agentRunState = {}) => {
             addThought(currentChainOfThought, createAIPrompt, getActionSummaryText(completePlanObject, null, false))
         }
 
+        if (!!localsettings?.agentUseOAITools) {
+            // ── OAI Tools mode ──────────────────────────────────────────────────────────
+            let oaiPersistedMessages = []
+            let isCompleted = false
+
+            let executeOAICommand = async (commandName, commandArgs, toolCallId, promptOverview) => {
+                let action = { name: commandName, args: commandArgs }
+                let command = [...getReasoningCommand(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist), ...getCommands(agentRunState)].find(c => c.name === commandName)
+                addThought(currentChainOfThought, createAIPrompt, getActionSummaryText(action, promptOverview, !!agentRunState?.wordCountEnabled))
+
+                let toolResultText = "Done."
+                if (!!command && command?.executor !== undefined) {
+                    try {
+                        let res = await command.executor(action)
+                        if (res === true) isCompleted = true
+                        if (typeof res === "string") toolResultText = res
+                    } catch (e) {
+                        toolResultText = `Error: ${e}`
+                        agentRunState.errors.push(e)
+                    }
+                }
+                if (typeof agentVisualiser === "function") {
+                    await agentVisualiser(objRefAssign({ agentRunState }, agentRunState))
+                }
+                return toolResultText
+            }
+
+            let planningPrompt = "The last action from the user is the instruction. If you need to ask the user for a response, use userInput as the final action. Produce a list of actions to respond to this instruction."
+            if (!!agentRunState?.agentName) {
+                planningPrompt += ` You must respond as ${agentRunState.agentName} when using the send_message or userInput actions.`
+            } else if (localsettings.inject_chatnames_instruct) {
+                planningPrompt += ` You must respond as ${localsettings.chatopponent.split("||$||").join(" or ")} when using the send_message or userInput actions.`
+            }
+
+            if (!agentRunState?.planToUse) {
+                // Planning step: use plan_actions as the only tool
+                let planningTools = commandsToOAITools(getReasoningCommand(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist))
+                currentChainOfThought = currentChainOfThought.splice(-maxActionsInHistory)
+                recentActions = recentActions.splice(-maxActionsInHistory)
+                objRefOverride(agentRunState, { currentChainOfThought, recentActions })
+
+                let planningContext = buildAgentContextState(
+                    agentRunState,
+                    textDBResults,
+                    currentChainOfThought,
+                    getReasoningCommand(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist),
+                    planningPrompt
+                )
+                let planningBuild = buildOAIBaseMessages(agentRunState, planningContext, oaiPersistedMessages, [{ role: "user", content: planningPrompt }])
+                await updateAgentContextUsage(planningBuild.oaiContext, textDBResults)
+                let planningMessages = planningBuild.messages
+
+                clearAgentStreamingDisplay()
+                let streamAccum = ""
+                let planResult = await (localsettings?.agentStreamThinking
+                    ? callOAIChatCompletionsStream(planningMessages, planningTools, { type: "function", function: { name: "plan_actions" } }, (tok) => {
+                        streamAccum += tok
+                        updateAgentStreamingDisplay(streamAccum)
+                    })
+                    : callOAIChatCompletions(planningMessages, planningTools, { type: "function", function: { name: "plan_actions" } })
+                ).catch(e => { agentRunState.errors.push(e); return null })
+                await contextUsage.triggerRerenderFromServerPerfEndpoint()
+                clearAgentStreamingDisplay()
+
+                if (!planResult || !planResult.tool_calls || planResult.tool_calls.length === 0) {
+                    addThought(currentChainOfThought, createSysPrompt, "Chain of thought complete", true)
+                    isCompleted = true
+                } else {
+                    let tc = planResult.tool_calls[0]
+                    let planArgs = {}
+                    try { planArgs = JSON.parse(tc.function.arguments) } catch (e) { }
+
+                    if (!!planArgs?.orderOfActions) {
+                        currentOrderOfActionsOverall = planArgs.orderOfActions.map(a => a.action)
+                        currentOrderOfActionDescriptionsOverall = planArgs.orderOfActions.map(a => a.objective)
+                        if (!agentRunState?.agentName && localsettings.inject_chatnames_instruct && !!planArgs?.whoToRespondAs) {
+                            agentRunState.agentName = planArgs.whoToRespondAs
+                        }
+                        objRefOverride(agentRunState, { currentOrderOfActionsOverall, currentOrderOfActionDescriptionsOverall })
+                    }
+
+                    let planSummaryAction = { name: "plan_actions", args: planArgs }
+                    addThought(currentChainOfThought, createAIPrompt, getActionSummaryText(planSummaryAction, null, false))
+                    if (typeof agentVisualiser === "function") {
+                        await agentVisualiser(objRefAssign({ agentRunState }, agentRunState))
+                    }
+
+                    oaiPersistedMessages.push({ role: "assistant", content: planResult.content || null, tool_calls: planResult.tool_calls })
+                    oaiPersistedMessages.push({ role: "tool", content: JSON.stringify(planArgs), tool_call_id: tc.id || "plan_call" })
+                }
+            }
+
+            // Execution steps
+            for (let i = 0; i < Number(localsettings.agentCOTMax) && !isCompleted && agentRunState.endCurrent === false; i++) {
+                Array(...document.getElementsByClassName("stopThinking")).forEach(elem => elem.classList.remove("hidden"))
+
+                let validCommands = getEnabledCommands(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist).map(c => c.name)
+                let plannedCommandName = currentOrderOfActionsOverall.length > i ? currentOrderOfActionsOverall[i] : null
+                let plannedCommand = plannedCommandName ? getCommands(agentRunState).find(c => c.name === plannedCommandName) : null
+
+                // After exhausting all planned steps, stop - don't fall into free-choice mode
+                if (currentOrderOfActionsOverall.length > 0 && !plannedCommandName) {
+                    break
+                }
+                // If a command was planned but can't be found, log and skip
+                if (plannedCommandName && !plannedCommand) {
+                    addThought(currentChainOfThought, createSysPrompt, `Planned command not found: ${plannedCommandName}`)
+                    break
+                }
+
+                let execTools, execToolChoice
+
+                if (plannedCommand) {
+                    execTools = commandsToOAITools([plannedCommand])
+                    execToolChoice = { type: "function", function: { name: plannedCommand.name } }
+                } else {
+                    let enabledCmds = getEnabledCommands(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist)
+                    execTools = commandsToOAITools(enabledCmds)
+                    execToolChoice = "auto"
+                }
+
+                let promptOverview = currentOrderOfActionDescriptionsOverall.length > i ? currentOrderOfActionDescriptionsOverall[i] : null
+                currentChainOfThought = currentChainOfThought.splice(-maxActionsInHistory)
+                recentActions = recentActions.splice(-maxActionsInHistory)
+                objRefOverride(agentRunState, { currentChainOfThought, recentActions })
+
+                let contextCommands = plannedCommand ? [plannedCommand] : getEnabledCommands(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist)
+                let executionContext = buildAgentContextState(
+                    agentRunState,
+                    textDBResults,
+                    currentChainOfThought,
+                    contextCommands,
+                    promptOverview
+                )
+                let oaiBuild = buildOAIBaseMessages(agentRunState, executionContext, oaiPersistedMessages, promptOverview ? [{ role: "user", content: `Objective for this action: ${promptOverview}` }] : [])
+                await updateAgentContextUsage(oaiBuild.oaiContext, textDBResults)
+                let oaiMessages = oaiBuild.messages
+
+                clearAgentStreamingDisplay()
+                let streamAccum = ""
+                let execResult = await (localsettings?.agentStreamThinking
+                    ? callOAIChatCompletionsStream(oaiMessages, execTools, execToolChoice, (tok) => {
+                        streamAccum += tok
+                        updateAgentStreamingDisplay(streamAccum)
+                    })
+                    : callOAIChatCompletions(oaiMessages, execTools, execToolChoice)
+                ).catch(e => { agentRunState.errors.push(e); return null })
+                await contextUsage.triggerRerenderFromServerPerfEndpoint()
+                clearAgentStreamingDisplay()
+
+                if (!execResult) break
+
+                if (execResult.content && (!execResult.tool_calls || execResult.tool_calls.length === 0)) {
+                    // Model responded with content, not a tool call - treat as send_message
+                    addThought(currentChainOfThought, createAIPrompt, execResult.content)
+                    oaiPersistedMessages.push({ role: "assistant", content: execResult.content })
+                    if (typeof agentVisualiser === "function") {
+                        await agentVisualiser(objRefAssign({ agentRunState }, agentRunState))
+                    }
+                    isCompleted = true
+                    break
+                }
+
+                if (!execResult.tool_calls || execResult.tool_calls.length === 0) break
+
+                let tc = execResult.tool_calls[0]
+                let cmdArgs = {}
+                try { cmdArgs = JSON.parse(tc.function.arguments) } catch (e) { }
+
+                if (tc.function.name === "stop_thinking") {
+                    isCompleted = true
+                    break
+                }
+
+                if (!validCommands.includes(tc.function.name) && tc.function.name !== "plan_actions" && tc.function.name !== "stop_thinking") {
+                    addThought(currentChainOfThought, createSysPrompt, `Invalid command requested: ${tc.function.name}`)
+                    break
+                }
+
+                let toolResult = await executeOAICommand(tc.function.name, cmdArgs, tc.id, promptOverview)
+
+                oaiPersistedMessages.push({ role: "assistant", content: execResult.content || null, tool_calls: execResult.tool_calls })
+                oaiPersistedMessages.push({ role: "tool", content: toolResult, tool_call_id: tc.id || "tool_call" })
+
+                if (printToConsole) logger.printPendingLogs()
+            }
+
+            if (!isCompleted) {
+                addThought(currentChainOfThought, createSysPrompt, "Chain of thought complete", true)
+                if (typeof agentVisualiser === "function") {
+                    await agentVisualiser(objRefAssign({ agentRunState }, agentRunState))
+                }
+            }
+        } else {
+        let isCompleted = false
         for (let i = !!agentRunState?.planToUse ? 1 : 0; i < Number(localsettings.agentCOTMax) + 1 && (currentOrderOfActionsOverall.length === 0 || i < currentOrderOfActionsOverall.length + 1) && agentRunState.endCurrent === false; i++) {
             Array(...document.getElementsByClassName("stopThinking")).forEach(elem => elem.classList.remove("hidden"))
 
@@ -931,23 +1490,6 @@ let runAgentCycle = async (agentRunState = {}) => {
             recentActions = recentActions.splice(-maxActionsInHistory)
             objRefOverride(agentRunState, { currentChainOfThought, recentActions })
 
-            // All content			
-            let truncated_context = concat_gametext(true, "", "", "", false, true); //no need to truncate if memory is empty
-            truncated_context = truncated_context.replace(/\xA0/g, ' '); //replace non breaking space nbsp
-
-            // Context quantities
-            let maxctxlen = localsettings.max_context_length;
-            let maxgenamt = localsettings.max_length;
-            let max_allowed_characters = getMaxAllowedCharacters(truncated_context, maxctxlen, maxgenamt);
-            let max_mem_len = Math.floor(max_allowed_characters * 0.8);
-            let max_anote_len = Math.floor(max_allowed_characters * 0.6);
-            let max_wi_len = Math.floor(max_allowed_characters * 0.5);
-
-            let history = getInitialAgentPrompt(agentRunState, max_mem_len)
-            let worldInfoForAgent = getWorldInfoForAgent(agentRunState, truncated_context, max_wi_len)
-            let wiToInclude = createSysPrompt(substring_to_boundary(worldInfoForAgent + "\n\n" + textDBResults, max_wi_len))
-            let anToInclude = !!current_anote ? createSysPrompt(substring_to_boundary(current_anotetemplate.replace("<|>", current_anote), max_anote_len)) : ""
-
             let promptOverview = currentOrderOfActionDescriptionsOverall.length > 0 ? currentOrderOfActionDescriptionsOverall[i - 1] : null
             if (i === 0) {
                 let planningPrompt = "The last action from the user is the instruction. If you need to ask the user for a response, the action userInput must be used and be put as the final action in the order. When handling images always use actions to get information when needed especially for descriptions. Use describe_clicked_image only for images the user clicks in chat, and use describe_fs_image only when a fs file path is available. Produces a list of actions to respond to this instruction."
@@ -960,33 +1502,13 @@ let runAgentCycle = async (agentRunState = {}) => {
                 promptOverview = planningPrompt
             }
 
-            let finalAgentPrompt = getFinalAgentPrompt(agentRunState, nextAction, promptOverview)
-
-            let cotAsText = "", maxLengthOfCot = max_allowed_characters - history.length - wiToInclude.length - anToInclude.length - finalAgentPrompt.length
-            for (let j = currentChainOfThought.length - 1; j >= 0; j--) {
-                if (!!(currentChainOfThought[j]?.onlyDisplay)) {
-                    continue
-                }
-                if (cotAsText.length + currentChainOfThought[j].wrappedPrompt.length > maxLengthOfCot) {
-                    break
-                }
-                cotAsText = currentChainOfThought[j].wrappedPrompt + cotAsText
-            }
-
-            let agentRequestBody = substring_to_boundary(current_temp_memory + cotAsText, maxLengthOfCot)
-
-            if (window?.contextUsage) {
-                contextUsage.reset();
-                contextUsage.setUsage("tempMemory", current_temp_memory.length);
-                contextUsage.setUsage("textDB", textDBResults.length);
-                contextUsage.setUsage("worldInfo", worldInfoForAgent.length);
-                contextUsage.calculateOverspillUsage("worldInfo", "textDB", max_wi_len);
-                contextUsage.setUsage("memory", history.length);
-                contextUsage.setUsage("authorsNote", anToInclude.length);
-                contextUsage.setUsage("systemPrompt", finalAgentPrompt.length);
-                contextUsage.setUsage("context", agentRequestBody.length);
-                contextUsage.calculateOverspillUsage("context", "tempMemory", maxLengthOfCot);
-            }
+            let contextState = buildAgentContextState(agentRunState, textDBResults, currentChainOfThought, nextAction, promptOverview)
+            let history = contextState.history
+            let wiToInclude = contextState.wiToInclude
+            let anToInclude = contextState.anToInclude
+            let finalAgentPrompt = contextState.finalAgentPrompt
+            let agentRequestBody = contextState.agentRequestBody
+            await updateAgentContextUsage(contextState, textDBResults)
 
             if (wi_insertlocation === "0") // WI after memory
             {
@@ -1016,9 +1538,19 @@ let runAgentCycle = async (agentRunState = {}) => {
             let finalAgentHistory = replace_placeholders(history)
             if (window?.contextUsage) {
                 contextUsage.setUsage("context", finalAgentHistory.length);
-                contextUsage.renderContextUsage();
+                await contextUsage.renderContextUsage();
             }
-            let resp = await generateAndGetTextFromPrompt(finalAgentHistory, jsonGrammar, [], recentActions.map(JSON.stringify))
+            clearAgentStreamingDisplay()
+            let streamAccum = ""
+            let resp = await (localsettings?.agentStreamThinking && is_using_kcpp_with_sse()
+                ? generateAndStreamFromKCPP(finalAgentHistory, jsonGrammar, recentActions.map(JSON.stringify), (tok) => {
+                    streamAccum += tok
+                    updateAgentStreamingDisplay(streamAccum)
+                })
+                : generateAndGetTextFromPrompt(finalAgentHistory, jsonGrammar, [], recentActions.map(JSON.stringify))
+            )
+            await contextUsage.triggerRerenderFromServerPerfEndpoint()
+            clearAgentStreamingDisplay()
 
             try {
                 if (resp.trim() == "") {
@@ -1143,6 +1675,7 @@ let runAgentCycle = async (agentRunState = {}) => {
                 logger.printPendingLogs()
             }
         }
+        } // end standard (non-OAI-tools) loop
 
         if (previousConfig.config !== originalConfiguration.config || previousConfig.model !== originalConfiguration.model) {
             await reloadUtils.reloadAndWait(originalConfiguration.config, originalConfiguration.model)
@@ -1256,6 +1789,28 @@ restart_new_game = (save = true, keep_memory = false) => {
     originalRestartNewGame(save, keep_memory)
 }
 
+window.interactByDuration = (elem, durationCallback) => {
+  let startTime;
+  elem.addEventListener('mousedown', () => {
+    startTime = new Date()
+  })
+  elem.addEventListener('mouseup', () => {
+    let endTime = new Date(),
+      duration = endTime - startTime
+    durationCallback(duration)
+  })
+}
+
+let toggleAgentCOT = () => {
+    populate_regex_replacers()
+
+    display_settings();
+    document.getElementById("agentHideCOT").checked = !document.getElementById("agentHideCOT").checked
+    confirm_settings();
+    updateAgentButtonVisibility();
+    render_gametext();
+}
+
 let toggleAgent = () => {
     populate_regex_replacers()
 
@@ -1272,6 +1827,19 @@ let toggleAgent = () => {
     updateAgentButtonVisibility();
     render_gametext();
 }
+
+window.addEventListener("load", () => {
+    let durationHandler = (duration) => {
+        if (duration >= 500) {
+            toggleAgentCOT()
+        }
+        else {
+            toggleAgent()
+        }
+    }
+    interactByDuration(document.querySelector("#btn_toggleAgent"), durationHandler)
+    interactByDuration(document.querySelector("#btn_toggleAgentAesthetic"), durationHandler)
+})
 
 let stopAgentThinking = async (agentRunState = null) => {
     if (agentRunState !== null) {
@@ -1295,6 +1863,8 @@ let stopAgentThinking = async (agentRunState = null) => {
             clearInterval(window.intervalIdForBackgroundAgent)
         }
         Array(...document.getElementsByClassName("stopThinking")).forEach(elem => elem.classList.add("hidden"))
+        await contextUsage.triggerRerenderFromServerPerfEndpoint()
+        clearAgentStreamingDisplay()
     }
     submit_multiplayer(true)
 }
@@ -1320,7 +1890,27 @@ let createStopThinkingButton = () => {
             elem.style.bottom = "0px";
         }
         elem.onclick = () => stopAgentThinking();
+
+        let streamElem = document.createElement("div");
+        streamElem.classList.add("agentStreamingDisplay", "hidden");
+        streamElem.dataset.inputId = id;
+        document.getElementById(id).parentElement.appendChild(streamElem);
     })
+}
+
+let updateAgentStreamingDisplay = (text) => {
+    document.querySelectorAll(".agentStreamingDisplay").forEach(elem => {
+        elem.textContent = text || ""
+        if (text) {
+            elem.classList.remove("hidden")
+            elem.scrollTop = elem.scrollHeight
+        }
+        else elem.classList.add("hidden")
+    })
+}
+
+let clearAgentStreamingDisplay = () => {
+    updateAgentStreamingDisplay("")
 }
 
 let removeChoiceContainer = () => {
@@ -1715,7 +2305,7 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [], enableFileUpload = 
                     fileStatus.innerText = `Uploading file ${i + 1}/${selectedFiles.length}: ${currentFile.fileName}`
                     let uploadPath = buildAgentUploadFsPath(currentFile.fileName)
                     let bytes = new Uint8Array(await currentFile.localFile.arrayBuffer())
-                    await window.fsClient.write(uploadPath, bytes, true)
+                    await window.fsClient.write([{ path: uploadPath, content: bytes, isB64: true }])
                     preparedFiles.push({
                         source: "local",
                         fileName: currentFile.fileName,
@@ -1834,6 +2424,9 @@ let getTaskCompletionCheckGrammar = async () => {
 }
 
 let checkIfTaskComplete = async (agentRunState) => {
+    if (!!localsettings?.agentUseOAITools) {
+        return checkIfTaskCompleteOAI(agentRunState)
+    }
     try {
         let latestActions = getLastActions(20)
         let latestActionsText = latestActions.map(action => `${action.source}: ${action.msg}`).join("\n")
@@ -1848,6 +2441,54 @@ let checkIfTaskComplete = async (agentRunState) => {
             let parsed = JSON.parse(response)
             if (typeof parsed?.isTaskComplete === "boolean") {
                 return parsed;
+            }
+        }
+    }
+    catch {
+        // suppress completion checker errors
+    }
+    return null
+}
+
+let checkIfTaskCompleteOAI = async (agentRunState) => {
+    try {
+        let latestActions = getLastActions(20)
+        let latestActionsText = latestActions.map(action => `${action.source}: ${action.msg}`).join("\n")
+        let objective = agentRunState?.agentInputPrompt || agentRunState?.initialPrompt || ""
+
+        let completionTool = [{
+            type: "function",
+            function: {
+                name: "report_task_completion",
+                description: "Report whether the current task objective has been completed.",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        isTaskComplete: {
+                            type: "boolean",
+                            description: "True if the task objective has been fully completed, false otherwise."
+                        },
+                        objectiveForContinuing: {
+                            type: "string",
+                            description: "If the task is not complete, provide a concise objective the agent should aim to complete in the next cycle. Leave empty if the task is complete."
+                        }
+                    },
+                    required: ["isTaskComplete"]
+                }
+            }
+        }]
+
+        let messages = [
+            { role: "system", content: "You are validating whether the current task objective has been completed." },
+            { role: "user", content: `Task objective:\n${objective}\n\nRecent actions and outputs:\n${latestActionsText}\n\nDecide if the task is complete.` }
+        ]
+
+        let result = await callOAIChatCompletions(messages, completionTool, { type: "function", function: { name: "report_task_completion" } })
+        if (result?.tool_calls?.length > 0) {
+            let args = {}
+            try { args = JSON.parse(result.tool_calls[0].function.arguments) } catch (e) { }
+            if (typeof args?.isTaskComplete === "boolean") {
+                return args
             }
         }
     }
