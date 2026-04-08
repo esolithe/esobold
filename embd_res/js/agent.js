@@ -236,7 +236,7 @@ let callOAIChatCompletionsStream = async (messages, tools, toolChoice, onToken) 
     }
 }
 
-let buildOAIBaseMessages = (agentRunState, textDBResults, currentChainOfThought, commands, promptOverview, persistedMessages = [], appendedMessages = []) => {
+let buildAgentContextState = (agentRunState, textDBResults, currentChainOfThought, commands, promptOverview) => {
     let truncated_context = concat_gametext(true, "", "", "", false, true)
     truncated_context = truncated_context.replace(/\xA0/g, ' ')
 
@@ -252,8 +252,11 @@ let buildOAIBaseMessages = (agentRunState, textDBResults, currentChainOfThought,
     let wiAndTextDbText = substring_to_boundary((worldInfoForAgent || "") + "\n\n" + (textDBResults || ""), max_wi_len)
     let authorsNoteText = !!current_anote ? substring_to_boundary(current_anotetemplate.replace("<|>", current_anote), max_anote_len) : ""
 
+    let history = getInitialAgentPrompt(agentRunState, max_mem_len)
+    let wiToInclude = createSysPrompt(wiAndTextDbText)
+    let anToInclude = !!authorsNoteText ? createSysPrompt(authorsNoteText) : ""
     let finalAgentPrompt = getFinalAgentPrompt(agentRunState, commands, promptOverview)
-    let maxLengthOfCot = max_allowed_characters - systemPromptText.length - wiAndTextDbText.length - authorsNoteText.length - finalAgentPrompt.length
+    let maxLengthOfCot = max_allowed_characters - history.length - wiToInclude.length - anToInclude.length - finalAgentPrompt.length
     let cotAsText = ""
     for (let j = currentChainOfThought.length - 1; j >= 0; j--) {
         if (!!(currentChainOfThought[j]?.onlyDisplay)) {
@@ -266,28 +269,35 @@ let buildOAIBaseMessages = (agentRunState, textDBResults, currentChainOfThought,
     }
     let agentRequestBody = substring_to_boundary(current_temp_memory + cotAsText, maxLengthOfCot)
 
-    let oaiContext = {
+    return {
+        truncated_context,
         max_allowed_characters,
         max_mem_len,
         max_anote_len,
         max_wi_len,
         maxLengthOfCot,
         systemPromptText,
+        history,
         worldInfoForAgent,
         wiAndTextDbText,
         authorsNoteText,
+        wiToInclude,
+        anToInclude,
         finalAgentPrompt,
         agentRequestBody
     }
+}
+
+let buildOAIBaseMessages = (agentRunState, contextState, persistedMessages = [], appendedMessages = []) => {
     let messages = []
 
     let systemParts = []
-    if (!!oaiContext?.systemPromptText) {
-        systemParts.push(`Setting overview:\n\n${oaiContext.systemPromptText}`)
+    if (!!contextState?.systemPromptText) {
+        systemParts.push(`Setting overview:\n\n${contextState.systemPromptText}`)
     }
 
-    let contextBlock = oaiContext?.agentRequestBody || ""
-    let wiBlock = oaiContext?.wiAndTextDbText || ""
+    let contextBlock = contextState?.agentRequestBody || ""
+    let wiBlock = contextState?.wiAndTextDbText || ""
     if (wi_insertlocation === "0") {
         if (wiBlock) systemParts.push(wiBlock)
         if (contextBlock) systemParts.push(contextBlock)
@@ -298,13 +308,13 @@ let buildOAIBaseMessages = (agentRunState, textDBResults, currentChainOfThought,
     }
 
     let isANoteTurnBased = "turn" === anote_strength
-    if (!!oaiContext?.authorsNoteText) {
+    if (!!contextState?.authorsNoteText) {
         if (isANoteTurnBased && systemParts.length > 0) {
-            let mergedContext = insertAuthorsNoteToContext(systemParts.join("\n\n"), `\n\n${oaiContext.authorsNoteText}`)
+            let mergedContext = insertAuthorsNoteToContext(systemParts.join("\n\n"), `\n\n${contextState.authorsNoteText}`)
             systemParts = [mergedContext]
         }
         else {
-            systemParts.push(oaiContext.authorsNoteText)
+            systemParts.push(contextState.authorsNoteText)
         }
     }
 
@@ -322,8 +332,8 @@ let buildOAIBaseMessages = (agentRunState, textDBResults, currentChainOfThought,
     systemParts.push(`Current date/time (UTC): ${new Date().toUTCString()}`)
     systemParts.push(`System prompt for all responses: ${agentRunState.agentPrompt}`)
 
-    if (!!oaiContext?.finalAgentPrompt) {
-        systemParts.push(oaiContext.finalAgentPrompt)
+    if (!!contextState?.finalAgentPrompt) {
+        systemParts.push(contextState.finalAgentPrompt)
     }
 
     if (systemParts.length > 0) {
@@ -357,31 +367,31 @@ let buildOAIBaseMessages = (agentRunState, textDBResults, currentChainOfThought,
 
     let getMessageLength = (message) => `${message?.content || ""}`.length
     let totalMessageLength = messages.reduce((sum, message) => sum + getMessageLength(message), 0)
-    while (messages.length > 1 && totalMessageLength > max_allowed_characters) {
+    while (messages.length > 1 && totalMessageLength > contextState.max_allowed_characters) {
         totalMessageLength -= getMessageLength(messages[1])
         messages.splice(1, 1)
     }
 
     return {
         messages,
-        oaiContext
+        oaiContext: contextState
     }
 }
 
-let updateOAIContextUsage = async (oaiContext, textDBResults) => {
-    if (!window?.contextUsage || !oaiContext) {
+let updateAgentContextUsage = async (contextState, textDBResults) => {
+    if (!window?.contextUsage || !contextState) {
         return
     }
     contextUsage.reset()
     contextUsage.setUsage("tempMemory", current_temp_memory.length)
     contextUsage.setUsage("textDB", (textDBResults || "").length)
-    contextUsage.setUsage("worldInfo", (oaiContext.worldInfoForAgent || "").length)
-    contextUsage.calculateOverspillUsage("worldInfo", "textDB", oaiContext.max_wi_len)
-    contextUsage.setUsage("memory", (oaiContext.systemPromptText || "").length)
-    contextUsage.setUsage("authorsNote", (oaiContext.authorsNoteText || "").length)
-    contextUsage.setUsage("systemPrompt", (oaiContext.finalAgentPrompt || "").length)
-    contextUsage.setUsage("context", (oaiContext.agentRequestBody || "").length)
-    contextUsage.calculateOverspillUsage("context", "tempMemory", oaiContext.maxLengthOfCot)
+    contextUsage.setUsage("worldInfo", (contextState.worldInfoForAgent || "").length)
+    contextUsage.calculateOverspillUsage("worldInfo", "textDB", contextState.max_wi_len)
+    contextUsage.setUsage("memory", (contextState.history || "").length)
+    contextUsage.setUsage("authorsNote", (contextState.anToInclude || "").length)
+    contextUsage.setUsage("systemPrompt", (contextState.finalAgentPrompt || "").length)
+    contextUsage.setUsage("context", (contextState.agentRequestBody || "").length)
+    contextUsage.calculateOverspillUsage("context", "tempMemory", contextState.maxLengthOfCot)
     await contextUsage.renderContextUsage()
 }
 
@@ -1279,16 +1289,15 @@ let runAgentCycle = async (agentRunState = {}) => {
                 recentActions = recentActions.splice(-maxActionsInHistory)
                 objRefOverride(agentRunState, { currentChainOfThought, recentActions })
 
-                let planningBuild = buildOAIBaseMessages(
+                let planningContext = buildAgentContextState(
                     agentRunState,
                     textDBResults,
                     currentChainOfThought,
                     getReasoningCommand(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist),
-                    planningPrompt,
-                    oaiPersistedMessages,
-                    [{ role: "user", content: planningPrompt }]
+                    planningPrompt
                 )
-                await updateOAIContextUsage(planningBuild.oaiContext, textDBResults)
+                let planningBuild = buildOAIBaseMessages(agentRunState, planningContext, oaiPersistedMessages, [{ role: "user", content: planningPrompt }])
+                await updateAgentContextUsage(planningBuild.oaiContext, textDBResults)
                 let planningMessages = planningBuild.messages
 
                 clearAgentStreamingDisplay()
@@ -1366,16 +1375,15 @@ let runAgentCycle = async (agentRunState = {}) => {
                 objRefOverride(agentRunState, { currentChainOfThought, recentActions })
 
                 let contextCommands = plannedCommand ? [plannedCommand] : getEnabledCommands(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist)
-                let oaiBuild = buildOAIBaseMessages(
+                let executionContext = buildAgentContextState(
                     agentRunState,
                     textDBResults,
                     currentChainOfThought,
                     contextCommands,
-                    promptOverview,
-                    oaiPersistedMessages,
-                    promptOverview ? [{ role: "user", content: `Objective for this action: ${promptOverview}` }] : []
+                    promptOverview
                 )
-                await updateOAIContextUsage(oaiBuild.oaiContext, textDBResults)
+                let oaiBuild = buildOAIBaseMessages(agentRunState, executionContext, oaiPersistedMessages, promptOverview ? [{ role: "user", content: `Objective for this action: ${promptOverview}` }] : [])
+                await updateAgentContextUsage(oaiBuild.oaiContext, textDBResults)
                 let oaiMessages = oaiBuild.messages
 
                 clearAgentStreamingDisplay()
@@ -1482,23 +1490,6 @@ let runAgentCycle = async (agentRunState = {}) => {
             recentActions = recentActions.splice(-maxActionsInHistory)
             objRefOverride(agentRunState, { currentChainOfThought, recentActions })
 
-            // All content			
-            let truncated_context = concat_gametext(true, "", "", "", false, true); //no need to truncate if memory is empty
-            truncated_context = truncated_context.replace(/\xA0/g, ' '); //replace non breaking space nbsp
-
-            // Context quantities
-            let maxctxlen = localsettings.max_context_length;
-            let maxgenamt = localsettings.max_length;
-            let max_allowed_characters = getMaxAllowedCharacters(truncated_context, maxctxlen, maxgenamt);
-            let max_mem_len = Math.floor(max_allowed_characters * 0.8);
-            let max_anote_len = Math.floor(max_allowed_characters * 0.6);
-            let max_wi_len = Math.floor(max_allowed_characters * 0.5);
-
-            let history = getInitialAgentPrompt(agentRunState, max_mem_len)
-            let worldInfoForAgent = getWorldInfoForAgent(agentRunState, truncated_context, max_wi_len)
-            let wiToInclude = createSysPrompt(substring_to_boundary(worldInfoForAgent + "\n\n" + textDBResults, max_wi_len))
-            let anToInclude = !!current_anote ? createSysPrompt(substring_to_boundary(current_anotetemplate.replace("<|>", current_anote), max_anote_len)) : ""
-
             let promptOverview = currentOrderOfActionDescriptionsOverall.length > 0 ? currentOrderOfActionDescriptionsOverall[i - 1] : null
             if (i === 0) {
                 let planningPrompt = "The last action from the user is the instruction. If you need to ask the user for a response, the action userInput must be used and be put as the final action in the order. When handling images always use actions to get information when needed especially for descriptions. Use describe_clicked_image only for images the user clicks in chat, and use describe_fs_image only when a fs file path is available. Produces a list of actions to respond to this instruction."
@@ -1511,33 +1502,13 @@ let runAgentCycle = async (agentRunState = {}) => {
                 promptOverview = planningPrompt
             }
 
-            let finalAgentPrompt = getFinalAgentPrompt(agentRunState, nextAction, promptOverview)
-
-            let cotAsText = "", maxLengthOfCot = max_allowed_characters - history.length - wiToInclude.length - anToInclude.length - finalAgentPrompt.length
-            for (let j = currentChainOfThought.length - 1; j >= 0; j--) {
-                if (!!(currentChainOfThought[j]?.onlyDisplay)) {
-                    continue
-                }
-                if (cotAsText.length + currentChainOfThought[j].wrappedPrompt.length > maxLengthOfCot) {
-                    break
-                }
-                cotAsText = currentChainOfThought[j].wrappedPrompt + cotAsText
-            }
-
-            let agentRequestBody = substring_to_boundary(current_temp_memory + cotAsText, maxLengthOfCot)
-
-            if (window?.contextUsage) {
-                contextUsage.reset();
-                contextUsage.setUsage("tempMemory", current_temp_memory.length);
-                contextUsage.setUsage("textDB", textDBResults.length);
-                contextUsage.setUsage("worldInfo", worldInfoForAgent.length);
-                contextUsage.calculateOverspillUsage("worldInfo", "textDB", max_wi_len);
-                contextUsage.setUsage("memory", history.length);
-                contextUsage.setUsage("authorsNote", anToInclude.length);
-                contextUsage.setUsage("systemPrompt", finalAgentPrompt.length);
-                contextUsage.setUsage("context", agentRequestBody.length);
-                contextUsage.calculateOverspillUsage("context", "tempMemory", maxLengthOfCot);
-            }
+            let contextState = buildAgentContextState(agentRunState, textDBResults, currentChainOfThought, nextAction, promptOverview)
+            let history = contextState.history
+            let wiToInclude = contextState.wiToInclude
+            let anToInclude = contextState.anToInclude
+            let finalAgentPrompt = contextState.finalAgentPrompt
+            let agentRequestBody = contextState.agentRequestBody
+            await updateAgentContextUsage(contextState, textDBResults)
 
             if (wi_insertlocation === "0") // WI after memory
             {
