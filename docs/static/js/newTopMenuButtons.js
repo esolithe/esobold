@@ -15,6 +15,9 @@ window.addEventListener('load', () => {
                 <a id="topbtn_share" class="nav-link mainnav" href="#" tabindex="0">Share</a>
             </span>
 		</li>`
+    topButton += `<li class="nav-item" id="topbtn_quick_start">
+			<a class="nav-link mainnav" href="#" onclick="closeTopNav(); showQuickStartPopup();" tabindex="0">Quick Start</a>
+		</li>`
 
     document.querySelector("#navbarNavDropdown > ul").innerHTML += topButton;
     treeViewer.showOpenButton();
