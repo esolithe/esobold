@@ -236,7 +236,7 @@ let callOAIChatCompletionsStream = async (messages, tools, toolChoice, onToken) 
     }
 }
 
-let buildOAIContextState = (agentRunState, textDBResults, currentChainOfThought, commands, promptOverview) => {
+let buildOAIBaseMessages = (agentRunState, textDBResults, currentChainOfThought, commands, promptOverview, persistedMessages = [], appendedMessages = []) => {
     let truncated_context = concat_gametext(true, "", "", "", false, true)
     truncated_context = truncated_context.replace(/\xA0/g, ' ')
 
@@ -266,7 +266,7 @@ let buildOAIContextState = (agentRunState, textDBResults, currentChainOfThought,
     }
     let agentRequestBody = substring_to_boundary(current_temp_memory + cotAsText, maxLengthOfCot)
 
-    return {
+    let oaiContext = {
         max_allowed_characters,
         max_mem_len,
         max_anote_len,
@@ -279,26 +279,6 @@ let buildOAIContextState = (agentRunState, textDBResults, currentChainOfThought,
         finalAgentPrompt,
         agentRequestBody
     }
-}
-
-let updateOAIContextUsage = async (oaiContext, textDBResults) => {
-    if (!window?.contextUsage || !oaiContext) {
-        return
-    }
-    contextUsage.reset()
-    contextUsage.setUsage("tempMemory", current_temp_memory.length)
-    contextUsage.setUsage("textDB", (textDBResults || "").length)
-    contextUsage.setUsage("worldInfo", (oaiContext.worldInfoForAgent || "").length)
-    contextUsage.calculateOverspillUsage("worldInfo", "textDB", oaiContext.max_wi_len)
-    contextUsage.setUsage("memory", (oaiContext.systemPromptText || "").length)
-    contextUsage.setUsage("authorsNote", (oaiContext.authorsNoteText || "").length)
-    contextUsage.setUsage("systemPrompt", (oaiContext.finalAgentPrompt || "").length)
-    contextUsage.setUsage("context", (oaiContext.agentRequestBody || "").length)
-    contextUsage.calculateOverspillUsage("context", "tempMemory", oaiContext.maxLengthOfCot)
-    await contextUsage.renderContextUsage()
-}
-
-let buildOAIBaseMessages = (agentRunState, oaiContext, persistedMessages = []) => {
     let messages = []
 
     let systemParts = []
@@ -350,20 +330,8 @@ let buildOAIBaseMessages = (agentRunState, oaiContext, persistedMessages = []) =
         messages.push({ role: "system", content: systemParts.join("\n\n") })
     }
 
-    let availableHistoryBudget = Math.max(0, (oaiContext?.max_allowed_characters || 0) - (messages[0]?.content || "").length)
     let history = getLastActions(maxActionsInHistory, agentRunState.excludeSpecificMessagePrefixes || [])
-    let boundedHistory = []
-    let historyLen = 0
-    for (let idx = history.length - 1; idx >= 0; idx--) {
-        let turn = history[idx]
-        let turnLen = `${turn?.msg || ""}`.length
-        if (historyLen + turnLen > availableHistoryBudget) {
-            break
-        }
-        boundedHistory.push(turn)
-        historyLen += turnLen
-    }
-    boundedHistory.reverse().forEach(turn => {
+    history.forEach(turn => {
         let role = turn.myturn ? "user" : "assistant"
         if (turn.source === "system") role = "system"
         messages.push({ role, content: turn.msg })
@@ -383,7 +351,38 @@ let buildOAIBaseMessages = (agentRunState, oaiContext, persistedMessages = []) =
         messages = messages.concat(persistedMessages)
     }
 
-    return messages
+    if (Array.isArray(appendedMessages) && appendedMessages.length > 0) {
+        messages = messages.concat(appendedMessages)
+    }
+
+    let getMessageLength = (message) => `${message?.content || ""}`.length
+    let totalMessageLength = messages.reduce((sum, message) => sum + getMessageLength(message), 0)
+    while (messages.length > 1 && totalMessageLength > max_allowed_characters) {
+        totalMessageLength -= getMessageLength(messages[1])
+        messages.splice(1, 1)
+    }
+
+    return {
+        messages,
+        oaiContext
+    }
+}
+
+let updateOAIContextUsage = async (oaiContext, textDBResults) => {
+    if (!window?.contextUsage || !oaiContext) {
+        return
+    }
+    contextUsage.reset()
+    contextUsage.setUsage("tempMemory", current_temp_memory.length)
+    contextUsage.setUsage("textDB", (textDBResults || "").length)
+    contextUsage.setUsage("worldInfo", (oaiContext.worldInfoForAgent || "").length)
+    contextUsage.calculateOverspillUsage("worldInfo", "textDB", oaiContext.max_wi_len)
+    contextUsage.setUsage("memory", (oaiContext.systemPromptText || "").length)
+    contextUsage.setUsage("authorsNote", (oaiContext.authorsNoteText || "").length)
+    contextUsage.setUsage("systemPrompt", (oaiContext.finalAgentPrompt || "").length)
+    contextUsage.setUsage("context", (oaiContext.agentRequestBody || "").length)
+    contextUsage.calculateOverspillUsage("context", "tempMemory", oaiContext.maxLengthOfCot)
+    await contextUsage.renderContextUsage()
 }
 
 let split = (input, ...delimiters) => {
@@ -1280,9 +1279,17 @@ let runAgentCycle = async (agentRunState = {}) => {
                 recentActions = recentActions.splice(-maxActionsInHistory)
                 objRefOverride(agentRunState, { currentChainOfThought, recentActions })
 
-                let planningContext = buildOAIContextState(agentRunState, textDBResults, currentChainOfThought, getReasoningCommand(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist), planningPrompt)
-                await updateOAIContextUsage(planningContext, textDBResults)
-                let planningMessages = [...buildOAIBaseMessages(agentRunState, planningContext, oaiPersistedMessages), { role: "user", content: planningPrompt }]
+                let planningBuild = buildOAIBaseMessages(
+                    agentRunState,
+                    textDBResults,
+                    currentChainOfThought,
+                    getReasoningCommand(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist),
+                    planningPrompt,
+                    oaiPersistedMessages,
+                    [{ role: "user", content: planningPrompt }]
+                )
+                await updateOAIContextUsage(planningBuild.oaiContext, textDBResults)
+                let planningMessages = planningBuild.messages
 
                 clearAgentStreamingDisplay()
                 let streamAccum = ""
@@ -1359,12 +1366,17 @@ let runAgentCycle = async (agentRunState = {}) => {
                 objRefOverride(agentRunState, { currentChainOfThought, recentActions })
 
                 let contextCommands = plannedCommand ? [plannedCommand] : getEnabledCommands(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist)
-                let executionContext = buildOAIContextState(agentRunState, textDBResults, currentChainOfThought, contextCommands, promptOverview)
-                await updateOAIContextUsage(executionContext, textDBResults)
-                let oaiMessages = buildOAIBaseMessages(agentRunState, executionContext, oaiPersistedMessages)
-                if (promptOverview) {
-                    oaiMessages.push({ role: "user", content: `Objective for this action: ${promptOverview}` })
-                }
+                let oaiBuild = buildOAIBaseMessages(
+                    agentRunState,
+                    textDBResults,
+                    currentChainOfThought,
+                    contextCommands,
+                    promptOverview,
+                    oaiPersistedMessages,
+                    promptOverview ? [{ role: "user", content: `Objective for this action: ${promptOverview}` }] : []
+                )
+                await updateOAIContextUsage(oaiBuild.oaiContext, textDBResults)
+                let oaiMessages = oaiBuild.messages
 
                 clearAgentStreamingDisplay()
                 let streamAccum = ""
