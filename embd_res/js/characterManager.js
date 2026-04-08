@@ -1066,6 +1066,14 @@ let applyQuickStartSelection = async () => {
     finally {
         waitingToast.hide()
         popupUtils.reset()
+        if (libraryChangesOccurred && is_using_kcpp_with_server_saving()) {
+            libraryChangesOccurred = false
+            msgboxYesNo("Changes were made to the library. Would you like to sync to the server now?", "Library",
+                () => { 
+                    putAllCharacterManagerData() 
+                },
+                null)
+        }
     }
 
     if (nonFatalErrors.length > 0) {
@@ -1083,7 +1091,7 @@ let openLibraryForQuickStartRole = (role) => {
         itemType: roleConfig.itemType,
         initialSection: roleConfig.initialSection
     }
-    showCharacterList(undefined, true, false, window.quickStartLibrarySelectionContext)
+    showCharacterList(undefined, true, true, window.quickStartLibrarySelectionContext)
 }
 
 let showQuickStartPopup = () => {
@@ -1150,11 +1158,11 @@ let showQuickStartPopup = () => {
 
     createSection(contents, "Note", "Selections are optional. Use Library to select / deselect items. You can import from Library and then return here.")
     createSection(contents, "Selected items", `${totalSelected}`)
-    addChooserSection("save", "Base save")
-    addChooserSection("mainCharacter", "Main character (for intros)")
-    addChooserSection("additionalCharacters", "Additional characters (as WI)")
+    addChooserSection("save", "Base settings")
+    addChooserSection("mainCharacter", "Main character (used for intro)")
+    addChooserSection("additionalCharacters", "Additional characters in scene")
     addChooserSection("playerCharacter", "Player character")
-    addChooserSection("worldInfo", "World info")
+    addChooserSection("worldInfo", "World info / lorebook entries")
 
     popupUtils.reset().title("Quick Start").content(contents).css("min-height", "50%").css("min-width", "60%")
         .button("Confirm", async () => {
