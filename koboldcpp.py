@@ -6062,6 +6062,91 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
             time.sleep(interval)
         return False  # timeout
 
+    def _is_opticlaw_path(self, raw_path):
+        try:
+            parsed = urllib.parse.urlsplit(raw_path)
+            path = parsed.path or "/"
+        except Exception:
+            path = raw_path or "/"
+        return (path == "/openlumara" or path.startswith("/openlumara/"))
+
+    def _rewrite_opticlaw_path(self, raw_path):
+        parsed = urllib.parse.urlsplit(raw_path)
+        path = parsed.path or "/"
+        if path == "/openlumara":
+            upstream_path = "/"
+        elif path.startswith("/openlumara/"):
+            upstream_path = path[len("/openlumara"):]
+            if upstream_path == "":
+                upstream_path = "/"
+        else:
+            upstream_path = path
+        return urllib.parse.urlunsplit(("", "", upstream_path, parsed.query, ""))
+
+    def _rewrite_opticlaw_location(self, value):
+        if not value:
+            return value
+
+        local_prefixes = [
+            f"http://localhost:{opticlaw_default_webui_port}",
+            f"https://localhost:{opticlaw_default_webui_port}",
+            f"http://127.0.0.1:{opticlaw_default_webui_port}",
+            f"https://127.0.0.1:{opticlaw_default_webui_port}",
+        ]
+
+        for prefix in local_prefixes:
+            if value.startswith(prefix):
+                suffix = value[len(prefix):]
+                if suffix == "":
+                    suffix = "/"
+                if not suffix.startswith("/"):
+                    suffix = "/" + suffix
+                return "/openlumara" + suffix
+
+        if value.startswith("/"):
+            return "/openlumara" + value
+
+        return value
+
+    def _should_rewrite_opticlaw_body(self, content_type, content_encoding):
+        if content_encoding:
+            return False
+        ct = str(content_type or "").lower()
+        return (
+            "text/html" in ct or
+            "text/css" in ct or
+            "application/javascript" in ct or
+            "text/javascript" in ct or
+            "application/x-javascript" in ct
+        )
+
+    def _rewrite_opticlaw_body_text(self, text):
+        # Prefix absolute-root references so OpenLumara works from /openlumara.
+        prefixes = [
+            "/static/", "/api/", "/messages", "/stream", "/send", "/edit", "/delete", "/cancel", "/upload",
+            "/chats", "/chat/", "/settings/", "/storage/", "/server/", "/manifest.json", "/sw.js", "/icon-192.png", "/icon-512.png",
+        ]
+        for p in prefixes:
+            text = text.replace(f'"{p}', f'"/openlumara{p}')
+            text = text.replace(f"'{p}", f"'/openlumara{p}")
+            text = text.replace(f"`{p}", f"`/openlumara{p}")
+            text = text.replace(f"url({p}", f"url(/openlumara{p}")
+            text = text.replace(f"url('{p}", f"url('/openlumara{p}")
+            text = text.replace(f'url("{p}', f'url("/openlumara{p}')
+            text = text.replace(f"({p}", f"(/openlumara{p}")
+        return text
+
+    def _rewrite_opticlaw_body_bytes(self, body_bytes):
+        try:
+            decoded = body_bytes.decode("utf-8")
+            return self._rewrite_opticlaw_body_text(decoded).encode("utf-8")
+        except Exception:
+            try:
+                decoded = body_bytes.decode("latin-1")
+                return self._rewrite_opticlaw_body_text(decoded).encode("latin-1")
+            except Exception:
+                return body_bytes
+
     def _handle(self):
         upstream_port = self.server.upstream_port
         length = self.headers.get("Content-Length") #  read request body
@@ -6074,14 +6159,9 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                 headers[k] = v
         headers["Connection"] = "close"
 
-        # Route /opticlaw paths to the opticlaw webui (always redirect to root to avoid response splitting)
-        if args.opticlaw and (self.path == "/opticlaw" or self.path.startswith("/opticlaw/") or self.path.startswith("/opticlaw?")):
-            opticlaw_redirect_url = f"http://localhost:{opticlaw_default_webui_port}/"
-            self.send_response(302)
-            self.send_header("Location", opticlaw_redirect_url)
-            self.send_header("Content-Length", "0")
-            self.end_headers()
-            return
+        is_opticlaw_request = args.opticlaw and self._is_opticlaw_path(self.path)
+        target_port = opticlaw_default_webui_port if is_opticlaw_request else upstream_port
+        forward_path = self._rewrite_opticlaw_path(self.path) if is_opticlaw_request else self.path
 
         global global_memory
         #specifically look for generation requests from completions or chat completions to handle hotswap
@@ -6095,36 +6175,85 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
 
         autoswapEnabled = global_memory["autoswapmode"] is not None and global_memory["autoswapmode"]
         hasReloaded = False
-        if is_post and (is_completions_path or is_chat_completions_path):
-            model_name = ""
-            isValidModelRequest = False
-            if body:
-                try:
-                    request_json = json.loads(body.decode("utf-8"))
-                    model_name = request_json.get("model")
-                    if model_name and model_name!="":
-                        if model_name=="unload_model" or model_name=="initial_model": #special request to simply unload model or swap back top intial model
-                            isValidModelRequest = True
-                        else:
-                            dirpath = os.path.abspath(args.admindir)
-                            targetfilepath = os.path.join(dirpath, targetfile)
-                            opts = [f for f in os.listdir(dirpath) if (f.lower().endswith(".kcpps") or f.lower().endswith(".kcppt") or f.lower().endswith(".gguf")) and os.path.isfile(os.path.join(dirpath, f))]
-                            if targetfile in opts and os.path.exists(targetfilepath):
+        if not is_opticlaw_request:
+            if is_post and (is_completions_path or is_chat_completions_path):
+                model_name = ""
+                isValidModelRequest = False
+                if body:
+                    try:
+                        request_json = json.loads(body.decode("utf-8"))
+                        model_name = request_json.get("model")
+                        if model_name and model_name!="":
+                            if model_name=="unload_model" or model_name=="initial_model": #special request to simply unload model or swap back top intial model
                                 isValidModelRequest = True
-                except Exception:
-                    pass
+                            else:
+                                dirpath = os.path.abspath(args.admindir)
+                                targetfilepath = os.path.join(dirpath, targetfile)
+                                opts = [f for f in os.listdir(dirpath) if (f.lower().endswith(".kcpps") or f.lower().endswith(".kcppt") or f.lower().endswith(".gguf")) and os.path.isfile(os.path.join(dirpath, f))]
+                                if targetfile in opts and os.path.exists(targetfilepath):
+                                    isValidModelRequest = True
+                    except Exception:
+                        pass
 
-            was_auto_unloaded = (global_memory["triggered_sleeping"] and global_memory["current_model"]=="unload_model")
-            if (isValidModelRequest and model_name and model_name != global_memory["current_model"]) or (was_auto_unloaded and not autoswapEnabled):
-                hasReloaded = True
-                with proxy_reload_lock:
-                    whitelist = get_current_admindir_list() # see if its an allowed swap
-                    if was_auto_unloaded and not model_name:
-                        model_name = "initial_model"
-                    if model_name != global_memory["current_model"] and (model_name in whitelist):
-                        global_memory["last_active_timestamp"] = datetime.now()
-                        global_memory["triggered_sleeping"] = False
-                        reqbody = json.dumps({"filename":model_name})
+                was_auto_unloaded = (global_memory["triggered_sleeping"] and global_memory["current_model"]=="unload_model")
+                if (isValidModelRequest and model_name and model_name != global_memory["current_model"]) or (was_auto_unloaded and not autoswapEnabled):
+                    hasReloaded = True
+                    with proxy_reload_lock:
+                        whitelist = get_current_admindir_list() # see if its an allowed swap
+                        if was_auto_unloaded and not model_name:
+                            model_name = "initial_model"
+                        if model_name != global_memory["current_model"] and (model_name in whitelist):
+                            global_memory["last_active_timestamp"] = datetime.now()
+                            global_memory["triggered_sleeping"] = False
+                            reqbody = json.dumps({"filename":model_name})
+                            reqheaders = {
+                                'Content-Type': 'application/json',
+                                'Content-Length': str(len(reqbody)),
+                            }
+                            if args.adminpassword:
+                                reqheaders["Authorization"] = f"Bearer {args.adminpassword}"
+                            conn = http.client.HTTPConnection('localhost', upstream_port, timeout=600)
+                            conn.request("POST", "/api/admin/reload_config", body=reqbody, headers=reqheaders)
+                            resp = conn.getresponse()
+                            time.sleep(3)
+                            global_memory["last_active_timestamp"] = datetime.now()
+                            global_memory["triggered_sleeping"] = False
+                            if not self.wait_for_upstream_ready(upstream_port,120,0.5):
+                                self.send_error(504, "KoboldCpp model swap reload timed out")
+                                return
+                            time.sleep(0.1)
+            
+            if autoswapEnabled and not hasReloaded:
+                textReqs = ["/api/extra/generate/stream","/api/extra/tokencount","/api/v1/generate","/sdapi/v1/interrogate","/v1/completions","/v1/chat/completions"]
+                sttReqs = ["/api/extra/transcribe","/v1/audio/transcriptions"]
+                ttsReqs = ["/api/extra/tts", "/v1/audio/speech"]
+                embedReqs = ["/api/extra/embeddings", "/v1/embeddings", "/api/extra/fs/semantic_search", "/api/extra/fs/search_all_documents"]
+                musicReqs = ["/api/extra/music/prepare","/api/extra/music/generate"]
+                imageReqs = ["/sdapi/v1/txt2img", "/sdapi/v1/img2img", "/sdapi/v1/upscale"] # "/sdapi/v1/sd-models", "/sdapi/v1/options", "/sdapi/v1/samplers"
+
+                swapModeChanged = False
+                if any(self.path.endswith(e) for e in textReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "text"):
+                    global_memory["swapReqType"] = "text"
+                    swapModeChanged = True
+                elif any(self.path.endswith(e) for e in sttReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "stt"):
+                    global_memory["swapReqType"] = "stt"
+                    swapModeChanged = True
+                elif any(self.path.endswith(e) for e in ttsReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "tts"):
+                    global_memory["swapReqType"] = "tts"
+                    swapModeChanged = True
+                elif any(self.path.endswith(e) for e in embedReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "embed"):
+                    global_memory["swapReqType"] = "embed"
+                    swapModeChanged = True
+                elif any(self.path.endswith(e) for e in musicReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "music"):
+                    global_memory["swapReqType"] = "music"
+                    swapModeChanged = True
+                elif any(self.path.endswith(e) for e in imageReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "image"):
+                    global_memory["swapReqType"] = "image"
+                    swapModeChanged = True
+
+                if (global_memory["swapReqType"] is not None and swapModeChanged):
+                    with proxy_reload_lock:
+                        reqbody = json.dumps({"filename":global_memory["current_model"], "overrideconfig": global_memory["current_override"], "modelName": global_memory["current_model_override"]})
                         reqheaders = {
                             'Content-Type': 'application/json',
                             'Content-Length': str(len(reqbody)),
@@ -6136,62 +6265,14 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                         resp = conn.getresponse()
                         time.sleep(3)
                         global_memory["last_active_timestamp"] = datetime.now()
-                        global_memory["triggered_sleeping"] = False
                         if not self.wait_for_upstream_ready(upstream_port,120,0.5):
                             self.send_error(504, "KoboldCpp model swap reload timed out")
                             return
                         time.sleep(0.1)
-        
-        if autoswapEnabled and not hasReloaded:
-            textReqs = ["/api/extra/generate/stream","/api/extra/tokencount","/api/v1/generate","/sdapi/v1/interrogate","/v1/completions","/v1/chat/completions"]
-            sttReqs = ["/api/extra/transcribe","/v1/audio/transcriptions"]
-            ttsReqs = ["/api/extra/tts", "/v1/audio/speech"]
-            embedReqs = ["/api/extra/embeddings", "/v1/embeddings", "/api/extra/fs/semantic_search", "/api/extra/fs/search_all_documents"]
-            musicReqs = ["/api/extra/music/prepare","/api/extra/music/generate"]
-            imageReqs = ["/sdapi/v1/txt2img", "/sdapi/v1/img2img", "/sdapi/v1/upscale"] # "/sdapi/v1/sd-models", "/sdapi/v1/options", "/sdapi/v1/samplers"
-
-            swapModeChanged = False
-            if any(self.path.endswith(e) for e in textReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "text"):
-                global_memory["swapReqType"] = "text"
-                swapModeChanged = True
-            elif any(self.path.endswith(e) for e in sttReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "stt"):
-                global_memory["swapReqType"] = "stt"
-                swapModeChanged = True
-            elif any(self.path.endswith(e) for e in ttsReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "tts"):
-                global_memory["swapReqType"] = "tts"
-                swapModeChanged = True
-            elif any(self.path.endswith(e) for e in embedReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "embed"):
-                global_memory["swapReqType"] = "embed"
-                swapModeChanged = True
-            elif any(self.path.endswith(e) for e in musicReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "music"):
-                global_memory["swapReqType"] = "music"
-                swapModeChanged = True
-            elif any(self.path.endswith(e) for e in imageReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "image"):
-                global_memory["swapReqType"] = "image"
-                swapModeChanged = True
-
-            if (global_memory["swapReqType"] is not None and swapModeChanged):
-                with proxy_reload_lock:
-                    reqbody = json.dumps({"filename":global_memory["current_model"], "overrideconfig": global_memory["current_override"], "modelName": global_memory["current_model_override"]})
-                    reqheaders = {
-                        'Content-Type': 'application/json',
-                        'Content-Length': str(len(reqbody)),
-                    }
-                    if args.adminpassword:
-                        reqheaders["Authorization"] = f"Bearer {args.adminpassword}"
-                    conn = http.client.HTTPConnection('localhost', upstream_port, timeout=600)
-                    conn.request("POST", "/api/admin/reload_config", body=reqbody, headers=reqheaders)
-                    resp = conn.getresponse()
-                    time.sleep(3)
-                    global_memory["last_active_timestamp"] = datetime.now()
-                    if not self.wait_for_upstream_ready(upstream_port,120,0.5):
-                        self.send_error(504, "KoboldCpp model swap reload timed out")
-                        return
-                    time.sleep(0.1)
 
         try:  # connect upstream
-            conn = http.client.HTTPConnection('localhost', upstream_port, timeout=600)
-            conn.request( self.command, self.path, body=body, headers=headers)
+            conn = http.client.HTTPConnection('localhost', target_port, timeout=600)
+            conn.request( self.command, forward_path, body=body, headers=headers)
             resp = conn.getresponse()
         except OSError as e:
             if args.debugmode:
@@ -6238,12 +6319,43 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(html_502.encode("utf-8"))
             return
 
-        with proxy_reload_lock:
+        if is_opticlaw_request:
+            self._sendResponseToClient(resp, is_opticlaw_request, conn)
+        else:
+            with proxy_reload_lock:
+                self._sendResponseToClient(resp, is_opticlaw_request, conn)
+
+
+    def _sendResponseToClient(self, resp, is_opticlaw_request, conn):
+        response_headers = resp.getheaders()
+        content_type = resp.getheader("Content-Type", "")
+        content_encoding = resp.getheader("Content-Encoding", "")
+        rewrite_body = is_opticlaw_request and self._should_rewrite_opticlaw_body(content_type, content_encoding)
+
+        if rewrite_body:
+            body_data = self._rewrite_opticlaw_body_bytes(resp.read())
+            self.send_response(resp.status, resp.reason)
+            for k, v in response_headers:
+                lk = k.lower()
+                if lk in self.HOP_BY_HOP or lk == "content-length":
+                    continue
+                if lk == "location":
+                    v = self._rewrite_opticlaw_location(v)
+                self.send_header(k, v)
+            self.send_header("Content-Length", str(len(body_data)))
+            self.end_headers()
+            self.close_connection = True
+            if self.command.upper() != "HEAD" and body_data:
+                self.wfile.write(body_data)
+                self.wfile.flush()
+        else:
             self.send_response(resp.status, resp.reason) # forward response headers
-            for k, v in resp.getheaders():
+            for k, v in response_headers:
                 lk = k.lower()
                 if lk in self.HOP_BY_HOP:
                     continue
+                if lk == "location" and is_opticlaw_request:
+                    v = self._rewrite_opticlaw_location(v)
                 self.send_header(k, v)
             self.end_headers()
             self.close_connection = True
@@ -6259,6 +6371,7 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                 pass
             finally:
                 conn.close()
+        conn.close()
 
     # proxy all HTTP methods
     do_GET = _handle
@@ -6573,6 +6686,170 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         if showdebug:
             super().log_message(format, *args)
         pass
+
+    def _is_opticlaw_path(self, raw_path):
+        try:
+            parsed = urllib.parse.urlsplit(raw_path)
+            path = parsed.path or "/"
+        except Exception:
+            path = raw_path or "/"
+        return (path == "/openlumara" or path.startswith("/openlumara/"))
+
+    def _opticlaw_upstream_path(self, raw_path):
+        parsed = urllib.parse.urlsplit(raw_path)
+        path = parsed.path or "/"
+        if path == "/openlumara":
+            upstream_path = "/"
+        elif path.startswith("/openlumara/"):
+            upstream_path = path[len("/openlumara"):]
+            if upstream_path == "":
+                upstream_path = "/"
+        else:
+            upstream_path = path
+        return urllib.parse.urlunsplit(("", "", upstream_path, parsed.query, ""))
+
+    def _rewrite_opticlaw_location(self, value):
+        if not value:
+            return value
+
+        local_prefixes = [
+            f"http://localhost:{opticlaw_default_webui_port}",
+            f"https://localhost:{opticlaw_default_webui_port}",
+            f"http://127.0.0.1:{opticlaw_default_webui_port}",
+            f"https://127.0.0.1:{opticlaw_default_webui_port}",
+        ]
+
+        for prefix in local_prefixes:
+            if value.startswith(prefix):
+                suffix = value[len(prefix):]
+                if suffix == "":
+                    suffix = "/"
+                if not suffix.startswith("/"):
+                    suffix = "/" + suffix
+                return "/openlumara" + suffix
+
+        if value.startswith("/"):
+            return "/openlumara" + value
+
+        return value
+
+    def _should_rewrite_opticlaw_body(self, content_type, content_encoding):
+        if content_encoding:
+            return False
+        ct = str(content_type or "").lower()
+        return (
+            "text/html" in ct or
+            "text/css" in ct or
+            "application/javascript" in ct or
+            "text/javascript" in ct or
+            "application/x-javascript" in ct
+        )
+
+    def _rewrite_opticlaw_body_text(self, text):
+        # Prefix absolute-root references so OpenLumara works from /openlumara.
+        prefixes = [
+            "/static/", "/api/", "/messages", "/stream", "/send", "/edit", "/delete", "/cancel", "/upload",
+            "/chats", "/chat/", "/settings/", "/storage/", "/server/", "/manifest.json", "/sw.js", "/icon-192.png", "/icon-512.png",
+        ]
+        for p in prefixes:
+            text = text.replace(f'"{p}', f'"/openlumara{p}')
+            text = text.replace(f"'{p}", f"'/openlumara{p}")
+            text = text.replace(f"`{p}", f"`/openlumara{p}")
+            text = text.replace(f"url({p}", f"url(/openlumara{p}")
+            text = text.replace(f"url('{p}", f"url('/openlumara{p}")
+            text = text.replace(f'url("{p}', f'url("/openlumara{p}')
+            text = text.replace(f"({p}", f"(/openlumara{p}")
+        return text
+
+    def _rewrite_opticlaw_body_bytes(self, body_bytes):
+        try:
+            decoded = body_bytes.decode("utf-8")
+            return self._rewrite_opticlaw_body_text(decoded).encode("utf-8")
+        except Exception:
+            try:
+                decoded = body_bytes.decode("latin-1")
+                return self._rewrite_opticlaw_body_text(decoded).encode("latin-1")
+            except Exception:
+                return body_bytes
+
+    def proxy_opticlaw(self, method, body=None):
+        if not (args.opticlaw and self._is_opticlaw_path(self.path)):
+            return False
+
+        hop_by_hop = {
+            "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+            "te", "trailers", "transfer-encoding", "upgrade"
+        }
+        headers = {}
+        for k, v in self.headers.items():
+            lk = k.lower()
+            if lk in hop_by_hop or lk == "host":
+                continue
+            headers[k] = v
+        headers["Host"] = f"localhost:{opticlaw_default_webui_port}"
+        headers["Connection"] = "close"
+
+        try:
+            conn = http.client.HTTPConnection("localhost", opticlaw_default_webui_port, timeout=600)
+            conn.request(method, self._opticlaw_upstream_path(self.path), body=body, headers=headers)
+            resp = conn.getresponse()
+        except Exception as e:
+            response_body = json.dumps({"detail": {"msg": f"OpenLumara proxy error: {str(e)}", "type": "service_unavailable"}}).encode()
+            self.send_response(502)
+            self.send_header('content-length', str(len(response_body)))
+            self.end_headers(content_type='application/json')
+            self.wfile.write(response_body)
+            return True
+
+        response_headers = resp.getheaders()
+        content_type = resp.getheader("Content-Type", "")
+        content_encoding = resp.getheader("Content-Encoding", "")
+        rewrite_body = self._should_rewrite_opticlaw_body(content_type, content_encoding)
+
+        if rewrite_body:
+            body_data = self._rewrite_opticlaw_body_bytes(resp.read())
+            self.send_response(resp.status, resp.reason)
+            for k, v in response_headers:
+                lk = k.lower()
+                if lk in hop_by_hop or lk == "content-length":
+                    continue
+                if lk == "location":
+                    v = self._rewrite_opticlaw_location(v)
+                self.send_header(k, v)
+            self.send_header("Content-Length", str(len(body_data)))
+            self.end_headers()
+            if method.upper() != "HEAD" and body_data:
+                self.wfile.write(body_data)
+                self.wfile.flush()
+            conn.close()
+            return True
+
+        self.send_response(resp.status, resp.reason)
+        for k, v in response_headers:
+            lk = k.lower()
+            if lk in hop_by_hop:
+                continue
+            if lk == "location":
+                v = self._rewrite_opticlaw_location(v)
+            self.send_header(k, v)
+        self.end_headers()
+
+        if method.upper() != "HEAD":
+            try:
+                while True:
+                    chunk = resp.read(512)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            finally:
+                conn.close()
+        else:
+            conn.close()
+
+        return True
 
     def extract_formdata_from_file_upload(self, body):
         result = {"file": None, "prompt": None, "language": None}
@@ -7371,6 +7648,9 @@ Change Mode<br>
         global savedata_obj, has_multiplayer, multiplayer_turn_major, multiplayer_turn_minor, multiplayer_story_data_compressed, multiplayer_dataformat, multiplayer_lastactive, maxctx, maxhordelen, friendlymodelname, lastuploadedcomfyimg, lastgeneratedcomfyimg, KcppVersion, totalgens, preloaded_story, exitcounter, currentusergenkey, friendlysdmodelname, fullsdmodelpath, password, friendlyembeddingsmodelname, voicelist
         global autoswapmode, textName, sttName, ttsName, embedName, musicName, imageName, mmprojName
 
+        if self.proxy_opticlaw("GET"):
+            return None
+
         clean_path = self.path.split("?")[0] #for cases where we do not want query params
         if clean_path=="/lcpp": #fix for svelte redirect issues, browser path needs to end with slash
             clean_path = "/lcpp/"
@@ -7395,13 +7675,6 @@ Change Mode<br>
         if self.is_fs_protected_path(clean_path):
             if not self.secure_fs_endpoint():
                 return None
-
-        if (clean_path == "/opticlaw" or clean_path.startswith("/opticlaw/")) and args.opticlaw:
-            opticlaw_redirect_url = f"http://localhost:{opticlaw_default_webui_port}/"
-            self.send_response(302)
-            self.send_header("Location", opticlaw_redirect_url)
-            self.end_headers(content_type='text/html')
-            return None
 
         if clean_path in [""]: # the root url is lite
             content_type = 'text/html'
@@ -8103,6 +8376,9 @@ Change Mode<br>
                 "type": "bad_input",
                 }}).encode())
                 return
+
+        if self.proxy_opticlaw("POST", body=body):
+            return
 
         self.path = self.path.rstrip('/')
         response_body = None
