@@ -29,7 +29,7 @@ jobs:
       - name: Dependencies
         id: depends
         run: |
-          pip install customtkinter pyinstaller tk jinja2 pdfplumber PyMuPdf tqdm chardet
+          pip install customtkinter pyinstaller tk jinja2 pdfplumber PyMuPdf tqdm chardet openai tiktoken prompt_toolkit msgpack pyyaml json-repair aiofiles python-ulid requests flask discord.py python-telegram-bot matrix-nio websockets beautifulsoup4
 
       - name: Build
         id: make_build
