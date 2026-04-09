@@ -32719,6 +32719,7 @@ Current version indicated by LITEVER below.
 <!-- Third party libs end -->
 <!-- EsoLite modifications -->
 <script src="static/js/fs.js"></script>
+<script src="static/js/openlumara_client.js"></script>
 <script src="static/js/encryptUtils.js"></script>
 <script src="static/js/serverSideSaving.js"></script>
 <link rel="stylesheet" type="text/css" href="static/css/serverSideScenario.css" />
