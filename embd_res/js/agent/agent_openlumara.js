@@ -7,13 +7,15 @@ export const buildOpenlumaraCommands = (ctx) => {
 		objToText,
 	} = ctx
 
+	let formatLumaraMessage = (message) => `Lumara response: ${`${message || ""}`.trim()}`
+
 	/** Shared helper — run an async call, add result to CoT, return the data. */
 	let runAndReport = async (label, asyncCall) => {
 		let result
 		try {
 			result = await asyncCall()
 		} catch (err) {
-			addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: OpenLumara ${label} error: ${err?.message || err}`)
+			addThought(currentChainOfThought, createSysPrompt, formatLumaraMessage(`${label} error: ${err?.message || err}`))
 			return null
 		}
 		return result
@@ -33,10 +35,10 @@ export const buildOpenlumaraCommands = (ctx) => {
 				if (!result) return
 				if (result.connected) {
 					addThought(currentChainOfThought, createSysPrompt,
-						`OpenLumara status: connected. Model: ${result.model || "unknown"}.`)
+						formatLumaraMessage(`status: connected. Model: ${result.model || "unknown"}.`))
 				} else {
 					addThought(currentChainOfThought, createSysPrompt,
-						`OpenLumara status: not connected. ${result.error || ""} ${result.action || ""}`.trim())
+						formatLumaraMessage(`status: not connected. ${result.error || ""} ${result.action || ""}`.trim()))
 				}
 			}
 		},
@@ -54,7 +56,7 @@ export const buildOpenlumaraCommands = (ctx) => {
 			"executor": async (action) => {
 				let message = `${action?.args?.message || ""}`.trim()
 				if (!message) {
-					addThought(currentChainOfThought, createSysPrompt, `OpenLumara send: no message provided, nothing sent.`)
+					addThought(currentChainOfThought, createSysPrompt, formatLumaraMessage(`send: no message provided, nothing sent.`))
 					return
 				}
 				let result = await runAndReport("sendMessage", () => ol.sendMessage({ role: "user", content: message }))
@@ -63,7 +65,7 @@ export const buildOpenlumaraCommands = (ctx) => {
 					? result.response
 					: (result.response?.content || objToText(result.response))
 				addThought(currentChainOfThought, createSysPrompt,
-					`OpenLumara response to "${message.slice(0, 80)}${message.length > 80 ? "…" : ""}":\n${responseText}`)
+					formatLumaraMessage(`response to "${message.slice(0, 80)}${message.length > 80 ? "…" : ""}":\n${responseText}`))
 			}
 		},
 		{
@@ -77,12 +79,12 @@ export const buildOpenlumaraCommands = (ctx) => {
 				if (!result) return
 				let messages = Array.isArray(result.messages) ? result.messages : []
 				if (messages.length === 0) {
-					addThought(currentChainOfThought, createSysPrompt, `OpenLumara chat is empty (0 messages).`)
+					addThought(currentChainOfThought, createSysPrompt, formatLumaraMessage(`chat is empty (0 messages).`))
 					return
 				}
 				let summary = messages.map(m => `[${m.role}] ${`${m.content || ""}`.slice(0, 200)}`).join("\n")
 				addThought(currentChainOfThought, createSysPrompt,
-					`OpenLumara chat (${messages.length} messages):\n${summary}`)
+					formatLumaraMessage(`chat (${messages.length} messages):\n${summary}`))
 			}
 		},
 		{
@@ -96,14 +98,14 @@ export const buildOpenlumaraCommands = (ctx) => {
 				if (!result) return
 				let chats = Array.isArray(result.chats) ? result.chats : []
 				if (chats.length === 0) {
-					addThought(currentChainOfThought, createSysPrompt, `OpenLumara has no saved chats.`)
+					addThought(currentChainOfThought, createSysPrompt, formatLumaraMessage(`no saved chats.`))
 					return
 				}
 				let summary = chats.map(c =>
 					`- id: ${c.id} | title: "${c.title}" | messages: ${c.message_count} | tags: [${(c.tags || []).join(", ")}]`
 				).join("\n")
 				addThought(currentChainOfThought, createSysPrompt,
-					`OpenLumara saved chats (${chats.length}):\n${summary}`)
+					formatLumaraMessage(`saved chats (${chats.length}):\n${summary}`))
 			}
 		},
 		{
@@ -125,7 +127,7 @@ export const buildOpenlumaraCommands = (ctx) => {
 				let chatTitle = result.chat?.title || title || "New Chat"
 				let chatId = result.chat?.id || "unknown"
 				addThought(currentChainOfThought, createSysPrompt,
-					`OpenLumara: created new chat "${chatTitle}" (id: ${chatId}).`)
+					formatLumaraMessage(`created new chat "${chatTitle}" (id: ${chatId}).`))
 			}
 		},
 		{
@@ -142,19 +144,19 @@ export const buildOpenlumaraCommands = (ctx) => {
 			"executor": async (action) => {
 				let chatId = `${action?.args?.chat_id || ""}`.trim()
 				if (!chatId) {
-					addThought(currentChainOfThought, createSysPrompt, `OpenLumara load chat: no chat_id provided.`)
+					addThought(currentChainOfThought, createSysPrompt, formatLumaraMessage(`load chat: no chat_id provided.`))
 					return
 				}
 				let result = await runAndReport("loadChat", () => ol.loadChat(chatId))
 				if (!result) return
 				if (!result.success) {
 					addThought(currentChainOfThought, createSysPrompt,
-						`OpenLumara load chat failed: ${result.error || "unknown error"}.`)
+						formatLumaraMessage(`load chat failed: ${result.error || "unknown error"}.`))
 					return
 				}
 				let chat = result.chat || {}
 				addThought(currentChainOfThought, createSysPrompt,
-					`OpenLumara: loaded chat "${chat.title || chatId}" (${chat.total || 0} messages).`)
+					formatLumaraMessage(`loaded chat "${chat.title || chatId}" (${chat.total || 0} messages).`))
 			}
 		},
 		{
@@ -167,7 +169,7 @@ export const buildOpenlumaraCommands = (ctx) => {
 				let result = await runAndReport("clearChat", () => ol.clearChat())
 				if (!result) return
 				addThought(currentChainOfThought, createSysPrompt,
-					`OpenLumara: current chat cleared.`)
+					formatLumaraMessage(`current chat cleared.`))
 			}
 		},
 		{
@@ -184,18 +186,18 @@ export const buildOpenlumaraCommands = (ctx) => {
 			"executor": async (action) => {
 				let title = `${action?.args?.title || ""}`.trim()
 				if (!title) {
-					addThought(currentChainOfThought, createSysPrompt, `OpenLumara rename chat: no title provided.`)
+					addThought(currentChainOfThought, createSysPrompt, formatLumaraMessage(`rename chat: no title provided.`))
 					return
 				}
 				let result = await runAndReport("renameChat", () => ol.renameChat(title))
 				if (!result) return
 				if (!result.success) {
 					addThought(currentChainOfThought, createSysPrompt,
-						`OpenLumara rename chat failed: ${result.error || "unknown error"}.`)
+						formatLumaraMessage(`rename chat failed: ${result.error || "unknown error"}.`))
 					return
 				}
 				addThought(currentChainOfThought, createSysPrompt,
-					`OpenLumara: current chat renamed to "${result.title || title}".`)
+					formatLumaraMessage(`current chat renamed to "${result.title || title}".`))
 			}
 		},
 	]
