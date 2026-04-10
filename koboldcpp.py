@@ -81,7 +81,7 @@ dry_seq_break_max = 128
 extra_images_max = 4 # for kontext/qwen img
 
 # global vars
-KcppVersion = "1.111.2"
+KcppVersion = "1.112"
 showdebug = True
 kcpp_instance = None #global running instance
 global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "current_override":"", "swapReqType": None, "autoswapmode": False, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}, "restart_override_config_target": "", "current_model_override": ""}
@@ -178,6 +178,9 @@ last_non_horde_req_time = time.time()
 currfinishreason = None
 zenity_recent_dir = os.getcwd()
 zenity_permitted = True
+thinkformats = [{"start":"<|channel|>analysis<|message|>","end":"<|start|>assistant<|channel|>final<|message|>"},
+                {"start":"<think>","end":"</think>"},
+                {"start":"<|channel>thought","end":"<channel|>"}]
 
 saved_stdout = None
 saved_stderr = None
@@ -1158,9 +1161,9 @@ def utfprint(str, importance = 2): #0 = only debugmode, 1 = except quiet, 2 = al
             return
         if importance==0:
             return
-    maxlen = 32000
+    maxlen = 40000
     if args.debugmode >= 1:
-        maxlen = 192000
+        maxlen = 240000
     try:
         strlength = len(str)
         if strlength > maxlen: #limit max output len
@@ -3531,6 +3534,68 @@ def is_ipv6_supported():
     except Exception:
         return False
 
+def coerce_tool_argtypes(tool_calls: list, tool_list: list) -> list:
+    if not tool_calls or not tool_list:
+        return tool_calls
+
+    schema_map = {} #lookup correct type for the tool
+    for tool in tool_list:
+        try:
+            if tool.get("type") == "function":
+                func = tool.get("function", {})
+                name = func.get("name", "")
+                props = func.get("parameters", {}).get("properties", {})
+            else:
+                name = tool.get("name", "")
+                props = tool.get("parameters", {}).get("properties", {})
+            if name:
+                schema_map[name] = props
+        except Exception:
+            continue
+
+    type_coercers = {
+        "integer": lambda v: int(v) if not isinstance(v, int) else v,
+        "number":  lambda v: float(v) if not isinstance(v, (int, float)) else v,
+        "boolean": lambda v: True if (isinstance(v, str) and v.lower() in ("true", "1", "yes")) else (False if (isinstance(v, str) and v.lower() in ("false", "0", "no")) else v),
+        "string":  lambda v: v, # default is already string
+    }
+
+    result = []
+    for call in tool_calls:
+        try:
+            # Handle both {name, arguments} and OpenAI {type, function: {name, arguments}} formats
+            if "function" in call:
+                name = call["function"].get("name", "")
+                arguments = call["function"].get("arguments", {})
+            else:
+                name = call.get("name", "")
+                arguments = call.get("arguments", {})
+
+            props = schema_map.get(name, {})
+            if props and isinstance(arguments, dict):
+                coerced = {}
+                for key, val in arguments.items():
+                    prop_type = props.get(key, {}).get("type")
+                    coercer = type_coercers.get(prop_type)
+                    if coercer is not None and val is not None:
+                        try:
+                            coerced[key] = coercer(val)
+                        except (ValueError, AttributeError):
+                            coerced[key] = val
+                    else:
+                        coerced[key] = val
+                # Write back
+                if "function" in call:
+                    call = {**call, "function": {**call["function"], "arguments": coerced}}
+                else:
+                    call = {**call, "arguments": coerced}
+
+        except Exception:
+            pass
+        result.append(call)
+
+    return result
+
 def toolcall_to_normalized_json(text,start_tag,end_tag): #convert weird formats into standard tool call json
     text = text.strip()
     def parse_qwen35(text: str) -> str:
@@ -3600,7 +3665,9 @@ def toolcall_to_normalized_json(text,start_tag,end_tag): #convert weird formats 
             return text
         return json.dumps(results) if len(results) > 1 else json.dumps(results[0])
     def parse_gemma4(text: str) -> str:
-        text = text.replace('<|"|>', '"')
+        text = text.replace('<|"|>', '!$$REAL_QUOTE$$!')
+        text = text.replace('"', '\"')
+        text = text.replace('!$$REAL_QUOTE$$!','"')
         fn_match = re.match(r'^([a-zA-Z_][a-zA-Z0-9_]*)\{(.*)\}$', text.strip(), re.DOTALL)
         if not fn_match:
             return text
@@ -3608,12 +3675,7 @@ def toolcall_to_normalized_json(text,start_tag,end_tag): #convert weird formats 
         body = fn_match.group(2).strip()
         if not body:
             return json.dumps({"name": fn_name, "arguments": {}})
-        try:   # Try to parse body as JSON object by wrapping it
-            args = json.loads('{' + body + '}',strict=False)
-            return json.dumps({"name": fn_name, "arguments": args})
-        except Exception:
-            pass
-        normalized = re.sub(r'([a-zA-Z_][a-zA-Z0-9_]*)\s*:', r'"\1":', body)
+        normalized = re.sub(r'((?:^|(?<=[{,]))\s*)([a-zA-Z_][a-zA-Z0-9_]*)(\s*:)',r'\1"\2"\3',body)
         try:
             args = json.loads('{' + normalized + '}',strict=False)
             return json.dumps({"name": fn_name, "arguments": args})
@@ -3647,14 +3709,14 @@ def toolcall_to_normalized_json(text,start_tag,end_tag): #convert weird formats 
 
     return text #fallback
 
-def repack_toolcall_tags(text: str):
+def repack_toolcall_tags(text: str, original_tools:list):
+    global thinkformats
     tool_calls = []
     if not text:
         return tool_calls
-    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
-    text = re.sub(r'<thinking>.*?</thinking>', '', text, flags=re.DOTALL)
-    text = re.sub(r'<reasoning>.*?</reasoning>', '', text, flags=re.DOTALL)
-    text = re.sub(r'<\|channel>thought.*?<channel\|>', '', text, flags=re.DOTALL)
+    for fmt in thinkformats:
+        pattern = f"{re.escape(fmt['start'])}.*?{re.escape(fmt['end'])}"
+        text = re.sub(pattern, '', text, flags=re.DOTALL)
     text = text.strip()
     tcpairs = [
         ("<tool_call>", "</tool_call>"),
@@ -3678,6 +3740,7 @@ def repack_toolcall_tags(text: str):
     # fallback ONLY if no tags were found at all
     if not found:
         tool_calls = extract_json_from_string(text)
+    tool_calls = coerce_tool_argtypes(tool_calls, original_tools)
     return tool_calls
 
 def format_jinja(messages_orig, tools, chat_template_kwargs=None):
@@ -4072,7 +4135,7 @@ def sweep_media_from_messages(messages_array):
 
 
 def transform_genparams(genparams, api_format, use_jinja):
-    global chatcompl_adapter, maxctx
+    global chatcompl_adapter, maxctx, thinkformats
 
     if api_format < 0: #not text gen, do nothing
         return
@@ -4229,8 +4292,11 @@ ws ::= | " " | "\n" [ \t]{0,20}
                 jinja_output = format_jinja(messages_array,jinjatools,jinjakwargs)
             if jinja_output:
                 messages_string = jinja_output
-                if jinja_output.rstrip().endswith("<think>") or jinja_output.rstrip().endswith("<|channel>thought") : #the prompt template already forced a start think.
-                    genparams["already_started_thinking"] = True
+                for pair in thinkformats:
+                    starter = pair['start']
+                    if jinja_output.rstrip().endswith(starter): #the prompt template already forced a start think.
+                        genparams["already_started_thinking"] = True
+                        break
                 if jinjatools and len(jinjatools)>0:
                     genparams["using_openai_tools"] = True
                 # handle media
@@ -4347,8 +4413,11 @@ ws ::= | " " | "\n" [ \t]{0,20}
                 if (latest_turn_was_assistant and continue_assistant_turn): #allow continue a prefill, chop off end
                     messages_string = messages_string[:-(len(assistant_message_gen)+len(assistant_message_end))]
             genparams["prompt"] = messages_string
-            if messages_string.rstrip().endswith("<think>") or messages_string.rstrip().endswith("<|channel>thought") : #the prompt template already forced a start think.
-                genparams["already_started_thinking"] = True
+            for pair in thinkformats:
+                starter = pair['start']
+                if messages_string.rstrip().endswith(starter): #the prompt template already forced a start think.
+                    genparams["already_started_thinking"] = True
+                    break
             if len(images_added)>0:
                 genparams["images"] = images_added
             if len(audio_added)>0:
@@ -6642,7 +6711,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         return ret
 
     async def generate_text(self, genparams, api_format, stream_flag):
-        global friendlymodelname, chatcompl_adapter, currfinishreason
+        global friendlymodelname, chatcompl_adapter, currfinishreason, thinkformats
         global autoswapmode, textName, sttName, ttsName, embedName, musicName, imageName, mmprojName
 
         currfinishreason = None
@@ -6692,7 +6761,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             using_openai_tools = genparams.get('using_openai_tools', False)
             if using_openai_tools:
                 # first, check and potentially segment multiple tags for multi-tool calls
-                tool_calls = repack_toolcall_tags(recvtxt)
+                tool_calls = repack_toolcall_tags(recvtxt,genparams.get('tools', []))
                 if tool_calls and len(tool_calls)>0:
                     flat = []
                     for obj in tool_calls:
@@ -6714,16 +6783,40 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         modelNameToReturn = friendlymodelname
         if autoswapmode and textName is not None:
             modelNameToReturn = textName
+
+        #handle potential think tags, but only chat completions will return them. the others just drop them
+        reasoningtxt = ""
+        if api_format==4 or api_format==8 or api_format==9: #chat completions, responses and anthropic messages, but only chat has reasoning returned
+            if recvtxt:
+                for pair in thinkformats:
+                    starter = pair['start']
+                    ender = pair['end']
+                    start_idx = recvtxt.find(starter)
+                    end_idx = recvtxt.find(ender, start_idx + len(starter))
+                    if start_idx != -1 and end_idx != -1 and start_idx < end_idx:
+                        reasoningtxt = recvtxt[start_idx + len(starter):end_idx]
+                        recvtxt = recvtxt[:start_idx] + recvtxt[end_idx + len(ender):]
+                        break
+                    elif starter not in recvtxt and ender in recvtxt:
+                        parts = recvtxt.split(ender, 1)
+                        reasoningtxt = parts[0]
+                        recvtxt = parts[1]
+                        break
         if api_format == 1:
             res = {"data": {"seqs": [recvtxt]}}
         elif api_format == 3:
             res = {"id": cmpl_id, "object": "text_completion", "created": int(time.time()), "model": modelNameToReturn,
                    "usage": {"prompt_tokens": prompttokens, "completion_tokens": comptokens, "total_tokens": (prompttokens+comptokens)},
                    "choices": [{"text": recvtxt, "index": 0, "finish_reason": currfinishreason, "logprobs":logprobsdict}]}
-        elif api_format == 4:
+        elif api_format == 4: #chat completions
+            ccmsg = {"role": "assistant", "content": recvtxt, "tool_calls": tool_calls}
+            if reasoningtxt and genparams.get('encapsulate_thinking', True):
+                ccmsg["reasoning_content"] = reasoningtxt
+            else:
+                ccmsg["content"] = reasoningtxt + (recvtxt if recvtxt else "")
             res = {"id": chatcmpl_id, "object": "chat.completion", "created": int(time.time()), "model": modelNameToReturn,
                    "usage": {"prompt_tokens": prompttokens, "completion_tokens": comptokens, "total_tokens": (prompttokens+comptokens)},
-                   "choices": [{"index": 0, "message": {"role": "assistant", "content": recvtxt, "tool_calls": tool_calls}, "finish_reason": currfinishreason, "logprobs":logprobsdict}]}
+                   "choices": [{"index": 0, "message": ccmsg, "finish_reason": currfinishreason, "logprobs":logprobsdict}]}
         elif api_format == 5:
             res = {"caption": end_trim_to_sentence(recvtxt)}
         elif api_format == 6:
@@ -6732,7 +6825,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             res = {"model": modelNameToReturn,"created_at": str(datetime.now(timezone.utc).isoformat()),"response":recvtxt,"done": True,"done_reason":currfinishreason,"context": tokarr,"total_duration": 1,"load_duration": 1,"prompt_eval_count": prompttokens,"prompt_eval_duration": 1,"eval_count": comptokens,"eval_duration": 1}
         elif api_format == 7:
             res = {"model": modelNameToReturn,"created_at": str(datetime.now(timezone.utc).isoformat()),"message":{"role":"assistant","content":recvtxt},"done": True,"done_reason":currfinishreason,"total_duration": 1,"load_duration": 1,"prompt_eval_count": prompttokens,"prompt_eval_duration": 1,"eval_count": comptokens,"eval_duration": 1}
-        elif api_format == 8:
+        elif api_format == 8: #oai-responses
             resp_id = f"resp-A{genparams.get('oai_uniqueid', 1)}"
             output_item_id = f"msg_0{genparams.get('oai_uniqueid', 1)}"
             output_items = []
@@ -6793,7 +6886,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         self.wfile.flush()
 
     async def handle_sse_stream(self, genparams, api_format):
-        global friendlymodelname, currfinishreason
+        global friendlymodelname, currfinishreason, thinkformats
         global autoswapmode, textName, sttName, ttsName, embedName, musicName, imageName, mmprojName
 
         modelNameToReturn = friendlymodelname
@@ -6817,9 +6910,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         if genparams.get('already_started_thinking', False):
             encap_in_thinking = True
         encap_first_loop = True
-        thinkpairs = [{"start":"<|channel|>analysis<|message|>","end":"<|start|>assistant<|channel|>final<|message|>"},
-                      {"start":"<think>","end":"</think>"},
-                      {"start":"<|channel>thought","end":"<channel|>"}]
+        thinkpairs = json.loads(json.dumps(thinkformats))
         responses_first_loop = True
         anthropic_first_loop = True
         rseq_num = 0
@@ -8022,6 +8113,7 @@ Change Mode<br>
         return
 
     def do_POST(self):
+        global thinkformats
         global modelbusy, requestsinqueue, currentusergenkey, totalgens, pendingabortkey, lastuploadedcomfyimg, lastgeneratedcomfyimg, multiplayer_turn_major, multiplayer_turn_minor, multiplayer_story_data_compressed, multiplayer_dataformat, multiplayer_lastactive, net_save_slots, has_vision_support, savestate_limit, mcp_lock
         global autoswapmode, textName, sttName, ttsName, embedName, musicName, imageName, mmprojName
         post_path = self.path.rstrip('/')
@@ -9216,9 +9308,9 @@ Change Mode<br>
                 genparams.update(gendefaults if args.gendefaultsoverwrite else gen_new_keys)
                 genparams.update(special_fields_overwrite)
 
-                trunc_len = 8000
+                trunc_len = 10000
                 if args.debugmode >= 1:
-                    trunc_len = 32000
+                    trunc_len = 40000
 
                 if use_jinja and not args.jinja_tools:
                     tmptools = genparams.get('tools', [])
@@ -9317,8 +9409,8 @@ Change Mode<br>
                             # Send content if present
                             if content_text:
                                 reasoning_txt = ""
-                                thinkstrips = ["<think>","<|channel>thought"]
-                                thinksplitters = ["</think>","<channel|>"]
+                                thinkstrips = [item["start"] for item in thinkformats] #start thinking tags
+                                thinksplitters = [item["end"] for item in thinkformats] #end thinking tags
                                 for tsp in thinksplitters:
                                     if tsp in content_text:
                                         parts = content_text.split(tsp, 1)
