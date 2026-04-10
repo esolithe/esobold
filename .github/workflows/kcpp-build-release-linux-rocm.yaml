@@ -31,11 +31,15 @@ jobs:
           sudo apt-get clean
           df -h
 
+      - name: Install git on container
+        run: |
+          apt update
+          apt install -y git
       - name: Checkout source
         uses: actions/checkout@v5
         with:
           ref: ${{ inputs.commit_hash != '' && inputs.commit_hash || github.head_ref || github.ref_name }}
-          submodules: recursive
+          submodules: true
 
       - name: Show Commit Used
         run: |
