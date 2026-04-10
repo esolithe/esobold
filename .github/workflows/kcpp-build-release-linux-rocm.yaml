@@ -21,6 +21,9 @@ jobs:
   linux:
     runs-on: ubuntu-22.04
     permissions: write-all
+    container:
+      image: ubuntu:22.04
+      options: --privileged
     steps:
       - name: Free up disk space before container
         run: |
