@@ -5389,7 +5389,7 @@ Current version indicated by LITEVER below.
 		let instag = localsettings.instruct_starttag;
 		if(instag=="{{[INPUT]}}" && !(custom_kobold_endpoint != "" && is_using_kcpp_with_autotags()))
 		{
-			if(!localsettings.autoguess_third_party)
+			if(!localsettings.autoguess_third_party && is_using_custom_ep()) //allow horde to use placeholder
 			{
 				instag = "\n### Instruction:\n"; //backend not compatible with auto
 			}
@@ -5405,7 +5405,7 @@ Current version indicated by LITEVER below.
 		let instag = localsettings.instruct_endtag;
 		if(instag=="{{[OUTPUT]}}" && !(custom_kobold_endpoint != "" && is_using_kcpp_with_autotags()))
 		{
-			if(!localsettings.autoguess_third_party)
+			if(!localsettings.autoguess_third_party && is_using_custom_ep()) //allow horde to use placeholder
 			{
 				instag = "\n### Response:\n"; //backend not compatible with auto
 			}
@@ -10497,10 +10497,6 @@ Current version indicated by LITEVER below.
 						if(completed_imgs_meta[key] && !completed_imgs_meta[key].data && oldb64)
 						{
 							completed_imgs_meta[key].data = oldb64;
-						}
-						if(completed_imgs_meta[key] && completed_imgs_meta[key].visionmode==4)
-						{
-							completed_imgs_meta[key].visionmode = 3; //todo: temporary backwards compat, to be removed.
 						}
 					}
 				}
@@ -24628,6 +24624,8 @@ Current version indicated by LITEVER below.
 			{
 				insertAIVisionImages = []; //a bit hacky
 				insertAIAudioSounds = [];
+				//perform a little surgery on images: shift them from an assistant's turn into a user's turn
+				fulltxt = fulltxt.replace(/(\[<\|h\|.+?\|h\|>\](?:\s*\[<\|h\|.+?\|h\|>\])*)(\s{0,3})(\{\{\[INPUT\]\}\})/g,"$3$2$1");
 				fulltxt = fulltxt.replace(/\[<\|h\|(.+?)\|h\|>\]/g, function (_match, inner) {
 					let imghash = inner;
 					let foundmeta = completed_imgs_meta[imghash];
