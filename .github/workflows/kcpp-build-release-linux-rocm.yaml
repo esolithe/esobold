@@ -21,9 +21,6 @@ jobs:
   linux:
     runs-on: ubuntu-22.04
     permissions: write-all
-    container:
-      image: ubuntu:22.04
-      options: --privileged
     steps:
       - name: Free up disk space before container
         run: |
@@ -36,8 +33,8 @@ jobs:
 
       - name: Install git on container
         run: |
-          apt update
-          apt install -y git
+          sudo apt-get update
+          sudo apt-get install -y git
       - name: Checkout source
         uses: actions/checkout@v5
         with:
