@@ -2936,7 +2936,7 @@ def coerce_tool_argtypes(tool_calls: list, tool_list: list) -> list:
     if not tool_calls or not tool_list:
         return tool_calls
 
-    schema_map = {} #lookup correct type for the tool
+    schema_map = {}
     for tool in tool_list:
         try:
             if tool.get("type") == "function":
@@ -2951,17 +2951,58 @@ def coerce_tool_argtypes(tool_calls: list, tool_list: list) -> list:
         except Exception:
             continue
 
-    type_coercers = {
-        "integer": lambda v: int(v) if not isinstance(v, int) else v,
-        "number":  lambda v: float(v) if not isinstance(v, (int, float)) else v,
-        "boolean": lambda v: True if (isinstance(v, str) and v.lower() in ("true", "1", "yes")) else (False if (isinstance(v, str) and v.lower() in ("false", "0", "no")) else v),
-        "string":  lambda v: v, # default is already string
-    }
+    def coerce_value(val, prop_type):
+        if val is None:
+            return val
+        try:
+            if prop_type == "integer":
+                return val if isinstance(val, int) else int(val)
+            elif prop_type == "number":
+                return val if isinstance(val, (int, float)) else float(val)
+            elif prop_type == "boolean":
+                if isinstance(val, bool):
+                    return val
+                if isinstance(val, str):
+                    if val.lower() in ("true", "1", "yes"):
+                        return True
+                    if val.lower() in ("false", "0", "no"):
+                        return False
+                if isinstance(val, int):
+                    return bool(val)
+                return val
+            elif prop_type == "string":
+                return val if isinstance(val, str) else str(val) if val is not None else val
+            elif prop_type == "array":
+                if isinstance(val, list):
+                    return val
+                if isinstance(val, str):
+                    try:
+                        parsed = json.loads(val)
+                        return parsed if isinstance(parsed, list) else [parsed]
+                    except Exception:
+                        return [val]
+                if isinstance(val, (set, tuple)):
+                    return list(val)
+                return [val]
+            elif prop_type == "object":
+                if isinstance(val, dict):
+                    return val
+                if isinstance(val, str):
+                    try:
+                        parsed = json.loads(val)
+                        return parsed if isinstance(parsed, dict) else val
+                    except Exception:
+                        return val
+                return val
+            elif prop_type == "null":
+                return None
+        except (ValueError, TypeError, AttributeError):
+            pass
+        return val
 
     result = []
     for call in tool_calls:
         try:
-            # Handle both {name, arguments} and OpenAI {type, function: {name, arguments}} formats
             if "function" in call:
                 name = call["function"].get("name", "")
                 arguments = call["function"].get("arguments", {})
@@ -2973,21 +3014,27 @@ def coerce_tool_argtypes(tool_calls: list, tool_list: list) -> list:
             if props and isinstance(arguments, dict):
                 coerced = {}
                 for key, val in arguments.items():
-                    prop_type = props.get(key, {}).get("type")
-                    coercer = type_coercers.get(prop_type)
-                    if coercer is not None and val is not None:
-                        try:
-                            coerced[key] = coercer(val)
-                        except (ValueError, AttributeError):
-                            coerced[key] = val
-                    else:
+                    prop_schema = props.get(key, {})
+                    prop_type = prop_schema.get("type")
+                    # handle anyOf/oneOf for nullable types like {"anyOf": [{"type": "string"}, {"type": "null"}]}
+                    if prop_type is None:
+                        for combiner in ("anyOf", "oneOf"):
+                            options = prop_schema.get(combiner, [])
+                            for option in options:
+                                t = option.get("type")
+                                if t and t != "null":
+                                    prop_type = t
+                                    break
+                            if prop_type: # Found a type, stop looking in other combiners
+                                break
+                    try:
+                        coerced[key] = coerce_value(val, prop_type)
+                    except Exception:
                         coerced[key] = val
-                # Write back
                 if "function" in call:
                     call = {**call, "function": {**call["function"], "arguments": coerced}}
                 else:
                     call = {**call, "arguments": coerced}
-
         except Exception:
             pass
         result.append(call)
