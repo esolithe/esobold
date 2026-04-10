@@ -3332,13 +3332,14 @@ int GetThreadsToUse(bool blasmode)
 }
 
 //this function prepares the clip embds for llava. it's only needed when images change
-static void PrepareMediaEmbds(const int nctx, const std::vector<int> & media_intro)
+static void PrepareMediaEmbds(const int nctx, const std::vector<int> & media_intro, const std::vector<int> & media_outro)
 {
     bool vision_on = (clp_ctx_v != nullptr && clp_img_data != nullptr);
     bool audio_on = (clp_ctx_a != nullptr);
     if (vision_on || audio_on)
     {
         int introsize = media_intro.size();
+        int outrosize = media_outro.size();
         last_media_mem.clear();
 
         for(int i=0;i<media_objects.size();++i)
@@ -3373,7 +3374,7 @@ static void PrepareMediaEmbds(const int nctx, const std::vector<int> & media_int
                         int tokcnt = (chunk.clp_image_tokens + media_objects[i].chunk_start_seq.size() + media_objects[i].chunk_end_seq.size());
                         if(i==0)
                         {
-                            tokcnt += introsize;
+                            tokcnt += introsize + outrosize;
                         }
                         for(int n=0;n<tokcnt;++n)
                         {
@@ -3425,7 +3426,7 @@ static void PrepareMediaEmbds(const int nctx, const std::vector<int> & media_int
                     int tokcnt = (cliptokensneeded + media_objects[i].chunk_start_seq.size() + media_objects[i].chunk_end_seq.size());
                     if(i==0)
                     {
-                        tokcnt += introsize;
+                        tokcnt += introsize + outrosize;
                     }
                     for(int n=0;n<tokcnt;++n)
                     {
@@ -3626,6 +3627,10 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
 
     std::string addedmemory = inputs.memory;
     std::string negative_prompt = inputs.negative_prompt;
+
+    std::vector<int> media_intro; //added before media list
+    std::vector<int> media_outro; //added before media list
+    TokenizeString("\nAttached Media:\n", media_intro, file_format, true);
 
     //clear previous run llava embd memory, just-in-time free
     for(int i=0;i<media_objects.size();++i)
@@ -3918,14 +3923,12 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
     // tokenize the prompt
     std::vector<int> embd_inp;
     std::vector<int> embd_inp_mem; //for storing added memory
-    std::vector<int> media_intro; //added before media list
     std::vector<int> guidance_embd; //holds the guidance prompt
     bool media_embds_built = false;
 
     int32_t nctx = kcpp_data->n_ctx;
 
     TokenizeString(kcpp_data->prompt, embd_inp, file_format, add_bos_token);
-    TokenizeString("\nAttached Media:\n", media_intro, file_format, true);
 
     if(media_composite_image_signature=="")
     {
@@ -3933,7 +3936,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
     }
     if(media_data_changed)
     {
-        PrepareMediaEmbds(nctx, media_intro);
+        PrepareMediaEmbds(nctx, media_intro, media_outro);
         media_embds_built = true;
     }
 
@@ -5057,7 +5060,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                 {
                     if(!media_embds_built) //this should never happen! however, handle it anyway
                     {
-                        PrepareMediaEmbds(nctx, media_intro);
+                        PrepareMediaEmbds(nctx, media_intro, media_outro);
                         media_embds_built = true;
                         printf("\nSomehow media embeds was not prepared (maybe no fast forward), rebuilding it...\n");
                     }
@@ -5073,6 +5076,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                         int llavatokenscounted = 0;
                         int llavatokensevaled = 0;
                         int introsize = media_intro.size();
+                        int outrosize = media_outro.size();
                         while(input_consumed < embd_inp.size() && (embd_inp[input_consumed]==MEDIA_TOKEN_IDENTIFIER_A || embd_inp[input_consumed]==MEDIA_TOKEN_IDENTIFIER_B))
                         {
                             if (!last_n_tokens.empty())
@@ -5161,6 +5165,22 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                                 n_past += end_size;
                                 llavatokensevaled += end_size;
                             }
+                        }
+                        if(media_objects.size()>0 && outrosize>0)
+                        {
+                            //added after all media but before prompt
+                            kcpp_embd_batch batch = kcpp_embd_batch(media_outro, n_past, use_mrope, false);
+                            auto evr = llama_decode(llama_ctx_v4, batch.batch);
+                            if(evr!=0)
+                            {
+                                printf("\nError when appending media outro: %d\n",evr);
+                            }
+                            else
+                            {
+                                printf("\rProcessing Media Outro (%d tokens)",outrosize);
+                            }
+                            n_past += outrosize;
+                            llavatokensevaled += outrosize;
                         }
                         if(llavatokenscounted!=llavatokensevaled)
                         {

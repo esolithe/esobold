@@ -1046,6 +1046,109 @@ def strip_base64_prefix(encoded_data):
         encoded_data = encoded_data.split(',', 1)[-1]
     return encoded_data
 
+def fix_unquoted_keys(s: str) -> str:
+    """
+    Fix JSON with unquoted keys by only quoting identifiers that appear
+    in key position (after '{' or ',' at object level, before ':').
+    Uses a state machine to track position in the JSON structure.
+    """
+    result = []
+    i = 0
+    n = len(s)
+    def skip_whitespace():
+        nonlocal i
+        while i < n and s[i].isspace():
+            result.append(s[i])
+            i += 1
+    def read_string():
+        """Read a quoted string, handling escape sequences correctly."""
+        nonlocal i
+        assert s[i] == '"'
+        result.append(s[i])
+        i += 1
+        while i < n:
+            ch = s[i]
+            result.append(ch)
+            i += 1
+            if ch == '\\':
+                if i < n:
+                    result.append(s[i])
+                    i += 1
+            elif ch == '"':
+                break
+    def read_value():
+        """Read any JSON value."""
+        nonlocal i
+        skip_whitespace()
+        if i >= n:
+            return
+        ch = s[i]
+        if ch == '{':
+            read_object()
+        elif ch == '[':
+            read_array()
+        elif ch == '"':
+            read_string()
+        else:
+            while i < n and s[i] not in ',}]':
+                result.append(s[i])
+                i += 1
+    def read_object():
+        nonlocal i
+        result.append(s[i])
+        i += 1
+        skip_whitespace()
+        if i < n and s[i] == '}':
+            result.append(s[i])
+            i += 1
+            return
+        while i < n:
+            skip_whitespace()
+            if i < n and s[i] == '"':
+                read_string()
+            elif i < n and re.match(r'[a-zA-Z_]', s[i]):
+                key = []
+                while i < n and re.match(r'[a-zA-Z0-9_]', s[i]):
+                    key.append(s[i])
+                    i += 1
+                result.append('"' + ''.join(key) + '"')
+            skip_whitespace()
+            if i < n and s[i] == ':':
+                result.append(s[i])
+                i += 1
+            read_value()
+            skip_whitespace()
+            if i >= n or s[i] == '}':
+                break
+            if s[i] == ',':
+                result.append(s[i])
+                i += 1
+        if i < n and s[i] == '}':
+            result.append(s[i])
+            i += 1
+    def read_array():
+        nonlocal i
+        result.append(s[i])
+        i += 1
+        skip_whitespace()
+        if i < n and s[i] == ']':
+            result.append(s[i])
+            i += 1
+            return
+        while i < n:
+            read_value()
+            skip_whitespace()
+            if i >= n or s[i] == ']':
+                break
+            if s[i] == ',':
+                result.append(s[i])
+                i += 1
+        if i < n and s[i] == ']':
+            result.append(s[i])
+            i += 1
+    read_value()
+    return ''.join(result)
+
 def old_cpu_check(): #return -1 for pass, 0 if has avx2, 1 if has avx, 2 if has nothing
     shouldcheck = ((sys.platform == "linux" and platform.machine().lower() in ("x86_64", "amd64")) or
                   (os.name == 'nt' and platform.machine().lower() in ("amd64", "x86_64")))
@@ -3541,7 +3644,7 @@ def coerce_tool_argtypes(tool_calls: list, tool_list: list) -> list:
     if not tool_calls or not tool_list:
         return tool_calls
 
-    schema_map = {} #lookup correct type for the tool
+    schema_map = {}
     for tool in tool_list:
         try:
             if tool.get("type") == "function":
@@ -3556,17 +3659,58 @@ def coerce_tool_argtypes(tool_calls: list, tool_list: list) -> list:
         except Exception:
             continue
 
-    type_coercers = {
-        "integer": lambda v: int(v) if not isinstance(v, int) else v,
-        "number":  lambda v: float(v) if not isinstance(v, (int, float)) else v,
-        "boolean": lambda v: True if (isinstance(v, str) and v.lower() in ("true", "1", "yes")) else (False if (isinstance(v, str) and v.lower() in ("false", "0", "no")) else v),
-        "string":  lambda v: v, # default is already string
-    }
+    def coerce_value(val, prop_type):
+        if val is None:
+            return val
+        try:
+            if prop_type == "integer":
+                return val if isinstance(val, int) else int(val)
+            elif prop_type == "number":
+                return val if isinstance(val, (int, float)) else float(val)
+            elif prop_type == "boolean":
+                if isinstance(val, bool):
+                    return val
+                if isinstance(val, str):
+                    if val.lower() in ("true", "1", "yes"):
+                        return True
+                    if val.lower() in ("false", "0", "no"):
+                        return False
+                if isinstance(val, int):
+                    return bool(val)
+                return val
+            elif prop_type == "string":
+                return val if isinstance(val, str) else str(val) if val is not None else val
+            elif prop_type == "array":
+                if isinstance(val, list):
+                    return val
+                if isinstance(val, str):
+                    try:
+                        parsed = json.loads(val)
+                        return parsed if isinstance(parsed, list) else [parsed]
+                    except Exception:
+                        return [val]
+                if isinstance(val, (set, tuple)):
+                    return list(val)
+                return [val]
+            elif prop_type == "object":
+                if isinstance(val, dict):
+                    return val
+                if isinstance(val, str):
+                    try:
+                        parsed = json.loads(val)
+                        return parsed if isinstance(parsed, dict) else val
+                    except Exception:
+                        return val
+                return val
+            elif prop_type == "null":
+                return None
+        except (ValueError, TypeError, AttributeError):
+            pass
+        return val
 
     result = []
     for call in tool_calls:
         try:
-            # Handle both {name, arguments} and OpenAI {type, function: {name, arguments}} formats
             if "function" in call:
                 name = call["function"].get("name", "")
                 arguments = call["function"].get("arguments", {})
@@ -3578,21 +3722,27 @@ def coerce_tool_argtypes(tool_calls: list, tool_list: list) -> list:
             if props and isinstance(arguments, dict):
                 coerced = {}
                 for key, val in arguments.items():
-                    prop_type = props.get(key, {}).get("type")
-                    coercer = type_coercers.get(prop_type)
-                    if coercer is not None and val is not None:
-                        try:
-                            coerced[key] = coercer(val)
-                        except (ValueError, AttributeError):
-                            coerced[key] = val
-                    else:
+                    prop_schema = props.get(key, {})
+                    prop_type = prop_schema.get("type")
+                    # handle anyOf/oneOf for nullable types like {"anyOf": [{"type": "string"}, {"type": "null"}]}
+                    if prop_type is None:
+                        for combiner in ("anyOf", "oneOf"):
+                            options = prop_schema.get(combiner, [])
+                            for option in options:
+                                t = option.get("type")
+                                if t and t != "null":
+                                    prop_type = t
+                                    break
+                            if prop_type: # Found a type, stop looking in other combiners
+                                break
+                    try:
+                        coerced[key] = coerce_value(val, prop_type)
+                    except Exception:
                         coerced[key] = val
-                # Write back
                 if "function" in call:
                     call = {**call, "function": {**call["function"], "arguments": coerced}}
                 else:
                     call = {**call, "arguments": coerced}
-
         except Exception:
             pass
         result.append(call)
@@ -3669,18 +3819,24 @@ def toolcall_to_normalized_json(text,start_tag,end_tag): #convert weird formats 
         return json.dumps(results) if len(results) > 1 else json.dumps(results[0])
     def parse_gemma4(text: str) -> str:
         text = text.replace('<|"|>', '!$$REAL_QUOTE$$!')
-        text = text.replace('"', '\"')
+        text = text.replace('\"', '\\"')
         text = text.replace('!$$REAL_QUOTE$$!','"')
-        fn_match = re.match(r'^([a-zA-Z_][a-zA-Z0-9_]*)\{(.*)\}$', text.strip(), re.DOTALL)
+        fn_match = re.match(r'^([a-zA-Z_][a-zA-Z0-9_]*)\{(.*)\}$', text.strip(), re.DOTALL) # extract fn name
         if not fn_match:
             return text
         fn_name = fn_match.group(1)
         body = fn_match.group(2).strip()
+        body = '{' + body + '}'
         if not body:
             return json.dumps({"name": fn_name, "arguments": {}})
-        normalized = re.sub(r'((?:^|(?<=[{,]))\s*)([a-zA-Z_][a-zA-Z0-9_]*)(\s*:)',r'\1"\2"\3',body)
+        try:   # Try to parse body as JSON object by wrapping it
+            args = json.loads(body,strict=False)
+            return json.dumps({"name": fn_name, "arguments": args})
+        except Exception:
+            pass
+        normalized = fix_unquoted_keys(body)
         try:
-            args = json.loads('{' + normalized + '}',strict=False)
+            args = json.loads(normalized,strict=False)
             return json.dumps({"name": fn_name, "arguments": args})
         except Exception:
             pass
@@ -3742,7 +3898,7 @@ def repack_toolcall_tags(text: str, original_tools:list):
             break
     # fallback ONLY if no tags were found at all
     if not found:
-        tool_calls = extract_json_from_string(text)
+        tool_calls = extract_json_from_string(text,True)
     tool_calls = coerce_tool_argtypes(tool_calls, original_tools)
     return tool_calls
 
@@ -3763,6 +3919,31 @@ def format_jinja(messages_orig, tools, chat_template_kwargs=None):
         for m in messages:
             if m.get("content") is None:
                 m["content"] = ""
+        # fix image placeholders, erase them and slap a reference onto the turn text message
+        mediacount = 1
+        for m in messages:
+            if isinstance(m.get("content"), list):
+                normalized = []
+                turn_text = ""
+                media_text = ""
+                for item in m["content"]:
+                    if item.get("type")=="text":
+                        turn_text += item.get("text","")
+                for item in m["content"]:
+                    if item.get("type")=="text":
+                        pass
+                    elif item.get("type")=="image_url" or item.get("type")=="image":
+                        media_text += f"\n(Attached Image {mediacount})\n"
+                        mediacount += 1
+                    elif item.get("type")=="input_audio":
+                        media_text += f"\n(Attached Audio {mediacount})\n"
+                        mediacount += 1
+                    else:
+                        normalized.append(item)
+                turn_text = media_text + turn_text
+                if turn_text:
+                    normalized.append({"type": "text","text": turn_text})
+                m["content"] = normalized
         for m in messages: # Fix tool_calls arguments and content if parsable
             if m.get("tool_calls"):
                 for tc in m["tool_calls"]:
@@ -9788,7 +9969,7 @@ Change Mode<br>
                                 "object": "chat.completion.chunk",
                                 "created": int(time.time()),
                                 "model": modelNameToReturn,
-                                "choices": [{"index": 0, "finish_reason": "tool_calls", "delta": {}}]
+                                "choices": [{"index": 0, "finish_reason": "tool_calls" if (len(toolsdata_res) > 0) else currfinishreason, "delta": {}}]
                             })
                             self.wfile.write(f"data: {chunk_final}\n\n".encode())
                             self.wfile.write("data: [DONE]\n\n".encode())
