@@ -21,6 +21,10 @@ jobs:
       image: ubuntu:20.04
       options: --privileged
     steps:
+      - name: Install git on container
+        run: |
+          apt update
+          apt install -y git
       - name: Clone
         id: checkout
         uses: actions/checkout@v5
