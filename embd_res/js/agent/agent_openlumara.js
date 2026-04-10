@@ -9,6 +9,21 @@ export const buildOpenlumaraCommands = (ctx) => {
 
 	let formatLumaraMessage = (message) => `Lumara response: ${`${message || ""}`.trim()}`
 
+	let updateAgentStreamingDisplay = (text) => {
+		document.querySelectorAll(".agentStreamingDisplay").forEach(elem => {
+			elem.textContent = text || ""
+			if (text) {
+				elem.classList.remove("hidden")
+				elem.scrollTop = elem.scrollHeight
+			}
+			else elem.classList.add("hidden")
+		})
+	}
+
+	let clearAgentStreamingDisplay = () => {
+		updateAgentStreamingDisplay("")
+	}
+
 	/** Shared helper — run an async call, add result to CoT, return the data. */
 	let runAndReport = async (label, asyncCall) => {
 		let result
@@ -19,6 +34,84 @@ export const buildOpenlumaraCommands = (ctx) => {
 			return null
 		}
 		return result
+	}
+
+	let streamLumaraResponse = async (message) => {
+		let response = await ol.stream({ role: "user", content: message })
+		if (!response?.body) {
+			throw new Error("stream response did not include a readable body")
+		}
+
+		let reader = response.body.getReader()
+		let decoder = new TextDecoder()
+		let buffer = ""
+		let responseText = ""
+
+		let processLine = (line) => {
+			if (!line || !line.startsWith("data:")) {
+				return
+			}
+
+			let payload = line.slice(5).trim()
+			if (!payload) {
+				return
+			}
+
+			let data = null
+			try {
+				data = JSON.parse(payload)
+			} catch (_err) {
+				return
+			}
+
+			if (data.cancelled) {
+				throw new Error("stream cancelled")
+			}
+
+			if (data.error) {
+				let errorText = data?.error_data?.message || data?.error_data?.error || data.error || "stream error"
+				throw new Error(errorText)
+			}
+
+			let token = ""
+			if (data.type === "content") {
+				token = `${data.content || data.text || ""}`
+			} else if (!data.type && data.token) {
+				token = `${data.token}`
+			}
+
+			if (token.length > 0) {
+				responseText += token
+				updateAgentStreamingDisplay(responseText)
+			}
+		}
+
+		try {
+			while (true) {
+				let { done, value } = await reader.read()
+				if (done) {
+					break
+				}
+
+				buffer += decoder.decode(value, { stream: true })
+				let lines = buffer.split("\n")
+				buffer = lines.pop() || ""
+				for (let line of lines) {
+					processLine(line)
+				}
+			}
+
+			buffer += decoder.decode()
+			if (buffer.length > 0) {
+				for (let line of buffer.split("\n")) {
+					processLine(line)
+				}
+			}
+		} finally {
+			clearAgentStreamingDisplay()
+		}
+
+		return responseText
 	}
 
 	let ol = window.openlumaraClient
@@ -59,13 +152,53 @@ export const buildOpenlumaraCommands = (ctx) => {
 					addThought(currentChainOfThought, createSysPrompt, formatLumaraMessage(`send: no message provided, nothing sent.`))
 					return
 				}
-				let result = await runAndReport("sendMessage", () => ol.sendMessage({ role: "user", content: message }))
-				if (!result) return
-				let responseText = typeof result.response === "string"
-					? result.response
-					: (result.response?.content || objToText(result.response))
-				addThought(currentChainOfThought, createSysPrompt,
-					formatLumaraMessage(`response to "${message.slice(0, 80)}${message.length > 80 ? "…" : ""}":\n${responseText}`))
+				let responseText = await runAndReport("stream", () => streamLumaraResponse(message))
+				if (responseText === null) return
+				if (`${responseText}`.trim().length === 0) {
+					responseText = "[empty response]"
+				}
+                let messageHistory = (await openlumaraClient.getMessages())?.messages;
+                let displayHandled = false;
+                if (!!messageHistory) {
+                    let startPoint = messageHistory.reverse().find(msg => msg?.role === "user")?.index || null;
+                    if (startPoint !== null) {
+                        let messagesToShow = messageHistory.filter(msg => !!msg?.index && msg.index > startPoint).sort((a, b) => a.index > b.index ? 1 : -1)
+                        if (messagesToShow.length > 0) {
+                            messagesToShow.forEach(msg => {
+                                if (!!msg?.content) {
+                                    if (msg.role === "user") {
+                                        addThought(currentChainOfThought, createInstructPrompt, `Lumara - user: ${msg.content || ""}`)
+                                    } else if (msg.role === "assistant") {
+                                        addThought(currentChainOfThought, createAIPrompt, `Lumara: ${msg.content || ""}`)
+                                    }
+                                }
+                                if (!!msg?.tool_calls && Array.isArray(msg.tool_calls)) {
+                                    msg.tool_calls.forEach(call => {
+                                        let toolCallId = call.id;
+                                        let toolDetails = `tool call: ${objToText(call?.function || call)}`
+                                        if (!!toolCallId) {
+                                            let toolResp = messagesToShow.find(m => m.role === "tool" && m.tool_call_id === toolCallId);
+                                            if (!!toolResp) {
+                                                let respContent = `${toolResp.content || ""}`
+                                                try {
+                                                    respContent = objToText(JSON.parse(toolResp.content))
+                                                }
+                                                catch (_err) { }
+                                                toolDetails += `\n\ntool response: ${respContent}`
+                                            }
+                                        }
+                                        addThought(currentChainOfThought, createSysPrompt, formatLumaraMessage(toolDetails))
+                                    })
+                                }
+                            })
+                            displayHandled = true;
+                        }
+                    }
+                }
+                if (!displayHandled) {
+                    addThought(currentChainOfThought, createSysPrompt,
+                        formatLumaraMessage(`response to "${message.slice(0, 80)}${message.length > 80 ? "…" : ""}":\n${responseText}`))
+                }
 			}
 		},
 		{
