@@ -1,6 +1,8 @@
 window.eso.currentlyProcessingFromLumara = Promise.resolve();
 window.eso.maxPolledMessagesFromLumara = 10;
 pollForLatestMessagesFromLumara = async () => {
+    let formatLumaraMessage = (message) => `Lumara response: ${`${message || ""}`.trim()}`
+
     let displayHandled = false;
     window.eso.currentlyProcessingFromLumara = window.eso.currentlyProcessingFromLumara.then(async () => {
         try {
