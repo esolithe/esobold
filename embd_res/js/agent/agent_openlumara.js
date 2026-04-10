@@ -121,7 +121,7 @@ export const buildOpenlumaraCommands = (ctx) => {
 			"name": "ol_status",
 			"description": "Check whether OpenLumara is running and its LLM API is connected. Returns the model name and connection details.",
 			"args": {},
-			"enabled": true,
+			"enabled": is_using_kcpp_with_open_lumara(),
 			"outputVisibleToUser": true,
 			"executor": async (action) => {
 				let result = await runAndReport("getStatus", () => ol.getStatus())
@@ -144,7 +144,7 @@ export const buildOpenlumaraCommands = (ctx) => {
 					type: "string"
 				}
 			},
-			"enabled": true,
+			"enabled": is_using_kcpp_with_open_lumara(),
 			"outputVisibleToUser": true,
 			"executor": async (action) => {
                 const getMessagesSinceLastUserMessageAndShow = async () => {
@@ -223,7 +223,7 @@ export const buildOpenlumaraCommands = (ctx) => {
 			"name": "ol_get_messages",
 			"description": "Retrieve the full message history of the current OpenLumara chat.",
 			"args": {},
-			"enabled": true,
+			"enabled": is_using_kcpp_with_open_lumara(),
 			"outputVisibleToUser": true,
 			"executor": async (action) => {
 				let result = await runAndReport("getMessages", () => ol.getMessages())
@@ -242,7 +242,7 @@ export const buildOpenlumaraCommands = (ctx) => {
 			"name": "ol_list_chats",
 			"description": "List all saved chats in OpenLumara, including their IDs, titles, and tags.",
 			"args": {},
-			"enabled": true,
+			"enabled": is_using_kcpp_with_open_lumara(),
 			"outputVisibleToUser": true,
 			"executor": async (action) => {
 				let result = await runAndReport("listChats", () => ol.listChats())
@@ -269,7 +269,7 @@ export const buildOpenlumaraCommands = (ctx) => {
 					optional: true
 				}
 			},
-			"enabled": true,
+			"enabled": is_using_kcpp_with_open_lumara(),
 			"outputVisibleToUser": true,
 			"executor": async (action) => {
 				let title = `${action?.args?.title || ""}`.trim() || undefined
@@ -290,7 +290,7 @@ export const buildOpenlumaraCommands = (ctx) => {
 					type: "string"
 				}
 			},
-			"enabled": true,
+			"enabled": is_using_kcpp_with_open_lumara(),
 			"outputVisibleToUser": true,
 			"executor": async (action) => {
 				let chatId = `${action?.args?.chat_id || ""}`.trim()
@@ -314,7 +314,7 @@ export const buildOpenlumaraCommands = (ctx) => {
 			"name": "ol_clear_chat",
 			"description": "Clear all messages from the current OpenLumara chat, keeping the chat entry itself.",
 			"args": {},
-			"enabled": true,
+			"enabled": is_using_kcpp_with_open_lumara(),
 			"outputVisibleToUser": true,
 			"executor": async (action) => {
 				let result = await runAndReport("clearChat", () => ol.clearChat())
@@ -332,7 +332,7 @@ export const buildOpenlumaraCommands = (ctx) => {
 					type: "string"
 				}
 			},
-			"enabled": true,
+			"enabled": is_using_kcpp_with_open_lumara(),
 			"outputVisibleToUser": true,
 			"executor": async (action) => {
 				let title = `${action?.args?.title || ""}`.trim()
