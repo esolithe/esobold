@@ -84,7 +84,7 @@ extra_images_max = 4 # for kontext/qwen img
 KcppVersion = "1.111.2"
 showdebug = True
 kcpp_instance = None #global running instance
-global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "current_override":"", "swapReqType": None, "autoswapmode": False, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}, "restart_override_config_target": "", "current_model_override": "", "opticlaw": False}
+global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "current_override":"", "swapReqType": None, "autoswapmode": False, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}, "restart_override_config_target": "", "current_model_override": "", "OpenLumara": False}
 using_gui_launcher = False
 fs_lock = threading.Lock()
 # Used only by in-memory filesystem mode to represent empty directories.
@@ -123,7 +123,7 @@ modelbusy = threading.Lock()
 requestsinqueue = 0
 ratelimitlookup = {}
 defaultport = 5001
-opticlaw_default_webui_port = 15021
+OpenLumara_default_webui_port = 15021
 showsamplerwarning = True
 showmaxctxwarning = True
 showusedmemwarning = True
@@ -1290,7 +1290,7 @@ def get_capabilities():
     has_router = True if args.routermode else False
     _admindocsdir = str(getattr(args, "admindocsdir", "") or "").strip()
     can_search_documents = has_embeddings and bool(_admindocsdir) and os.path.isdir(_admindocsdir)
-    hasOpenLumaraEnabled = global_memory["opticlaw"]
+    hasOpenLumaraEnabled = global_memory["OpenLumara"]
     return {"result":"KoboldCpp", "version":KcppVersion, "protected":has_password, "llm":has_llm, "txt2img":has_txt2img,"vision":visionSupport,"audio":audioSupport,"transcribe":has_whisper,"multiplayer":has_multiplayer,"websearch":has_search,"tts":has_tts, "embeddings":has_embeddings, "music":has_music, "fs":has_fs, "fsMode":fs_mode, "savedata":(savedata_obj is not None), "admin": admin_type, "router":has_router, "guidance": has_guidance, "jinja": has_jinja, "mcp":has_mcp, "hasServerSaving": has_server_saving, "hasAdminWithHF": had_admin_with_hf, "embeddingModel": embeddingModel, "canSearchDocuments": can_search_documents, "hasOpenLumaraEnabled": hasOpenLumaraEnabled}
 
 
@@ -6064,7 +6064,7 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
             time.sleep(interval)
         return False  # timeout
 
-    def _is_opticlaw_path(self, raw_path):
+    def _is_OpenLumara_path(self, raw_path):
         try:
             parsed = urllib.parse.urlsplit(raw_path)
             path = parsed.path or "/"
@@ -6072,7 +6072,7 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
             path = raw_path or "/"
         return (path == "/openlumara" or path.startswith("/openlumara/"))
 
-    def _rewrite_opticlaw_path(self, raw_path):
+    def _rewrite_OpenLumara_path(self, raw_path):
         parsed = urllib.parse.urlsplit(raw_path)
         path = parsed.path or "/"
         if path == "/openlumara":
@@ -6085,15 +6085,15 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
             upstream_path = path
         return urllib.parse.urlunsplit(("", "", upstream_path, parsed.query, ""))
 
-    def _rewrite_opticlaw_location(self, value):
+    def _rewrite_OpenLumara_location(self, value):
         if not value:
             return value
 
         local_prefixes = [
-            f"http://localhost:{opticlaw_default_webui_port}",
-            f"https://localhost:{opticlaw_default_webui_port}",
-            f"http://127.0.0.1:{opticlaw_default_webui_port}",
-            f"https://127.0.0.1:{opticlaw_default_webui_port}",
+            f"http://localhost:{OpenLumara_default_webui_port}",
+            f"https://localhost:{OpenLumara_default_webui_port}",
+            f"http://127.0.0.1:{OpenLumara_default_webui_port}",
+            f"https://127.0.0.1:{OpenLumara_default_webui_port}",
         ]
 
         for prefix in local_prefixes:
@@ -6110,7 +6110,7 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
 
         return value
 
-    def _should_rewrite_opticlaw_body(self, content_type, content_encoding):
+    def _should_rewrite_OpenLumara_body(self, content_type, content_encoding):
         if content_encoding:
             return False
         ct = str(content_type or "").lower()
@@ -6122,7 +6122,7 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
             "application/x-javascript" in ct
         )
 
-    def _rewrite_opticlaw_body_text(self, text):
+    def _rewrite_OpenLumara_body_text(self, text):
         # Prefix absolute-root references so OpenLumara works from /openlumara.
         prefixes = [
             "/static/", "/api/", "/messages", "/stream", "/send", "/edit", "/delete", "/cancel", "/upload",
@@ -6138,14 +6138,14 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
             text = text.replace(f"({p}", f"(/openlumara{p}")
         return text
 
-    def _rewrite_opticlaw_body_bytes(self, body_bytes):
+    def _rewrite_OpenLumara_body_bytes(self, body_bytes):
         try:
             decoded = body_bytes.decode("utf-8")
-            return self._rewrite_opticlaw_body_text(decoded).encode("utf-8")
+            return self._rewrite_OpenLumara_body_text(decoded).encode("utf-8")
         except Exception:
             try:
                 decoded = body_bytes.decode("latin-1")
-                return self._rewrite_opticlaw_body_text(decoded).encode("latin-1")
+                return self._rewrite_OpenLumara_body_text(decoded).encode("latin-1")
             except Exception:
                 return body_bytes
 
@@ -6161,9 +6161,9 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                 headers[k] = v
         headers["Connection"] = "close"
 
-        is_opticlaw_request = args.opticlaw and self._is_opticlaw_path(self.path)
-        target_port = opticlaw_default_webui_port if is_opticlaw_request else upstream_port
-        forward_path = self._rewrite_opticlaw_path(self.path) if is_opticlaw_request else self.path
+        is_OpenLumara_request = args.OpenLumara and self._is_OpenLumara_path(self.path)
+        target_port = OpenLumara_default_webui_port if is_OpenLumara_request else upstream_port
+        forward_path = self._rewrite_OpenLumara_path(self.path) if is_OpenLumara_request else self.path
 
         global global_memory
         #specifically look for generation requests from completions or chat completions to handle hotswap
@@ -6177,7 +6177,7 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
 
         autoswapEnabled = global_memory["autoswapmode"] is not None and global_memory["autoswapmode"]
         hasReloaded = False
-        if not is_opticlaw_request:
+        if not is_OpenLumara_request:
             if is_post and (is_completions_path or is_chat_completions_path):
                 model_name = ""
                 isValidModelRequest = False
@@ -6321,28 +6321,28 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(html_502.encode("utf-8"))
             return
 
-        if is_opticlaw_request:
-            self._sendResponseToClient(resp, is_opticlaw_request, conn)
+        if is_OpenLumara_request:
+            self._sendResponseToClient(resp, is_OpenLumara_request, conn)
         else:
             with proxy_reload_lock:
-                self._sendResponseToClient(resp, is_opticlaw_request, conn)
+                self._sendResponseToClient(resp, is_OpenLumara_request, conn)
 
 
-    def _sendResponseToClient(self, resp, is_opticlaw_request, conn):
+    def _sendResponseToClient(self, resp, is_OpenLumara_request, conn):
         response_headers = resp.getheaders()
         content_type = resp.getheader("Content-Type", "")
         content_encoding = resp.getheader("Content-Encoding", "")
-        rewrite_body = is_opticlaw_request and self._should_rewrite_opticlaw_body(content_type, content_encoding)
+        rewrite_body = is_OpenLumara_request and self._should_rewrite_OpenLumara_body(content_type, content_encoding)
 
         if rewrite_body:
-            body_data = self._rewrite_opticlaw_body_bytes(resp.read())
+            body_data = self._rewrite_OpenLumara_body_bytes(resp.read())
             self.send_response(resp.status, resp.reason)
             for k, v in response_headers:
                 lk = k.lower()
                 if lk in self.HOP_BY_HOP or lk == "content-length":
                     continue
                 if lk == "location":
-                    v = self._rewrite_opticlaw_location(v)
+                    v = self._rewrite_OpenLumara_location(v)
                 self.send_header(k, v)
             self.send_header("Content-Length", str(len(body_data)))
             self.end_headers()
@@ -6356,8 +6356,8 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                 lk = k.lower()
                 if lk in self.HOP_BY_HOP:
                     continue
-                if lk == "location" and is_opticlaw_request:
-                    v = self._rewrite_opticlaw_location(v)
+                if lk == "location" and is_OpenLumara_request:
+                    v = self._rewrite_OpenLumara_location(v)
                 self.send_header(k, v)
             self.end_headers()
             self.close_connection = True
@@ -6689,7 +6689,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             super().log_message(format, *args)
         pass
 
-    def _is_opticlaw_path(self, raw_path):
+    def _is_OpenLumara_path(self, raw_path):
         try:
             parsed = urllib.parse.urlsplit(raw_path)
             path = parsed.path or "/"
@@ -6697,7 +6697,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             path = raw_path or "/"
         return (path == "/openlumara" or path.startswith("/openlumara/"))
 
-    def _opticlaw_upstream_path(self, raw_path):
+    def _OpenLumara_upstream_path(self, raw_path):
         parsed = urllib.parse.urlsplit(raw_path)
         path = parsed.path or "/"
         if path == "/openlumara":
@@ -6710,15 +6710,15 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             upstream_path = path
         return urllib.parse.urlunsplit(("", "", upstream_path, parsed.query, ""))
 
-    def _rewrite_opticlaw_location(self, value):
+    def _rewrite_OpenLumara_location(self, value):
         if not value:
             return value
 
         local_prefixes = [
-            f"http://localhost:{opticlaw_default_webui_port}",
-            f"https://localhost:{opticlaw_default_webui_port}",
-            f"http://127.0.0.1:{opticlaw_default_webui_port}",
-            f"https://127.0.0.1:{opticlaw_default_webui_port}",
+            f"http://localhost:{OpenLumara_default_webui_port}",
+            f"https://localhost:{OpenLumara_default_webui_port}",
+            f"http://127.0.0.1:{OpenLumara_default_webui_port}",
+            f"https://127.0.0.1:{OpenLumara_default_webui_port}",
         ]
 
         for prefix in local_prefixes:
@@ -6735,7 +6735,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         return value
 
-    def _should_rewrite_opticlaw_body(self, content_type, content_encoding):
+    def _should_rewrite_OpenLumara_body(self, content_type, content_encoding):
         if content_encoding:
             return False
         ct = str(content_type or "").lower()
@@ -6747,7 +6747,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             "application/x-javascript" in ct
         )
 
-    def _rewrite_opticlaw_body_text(self, text):
+    def _rewrite_OpenLumara_body_text(self, text):
         # Prefix absolute-root references so OpenLumara works from /openlumara.
         prefixes = [
             "/static/", "/api/", "/messages", "/stream", "/send", "/edit", "/delete", "/cancel", "/upload",
@@ -6763,19 +6763,19 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             text = text.replace(f"({p}", f"(/openlumara{p}")
         return text
 
-    def _rewrite_opticlaw_body_bytes(self, body_bytes):
+    def _rewrite_OpenLumara_body_bytes(self, body_bytes):
         try:
             decoded = body_bytes.decode("utf-8")
-            return self._rewrite_opticlaw_body_text(decoded).encode("utf-8")
+            return self._rewrite_OpenLumara_body_text(decoded).encode("utf-8")
         except Exception:
             try:
                 decoded = body_bytes.decode("latin-1")
-                return self._rewrite_opticlaw_body_text(decoded).encode("latin-1")
+                return self._rewrite_OpenLumara_body_text(decoded).encode("latin-1")
             except Exception:
                 return body_bytes
 
-    def proxy_opticlaw(self, method, body=None):
-        if not (args.opticlaw and self._is_opticlaw_path(self.path)):
+    def proxy_OpenLumara(self, method, body=None):
+        if not (args.OpenLumara and self._is_OpenLumara_path(self.path)):
             return False
 
         hop_by_hop = {
@@ -6788,12 +6788,12 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             if lk in hop_by_hop or lk == "host":
                 continue
             headers[k] = v
-        headers["Host"] = f"localhost:{opticlaw_default_webui_port}"
+        headers["Host"] = f"localhost:{OpenLumara_default_webui_port}"
         headers["Connection"] = "close"
 
         try:
-            conn = http.client.HTTPConnection("localhost", opticlaw_default_webui_port, timeout=600)
-            conn.request(method, self._opticlaw_upstream_path(self.path), body=body, headers=headers)
+            conn = http.client.HTTPConnection("localhost", OpenLumara_default_webui_port, timeout=600)
+            conn.request(method, self._OpenLumara_upstream_path(self.path), body=body, headers=headers)
             resp = conn.getresponse()
         except Exception as e:
             response_body = json.dumps({"detail": {"msg": f"OpenLumara proxy error: {str(e)}", "type": "service_unavailable"}}).encode()
@@ -6806,17 +6806,17 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         response_headers = resp.getheaders()
         content_type = resp.getheader("Content-Type", "")
         content_encoding = resp.getheader("Content-Encoding", "")
-        rewrite_body = self._should_rewrite_opticlaw_body(content_type, content_encoding)
+        rewrite_body = self._should_rewrite_OpenLumara_body(content_type, content_encoding)
 
         if rewrite_body:
-            body_data = self._rewrite_opticlaw_body_bytes(resp.read())
+            body_data = self._rewrite_OpenLumara_body_bytes(resp.read())
             self.send_response(resp.status, resp.reason)
             for k, v in response_headers:
                 lk = k.lower()
                 if lk in hop_by_hop or lk == "content-length":
                     continue
                 if lk == "location":
-                    v = self._rewrite_opticlaw_location(v)
+                    v = self._rewrite_OpenLumara_location(v)
                 self.send_header(k, v)
             self.send_header("Content-Length", str(len(body_data)))
             self.end_headers()
@@ -6832,7 +6832,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             if lk in hop_by_hop:
                 continue
             if lk == "location":
-                v = self._rewrite_opticlaw_location(v)
+                v = self._rewrite_OpenLumara_location(v)
             self.send_header(k, v)
         self.end_headers()
 
@@ -7650,7 +7650,7 @@ Change Mode<br>
         global savedata_obj, has_multiplayer, multiplayer_turn_major, multiplayer_turn_minor, multiplayer_story_data_compressed, multiplayer_dataformat, multiplayer_lastactive, maxctx, maxhordelen, friendlymodelname, lastuploadedcomfyimg, lastgeneratedcomfyimg, KcppVersion, totalgens, preloaded_story, exitcounter, currentusergenkey, friendlysdmodelname, fullsdmodelpath, password, friendlyembeddingsmodelname, voicelist
         global autoswapmode, textName, sttName, ttsName, embedName, musicName, imageName, mmprojName
 
-        if self.proxy_opticlaw("GET"):
+        if self.proxy_OpenLumara("GET"):
             return None
 
         clean_path = self.path.split("?")[0] #for cases where we do not want query params
@@ -8379,7 +8379,7 @@ Change Mode<br>
                 }}).encode())
                 return
 
-        if self.proxy_opticlaw("POST", body=body):
+        if self.proxy_OpenLumara("POST", body=body):
             return
 
         self.path = self.path.rstrip('/')
@@ -10350,7 +10350,7 @@ def show_gui():
 
     tabs = ctk.CTkFrame(root, corner_radius = 0, width=windowwidth, height=windowheight-50)
     tabs.grid(row=0, stick="nsew")
-    tabnames= ["Quick Launch", "Hardware", "Context", "Loaded Files", "Network", "Horde Worker","Image Gen","Audio","Admin","Filesystem","Extra","Opticlaw"]
+    tabnames= ["Quick Launch", "Hardware", "Context", "Loaded Files", "Network", "Horde Worker","Image Gen","Audio","Admin","Filesystem","Extra","OpenLumara"]
     navbuttons = {}
     navbuttonframe = ctk.CTkFrame(tabs, width=int(104), height=int(tabs.cget("height")))
     navbuttonframe.grid(row=0, column=0, padx=2,pady=2)
@@ -10520,11 +10520,11 @@ def show_gui():
     fs_dir_var = ctk.StringVar(value="")
     fs_direct_var = ctk.IntVar(value=0)
 
-    opticlaw_var = ctk.IntVar(value=0)
-    opticlaw_configfile_var = ctk.StringVar(value="")
-    opticlaw_datadir_var = ctk.StringVar(value="")
-    opticlaw_sandboxfolder_var = ctk.StringVar(value="")
-    opticlaw_apiurl_var = ctk.StringVar(value="")
+    OpenLumara_var = ctk.IntVar(value=0)
+    OpenLumara_configfile_var = ctk.StringVar(value="")
+    OpenLumara_datadir_var = ctk.StringVar(value="")
+    OpenLumara_sandboxfolder_var = ctk.StringVar(value="")
+    OpenLumara_apiurl_var = ctk.StringVar(value="")
 
     nozenity_var = ctk.IntVar(value=0)
 
@@ -11449,14 +11449,14 @@ def show_gui():
         makelabel(extra_tab, "Spawn Terminal Logs", 12, 0,tooltiptxt="A simple terminal logger that duplicates the command line output.")
         ctk.CTkButton(extra_tab , text = "Spawn Terminal", command = showtermlogs ).grid(row=12,column=0, stick="w", padx= 170, pady=2)
 
-    opticlaw_tab = tabcontent["Opticlaw"]
-    makelabel(opticlaw_tab, "Opticlaw AI Agent", 0, 0, tooltiptxt="Opticlaw is a modular, token-efficient AI agent framework that runs alongside KoboldCpp.")
-    makecheckbox(opticlaw_tab, "Enable Opticlaw", opticlaw_var, 1, tooltiptxt="Launch the Opticlaw AI agent automatically when KoboldCpp starts.")
-    # makelabelentry(opticlaw_tab, "Config File (required):", opticlaw_configfile_var, 3, 220, tooltip="Path to the Opticlaw config YAML file. A default config will be generated at this path if the file is absent.\nLeave blank to use the default location in esoExtras/opticlaw/config/config.yml")
-    makefileentry(opticlaw_tab, "Config File (required):", "Select Opticlaw config file", opticlaw_configfile_var, 3, width=220, dialog_type=0, tooltiptxt="Path to the Opticlaw config YAML file. A default config will be generated at this path if the file is absent.")
-    makefileentry(opticlaw_tab, "Data Directory (required):", "Select Opticlaw data directory", opticlaw_datadir_var, 5, width=220, dialog_type=2, tooltiptxt="Overrides the data_dir field in the Opticlaw config.")
-    makefileentry(opticlaw_tab, "Sandbox Folder (required):", "Select Opticlaw sandbox folder", opticlaw_sandboxfolder_var, 7, width=220, dialog_type=2, tooltiptxt="Overrides the sandbox_folder field in the Opticlaw config.")
-    makelabelentry(opticlaw_tab, "OAI API URL (optional):", opticlaw_apiurl_var, 9, 220, tooltip=f"Overrides the API URL in the Opticlaw config.\nLeave blank to use the value already in the config.\nExample: https://localhost:{defaultport}/v1")
+    OpenLumara_tab = tabcontent["OpenLumara"]
+    makelabel(OpenLumara_tab, "OpenLumara AI Agent", 0, 0, tooltiptxt="OpenLumara is a modular, token-efficient AI agent framework that runs alongside KoboldCpp.")
+    makecheckbox(OpenLumara_tab, "Enable OpenLumara", OpenLumara_var, 1, tooltiptxt="Launch the OpenLumara AI agent automatically when KoboldCpp starts.")
+    # makelabelentry(OpenLumara_tab, "Config File (required):", OpenLumara_configfile_var, 3, 220, tooltip="Path to the OpenLumara config YAML file. A default config will be generated at this path if the file is absent.\nLeave blank to use the default location in esoExtras/opticlaw/config/config.yml")
+    makefileentry(OpenLumara_tab, "Config File (required):", "Select OpenLumara config file", OpenLumara_configfile_var, 3, width=220, dialog_type=0, tooltiptxt="Path to the OpenLumara config YAML file. A default config will be generated at this path if the file is absent.")
+    makefileentry(OpenLumara_tab, "Data Directory (required):", "Select OpenLumara data directory", OpenLumara_datadir_var, 5, width=220, dialog_type=2, tooltiptxt="Overrides the data_dir field in the OpenLumara config.")
+    makefileentry(OpenLumara_tab, "Sandbox Folder (required):", "Select OpenLumara sandbox folder", OpenLumara_sandboxfolder_var, 7, width=220, dialog_type=2, tooltiptxt="Overrides the sandbox_folder field in the OpenLumara config.")
+    makelabelentry(OpenLumara_tab, "OAI API URL (optional):", OpenLumara_apiurl_var, 9, 220, tooltip=f"Overrides the API URL in the OpenLumara config.\nLeave blank to use the value already in the config.\nExample: https://localhost:{defaultport}/v1")
 
     # refresh
     runopts_var.trace_add("write", changerunmode)
@@ -11726,11 +11726,11 @@ def show_gui():
         args.adminallowhf = (admin_allow_hf_var.get()==1 and not args.cli)
         args.developerMode = (developer_mode_var.get()==1)
 
-        args.opticlaw = (opticlaw_var.get()==1)
-        args.opticlaw_configfile = opticlaw_configfile_var.get()
-        args.opticlaw_datadir = opticlaw_datadir_var.get()
-        args.opticlaw_sandboxfolder = opticlaw_sandboxfolder_var.get()
-        args.opticlaw_apiurl = opticlaw_apiurl_var.get()
+        args.OpenLumara = (OpenLumara_var.get()==1)
+        args.OpenLumara_configfile = OpenLumara_configfile_var.get()
+        args.OpenLumara_datadir = OpenLumara_datadir_var.get()
+        args.OpenLumara_sandboxfolder = OpenLumara_sandboxfolder_var.get()
+        args.OpenLumara_apiurl = OpenLumara_apiurl_var.get()
 
     def import_vars(dict):
         global importvars_in_progress
@@ -12003,11 +12003,11 @@ def show_gui():
         fs_direct_var.set(dict["fsdirect"] if ("fsdirect" in dict) else 0)
         togglefsdiskmode(None,None,None)
 
-        opticlaw_var.set(1 if "opticlaw" in dict and dict["opticlaw"] else 0)
-        opticlaw_configfile_var.set(dict["opticlaw_configfile"] if ("opticlaw_configfile" in dict and dict["opticlaw_configfile"]) else "")
-        opticlaw_datadir_var.set(dict["opticlaw_datadir"] if ("opticlaw_datadir" in dict and dict["opticlaw_datadir"]) else "")
-        opticlaw_sandboxfolder_var.set(dict["opticlaw_sandboxfolder"] if ("opticlaw_sandboxfolder" in dict and dict["opticlaw_sandboxfolder"]) else "")
-        opticlaw_apiurl_var.set(dict["opticlaw_apiurl"] if ("opticlaw_apiurl" in dict and dict["opticlaw_apiurl"]) else "")
+        OpenLumara_var.set(1 if "OpenLumara" in dict and dict["OpenLumara"] else 0)
+        OpenLumara_configfile_var.set(dict["OpenLumara_configfile"] if ("OpenLumara_configfile" in dict and dict["OpenLumara_configfile"]) else "")
+        OpenLumara_datadir_var.set(dict["OpenLumara_datadir"] if ("OpenLumara_datadir" in dict and dict["OpenLumara_datadir"]) else "")
+        OpenLumara_sandboxfolder_var.set(dict["OpenLumara_sandboxfolder"] if ("OpenLumara_sandboxfolder" in dict and dict["OpenLumara_sandboxfolder"]) else "")
+        OpenLumara_apiurl_var.set(dict["OpenLumara_apiurl"] if ("OpenLumara_apiurl" in dict and dict["OpenLumara_apiurl"]) else "")
 
         importvars_in_progress = False
         gui_changed_modelfile()
@@ -12959,18 +12959,18 @@ def unregister_koboldcpp():
     except Exception as e:
         print(f"Unregister Extensions: An error occurred: {e}")
 
-def get_opticlaw_dir():
-    """Returns the absolute path to the bundled opticlaw directory."""
+def get_OpenLumara_dir():
+    """Returns the absolute path to the bundled OpenLumara directory."""
     return os.path.join(getdirpath(), "esoExtras", "opticlaw")
 
-def prepare_opticlaw_config(launch_args):
-    """Generate or update the opticlaw config YAML with any user-provided overrides."""
+def prepare_OpenLumara_config(launch_args):
+    """Generate or update the OpenLumara config YAML with any user-provided overrides."""
     import yaml
-    opticlaw_dir = get_opticlaw_dir()
-    config_dir = os.path.join(opticlaw_dir, "config")
+    OpenLumara_dir = get_OpenLumara_dir()
+    config_dir = os.path.join(OpenLumara_dir, "config")
 
     # Determine config file path
-    configfile = (launch_args.opticlaw_configfile or "").strip()
+    configfile = (launch_args.OpenLumara_configfile or "").strip()
     if configfile and os.path.isabs(configfile):
         config_path = configfile
     elif configfile:
@@ -12978,7 +12978,7 @@ def prepare_opticlaw_config(launch_args):
     else:
         config_path = os.path.join(config_dir, "config.yml")
 
-    # Default opticlaw config template
+    # Default OpenLumara config template
     default_cfg = {
         "data_dir": "./data",
         "api": {
@@ -12994,14 +12994,14 @@ def prepare_opticlaw_config(launch_args):
             "settings": {
                 "discord": {"token": "TOKEN_HERE"},
                 "matrix": {
-                    "device_id": "opticlaw-bot",
-                    "device_name": "Opticlaw",
+                    "device_id": "OpenLumara-bot",
+                    "device_name": "OpenLumara",
                     "homeserver": "https://matrix.org",
                     "password": "your_password_here",
                     "user_id": "@your_bot:matrix.org",
                 },
                 "telegram": {"token": "TOKEN_HERE"},
-                "webui": {"host": "localhost", "port": opticlaw_default_webui_port},
+                "webui": {"host": "localhost", "port": OpenLumara_default_webui_port},
             },
         },
         "model": {"name": "MODEL_HERE", "temperature": 0.2, "use_tools": True},
@@ -13036,44 +13036,44 @@ def prepare_opticlaw_config(launch_args):
                 return result
             cfg = deep_merge(default_cfg, loaded)
         except Exception as e:
-            print(f"Warning: Could not load opticlaw config '{config_path}': {e}. Using defaults.")
+            print(f"Warning: Could not load OpenLumara config '{config_path}': {e}. Using defaults.")
 
     # Apply overrides from KoboldCpp args
-    if launch_args.opticlaw_datadir:
-        cfg["data_dir"] = launch_args.opticlaw_datadir
-    if launch_args.opticlaw_sandboxfolder:
-        cfg.setdefault("modules", {}).setdefault("settings", {}).setdefault("files", {})["sandbox_folder"] = launch_args.opticlaw_sandboxfolder
-    if launch_args.opticlaw_apiurl:
-        cfg.setdefault("api", {})["url"] = launch_args.opticlaw_apiurl
+    if launch_args.OpenLumara_datadir:
+        cfg["data_dir"] = launch_args.OpenLumara_datadir
+    if launch_args.OpenLumara_sandboxfolder:
+        cfg.setdefault("modules", {}).setdefault("settings", {}).setdefault("files", {})["sandbox_folder"] = launch_args.OpenLumara_sandboxfolder
+    if launch_args.OpenLumara_apiurl:
+        cfg.setdefault("api", {})["url"] = launch_args.OpenLumara_apiurl
 
     # Ensure config directory exists and save
     os.makedirs(os.path.dirname(config_path), exist_ok=True)
     try:
         with open(config_path, "w", encoding="utf-8") as f:
             yaml.dump(cfg, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
-        print(f"Opticlaw config saved to: {config_path}")
+        print(f"OpenLumara config saved to: {config_path}")
         return config_path
     except Exception as e:
-        print(f"Warning: Could not save opticlaw config: {e}")
+        print(f"Warning: Could not save OpenLumara config: {e}")
         return None
     
 
-def launch_opticlaw(launch_args):
-    """Launch the Opticlaw AI agent as a subprocess."""
-    opticlaw_dir = get_opticlaw_dir()
-    opticlaw_main = os.path.join(opticlaw_dir, "main.py")
-    if not os.path.exists(opticlaw_main):
-        print(f"Warning: Opticlaw main.py not found at '{opticlaw_main}'. Is the submodule checked out?")
+def launch_OpenLumara(launch_args):
+    """Launch the OpenLumara AI agent as a subprocess."""
+    OpenLumara_dir = get_OpenLumara_dir()
+    OpenLumara_main = os.path.join(OpenLumara_dir, "main.py")
+    if not os.path.exists(OpenLumara_main):
+        print(f"Warning: OpenLumara main.py not found at '{OpenLumara_main}'. Is the submodule checked out?")
         return None
     
-    if not (launch_args.opticlaw_configfile and launch_args.opticlaw_datadir and launch_args.opticlaw_sandboxfolder):
-        print("Warning: Missing required Opticlaw launch arguments. Skipping.")
+    if not (launch_args.OpenLumara_configfile and launch_args.OpenLumara_datadir and launch_args.OpenLumara_sandboxfolder):
+        print("Warning: Missing required OpenLumara launch arguments. Skipping.")
         return None
 
-    configPath = prepare_opticlaw_config(launch_args)
+    configPath = prepare_OpenLumara_config(launch_args)
 
     if not configPath:
-        print("Warning: Opticlaw config preparation failed. Skipping launch.")
+        print("Warning: OpenLumara config preparation failed. Skipping launch.")
         return None
 
     try:
@@ -13096,19 +13096,19 @@ def launch_opticlaw(launch_args):
             print(f"[Subprocess Error] {line}")
         
         proc = subprocess.Popen(
-            [sys.executable, opticlaw_main, "--config", configPath],
-            cwd=opticlaw_dir,
+            [sys.executable, OpenLumara_main, "--config", configPath],
+            cwd=OpenLumara_dir,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1
         )
-        print(f"Opticlaw started (PID {proc.pid})")
+        print(f"OpenLumara started (PID {proc.pid})")
         threading.Thread(target=read_stream, args=(proc.stdout, log_output), daemon=True).start()
         threading.Thread(target=read_stream, args=(proc.stderr, log_error), daemon=True).start()
         return proc
     except Exception as e:
-        print(f"Warning: Failed to launch Opticlaw: {e}")
+        print(f"Warning: Failed to launch OpenLumara: {e}")
         return None
 
 def main(launch_args, default_args):
@@ -13258,9 +13258,9 @@ def main(launch_args, default_args):
             print("\nAdmin directory was empty, default file generated.\n")
 
     if not args.admin: #run in single process mode
-        if args.opticlaw and not args.prompt and not args.benchmark and not args.cli:
-            res = launch_opticlaw(args)
-            global_memory["opticlaw"] = res is not None
+        if args.OpenLumara and not args.prompt and not args.benchmark and not args.cli:
+            res = launch_OpenLumara(args)
+            global_memory["OpenLumara"] = res is not None
         if args.remotetunnel and not args.prompt and not args.benchmark and not args.cli:
             setuptunnel(global_memory, True if args.sdmodel else False)
         kcpp_main_process(args,global_memory,using_gui_launcher)
@@ -13270,11 +13270,11 @@ def main(launch_args, default_args):
             input()
     else:  # manager command queue for admin mode
         with multiprocessing.Manager() as mp_manager:
-            global_memory = mp_manager.dict({"tunnel_url": "", "restart_target": "", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "current_override":"", "swapReqType": None, "autoswapmode": False, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}, "restart_override_config_target": "", "current_model_override": "", "opticlaw": False})
+            global_memory = mp_manager.dict({"tunnel_url": "", "restart_target": "", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "current_override":"", "swapReqType": None, "autoswapmode": False, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}, "restart_override_config_target": "", "current_model_override": "", "OpenLumara": False})
 
-            if args.opticlaw and not args.prompt and not args.benchmark and not args.cli:
-                res = launch_opticlaw(args)
-                global_memory["opticlaw"] = res is not None
+            if args.OpenLumara and not args.prompt and not args.benchmark and not args.cli:
+                res = launch_OpenLumara(args)
+                global_memory["OpenLumara"] = res is not None
             if args.remotetunnel and not args.prompt and not args.benchmark and not args.cli:
                 setuptunnel(global_memory, True if args.sdmodel else False)
 
@@ -14676,12 +14676,12 @@ if __name__ == '__main__':
     admingroup.add_argument("--routermode", help="Router mode uses a reverse proxy router, allowing you to easily hotswap models and configs within a single request. Requires admin mode.", action='store_true')
     admingroup.add_argument("--autoswapmode", help="Autoswap mode builds on router mode to allow switching of model types within the same config automatically. Requires admin mode and router mode. All models desired must be defined within the same config.", action='store_true')
 
-    opticlawgroup = parser.add_argument_group('Opticlaw Commands')
-    opticlawgroup.add_argument("--opticlaw", help="Enable and launch the Opticlaw AI agent alongside KoboldCpp.", action='store_true')
-    opticlawgroup.add_argument("--opticlaw_configfile", metavar=('[filename]'), help="Path to the Opticlaw config YAML file. Generated with defaults if the file is absent.", default="", type=str)
-    opticlawgroup.add_argument("--opticlaw_datadir", metavar=('[directory]'), help="Overrides the data_dir field in the Opticlaw config.", default="", type=str)
-    opticlawgroup.add_argument("--opticlaw_sandboxfolder", metavar=('[directory]'), help="Overrides the sandbox_folder field in the Opticlaw config.", default="", type=str)
-    opticlawgroup.add_argument("--opticlaw_apiurl", metavar=('[url]'), help="Overrides the API URL field in the Opticlaw config.", default="", type=str)
+    OpenLumaragroup = parser.add_argument_group('OpenLumara Commands')
+    OpenLumaragroup.add_argument("--OpenLumara", help="Enable and launch the OpenLumara AI agent alongside KoboldCpp.", action='store_true')
+    OpenLumaragroup.add_argument("--OpenLumara_configfile", metavar=('[filename]'), help="Path to the OpenLumara config YAML file. Generated with defaults if the file is absent.", default="", type=str)
+    OpenLumaragroup.add_argument("--OpenLumara_datadir", metavar=('[directory]'), help="Overrides the data_dir field in the OpenLumara config.", default="", type=str)
+    OpenLumaragroup.add_argument("--OpenLumara_sandboxfolder", metavar=('[directory]'), help="Overrides the sandbox_folder field in the OpenLumara config.", default="", type=str)
+    OpenLumaragroup.add_argument("--OpenLumara_apiurl", metavar=('[url]'), help="Overrides the API URL field in the OpenLumara config.", default="", type=str)
 
     deprecatedgroup = parser.add_argument_group('Deprecated Commands, DO NOT USE!')
     deprecatedgroup.add_argument("--hordeconfig", help=argparse.SUPPRESS, nargs='+')
