@@ -1,3 +1,19 @@
+window.eso.lumaraPollingIntervalId = null;
+
+window.setupLumaraPolling = () => {
+    if (!!window.eso.lumaraPollingIntervalId) {
+        clearInterval(window.eso.lumaraPollingIntervalId)
+        window.eso.lumaraPollingIntervalId = null;
+    }
+    
+    if (isAgentModeEnabledAndSetCorrectly() && is_using_kcpp_with_open_lumara() && !!localsettings?.agentLumaraPollingRate && localsettings.agentLumaraPollingRate > 0) {
+        window.eso.currentlyProcessingFromLumara = false;
+        window.eso.lumaraPollingIntervalId = setInterval(async () => {
+            await pollForLatestMessagesFromLumara();
+        }, localsettings?.agentLumaraPollingRate * 1000)
+    }
+}
+
 let corpoHide_render_gametext = render_gametext;
 render_gametext = (...args) => {
     corpoHide_render_gametext(...args)
@@ -194,6 +210,8 @@ display_settings = () => {
     document.getElementById("agentCOTRepeatsMaxnumeric").value = localsettings.agentCOTRepeatsMax;
     document.getElementById("agentUseOAITools").checked = localsettings.agentUseOAITools;
     document.getElementById("agentStreamThinking").checked = localsettings.agentStreamThinking;
+    document.getElementById("agentLumaraPollingRate").value = localsettings.agentLumaraPollingRate;
+    document.getElementById("agentLumaraPollingRatenumeric").value = localsettings.agentLumaraPollingRate;
     document.getElementById("disableSaveCompressionLocally").checked = localsettings.disableSaveCompressionLocally;
     document.getElementById("enableRunningMemory").checked = localsettings.enableRunningMemory;
     document.getElementById("worldTreePrune").checked = localsettings.worldTreePrune;
@@ -227,6 +245,7 @@ confirm_settings = () => {
     localsettings.agentCOTRepeatsMax = document.getElementById("agentCOTRepeatsMax").value;
     localsettings.agentUseOAITools = (document.getElementById("agentUseOAITools").checked ? true : false);
     localsettings.agentStreamThinking = (document.getElementById("agentStreamThinking").checked ? true : false);
+    localsettings.agentLumaraPollingRate = document.getElementById("agentLumaraPollingRate").value;
     localsettings.disableSaveCompressionLocally = (document.getElementById("disableSaveCompressionLocally").checked ? true : false);
     localsettings.enableRunningMemory = (document.getElementById("enableRunningMemory").checked ? true : false);
     localsettings.worldTreePrune = (document.getElementById("worldTreePrune").checked ? true : false);
@@ -257,6 +276,8 @@ confirm_settings = () => {
         if (window?.contextUsage?.renderContextUsage) {
             window.contextUsage.renderContextUsage();
         }
+        
+        window.setupLumaraPolling();
     }
     catch (e)
     {
@@ -289,6 +310,9 @@ window.addEventListener('load', () => {
     }
     if (localsettings?.agentStreamThinking == undefined) {
         localsettings.agentStreamThinking = true
+    }
+    if (localsettings?.agentLumaraPollingRate == undefined) {
+        localsettings.agentLumaraPollingRate = is_using_kcpp_with_open_lumara() ? 60 : 0
     }
     if (localsettings?.disableSaveCompressionLocally == undefined) {
         localsettings.disableSaveCompressionLocally = true
@@ -328,6 +352,9 @@ window.addEventListener('load', () => {
     }
     if (!Array.isArray(localsettings?.disabled_agent_tools)) {
         localsettings.disabled_agent_tools = []
+    }
+    if (localsettings?.lastMessageProcessedFromLumara == undefined) {
+        localsettings.lastMessageProcessedFromLumara = 0
     }
 
     // Overwrite the switching to handle new dynamically added menus
@@ -557,6 +584,9 @@ window.addEventListener('load', () => {
     settingLabelElem = createSettingElemBool("agentStreamThinking", "Stream agent thinking", "When enabled, shows the LLM output tokens as they are generated during each agent step, rather than waiting for the full response. For the standard mode this requires KoboldCpp SSE streaming support (v1.40+). For OAI tools mode, streaming is used automatically.")
     agentElems.push(settingLabelElem)
 
+    settingLabelElem = createSettingElemRange("agentLumaraPollingRate", "Lumara polling rate", "Defines the rate at which the agent polls Lumara for new messages (in seconds). Zero means no polling.", 0, 1000, 1, is_using_kcpp_with_open_lumara() ? 60 : 0)
+    agentElems.push(settingLabelElem)
+
     // Hidden as this is no longer is in use for now
     settingLabelElem = createSettingElemRange("agentCOTRepeatsMax", "Maximum repeated agent actions of a type", "Defines the maximum number of actions the agent can take of the same type without a user input", 1, 20, 1, 1)
     settingLabelElem.style.display = "none"
@@ -630,4 +660,19 @@ window.addEventListener('load', () => {
     settingsBox.append(settingLabelElem)
 
     createStopThinkingButton()
+
+    setTimeout(() => {
+        window.setupLumaraPolling();
+    }, 15*1000);
 })
+
+let previousRestartNewGameLumara = restart_new_game, previousLoadSelectedFileLumara = load_selected_file
+restart_new_game = (save = true, keep_memory = false) => {
+    previousRestartNewGameLumara(save, keep_memory)
+    localsettings.lastMessageProcessedFromLumara = 0
+}
+
+load_selected_file = (file) => {
+    previousLoadSelectedFileLumara(file)
+    localsettings.lastMessageProcessedFromLumara = 0
+}

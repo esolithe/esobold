@@ -32764,5 +32764,6 @@ Current version indicated by LITEVER below.
 <script src="static/js/esoWelcome.js"></script>
 <script src="static/js/enableAllEndpointsLocally.js"></script>
 <script src="static/js/contextUsage.js"></script>
+<script src="static/js/agent/agent_openlumarapolling.js"></script>
 <!-- EsoLite modifications end -->
 </html>
