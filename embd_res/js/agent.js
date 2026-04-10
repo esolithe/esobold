@@ -945,7 +945,7 @@ window.eso.agentMacros = {
                     "action": "lumara_send",
                     "objective": "Send the message specified by the user to the OpenLumara system."
                 }
-                ]
+            ]
         },
     },
 }
@@ -1225,6 +1225,7 @@ let runAgentCycle = async (agentRunState = {}) => {
             }, {}) : {}
         }
         manualOverridesForEnabledCommands = Object.keys(configOverrides)
+        let shouldSkipPlanningStep = !agentRunState?.planToUse && !!localsettings?.agentSkipPlanningStep
 
         let originalConfiguration = await reloadUtils.getCurrentConfigAndModel()
         let previousConfig = JSON.parse(JSON.stringify(originalConfiguration))
@@ -1294,7 +1295,7 @@ let runAgentCycle = async (agentRunState = {}) => {
                 planningPrompt += ` You must respond as ${localsettings.chatopponent.split("||$||").join(" or ")} when using the send_message or userInput actions.`
             }
 
-            if (!agentRunState?.planToUse) {
+            if (!agentRunState?.planToUse && !shouldSkipPlanningStep) {
                 // Planning step: use plan_actions as the only tool
                 let planningTools = commandsToOAITools(getReasoningCommand(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist))
                 currentChainOfThought = currentChainOfThought.splice(-maxActionsInHistory)
@@ -1357,6 +1358,9 @@ let runAgentCycle = async (agentRunState = {}) => {
                 Array(...document.getElementsByClassName("stopThinking")).forEach(elem => elem.classList.remove("hidden"))
 
                 let validCommands = getEnabledCommands(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist).map(c => c.name)
+                if (i === 0 && currentOrderOfActionsOverall.length === 0) {
+                    validCommands = validCommands.filter(name => name !== "stop_thinking")
+                }
                 let plannedCommandName = currentOrderOfActionsOverall.length > i ? currentOrderOfActionsOverall[i] : null
                 let plannedCommand = plannedCommandName ? getCommands(agentRunState).find(c => c.name === plannedCommandName) : null
 
@@ -1376,7 +1380,7 @@ let runAgentCycle = async (agentRunState = {}) => {
                     execTools = commandsToOAITools([plannedCommand])
                     execToolChoice = { type: "function", function: { name: plannedCommand.name } }
                 } else {
-                    let enabledCmds = getEnabledCommands(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist)
+                    let enabledCmds = getEnabledCommands(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist).filter(command => validCommands.includes(command.name))
                     execTools = commandsToOAITools(enabledCmds)
                     execToolChoice = "auto"
                 }
@@ -1455,11 +1459,13 @@ let runAgentCycle = async (agentRunState = {}) => {
             }
         } else {
         let isCompleted = false
-        for (let i = !!agentRunState?.planToUse ? 1 : 0; i < Number(localsettings.agentCOTMax) + 1 && (currentOrderOfActionsOverall.length === 0 || i < currentOrderOfActionsOverall.length + 1) && agentRunState.endCurrent === false; i++) {
+        let standardLoopStartIndex = (!!agentRunState?.planToUse || shouldSkipPlanningStep) ? 1 : 0
+        for (let i = standardLoopStartIndex; i < Number(localsettings.agentCOTMax) + 1 && (currentOrderOfActionsOverall.length === 0 || i < currentOrderOfActionsOverall.length + 1) && agentRunState.endCurrent === false; i++) {
             Array(...document.getElementsByClassName("stopThinking")).forEach(elem => elem.classList.remove("hidden"))
 
             let nextAction = []
-            let validCommands = getEnabledCommands(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist).map(command => command.name).filter(name => i != 0 || name != "stop_thinking")
+            let isInitialActionSelection = i === standardLoopStartIndex
+            let validCommands = getEnabledCommands(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist).map(command => command.name).filter(name => !isInitialActionSelection || name != "stop_thinking")
             if (i == 0) {
                 nextAction = getReasoningCommand(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist)
             }

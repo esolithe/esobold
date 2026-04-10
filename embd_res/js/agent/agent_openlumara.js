@@ -137,7 +137,7 @@ export const buildOpenlumaraCommands = (ctx) => {
 		},
 		{
 			"name": "lumara_send",
-			"description": "Send a user message to OpenLumara and receive the AI assistant's response. The reply is added to the OpenLumara conversation history.",
+			"description": "Send a user message to OpenLumara and receive the AI assistant's response. The reply is added to the OpenLumara conversation history and displayed to the user.",
 			"args": {
 				"message": {
 					description: "<the message text to send to OpenLumara>",

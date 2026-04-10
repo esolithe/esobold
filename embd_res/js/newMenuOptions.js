@@ -209,6 +209,7 @@ display_settings = () => {
     document.getElementById("agentCOTRepeatsMax").value = localsettings.agentCOTRepeatsMax;
     document.getElementById("agentCOTRepeatsMaxnumeric").value = localsettings.agentCOTRepeatsMax;
     document.getElementById("agentUseOAITools").checked = localsettings.agentUseOAITools;
+    document.getElementById("agentSkipPlanningStep").checked = localsettings.agentSkipPlanningStep;
     document.getElementById("agentStreamThinking").checked = localsettings.agentStreamThinking;
     document.getElementById("agentLumaraPollingRate").value = localsettings.agentLumaraPollingRate || 0;
     document.getElementById("agentLumaraPollingRatenumeric").value = localsettings.agentLumaraPollingRate || 0;
@@ -244,6 +245,7 @@ confirm_settings = () => {
     localsettings.agentAutoContinue = (document.getElementById("agentAutoContinue").checked ? true : false);
     localsettings.agentCOTRepeatsMax = document.getElementById("agentCOTRepeatsMax").value;
     localsettings.agentUseOAITools = (document.getElementById("agentUseOAITools").checked ? true : false);
+    localsettings.agentSkipPlanningStep = (document.getElementById("agentSkipPlanningStep").checked ? true : false);
     localsettings.agentStreamThinking = (document.getElementById("agentStreamThinking").checked ? true : false);
     localsettings.agentLumaraPollingRate = document.getElementById("agentLumaraPollingRate").value || 0;
     localsettings.disableSaveCompressionLocally = (document.getElementById("disableSaveCompressionLocally").checked ? true : false);
@@ -307,6 +309,9 @@ window.addEventListener('load', () => {
     }
     if (localsettings?.agentUseOAITools == undefined) {
         localsettings.agentUseOAITools = false
+    }
+    if (localsettings?.agentSkipPlanningStep == undefined) {
+        localsettings.agentSkipPlanningStep = false
     }
     if (localsettings?.agentStreamThinking == undefined) {
         localsettings.agentStreamThinking = true
@@ -576,6 +581,9 @@ window.addEventListener('load', () => {
     agentElems.push(settingLabelElem)
 
     settingLabelElem = createSettingElemBool("agentUseOAITools", "Use OpenAI tools for command selection", "When enabled, the agent uses the OpenAI-compatible /v1/chat/completions endpoint with tool calling to select commands, instead of grammar-constrained generation. Requires a KoboldCpp endpoint that supports the OpenAI tools API. The agent performs a planning step (using plan_actions as a tool) followed by executing each planned step.")
+    agentElems.push(settingLabelElem)
+
+    settingLabelElem = createSettingElemBool("agentSkipPlanningStep", "Skip agent planning step", "When enabled, the agent skips the initial plan_actions step and selects commands directly each cycle. Explicit plans provided by macros still run normally.")
     agentElems.push(settingLabelElem)
 
     settingLabelElem = createSettingElemBool("agentStreamThinking", "Stream agent thinking", "When enabled, shows the LLM output tokens as they are generated during each agent step, rather than waiting for the full response. For the standard mode this requires KoboldCpp SSE streaming support (v1.40+). For OAI tools mode, streaming is used automatically.")
