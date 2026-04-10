@@ -21,18 +21,19 @@ jobs:
       image: ubuntu:20.04
       options: --privileged
     steps:
-      - name: Install git on container
-        run: |
-          apt update
-          apt install -y git
+      # - name: Install git on container
+      #   run: |
+      #     apt update
+      #     apt install -y git
       - name: Clone
         id: checkout
         uses: actions/checkout@v5
         with:
           ref: ${{ inputs.commit_hash != '' && inputs.commit_hash || github.head_ref || github.ref_name }}
-      - name: Checkout submodules
-        run: |
-          git submodule update --init --recursive
+          submodules: true
+      # - name: Checkout submodules
+      #   run: |
+      #     git submodule update --init --recursive
 
       - name: Show Commit Used
         run: |
