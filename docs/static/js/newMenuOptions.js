@@ -1,3 +1,19 @@
+window.eso.lumaraPollingIntervalId = null;
+
+window.setupLumaraPolling = () => {
+    if (!!window.eso.lumaraPollingIntervalId) {
+        clearInterval(window.eso.lumaraPollingIntervalId)
+        window.eso.lumaraPollingIntervalId = null;
+    }
+    
+    if (isAgentModeEnabledAndSetCorrectly() && is_using_kcpp_with_open_lumara() && !!localsettings?.agentLumaraPollingRate && localsettings.agentLumaraPollingRate > 0) {
+        window.eso.currentlyProcessingFromLumara = false;
+        window.eso.lumaraPollingIntervalId = setInterval(async () => {
+            await pollForLatestMessagesFromLumara();
+        }, localsettings?.agentLumaraPollingRate * 1000)
+    }
+}
+
 let corpoHide_render_gametext = render_gametext;
 render_gametext = (...args) => {
     corpoHide_render_gametext(...args)
@@ -193,7 +209,13 @@ display_settings = () => {
     document.getElementById("agentCOTRepeatsMax").value = localsettings.agentCOTRepeatsMax;
     document.getElementById("agentCOTRepeatsMaxnumeric").value = localsettings.agentCOTRepeatsMax;
     document.getElementById("agentUseOAITools").checked = localsettings.agentUseOAITools;
+    document.getElementById("agentSkipPlanningStep").checked = localsettings.agentSkipPlanningStep;
+    document.getElementById("agentMaxActionsInHistory").value = localsettings.agentMaxActionsInHistory;
+    document.getElementById("agentMaxActionsInHistorynumeric").value = localsettings.agentMaxActionsInHistory;
+    document.getElementById("agentSkipPreviousCOTWhenProcessing").checked = localsettings.agentSkipPreviousCOTWhenProcessing;
     document.getElementById("agentStreamThinking").checked = localsettings.agentStreamThinking;
+    document.getElementById("agentLumaraPollingRate").value = localsettings.agentLumaraPollingRate || 0;
+    document.getElementById("agentLumaraPollingRatenumeric").value = localsettings.agentLumaraPollingRate || 0;
     document.getElementById("disableSaveCompressionLocally").checked = localsettings.disableSaveCompressionLocally;
     document.getElementById("enableRunningMemory").checked = localsettings.enableRunningMemory;
     document.getElementById("worldTreePrune").checked = localsettings.worldTreePrune;
@@ -226,7 +248,11 @@ confirm_settings = () => {
     localsettings.agentAutoContinue = (document.getElementById("agentAutoContinue").checked ? true : false);
     localsettings.agentCOTRepeatsMax = document.getElementById("agentCOTRepeatsMax").value;
     localsettings.agentUseOAITools = (document.getElementById("agentUseOAITools").checked ? true : false);
+    localsettings.agentSkipPlanningStep = (document.getElementById("agentSkipPlanningStep").checked ? true : false);
+    localsettings.agentMaxActionsInHistory = document.getElementById("agentMaxActionsInHistory").value;
+    localsettings.agentSkipPreviousCOTWhenProcessing = (document.getElementById("agentSkipPreviousCOTWhenProcessing").checked ? true : false);
     localsettings.agentStreamThinking = (document.getElementById("agentStreamThinking").checked ? true : false);
+    localsettings.agentLumaraPollingRate = document.getElementById("agentLumaraPollingRate").value || 0;
     localsettings.disableSaveCompressionLocally = (document.getElementById("disableSaveCompressionLocally").checked ? true : false);
     localsettings.enableRunningMemory = (document.getElementById("enableRunningMemory").checked ? true : false);
     localsettings.worldTreePrune = (document.getElementById("worldTreePrune").checked ? true : false);
@@ -257,6 +283,8 @@ confirm_settings = () => {
         if (window?.contextUsage?.renderContextUsage) {
             window.contextUsage.renderContextUsage();
         }
+        
+        window.setupLumaraPolling();
     }
     catch (e)
     {
@@ -286,6 +314,15 @@ window.addEventListener('load', () => {
     }
     if (localsettings?.agentUseOAITools == undefined) {
         localsettings.agentUseOAITools = false
+    }
+    if (localsettings?.agentSkipPlanningStep == undefined) {
+        localsettings.agentSkipPlanningStep = false
+    }
+    if (localsettings?.agentMaxActionsInHistory == undefined) {
+        localsettings.agentMaxActionsInHistory = 30
+    }
+    if (localsettings?.agentSkipPreviousCOTWhenProcessing == undefined) {
+        localsettings.agentSkipPreviousCOTWhenProcessing = false
     }
     if (localsettings?.agentStreamThinking == undefined) {
         localsettings.agentStreamThinking = true
@@ -328,6 +365,9 @@ window.addEventListener('load', () => {
     }
     if (!Array.isArray(localsettings?.disabled_agent_tools)) {
         localsettings.disabled_agent_tools = []
+    }
+    if (localsettings?.lastMessageProcessedFromLumara == undefined) {
+        localsettings.lastMessageProcessedFromLumara = 0
     }
 
     // Overwrite the switching to handle new dynamically added menus
@@ -526,7 +566,7 @@ window.addEventListener('load', () => {
     let lastSettingContainer = document.querySelector("#inject_chatnames_instruct").closest(".settinglabel")
 
     let agentElems = []
-    agentElems.push(createNewSubSection("Esobold agent mode settings"))
+    agentElems.push(createNewSubSection("Esobold agent settings"))
     let settingLabelElem = createSettingElemBool("agentBehaviour", "Agent behaviour (experimental)", "Allows the AI to use multiple generations and certain tools to see if it can improve results.  This can include web search (if enabled), dice rolling, and formula evaluation.  This mode requires instruct start and end tags for all roles. Image and TTS only is enabled for local KCPP users.")
     settingLabelElem.onclick = () => {
         // if (document.getElementById("agentBehaviour").checked == true && document.getElementById("separate_end_tags").checked != true) {
@@ -554,7 +594,19 @@ window.addEventListener('load', () => {
     settingLabelElem = createSettingElemBool("agentUseOAITools", "Use OpenAI tools for command selection", "When enabled, the agent uses the OpenAI-compatible /v1/chat/completions endpoint with tool calling to select commands, instead of grammar-constrained generation. Requires a KoboldCpp endpoint that supports the OpenAI tools API. The agent performs a planning step (using plan_actions as a tool) followed by executing each planned step.")
     agentElems.push(settingLabelElem)
 
+    settingLabelElem = createSettingElemBool("agentSkipPlanningStep", "Skip agent planning step", "When enabled, the agent skips the initial plan_actions step and selects commands directly each cycle. Explicit plans provided by macros still run normally.")
+    agentElems.push(settingLabelElem)
+
+    settingLabelElem = createSettingElemRange("agentMaxActionsInHistory", "Maximum actions in history", "Defines the maximum number of previous actions to load into the current context. This value should be higher than the 'Maximum agent actions per plan' option to maintain history.", 0, 50, 1, 30)
+    agentElems.push(settingLabelElem)
+
+    settingLabelElem = createSettingElemBool("agentSkipPreviousCOTWhenProcessing", "Skip previous COT when processing history", "When enabled, hides previous chain of thought entries during history initialization, similar to 'Hide agent COT' but applied only when loading past actions.")
+    agentElems.push(settingLabelElem)
+
     settingLabelElem = createSettingElemBool("agentStreamThinking", "Stream agent thinking", "When enabled, shows the LLM output tokens as they are generated during each agent step, rather than waiting for the full response. For the standard mode this requires KoboldCpp SSE streaming support (v1.40+). For OAI tools mode, streaming is used automatically.")
+    agentElems.push(settingLabelElem)
+
+    settingLabelElem = createSettingElemRange("agentLumaraPollingRate", "Lumara polling rate", "Defines the rate at which the agent polls Lumara for new messages (in seconds). Zero means no polling.", 0, 1000, 1, is_using_kcpp_with_open_lumara() ? 60 : 0)
     agentElems.push(settingLabelElem)
 
     // Hidden as this is no longer is in use for now
@@ -562,8 +614,9 @@ window.addEventListener('load', () => {
     settingLabelElem.style.display = "none"
     agentElems.push(settingLabelElem)
 
-    agentElems.reverse().forEach(elem => {
-        lastSettingContainer.after(elem)
+    agentSection = createNewSettingsSection("esoboldAgent", "Agent")
+    agentElems.forEach(elem => {
+        agentSection.settingsBox.appendChild(elem)
     })
 
     lastSettingContainer = document.querySelector("#settingsmenuadvanced > .settingitem")
@@ -631,3 +684,63 @@ window.addEventListener('load', () => {
 
     createStopThinkingButton()
 })
+
+window.eso.afterKoboldCppVersionCheck = async () => {
+    function injectOpenLumaraButton() {
+        const container = document.getElementById('addmediacontainer');
+        if (!container || container.querySelector('#btn_open_openlumara')) {
+            return;
+        }
+
+        const anchor = container.querySelector('.nspopup.flexsizevsmall.high') || container.querySelector('.nspopup');
+        if (!anchor) {
+            return;
+        }
+
+        const wrapper = document.createElement('div');
+        wrapper.className = 'menutext';
+        wrapper.id = 'btn_open_openlumara';
+
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'btn btn-primary bg_purple';
+        button.textContent = 'Launch OpenLumara UI';
+        button.onclick = function () {
+            try {
+                if (typeof hide_popups === 'function') {
+                    hide_popups();
+                }
+            } catch (_) {}
+            window.open('/openlumara/', '_blank', 'noopener');
+        };
+
+        wrapper.appendChild(button);
+
+        const reference = container.querySelector('#btn_open_fsui') || container.querySelector('#btn_open_lcppui');
+        if (reference && reference.parentElement) {
+            reference.insertAdjacentElement('afterend', wrapper);
+        } else {
+            anchor.appendChild(wrapper);
+        }
+    }
+    
+    if (is_using_kcpp_with_open_lumara()) {
+        localsettings.agentLumaraPollingRate = localsettings?.agentLumaraPollingRate || 60
+        injectOpenLumaraButton();
+    }
+    else {
+        localsettings.agentLumaraPollingRate = 0
+    }
+    window.setupLumaraPolling();
+}
+
+let previousRestartNewGameLumara = restart_new_game, previousLoadSelectedFileLumara = load_selected_file
+restart_new_game = (save = true, keep_memory = false) => {
+    previousRestartNewGameLumara(save, keep_memory)
+    localsettings.lastMessageProcessedFromLumara = 0
+}
+
+load_selected_file = (file) => {
+    previousLoadSelectedFileLumara(file)
+    localsettings.lastMessageProcessedFromLumara = 0
+}
