@@ -147,57 +147,75 @@ export const buildOpenlumaraCommands = (ctx) => {
 			"enabled": true,
 			"outputVisibleToUser": true,
 			"executor": async (action) => {
+                const getMessagesSinceLastUserMessageAndShow = async () => {
+                    let messageHistory = (await openlumaraClient.getMessages())?.messages;
+                    let displayHandled = false;
+                    if (!!messageHistory) {
+                        let startPoint = messageHistory.reverse().find(msg => msg?.role === "user")?.index || null;
+                        if (startPoint !== null) {
+                            let messagesToShow = messageHistory.filter(msg => !!msg?.index && msg.index > startPoint).sort((a, b) => a.index > b.index ? 1 : -1)
+                            if (messagesToShow.length > 0) {
+                                messagesToShow.forEach(msg => {
+                                    if (!!msg?.content) {
+                                        if (msg.role === "user") {
+                                            addThought(currentChainOfThought, createInstructPrompt, `Lumara - user: ${msg.content || ""}`)
+                                        } else if (msg.role === "assistant") {
+                                            addThought(currentChainOfThought, createAIPrompt, `Lumara: ${msg.content || ""}`)
+                                        }
+                                    }
+                                    if (!!msg?.tool_calls && Array.isArray(msg.tool_calls)) {
+                                        msg.tool_calls.forEach(call => {
+                                            let toolCallId = call.id;
+                                            let toolDetails = `tool call: ${objToText(call?.function || call)}`
+                                            if (!!toolCallId) {
+                                                let toolResp = messagesToShow.find(m => m.role === "tool" && m.tool_call_id === toolCallId);
+                                                if (!!toolResp) {
+                                                    let respContent = `${toolResp.content || ""}`
+                                                    try {
+                                                        respContent = objToText(JSON.parse(toolResp.content))
+                                                    }
+                                                    catch (_err) { }
+                                                    toolDetails += `\n\ntool response: ${respContent}`
+                                                }
+                                            }
+                                            addThought(currentChainOfThought, createSysPrompt, formatLumaraMessage(toolDetails))
+                                        })
+                                    }
+                                })
+                                displayHandled = true;
+                            }
+                        }
+                    }
+                    return displayHandled;
+                }
+
 				let message = `${action?.args?.message || ""}`.trim()
 				if (!message) {
 					addThought(currentChainOfThought, createSysPrompt, formatLumaraMessage(`send: no message provided, nothing sent.`))
 					return
 				}
-				let responseText = await runAndReport("stream", () => streamLumaraResponse(message))
-				if (responseText === null) return
-				if (`${responseText}`.trim().length === 0) {
-					responseText = "[empty response]"
-				}
-                let messageHistory = (await openlumaraClient.getMessages())?.messages;
-                let displayHandled = false;
-                if (!!messageHistory) {
-                    let startPoint = messageHistory.reverse().find(msg => msg?.role === "user")?.index || null;
-                    if (startPoint !== null) {
-                        let messagesToShow = messageHistory.filter(msg => !!msg?.index && msg.index > startPoint).sort((a, b) => a.index > b.index ? 1 : -1)
-                        if (messagesToShow.length > 0) {
-                            messagesToShow.forEach(msg => {
-                                if (!!msg?.content) {
-                                    if (msg.role === "user") {
-                                        addThought(currentChainOfThought, createInstructPrompt, `Lumara - user: ${msg.content || ""}`)
-                                    } else if (msg.role === "assistant") {
-                                        addThought(currentChainOfThought, createAIPrompt, `Lumara: ${msg.content || ""}`)
-                                    }
-                                }
-                                if (!!msg?.tool_calls && Array.isArray(msg.tool_calls)) {
-                                    msg.tool_calls.forEach(call => {
-                                        let toolCallId = call.id;
-                                        let toolDetails = `tool call: ${objToText(call?.function || call)}`
-                                        if (!!toolCallId) {
-                                            let toolResp = messagesToShow.find(m => m.role === "tool" && m.tool_call_id === toolCallId);
-                                            if (!!toolResp) {
-                                                let respContent = `${toolResp.content || ""}`
-                                                try {
-                                                    respContent = objToText(JSON.parse(toolResp.content))
-                                                }
-                                                catch (_err) { }
-                                                toolDetails += `\n\ntool response: ${respContent}`
-                                            }
-                                        }
-                                        addThought(currentChainOfThought, createSysPrompt, formatLumaraMessage(toolDetails))
-                                    })
-                                }
-                            })
-                            displayHandled = true;
-                        }
+                if (!!localsettings?.agentStreamThinking) {
+                    let responseText = await runAndReport("stream", () => streamLumaraResponse(message))
+                    if (responseText === null) return
+                    if (`${responseText}`.trim().length === 0) {
+                        responseText = "[empty response]"
+                    }
+                    let displayHandled = await getMessagesSinceLastUserMessageAndShow()
+                    if (!displayHandled) {
+                        addThought(currentChainOfThought, createAIPrompt, `Lumara: ${responseText}`)
                     }
                 }
-                if (!displayHandled) {
-                    addThought(currentChainOfThought, createSysPrompt,
-                        formatLumaraMessage(`response to "${message.slice(0, 80)}${message.length > 80 ? "…" : ""}":\n${responseText}`))
+                else {
+                    let result = await runAndReport("sendMessage", () => ol.sendMessage({ role: "user", content: message }))
+                    if (!result) return
+                    let responseText = typeof result.response === "string"
+                        ? result.response
+                        : (result.response?.content || objToText(result.response))
+                    
+                    let displayHandled = await getMessagesSinceLastUserMessageAndShow()
+                    if (!displayHandled) {
+                        addThought(currentChainOfThought, createAIPrompt, `Lumara: ${responseText}`)
+                    }
                 }
 			}
 		},
