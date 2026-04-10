@@ -566,7 +566,7 @@ window.addEventListener('load', () => {
     let lastSettingContainer = document.querySelector("#inject_chatnames_instruct").closest(".settinglabel")
 
     let agentElems = []
-    agentElems.push(createNewSubSection("Esobold agent mode settings"))
+    agentElems.push(createNewSubSection("Esobold agent settings"))
     let settingLabelElem = createSettingElemBool("agentBehaviour", "Agent behaviour (experimental)", "Allows the AI to use multiple generations and certain tools to see if it can improve results.  This can include web search (if enabled), dice rolling, and formula evaluation.  This mode requires instruct start and end tags for all roles. Image and TTS only is enabled for local KCPP users.")
     settingLabelElem.onclick = () => {
         // if (document.getElementById("agentBehaviour").checked == true && document.getElementById("separate_end_tags").checked != true) {
@@ -614,8 +614,9 @@ window.addEventListener('load', () => {
     settingLabelElem.style.display = "none"
     agentElems.push(settingLabelElem)
 
-    agentElems.reverse().forEach(elem => {
-        lastSettingContainer.after(elem)
+    agentSection = createNewSettingsSection("esoboldAgent", "Agent")
+    agentElems.forEach(elem => {
+        agentSection.settingsBox.appendChild(elem)
     })
 
     lastSettingContainer = document.querySelector("#settingsmenuadvanced > .settingitem")
