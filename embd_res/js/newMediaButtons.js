@@ -46,10 +46,9 @@
     }
 
     window.addEventListener('load', async () => {
-        const ok = await isFsEnabled();
-        if (!ok) {
-            return;
+        const fsEnabled = await isFsEnabled();
+        if (fsEnabled) {
+            injectFsButton();
         }
-        injectFsButton();
     });
 })();

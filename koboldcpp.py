@@ -84,7 +84,7 @@ extra_images_max = 4 # for kontext/qwen img
 KcppVersion = "1.112"
 showdebug = True
 kcpp_instance = None #global running instance
-global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "current_override":"", "swapReqType": None, "autoswapmode": False, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}, "restart_override_config_target": "", "current_model_override": ""}
+global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "current_override":"", "swapReqType": None, "autoswapmode": False, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}, "restart_override_config_target": "", "current_model_override": "", "OpenLumara": False}
 using_gui_launcher = False
 fs_lock = threading.Lock()
 # Used only by in-memory filesystem mode to represent empty directories.
@@ -123,6 +123,7 @@ modelbusy = threading.Lock()
 requestsinqueue = 0
 ratelimitlookup = {}
 defaultport = 5001
+OpenLumara_default_webui_port = 15021
 showsamplerwarning = True
 showmaxctxwarning = True
 showusedmemwarning = True
@@ -1256,6 +1257,7 @@ def convert_json_to_gbnf(json_obj):
 def get_capabilities():
     global savedata_obj, has_multiplayer, KcppVersion, friendlymodelname, friendlysdmodelname, fullsdmodelpath, password, fullwhispermodelpath, ttsmodelpath, embeddingsmodelpath, musicdiffusionmodelpath, musicllmmodelpath, has_audio_support, has_vision_support, mcp_connections
     global autoswapmode, textName, sttName, ttsName, embedName, musicName, imageName, mmprojName
+    global global_memory
     has_llm = not (friendlymodelname=="inactive") or (autoswapmode and textName is not None)
     has_txt2img = not (friendlysdmodelname=="inactive" or fullsdmodelpath=="") or (autoswapmode and imageName is not None)
     has_password = (password!="")
@@ -1291,7 +1293,8 @@ def get_capabilities():
     has_router = True if args.routermode else False
     _admindocsdir = str(getattr(args, "admindocsdir", "") or "").strip()
     can_search_documents = has_embeddings and bool(_admindocsdir) and os.path.isdir(_admindocsdir)
-    return {"result":"KoboldCpp", "version":KcppVersion, "protected":has_password, "llm":has_llm, "txt2img":has_txt2img,"vision":visionSupport,"audio":audioSupport,"transcribe":has_whisper,"multiplayer":has_multiplayer,"websearch":has_search,"tts":has_tts, "embeddings":has_embeddings, "music":has_music, "fs":has_fs, "fsMode":fs_mode, "savedata":(savedata_obj is not None), "admin": admin_type, "router":has_router, "guidance": has_guidance, "jinja": has_jinja, "mcp":has_mcp, "hasServerSaving": has_server_saving, "hasAdminWithHF": had_admin_with_hf, "embeddingModel": embeddingModel, "canSearchDocuments": can_search_documents}
+    hasOpenLumaraEnabled = global_memory["OpenLumara"]
+    return {"result":"KoboldCpp", "version":KcppVersion, "protected":has_password, "llm":has_llm, "txt2img":has_txt2img,"vision":visionSupport,"audio":audioSupport,"transcribe":has_whisper,"multiplayer":has_multiplayer,"websearch":has_search,"tts":has_tts, "embeddings":has_embeddings, "music":has_music, "fs":has_fs, "fsMode":fs_mode, "savedata":(savedata_obj is not None), "admin": admin_type, "router":has_router, "guidance": has_guidance, "jinja": has_jinja, "mcp":has_mcp, "hasServerSaving": has_server_saving, "hasAdminWithHF": had_admin_with_hf, "embeddingModel": embeddingModel, "canSearchDocuments": can_search_documents, "hasOpenLumaraEnabled": hasOpenLumaraEnabled}
 
 
 def scan_directory(dirpath, valid_exts, depth):
@@ -6130,6 +6133,91 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
             time.sleep(interval)
         return False  # timeout
 
+    def _is_OpenLumara_path(self, raw_path):
+        try:
+            parsed = urllib.parse.urlsplit(raw_path)
+            path = parsed.path or "/"
+        except Exception:
+            path = raw_path or "/"
+        return (path == "/openlumara" or path.startswith("/openlumara/"))
+
+    def _rewrite_OpenLumara_path(self, raw_path):
+        parsed = urllib.parse.urlsplit(raw_path)
+        path = parsed.path or "/"
+        if path == "/openlumara":
+            upstream_path = "/"
+        elif path.startswith("/openlumara/"):
+            upstream_path = path[len("/openlumara"):]
+            if upstream_path == "":
+                upstream_path = "/"
+        else:
+            upstream_path = path
+        return urllib.parse.urlunsplit(("", "", upstream_path, parsed.query, ""))
+
+    def _rewrite_OpenLumara_location(self, value):
+        if not value:
+            return value
+
+        local_prefixes = [
+            f"http://localhost:{OpenLumara_default_webui_port}",
+            f"https://localhost:{OpenLumara_default_webui_port}",
+            f"http://127.0.0.1:{OpenLumara_default_webui_port}",
+            f"https://127.0.0.1:{OpenLumara_default_webui_port}",
+        ]
+
+        for prefix in local_prefixes:
+            if value.startswith(prefix):
+                suffix = value[len(prefix):]
+                if suffix == "":
+                    suffix = "/"
+                if not suffix.startswith("/"):
+                    suffix = "/" + suffix
+                return "/openlumara" + suffix
+
+        if value.startswith("/"):
+            return "/openlumara" + value
+
+        return value
+
+    def _should_rewrite_OpenLumara_body(self, content_type, content_encoding):
+        if content_encoding:
+            return False
+        ct = str(content_type or "").lower()
+        return (
+            "text/html" in ct or
+            "text/css" in ct or
+            "application/javascript" in ct or
+            "text/javascript" in ct or
+            "application/x-javascript" in ct
+        )
+
+    def _rewrite_OpenLumara_body_text(self, text):
+        # Prefix absolute-root references so OpenLumara works from /openlumara.
+        prefixes = [
+            "/static/", "/api/", "/messages", "/stream", "/send", "/edit", "/delete", "/cancel", "/upload",
+            "/chats", "/chat/", "/settings/", "/storage/", "/server/", "/manifest.json", "/sw.js", "/icon-192.png", "/icon-512.png",
+        ]
+        for p in prefixes:
+            text = text.replace(f'"{p}', f'"/openlumara{p}')
+            text = text.replace(f"'{p}", f"'/openlumara{p}")
+            text = text.replace(f"`{p}", f"`/openlumara{p}")
+            text = text.replace(f"url({p}", f"url(/openlumara{p}")
+            text = text.replace(f"url('{p}", f"url('/openlumara{p}")
+            text = text.replace(f'url("{p}', f'url("/openlumara{p}')
+            text = text.replace(f"({p}", f"(/openlumara{p}")
+        return text
+
+    def _rewrite_OpenLumara_body_bytes(self, body_bytes):
+        try:
+            decoded = body_bytes.decode("utf-8")
+            return self._rewrite_OpenLumara_body_text(decoded).encode("utf-8")
+        except Exception:
+            try:
+                decoded = body_bytes.decode("latin-1")
+                return self._rewrite_OpenLumara_body_text(decoded).encode("latin-1")
+            except Exception:
+                return body_bytes
+
     def _handle(self):
         upstream_port = self.server.upstream_port
         length = self.headers.get("Content-Length") #  read request body
@@ -6141,6 +6229,10 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
             if k.lower() not in self.HOP_BY_HOP:
                 headers[k] = v
         headers["Connection"] = "close"
+
+        is_OpenLumara_request = args.OpenLumara and self._is_OpenLumara_path(self.path)
+        target_port = OpenLumara_default_webui_port if is_OpenLumara_request else upstream_port
+        forward_path = self._rewrite_OpenLumara_path(self.path) if is_OpenLumara_request else self.path
 
         global global_memory
         #specifically look for generation requests from completions or chat completions to handle hotswap
@@ -6154,26 +6246,85 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
 
         autoswapEnabled = global_memory["autoswapmode"] is not None and global_memory["autoswapmode"]
         hasReloaded = False
-        if is_post and (is_completions_path or is_chat_completions_path):
-            model_name = ""
-            if body:
-                try:
-                    request_json = json.loads(body.decode("utf-8"))
-                    model_name = request_json.get("model")
-                except Exception:
-                    pass
+        if not is_OpenLumara_request:
+            if is_post and (is_completions_path or is_chat_completions_path):
+                model_name = ""
+                isValidModelRequest = False
+                if body:
+                    try:
+                        request_json = json.loads(body.decode("utf-8"))
+                        model_name = request_json.get("model")
+                        if model_name and model_name!="":
+                            if model_name=="unload_model" or model_name=="initial_model": #special request to simply unload model or swap back top intial model
+                                isValidModelRequest = True
+                            else:
+                                dirpath = os.path.abspath(args.admindir)
+                                targetfilepath = os.path.join(dirpath, targetfile)
+                                opts = [f for f in os.listdir(dirpath) if (f.lower().endswith(".kcpps") or f.lower().endswith(".kcppt") or f.lower().endswith(".gguf")) and os.path.isfile(os.path.join(dirpath, f))]
+                                if targetfile in opts and os.path.exists(targetfilepath):
+                                    isValidModelRequest = True
+                    except Exception:
+                        pass
 
-            was_auto_unloaded = (global_memory["triggered_sleeping"] and global_memory["current_model"]=="unload_model")
-            if (model_name and model_name != global_memory["current_model"]) or (was_auto_unloaded and not autoswapEnabled):
-                hasReloaded = True
-                with proxy_reload_lock:
-                    whitelist = get_current_admindir_list() # see if its an allowed swap
-                    if was_auto_unloaded and not model_name:
-                        model_name = "initial_model"
-                    if model_name != global_memory["current_model"] and (model_name in whitelist):
-                        global_memory["last_active_timestamp"] = datetime.now()
-                        global_memory["triggered_sleeping"] = False
-                        reqbody = json.dumps({"filename":model_name})
+                was_auto_unloaded = (global_memory["triggered_sleeping"] and global_memory["current_model"]=="unload_model")
+                if (isValidModelRequest and model_name and model_name != global_memory["current_model"]) or (was_auto_unloaded and not autoswapEnabled):
+                    hasReloaded = True
+                    with proxy_reload_lock:
+                        whitelist = get_current_admindir_list() # see if its an allowed swap
+                        if was_auto_unloaded and not model_name:
+                            model_name = "initial_model"
+                        if model_name != global_memory["current_model"] and (model_name in whitelist):
+                            global_memory["last_active_timestamp"] = datetime.now()
+                            global_memory["triggered_sleeping"] = False
+                            reqbody = json.dumps({"filename":model_name})
+                            reqheaders = {
+                                'Content-Type': 'application/json',
+                                'Content-Length': str(len(reqbody)),
+                            }
+                            if args.adminpassword:
+                                reqheaders["Authorization"] = f"Bearer {args.adminpassword}"
+                            conn = http.client.HTTPConnection('localhost', upstream_port, timeout=600)
+                            conn.request("POST", "/api/admin/reload_config", body=reqbody, headers=reqheaders)
+                            resp = conn.getresponse()
+                            time.sleep(3)
+                            global_memory["last_active_timestamp"] = datetime.now()
+                            global_memory["triggered_sleeping"] = False
+                            if not self.wait_for_upstream_ready(upstream_port,120,0.5):
+                                self.send_error(504, "KoboldCpp model swap reload timed out")
+                                return
+                            time.sleep(0.1)
+            
+            if autoswapEnabled and not hasReloaded:
+                textReqs = ["/api/extra/generate/stream","/api/extra/tokencount","/api/v1/generate","/sdapi/v1/interrogate","/v1/completions","/v1/chat/completions"]
+                sttReqs = ["/api/extra/transcribe","/v1/audio/transcriptions"]
+                ttsReqs = ["/api/extra/tts", "/v1/audio/speech"]
+                embedReqs = ["/api/extra/embeddings", "/v1/embeddings", "/api/extra/fs/semantic_search", "/api/extra/fs/search_all_documents"]
+                musicReqs = ["/api/extra/music/prepare","/api/extra/music/generate"]
+                imageReqs = ["/sdapi/v1/txt2img", "/sdapi/v1/img2img", "/sdapi/v1/upscale"] # "/sdapi/v1/sd-models", "/sdapi/v1/options", "/sdapi/v1/samplers"
+
+                swapModeChanged = False
+                if any(self.path.endswith(e) for e in textReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "text"):
+                    global_memory["swapReqType"] = "text"
+                    swapModeChanged = True
+                elif any(self.path.endswith(e) for e in sttReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "stt"):
+                    global_memory["swapReqType"] = "stt"
+                    swapModeChanged = True
+                elif any(self.path.endswith(e) for e in ttsReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "tts"):
+                    global_memory["swapReqType"] = "tts"
+                    swapModeChanged = True
+                elif any(self.path.endswith(e) for e in embedReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "embed"):
+                    global_memory["swapReqType"] = "embed"
+                    swapModeChanged = True
+                elif any(self.path.endswith(e) for e in musicReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "music"):
+                    global_memory["swapReqType"] = "music"
+                    swapModeChanged = True
+                elif any(self.path.endswith(e) for e in imageReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "image"):
+                    global_memory["swapReqType"] = "image"
+                    swapModeChanged = True
+
+                if (global_memory["swapReqType"] is not None and swapModeChanged):
+                    with proxy_reload_lock:
+                        reqbody = json.dumps({"filename":global_memory["current_model"], "overrideconfig": global_memory["current_override"], "modelName": global_memory["current_model_override"]})
                         reqheaders = {
                             'Content-Type': 'application/json',
                             'Content-Length': str(len(reqbody)),
@@ -6185,62 +6336,14 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                         resp = conn.getresponse()
                         time.sleep(3)
                         global_memory["last_active_timestamp"] = datetime.now()
-                        global_memory["triggered_sleeping"] = False
                         if not self.wait_for_upstream_ready(upstream_port,120,0.5):
                             self.send_error(504, "KoboldCpp model swap reload timed out")
                             return
                         time.sleep(0.1)
-        
-        if autoswapEnabled and not hasReloaded:
-            textReqs = ["/api/extra/generate/stream","/api/extra/tokencount","/api/v1/generate","/sdapi/v1/interrogate","/v1/completions","/v1/chat/completions"]
-            sttReqs = ["/api/extra/transcribe","/v1/audio/transcriptions"]
-            ttsReqs = ["/api/extra/tts", "/v1/audio/speech"]
-            embedReqs = ["/api/extra/embeddings", "/v1/embeddings", "/api/extra/fs/semantic_search", "/api/extra/fs/search_all_documents"]
-            musicReqs = ["/api/extra/music/prepare","/api/extra/music/generate"]
-            imageReqs = ["/sdapi/v1/txt2img", "/sdapi/v1/img2img", "/sdapi/v1/upscale"] # "/sdapi/v1/sd-models", "/sdapi/v1/options", "/sdapi/v1/samplers"
-
-            swapModeChanged = False
-            if any(self.path.endswith(e) for e in textReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "text"):
-                global_memory["swapReqType"] = "text"
-                swapModeChanged = True
-            elif any(self.path.endswith(e) for e in sttReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "stt"):
-                global_memory["swapReqType"] = "stt"
-                swapModeChanged = True
-            elif any(self.path.endswith(e) for e in ttsReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "tts"):
-                global_memory["swapReqType"] = "tts"
-                swapModeChanged = True
-            elif any(self.path.endswith(e) for e in embedReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "embed"):
-                global_memory["swapReqType"] = "embed"
-                swapModeChanged = True
-            elif any(self.path.endswith(e) for e in musicReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "music"):
-                global_memory["swapReqType"] = "music"
-                swapModeChanged = True
-            elif any(self.path.endswith(e) for e in imageReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "image"):
-                global_memory["swapReqType"] = "image"
-                swapModeChanged = True
-
-            if (global_memory["swapReqType"] is not None and swapModeChanged):
-                with proxy_reload_lock:
-                    reqbody = json.dumps({"filename":global_memory["current_model"], "overrideconfig": global_memory["current_override"], "modelName": global_memory["current_model_override"]})
-                    reqheaders = {
-                        'Content-Type': 'application/json',
-                        'Content-Length': str(len(reqbody)),
-                    }
-                    if args.adminpassword:
-                        reqheaders["Authorization"] = f"Bearer {args.adminpassword}"
-                    conn = http.client.HTTPConnection('localhost', upstream_port, timeout=600)
-                    conn.request("POST", "/api/admin/reload_config", body=reqbody, headers=reqheaders)
-                    resp = conn.getresponse()
-                    time.sleep(3)
-                    global_memory["last_active_timestamp"] = datetime.now()
-                    if not self.wait_for_upstream_ready(upstream_port,120,0.5):
-                        self.send_error(504, "KoboldCpp model swap reload timed out")
-                        return
-                    time.sleep(0.1)
 
         try:  # connect upstream
-            conn = http.client.HTTPConnection('localhost', upstream_port, timeout=600)
-            conn.request( self.command, self.path, body=body, headers=headers)
+            conn = http.client.HTTPConnection('localhost', target_port, timeout=600)
+            conn.request( self.command, forward_path, body=body, headers=headers)
             resp = conn.getresponse()
         except OSError as e:
             if args.debugmode:
@@ -6287,12 +6390,43 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(html_502.encode("utf-8"))
             return
 
-        with proxy_reload_lock:
+        if is_OpenLumara_request:
+            self._sendResponseToClient(resp, is_OpenLumara_request, conn)
+        else:
+            with proxy_reload_lock:
+                self._sendResponseToClient(resp, is_OpenLumara_request, conn)
+
+
+    def _sendResponseToClient(self, resp, is_OpenLumara_request, conn):
+        response_headers = resp.getheaders()
+        content_type = resp.getheader("Content-Type", "")
+        content_encoding = resp.getheader("Content-Encoding", "")
+        rewrite_body = is_OpenLumara_request and self._should_rewrite_OpenLumara_body(content_type, content_encoding)
+
+        if rewrite_body:
+            body_data = self._rewrite_OpenLumara_body_bytes(resp.read())
+            self.send_response(resp.status, resp.reason)
+            for k, v in response_headers:
+                lk = k.lower()
+                if lk in self.HOP_BY_HOP or lk == "content-length":
+                    continue
+                if lk == "location":
+                    v = self._rewrite_OpenLumara_location(v)
+                self.send_header(k, v)
+            self.send_header("Content-Length", str(len(body_data)))
+            self.end_headers()
+            self.close_connection = True
+            if self.command.upper() != "HEAD" and body_data:
+                self.wfile.write(body_data)
+                self.wfile.flush()
+        else:
             self.send_response(resp.status, resp.reason) # forward response headers
-            for k, v in resp.getheaders():
+            for k, v in response_headers:
                 lk = k.lower()
                 if lk in self.HOP_BY_HOP:
                     continue
+                if lk == "location" and is_OpenLumara_request:
+                    v = self._rewrite_OpenLumara_location(v)
                 self.send_header(k, v)
             self.end_headers()
             self.close_connection = True
@@ -6308,6 +6442,7 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                 pass
             finally:
                 conn.close()
+        conn.close()
 
     # proxy all HTTP methods
     do_GET = _handle
@@ -6622,6 +6757,170 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         if showdebug:
             super().log_message(format, *args)
         pass
+
+    def _is_OpenLumara_path(self, raw_path):
+        try:
+            parsed = urllib.parse.urlsplit(raw_path)
+            path = parsed.path or "/"
+        except Exception:
+            path = raw_path or "/"
+        return (path == "/openlumara" or path.startswith("/openlumara/"))
+
+    def _OpenLumara_upstream_path(self, raw_path):
+        parsed = urllib.parse.urlsplit(raw_path)
+        path = parsed.path or "/"
+        if path == "/openlumara":
+            upstream_path = "/"
+        elif path.startswith("/openlumara/"):
+            upstream_path = path[len("/openlumara"):]
+            if upstream_path == "":
+                upstream_path = "/"
+        else:
+            upstream_path = path
+        return urllib.parse.urlunsplit(("", "", upstream_path, parsed.query, ""))
+
+    def _rewrite_OpenLumara_location(self, value):
+        if not value:
+            return value
+
+        local_prefixes = [
+            f"http://localhost:{OpenLumara_default_webui_port}",
+            f"https://localhost:{OpenLumara_default_webui_port}",
+            f"http://127.0.0.1:{OpenLumara_default_webui_port}",
+            f"https://127.0.0.1:{OpenLumara_default_webui_port}",
+        ]
+
+        for prefix in local_prefixes:
+            if value.startswith(prefix):
+                suffix = value[len(prefix):]
+                if suffix == "":
+                    suffix = "/"
+                if not suffix.startswith("/"):
+                    suffix = "/" + suffix
+                return "/openlumara" + suffix
+
+        if value.startswith("/"):
+            return "/openlumara" + value
+
+        return value
+
+    def _should_rewrite_OpenLumara_body(self, content_type, content_encoding):
+        if content_encoding:
+            return False
+        ct = str(content_type or "").lower()
+        return (
+            "text/html" in ct or
+            "text/css" in ct or
+            "application/javascript" in ct or
+            "text/javascript" in ct or
+            "application/x-javascript" in ct
+        )
+
+    def _rewrite_OpenLumara_body_text(self, text):
+        # Prefix absolute-root references so OpenLumara works from /openlumara.
+        prefixes = [
+            "/static/", "/api/", "/messages", "/stream", "/send", "/edit", "/delete", "/cancel", "/upload",
+            "/chats", "/chat/", "/settings/", "/storage/", "/server/", "/manifest.json", "/sw.js", "/icon-192.png", "/icon-512.png",
+        ]
+        for p in prefixes:
+            text = text.replace(f'"{p}', f'"/openlumara{p}')
+            text = text.replace(f"'{p}", f"'/openlumara{p}")
+            text = text.replace(f"`{p}", f"`/openlumara{p}")
+            text = text.replace(f"url({p}", f"url(/openlumara{p}")
+            text = text.replace(f"url('{p}", f"url('/openlumara{p}")
+            text = text.replace(f'url("{p}', f'url("/openlumara{p}')
+            text = text.replace(f"({p}", f"(/openlumara{p}")
+        return text
+
+    def _rewrite_OpenLumara_body_bytes(self, body_bytes):
+        try:
+            decoded = body_bytes.decode("utf-8")
+            return self._rewrite_OpenLumara_body_text(decoded).encode("utf-8")
+        except Exception:
+            try:
+                decoded = body_bytes.decode("latin-1")
+                return self._rewrite_OpenLumara_body_text(decoded).encode("latin-1")
+            except Exception:
+                return body_bytes
+
+    def proxy_OpenLumara(self, method, body=None):
+        if not (args.OpenLumara and self._is_OpenLumara_path(self.path)):
+            return False
+
+        hop_by_hop = {
+            "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+            "te", "trailers", "transfer-encoding", "upgrade"
+        }
+        headers = {}
+        for k, v in self.headers.items():
+            lk = k.lower()
+            if lk in hop_by_hop or lk == "host":
+                continue
+            headers[k] = v
+        headers["Host"] = f"localhost:{OpenLumara_default_webui_port}"
+        headers["Connection"] = "close"
+
+        try:
+            conn = http.client.HTTPConnection("localhost", OpenLumara_default_webui_port, timeout=600)
+            conn.request(method, self._OpenLumara_upstream_path(self.path), body=body, headers=headers)
+            resp = conn.getresponse()
+        except Exception as e:
+            response_body = json.dumps({"detail": {"msg": f"OpenLumara proxy error: {str(e)}", "type": "service_unavailable"}}).encode()
+            self.send_response(502)
+            self.send_header('content-length', str(len(response_body)))
+            self.end_headers(content_type='application/json')
+            self.wfile.write(response_body)
+            return True
+
+        response_headers = resp.getheaders()
+        content_type = resp.getheader("Content-Type", "")
+        content_encoding = resp.getheader("Content-Encoding", "")
+        rewrite_body = self._should_rewrite_OpenLumara_body(content_type, content_encoding)
+
+        if rewrite_body:
+            body_data = self._rewrite_OpenLumara_body_bytes(resp.read())
+            self.send_response(resp.status, resp.reason)
+            for k, v in response_headers:
+                lk = k.lower()
+                if lk in hop_by_hop or lk == "content-length":
+                    continue
+                if lk == "location":
+                    v = self._rewrite_OpenLumara_location(v)
+                self.send_header(k, v)
+            self.send_header("Content-Length", str(len(body_data)))
+            self.end_headers()
+            if method.upper() != "HEAD" and body_data:
+                self.wfile.write(body_data)
+                self.wfile.flush()
+            conn.close()
+            return True
+
+        self.send_response(resp.status, resp.reason)
+        for k, v in response_headers:
+            lk = k.lower()
+            if lk in hop_by_hop:
+                continue
+            if lk == "location":
+                v = self._rewrite_OpenLumara_location(v)
+            self.send_header(k, v)
+        self.end_headers()
+
+        if method.upper() != "HEAD":
+            try:
+                while True:
+                    chunk = resp.read(512)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            finally:
+                conn.close()
+        else:
+            conn.close()
+
+        return True
 
     def extract_formdata_from_file_upload(self, body):
         result = {"file": None, "prompt": None, "language": None}
@@ -7442,6 +7741,9 @@ Change Mode<br>
         global savedata_obj, has_multiplayer, multiplayer_turn_major, multiplayer_turn_minor, multiplayer_story_data_compressed, multiplayer_dataformat, multiplayer_lastactive, maxctx, maxhordelen, friendlymodelname, lastuploadedcomfyimg, lastgeneratedcomfyimg, KcppVersion, totalgens, preloaded_story, exitcounter, currentusergenkey, friendlysdmodelname, fullsdmodelpath, password, friendlyembeddingsmodelname, voicelist
         global autoswapmode, textName, sttName, ttsName, embedName, musicName, imageName, mmprojName
 
+        if self.proxy_OpenLumara("GET"):
+            return None
+
         clean_path = self.path.split("?")[0] #for cases where we do not want query params
         if clean_path=="/lcpp": #fix for svelte redirect issues, browser path needs to end with slash
             clean_path = "/lcpp/"
@@ -8168,6 +8470,9 @@ Change Mode<br>
                 "type": "bad_input",
                 }}).encode())
                 return
+
+        if self.proxy_OpenLumara("POST", body=body):
+            return
 
         self.path = self.path.rstrip('/')
         response_body = None
@@ -10137,7 +10442,7 @@ def show_gui():
 
     tabs = ctk.CTkFrame(root, corner_radius = 0, width=windowwidth, height=windowheight-50)
     tabs.grid(row=0, stick="nsew")
-    tabnames= ["Quick Launch", "Hardware", "Context", "Loaded Files", "Network", "Horde Worker","Image Gen","Audio","Admin","Filesystem","Extra"]
+    tabnames= ["Quick Launch", "Hardware", "Context", "Loaded Files", "Network", "Horde Worker","Image Gen","Audio","Admin","Filesystem","Extra","OpenLumara"]
     navbuttons = {}
     navbuttonframe = ctk.CTkFrame(tabs, width=int(104), height=int(tabs.cget("height")))
     navbuttonframe.grid(row=0, column=0, padx=2,pady=2)
@@ -10306,6 +10611,12 @@ def show_gui():
     fs_maxsize_var = ctk.StringVar(value="0")
     fs_dir_var = ctk.StringVar(value="")
     fs_direct_var = ctk.IntVar(value=0)
+
+    OpenLumara_var = ctk.IntVar(value=0)
+    OpenLumara_configfile_var = ctk.StringVar(value="")
+    OpenLumara_datadir_var = ctk.StringVar(value="")
+    OpenLumara_sandboxfolder_var = ctk.StringVar(value="")
+    OpenLumara_apiurl_var = ctk.StringVar(value="")
 
     nozenity_var = ctk.IntVar(value=0)
 
@@ -11230,6 +11541,15 @@ def show_gui():
         makelabel(extra_tab, "Spawn Terminal Logs", 12, 0,tooltiptxt="A simple terminal logger that duplicates the command line output.")
         ctk.CTkButton(extra_tab , text = "Spawn Terminal", command = showtermlogs ).grid(row=12,column=0, stick="w", padx= 170, pady=2)
 
+    OpenLumara_tab = tabcontent["OpenLumara"]
+    makelabel(OpenLumara_tab, "OpenLumara AI Agent", 0, 0, tooltiptxt="OpenLumara is a modular, token-efficient AI agent framework that runs alongside KoboldCpp.")
+    makecheckbox(OpenLumara_tab, "Enable OpenLumara", OpenLumara_var, 1, tooltiptxt="Launch the OpenLumara AI agent automatically when KoboldCpp starts.")
+    # makelabelentry(OpenLumara_tab, "Config File (required):", OpenLumara_configfile_var, 3, 220, tooltip="Path to the OpenLumara config YAML file. A default config will be generated at this path if the file is absent.\nLeave blank to use the default location in esoExtras/opticlaw/config/config.yml")
+    makefileentry(OpenLumara_tab, "Config File (required):", "Select OpenLumara config file", OpenLumara_configfile_var, 3, width=220, dialog_type=0, tooltiptxt="Path to the OpenLumara config YAML file. A default config will be generated at this path if the file is absent.")
+    makefileentry(OpenLumara_tab, "Data Directory (required):", "Select OpenLumara data directory", OpenLumara_datadir_var, 5, width=220, dialog_type=2, tooltiptxt="Overrides the data_dir field in the OpenLumara config.")
+    makefileentry(OpenLumara_tab, "Sandbox Folder (required):", "Select OpenLumara sandbox folder", OpenLumara_sandboxfolder_var, 7, width=220, dialog_type=2, tooltiptxt="Overrides the sandbox_folder field in the OpenLumara config.")
+    makelabelentry(OpenLumara_tab, "OAI API URL (optional):", OpenLumara_apiurl_var, 9, 220, tooltip=f"Overrides the API URL in the OpenLumara config.\nLeave blank to use the value already in the config.\nExample: https://localhost:{defaultport}/v1")
+
     # refresh
     runopts_var.trace_add("write", changerunmode)
     changerunmode(1,1,1)
@@ -11497,6 +11817,12 @@ def show_gui():
         args.showgui = False #prevent showgui from leaking into configs, its cli only
         args.adminallowhf = (admin_allow_hf_var.get()==1 and not args.cli)
         args.developerMode = (developer_mode_var.get()==1)
+
+        args.OpenLumara = (OpenLumara_var.get()==1)
+        args.OpenLumara_configfile = OpenLumara_configfile_var.get()
+        args.OpenLumara_datadir = OpenLumara_datadir_var.get()
+        args.OpenLumara_sandboxfolder = OpenLumara_sandboxfolder_var.get()
+        args.OpenLumara_apiurl = OpenLumara_apiurl_var.get()
 
     def import_vars(dict):
         global importvars_in_progress
@@ -11768,6 +12094,12 @@ def show_gui():
         fs_dir_var.set(dict["fsdir"] if ("fsdir" in dict and dict["fsdir"]) else "")
         fs_direct_var.set(dict["fsdirect"] if ("fsdirect" in dict) else 0)
         togglefsdiskmode(None,None,None)
+
+        OpenLumara_var.set(1 if "OpenLumara" in dict and dict["OpenLumara"] else 0)
+        OpenLumara_configfile_var.set(dict["OpenLumara_configfile"] if ("OpenLumara_configfile" in dict and dict["OpenLumara_configfile"]) else "")
+        OpenLumara_datadir_var.set(dict["OpenLumara_datadir"] if ("OpenLumara_datadir" in dict and dict["OpenLumara_datadir"]) else "")
+        OpenLumara_sandboxfolder_var.set(dict["OpenLumara_sandboxfolder"] if ("OpenLumara_sandboxfolder" in dict and dict["OpenLumara_sandboxfolder"]) else "")
+        OpenLumara_apiurl_var.set(dict["OpenLumara_apiurl"] if ("OpenLumara_apiurl" in dict and dict["OpenLumara_apiurl"]) else "")
 
         importvars_in_progress = False
         gui_changed_modelfile()
@@ -12326,7 +12658,7 @@ def reload_from_new_args(newargs):
         args.istemplate = False
         newargs = convert_invalid_args(newargs)
         for key, value in newargs.items(): #do not overwrite certain values
-            if key not in ["remotetunnel","showgui","port","host","port_param","admin","adminpassword","password","adminunloadtimeout","routermode","admindir","admintextmodelsdir","admindatadir","admindocsdir","adminallowhf","developerMode","fsmaxsize","fsdir","fsdirect","ssl","nocertify","benchmark","prompt","config","downloaddir"]:
+            if key not in ["remotetunnel","showgui","port","host","port_param","admin","adminpassword","password","adminunloadtimeout","routermode","admindir","admintextmodelsdir","admindatadir","admindocsdir","adminallowhf","developerMode","fsmaxsize","fsdir","fsdirect","OpenLumara", "OpenLumara_configfile", "OpenLumara_datadir", "OpenLumara_sandboxfolder", "OpenLumara_apiurl","ssl","nocertify","benchmark","prompt","config","downloaddir"]:
                 setattr(args, key, value)
         setattr(args,"showgui",False)
         setattr(args,"benchmark",False)
@@ -12719,6 +13051,158 @@ def unregister_koboldcpp():
     except Exception as e:
         print(f"Unregister Extensions: An error occurred: {e}")
 
+def get_OpenLumara_dir():
+    """Returns the absolute path to the bundled OpenLumara directory."""
+    return os.path.join(getdirpath(), "esoExtras", "opticlaw")
+
+def prepare_OpenLumara_config(launch_args):
+    """Generate or update the OpenLumara config YAML with any user-provided overrides."""
+    import yaml
+    OpenLumara_dir = get_OpenLumara_dir()
+    config_dir = os.path.join(OpenLumara_dir, "config")
+
+    # Determine config file path
+    configfile = (launch_args.OpenLumara_configfile or "").strip()
+    if configfile and os.path.isabs(configfile):
+        config_path = configfile
+    elif configfile:
+        config_path = os.path.abspath(configfile)
+    else:
+        config_path = os.path.join(config_dir, "config.yml")
+
+    # Default OpenLumara config template
+    default_cfg = {
+        "data_dir": "./data",
+        "api": {
+            "key": "KEY_HERE",
+            "max_context": 8192,
+            "max_messages": 200,
+            "url": f"https://localhost:{defaultport}/v1",
+            "insecure_skip_tls_verify": True,
+        },
+        "channels": {
+            "disabled": ["discord", "matrix", "telegram", "cli"],
+            "enabled": ["webui"],
+            "settings": {
+                "discord": {"token": "TOKEN_HERE"},
+                "matrix": {
+                    "device_id": "OpenLumara-bot",
+                    "device_name": "OpenLumara",
+                    "homeserver": "https://matrix.org",
+                    "password": "your_password_here",
+                    "user_id": "@your_bot:matrix.org",
+                },
+                "telegram": {"token": "TOKEN_HERE"},
+                "webui": {"host": "localhost", "port": OpenLumara_default_webui_port},
+            },
+        },
+        "model": {"name": "MODEL_HERE", "temperature": 0.2, "use_tools": True},
+        "modules": {
+            "disabled": [
+                "modules", "calculator", "characters", "daily_todo",
+                "files", "http", "safe_eval", "settings", "shell_unsafe",
+            ],
+            "disabled_prompts": [],
+            "enabled": [
+                "channel", "chats", "context", "identity", "memory",
+                "models", "notes", "scheduler", "system", "time", "tokens",
+            ],
+            "settings": {"files": {"sandbox_folder": "./sandbox"}},
+        },
+    }
+
+    # Load existing config or start from template
+    cfg = default_cfg
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                loaded = yaml.safe_load(f) or {}
+            # Merge: user settings take precedence, fill missing keys from default
+            def deep_merge(base, override):
+                result = dict(base)
+                for k, v in override.items():
+                    if k in result and isinstance(result[k], dict) and isinstance(v, dict):
+                        result[k] = deep_merge(result[k], v)
+                    else:
+                        result[k] = v
+                return result
+            cfg = deep_merge(default_cfg, loaded)
+        except Exception as e:
+            print(f"Warning: Could not load OpenLumara config '{config_path}': {e}. Using defaults.")
+
+    # Apply overrides from KoboldCpp args
+    if launch_args.OpenLumara_datadir:
+        cfg["data_dir"] = launch_args.OpenLumara_datadir
+    if launch_args.OpenLumara_sandboxfolder:
+        cfg.setdefault("modules", {}).setdefault("settings", {}).setdefault("files", {})["sandbox_folder"] = launch_args.OpenLumara_sandboxfolder
+    if launch_args.OpenLumara_apiurl:
+        cfg.setdefault("api", {})["url"] = launch_args.OpenLumara_apiurl
+
+    # Ensure config directory exists and save
+    os.makedirs(os.path.dirname(config_path), exist_ok=True)
+    try:
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(cfg, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+        print(f"OpenLumara config saved to: {config_path}")
+        return config_path
+    except Exception as e:
+        print(f"Warning: Could not save OpenLumara config: {e}")
+        return None
+    
+
+def launch_OpenLumara(launch_args):
+    """Launch the OpenLumara AI agent as a subprocess."""
+    OpenLumara_dir = get_OpenLumara_dir()
+    OpenLumara_main = os.path.join(OpenLumara_dir, "main.py")
+    if not os.path.exists(OpenLumara_main):
+        print(f"Warning: OpenLumara main.py not found at '{OpenLumara_main}'. Is the submodule checked out?")
+        return None
+    
+    if not (launch_args.OpenLumara_configfile and launch_args.OpenLumara_datadir and launch_args.OpenLumara_sandboxfolder):
+        print("Warning: Missing required OpenLumara launch arguments. Skipping.")
+        return None
+
+    configPath = prepare_OpenLumara_config(launch_args)
+
+    if not configPath:
+        print("Warning: OpenLumara config preparation failed. Skipping launch.")
+        return None
+
+    try:
+        def read_stream(stream, callback):
+            """Read from a stream (stdout/stderr) and call a callback with each line."""
+            if stream is None:
+                return
+            for line in stream:
+                lineContent = line.strip()
+                if lineContent and len(lineContent) > 0:
+                    callback(lineContent)
+            stream.close()
+        
+        def log_output(line):
+            """Callback to handle captured output."""
+            print(f"[Subprocess Output] {line}")
+        
+        def log_error(line):
+            """Callback to handle captured errors."""
+            print(f"[Subprocess Error] {line}")
+        
+        proc = subprocess.Popen(
+            [sys.executable, OpenLumara_main, "--config", configPath],
+            cwd=OpenLumara_dir,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1
+        )
+        print(f"OpenLumara started (PID {proc.pid})")
+        threading.Thread(target=read_stream, args=(proc.stdout, log_output), daemon=True).start()
+        threading.Thread(target=read_stream, args=(proc.stderr, log_error), daemon=True).start()
+        return proc
+    except Exception as e:
+        print(f"Warning: Failed to launch OpenLumara: {e}")
+        return None
+
 def main(launch_args, default_args):
     global args, showdebug, kcpp_instance, exitcounter, using_gui_launcher, sslvalid, global_memory
     args = launch_args #note: these are NOT shared with the child processes!
@@ -12866,6 +13350,9 @@ def main(launch_args, default_args):
             print("\nAdmin directory was empty, default file generated.\n")
 
     if not args.admin: #run in single process mode
+        if args.OpenLumara and not args.prompt and not args.benchmark and not args.cli:
+            res = launch_OpenLumara(args)
+            global_memory["OpenLumara"] = res is not None
         if args.remotetunnel and not args.prompt and not args.benchmark and not args.cli:
             setuptunnel(global_memory, True if args.sdmodel else False)
         kcpp_main_process(args,global_memory,using_gui_launcher)
@@ -12875,8 +13362,11 @@ def main(launch_args, default_args):
             input()
     else:  # manager command queue for admin mode
         with multiprocessing.Manager() as mp_manager:
-            global_memory = mp_manager.dict({"tunnel_url": "", "restart_target": "", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "current_override":"", "swapReqType": None, "autoswapmode": False, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}, "restart_override_config_target": "", "current_model_override": ""})
+            global_memory = mp_manager.dict({"tunnel_url": "", "restart_target": "", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "current_override":"", "swapReqType": None, "autoswapmode": False, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}, "restart_override_config_target": "", "current_model_override": "", "OpenLumara": False})
 
+            if args.OpenLumara and not args.prompt and not args.benchmark and not args.cli:
+                res = launch_OpenLumara(args)
+                global_memory["OpenLumara"] = res is not None
             if args.remotetunnel and not args.prompt and not args.benchmark and not args.cli:
                 setuptunnel(global_memory, True if args.sdmodel else False)
 
@@ -14277,6 +14767,13 @@ if __name__ == '__main__':
     admingroup.add_argument("--adminallowhf", help="Enables downloading of HuggingFace models through the Lite UI.", action='store_true')
     admingroup.add_argument("--routermode", help="Router mode uses a reverse proxy router, allowing you to easily hotswap models and configs within a single request. Requires admin mode.", action='store_true')
     admingroup.add_argument("--autoswapmode", help="Autoswap mode builds on router mode to allow switching of model types within the same config automatically. Requires admin mode and router mode. All models desired must be defined within the same config.", action='store_true')
+
+    OpenLumaragroup = parser.add_argument_group('OpenLumara Commands')
+    OpenLumaragroup.add_argument("--OpenLumara", help="Enable and launch the OpenLumara AI agent alongside KoboldCpp.", action='store_true')
+    OpenLumaragroup.add_argument("--OpenLumara_configfile", metavar=('[filename]'), help="Path to the OpenLumara config YAML file. Generated with defaults if the file is absent.", default="", type=str)
+    OpenLumaragroup.add_argument("--OpenLumara_datadir", metavar=('[directory]'), help="Overrides the data_dir field in the OpenLumara config.", default="", type=str)
+    OpenLumaragroup.add_argument("--OpenLumara_sandboxfolder", metavar=('[directory]'), help="Overrides the sandbox_folder field in the OpenLumara config.", default="", type=str)
+    OpenLumaragroup.add_argument("--OpenLumara_apiurl", metavar=('[url]'), help="Overrides the API URL field in the OpenLumara config.", default="", type=str)
 
     deprecatedgroup = parser.add_argument_group('Deprecated Commands, DO NOT USE!')
     deprecatedgroup.add_argument("--hordeconfig", help=argparse.SUPPRESS, nargs='+')
