@@ -118,7 +118,7 @@ export const buildOpenlumaraCommands = (ctx) => {
 
 	return [
 		{
-			"name": "ol_status",
+			"name": "lumara_status",
 			"description": "Check whether OpenLumara is running and its LLM API is connected. Returns the model name and connection details.",
 			"args": {},
 			"enabled": is_using_kcpp_with_open_lumara(),
@@ -136,7 +136,7 @@ export const buildOpenlumaraCommands = (ctx) => {
 			}
 		},
 		{
-			"name": "ol_send",
+			"name": "lumara_send",
 			"description": "Send a user message to OpenLumara and receive the AI assistant's response. The reply is added to the OpenLumara conversation history.",
 			"args": {
 				"message": {
@@ -227,14 +227,14 @@ export const buildOpenlumaraCommands = (ctx) => {
                     }
                 } catch (err) {
                     addThought(currentChainOfThought, createSysPrompt, formatLumaraMessage(`sendMessage failed ${err?.message || err}`))
-                    console.error("Error in ol_send executor:", err)
+                    console.error("Error in lumara_send executor:", err)
                 } finally {
                     window.eso.currentlyProcessingFromLumara = false;
                 }
 			}
 		},
 		{
-			"name": "ol_get_messages",
+			"name": "lumara_get_messages",
 			"description": "Retrieve the full message history of the current OpenLumara chat.",
 			"args": {},
 			"enabled": is_using_kcpp_with_open_lumara(),
@@ -253,7 +253,7 @@ export const buildOpenlumaraCommands = (ctx) => {
 			}
 		},
 		{
-			"name": "ol_list_chats",
+			"name": "lumara_list_chats",
 			"description": "List all saved chats in OpenLumara, including their IDs, titles, and tags.",
 			"args": {},
 			"enabled": is_using_kcpp_with_open_lumara(),
@@ -274,7 +274,7 @@ export const buildOpenlumaraCommands = (ctx) => {
 			}
 		},
 		{
-			"name": "ol_new_chat",
+			"name": "lumara_new_chat",
 			"description": "Create a new empty chat in OpenLumara, optionally with a title.",
 			"args": {
 				"title": {
@@ -296,7 +296,7 @@ export const buildOpenlumaraCommands = (ctx) => {
 			}
 		},
 		{
-			"name": "ol_load_chat",
+			"name": "lumara_load_chat",
 			"description": "Load an existing OpenLumara chat by its ID, making it the active chat.",
 			"args": {
 				"chat_id": {
@@ -325,7 +325,7 @@ export const buildOpenlumaraCommands = (ctx) => {
 			}
 		},
 		{
-			"name": "ol_clear_chat",
+			"name": "lumara_clear_chat",
 			"description": "Clear all messages from the current OpenLumara chat, keeping the chat entry itself.",
 			"args": {},
 			"enabled": is_using_kcpp_with_open_lumara(),
@@ -338,7 +338,7 @@ export const buildOpenlumaraCommands = (ctx) => {
 			}
 		},
 		{
-			"name": "ol_rename_chat",
+			"name": "lumara_rename_chat",
 			"description": "Rename the currently active OpenLumara chat.",
 			"args": {
 				"title": {

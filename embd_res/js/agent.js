@@ -936,6 +936,18 @@ window.eso.agentMacros = {
             ]
         }
     },
+    "lumara": {
+        printToConsole: true,
+        planToUse: {
+            responsePlanOverview: "Send a message to the OpenLumara system.",
+            orderOfActions: [
+                {
+                    "action": "lumara_send",
+                    "objective": "Send the message specified by the user to the OpenLumara system."
+                }
+                ]
+        },
+    },
 }
 
 class AgentLogger {
