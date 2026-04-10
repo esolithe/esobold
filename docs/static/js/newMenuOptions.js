@@ -7,7 +7,7 @@ window.setupLumaraPolling = () => {
     }
     
     if (isAgentModeEnabledAndSetCorrectly() && is_using_kcpp_with_open_lumara() && !!localsettings?.agentLumaraPollingRate && localsettings.agentLumaraPollingRate > 0) {
-        window.eso.currentlyProcessingFromLumara = false;
+        window.eso.currentlyProcessingFromLumara = Promise.resolve();
         window.eso.lumaraPollingIntervalId = setInterval(async () => {
             await pollForLatestMessagesFromLumara();
         }, localsettings?.agentLumaraPollingRate * 1000)
