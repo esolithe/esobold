@@ -153,8 +153,8 @@ export const buildOpenlumaraCommands = (ctx) => {
                     let lastMessageProcessedFromLumara = localsettings.lastMessageProcessedFromLumara
                     let messageHistory = (await openlumaraClient.getMessagesSince(lastMessageProcessedFromLumara !== 0 ? lastMessageProcessedFromLumara + 1 : lastMessageProcessedFromLumara))?.messages;
                     if (!!messageHistory) {
-                        let startPoint = messageHistory.reverse().find(msg => msg?.role === "user")?.index || null;
-                        if (startPoint !== null) {
+                        let startPoint = messageHistory.reverse().find(msg => msg?.role === "user")?.index;
+                        if (startPoint !== null && Number.isInteger(startPoint)) {
                             let messagesToShow = messageHistory.filter(msg => !!msg?.index && msg.index > startPoint).sort((a, b) => a.index > b.index ? 1 : -1)
                             if (messagesToShow.length > 0) {
                                 messagesToShow.forEach(msg => {
@@ -185,10 +185,10 @@ export const buildOpenlumaraCommands = (ctx) => {
                                     }
                                 })
                                 displayHandled = true;
-                                localsettings.lastMessageProcessedFromLumara = messagesToShow.reduce((a, c) => {
-                                    return !!c?.index && c.index > a ? c.index : a
-                                }, lastMessageProcessedFromLumara)
                             }
+							localsettings.lastMessageProcessedFromLumara = messagesToShow.reduce((a, c) => {
+								return !!c?.index && c.index > a ? c.index : a
+							}, lastMessageProcessedFromLumara)
                         }
                     }
                     return displayHandled;
@@ -200,37 +200,39 @@ export const buildOpenlumaraCommands = (ctx) => {
 					return
 				}
 
-                try {
-                    window.eso.currentlyProcessingFromLumara = true;
-                    if (!!localsettings?.agentStreamThinking) {
-                        let responseText = await runAndReport("stream", () => streamLumaraResponse(message))
-                        if (responseText === null) return
-                        if (`${responseText}`.trim().length === 0) {
-                            responseText = "[empty response]"
-                        }
-                        let displayHandled = await getMessagesSinceLastUserMessageAndShow()
-                        if (!displayHandled) {
-                            addThought(currentChainOfThought, createAIPrompt, `Lumara: ${responseText}`)
-                        }
-                    }
-                    else {
-                        let result = await runAndReport("sendMessage", () => ol.sendMessage({ role: "user", content: message }))
-                        if (!result) return
-                        let responseText = typeof result.response === "string"
-                            ? result.response
-                            : (result.response?.content || objToText(result.response))
-                        
-                        let displayHandled = await getMessagesSinceLastUserMessageAndShow()
-                        if (!displayHandled) {
-                            addThought(currentChainOfThought, createAIPrompt, `Lumara: ${responseText}`)
-                        }
-                    }
-                } catch (err) {
-                    addThought(currentChainOfThought, createSysPrompt, formatLumaraMessage(`sendMessage failed ${err?.message || err}`))
-                    console.error("Error in lumara_send executor:", err)
-                } finally {
-                    window.eso.currentlyProcessingFromLumara = false;
-                }
+    			window.eso.currentlyProcessingFromLumara = window.eso.currentlyProcessingFromLumara.then(async () => {
+					try {
+						if (!!localsettings?.agentStreamThinking) {
+							let responseText = await runAndReport("stream", () => streamLumaraResponse(message))
+							if (responseText === null) return
+							if (`${responseText}`.trim().length === 0) {
+								responseText = "[empty response]"
+							}
+							let displayHandled = await getMessagesSinceLastUserMessageAndShow()
+							if (!displayHandled) {
+								addThought(currentChainOfThought, createAIPrompt, `Lumara: ${responseText}`)
+							}
+						}
+						else {
+							let result = await runAndReport("sendMessage", () => ol.sendMessage({ role: "user", content: message }))
+							if (!result) return
+							let responseText = typeof result.response === "string"
+								? result.response
+								: (result.response?.content || objToText(result.response))
+							
+							let displayHandled = await getMessagesSinceLastUserMessageAndShow()
+							if (!displayHandled) {
+								addThought(currentChainOfThought, createAIPrompt, `Lumara: ${responseText}`)
+							}
+						}
+					} catch (err) {
+						addThought(currentChainOfThought, createSysPrompt, formatLumaraMessage(`sendMessage failed ${err?.message || err}`))
+						console.error("Error in lumara_send executor:", err)
+					} finally {
+						return Promise.resolve()
+					}
+				})
+				await window.eso.currentlyProcessingFromLumara;
 			}
 		},
 		{
