@@ -210,8 +210,8 @@ display_settings = () => {
     document.getElementById("agentCOTRepeatsMaxnumeric").value = localsettings.agentCOTRepeatsMax;
     document.getElementById("agentUseOAITools").checked = localsettings.agentUseOAITools;
     document.getElementById("agentStreamThinking").checked = localsettings.agentStreamThinking;
-    document.getElementById("agentLumaraPollingRate").value = localsettings.agentLumaraPollingRate;
-    document.getElementById("agentLumaraPollingRatenumeric").value = localsettings.agentLumaraPollingRate;
+    document.getElementById("agentLumaraPollingRate").value = localsettings.agentLumaraPollingRate || 0;
+    document.getElementById("agentLumaraPollingRatenumeric").value = localsettings.agentLumaraPollingRate || 0;
     document.getElementById("disableSaveCompressionLocally").checked = localsettings.disableSaveCompressionLocally;
     document.getElementById("enableRunningMemory").checked = localsettings.enableRunningMemory;
     document.getElementById("worldTreePrune").checked = localsettings.worldTreePrune;
@@ -245,7 +245,7 @@ confirm_settings = () => {
     localsettings.agentCOTRepeatsMax = document.getElementById("agentCOTRepeatsMax").value;
     localsettings.agentUseOAITools = (document.getElementById("agentUseOAITools").checked ? true : false);
     localsettings.agentStreamThinking = (document.getElementById("agentStreamThinking").checked ? true : false);
-    localsettings.agentLumaraPollingRate = document.getElementById("agentLumaraPollingRate").value;
+    localsettings.agentLumaraPollingRate = document.getElementById("agentLumaraPollingRate").value || 0;
     localsettings.disableSaveCompressionLocally = (document.getElementById("disableSaveCompressionLocally").checked ? true : false);
     localsettings.enableRunningMemory = (document.getElementById("enableRunningMemory").checked ? true : false);
     localsettings.worldTreePrune = (document.getElementById("worldTreePrune").checked ? true : false);
@@ -310,9 +310,6 @@ window.addEventListener('load', () => {
     }
     if (localsettings?.agentStreamThinking == undefined) {
         localsettings.agentStreamThinking = true
-    }
-    if (localsettings?.agentLumaraPollingRate == undefined) {
-        localsettings.agentLumaraPollingRate = is_using_kcpp_with_open_lumara() ? 60 : 0
     }
     if (localsettings?.disableSaveCompressionLocally == undefined) {
         localsettings.disableSaveCompressionLocally = true

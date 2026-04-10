@@ -95,9 +95,11 @@
             injectFsButton();
         }
 
-        const openLumaraEnabled = await isOpenLumaraEnabled();
-        if (openLumaraEnabled) {
-            injectOpenLumaraButton();
-        }
+        setTimeout(async () => {
+            const openLumaraEnabled = await isOpenLumaraEnabled();
+            if (openLumaraEnabled) {
+                injectOpenLumaraButton();
+            }
+        }, 15*1000);
     });
 })();
