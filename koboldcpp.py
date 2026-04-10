@@ -1031,6 +1031,109 @@ def strip_base64_prefix(encoded_data):
         encoded_data = encoded_data.split(',', 1)[-1]
     return encoded_data
 
+def fix_unquoted_keys(s: str) -> str:
+    """
+    Fix JSON with unquoted keys by only quoting identifiers that appear
+    in key position (after '{' or ',' at object level, before ':').
+    Uses a state machine to track position in the JSON structure.
+    """
+    result = []
+    i = 0
+    n = len(s)
+    def skip_whitespace():
+        nonlocal i
+        while i < n and s[i].isspace():
+            result.append(s[i])
+            i += 1
+    def read_string():
+        """Read a quoted string, handling escape sequences correctly."""
+        nonlocal i
+        assert s[i] == '"'
+        result.append(s[i])
+        i += 1
+        while i < n:
+            ch = s[i]
+            result.append(ch)
+            i += 1
+            if ch == '\\':
+                if i < n:
+                    result.append(s[i])
+                    i += 1
+            elif ch == '"':
+                break
+    def read_value():
+        """Read any JSON value."""
+        nonlocal i
+        skip_whitespace()
+        if i >= n:
+            return
+        ch = s[i]
+        if ch == '{':
+            read_object()
+        elif ch == '[':
+            read_array()
+        elif ch == '"':
+            read_string()
+        else:
+            while i < n and s[i] not in ',}]':
+                result.append(s[i])
+                i += 1
+    def read_object():
+        nonlocal i
+        result.append(s[i])
+        i += 1
+        skip_whitespace()
+        if i < n and s[i] == '}':
+            result.append(s[i])
+            i += 1
+            return
+        while i < n:
+            skip_whitespace()
+            if i < n and s[i] == '"':
+                read_string()
+            elif i < n and re.match(r'[a-zA-Z_]', s[i]):
+                key = []
+                while i < n and re.match(r'[a-zA-Z0-9_]', s[i]):
+                    key.append(s[i])
+                    i += 1
+                result.append('"' + ''.join(key) + '"')
+            skip_whitespace()
+            if i < n and s[i] == ':':
+                result.append(s[i])
+                i += 1
+            read_value()
+            skip_whitespace()
+            if i >= n or s[i] == '}':
+                break
+            if s[i] == ',':
+                result.append(s[i])
+                i += 1
+        if i < n and s[i] == '}':
+            result.append(s[i])
+            i += 1
+    def read_array():
+        nonlocal i
+        result.append(s[i])
+        i += 1
+        skip_whitespace()
+        if i < n and s[i] == ']':
+            result.append(s[i])
+            i += 1
+            return
+        while i < n:
+            read_value()
+            skip_whitespace()
+            if i >= n or s[i] == ']':
+                break
+            if s[i] == ',':
+                result.append(s[i])
+                i += 1
+        if i < n and s[i] == ']':
+            result.append(s[i])
+            i += 1
+    read_value()
+    return ''.join(result)
+
 def old_cpu_check(): #return -1 for pass, 0 if has avx2, 1 if has avx, 2 if has nothing
     shouldcheck = ((sys.platform == "linux" and platform.machine().lower() in ("x86_64", "amd64")) or
                   (os.name == 'nt' and platform.machine().lower() in ("amd64", "x86_64")))
@@ -3111,18 +3214,24 @@ def toolcall_to_normalized_json(text,start_tag,end_tag): #convert weird formats 
         return json.dumps(results) if len(results) > 1 else json.dumps(results[0])
     def parse_gemma4(text: str) -> str:
         text = text.replace('<|"|>', '!$$REAL_QUOTE$$!')
-        text = text.replace('"', '\"')
+        text = text.replace('\"', '\\"')
         text = text.replace('!$$REAL_QUOTE$$!','"')
-        fn_match = re.match(r'^([a-zA-Z_][a-zA-Z0-9_]*)\{(.*)\}$', text.strip(), re.DOTALL)
+        fn_match = re.match(r'^([a-zA-Z_][a-zA-Z0-9_]*)\{(.*)\}$', text.strip(), re.DOTALL) # extract fn name
         if not fn_match:
             return text
         fn_name = fn_match.group(1)
         body = fn_match.group(2).strip()
+        body = '{' + body + '}'
         if not body:
             return json.dumps({"name": fn_name, "arguments": {}})
-        normalized = re.sub(r'((?:^|(?<=[{,]))\s*)([a-zA-Z_][a-zA-Z0-9_]*)(\s*:)',r'\1"\2"\3',body)
+        try:   # Try to parse body as JSON object by wrapping it
+            args = json.loads(body,strict=False)
+            return json.dumps({"name": fn_name, "arguments": args})
+        except Exception:
+            pass
+        normalized = fix_unquoted_keys(body)
         try:
-            args = json.loads('{' + normalized + '}',strict=False)
+            args = json.loads(normalized,strict=False)
             return json.dumps({"name": fn_name, "arguments": args})
         except Exception:
             pass
