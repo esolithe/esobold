@@ -340,7 +340,11 @@ let buildOAIBaseMessages = (agentRunState, contextState, persistedMessages = [],
         messages.push({ role: "system", content: systemParts.join("\n\n") })
     }
 
-    let history = getLastActions(maxActionsInHistory, agentRunState.excludeSpecificMessagePrefixes || [])
+    let excludeFromHistory = Array.isArray(agentRunState.excludeSpecificMessagePrefixes) ? [...agentRunState.excludeSpecificMessagePrefixes] : []
+    if (!!localsettings?.agentSkipPreviousCOTWhenProcessing) {
+        excludeFromHistory = excludeFromHistory.concat(listOfExclusions)
+    }
+    let history = getLastActions(localsettings.agentMaxActionsInHistory, excludeFromHistory)
     history.forEach(turn => {
         let role = turn.myturn ? "user" : "assistant"
         if (turn.source === "system") role = "system"
@@ -425,7 +429,7 @@ let split = (input, ...delimiters) => {
 let listOfExclusions = ["Action taken:", "Action taken (words =", "History search performed:", "Semantic search performed:", "Chain of thought complete",
     "Web search results:", "Text has been added to history", "Formula evaluation result:", "Formula evaluation could not be completed as no formula was provided",
     "Text has been added to history", "Text was empty - nothing added to history", "Search string was empty, no search performed", "Word count is", "Image analysed:",
-    "FS_TOOL:",
+    "FS_TOOL:", "Lumara response: ",
     "Image generated", "No prompt provided, image not generated", "Text has been spoken", "No text provided, nothing has been said", "Setting overview has been overwritten",
     "No setting overview provided, nothing has been overwritten", "Current state has been overwritten", "No state provided, nothing has been overwritten", "Error - Empty response instead of action. Ensure all responses are valid JSON.",
     "Current state format has been overwritten", "No valid state format provided, nothing has been overwritten", 
@@ -794,7 +798,7 @@ let actionToText = (action) => {
     return actionAsText
 }
 
-let maxActionsInHistory = 1000, currentAgentCycle = [];
+let currentAgentCycle = [];
 
 window.objRefAssign = (target, ...sources) => {
     sources.forEach(source => {
@@ -935,6 +939,18 @@ window.eso.agentMacros = {
                 }
             ]
         }
+    },
+    "lumara": {
+        printToConsole: true,
+        planToUse: {
+            responsePlanOverview: "Send a message to the OpenLumara system.",
+            orderOfActions: [
+                {
+                    "action": "lumara_send",
+                    "objective": "Send the message specified by the user to the OpenLumara system."
+                }
+            ]
+        },
     },
 }
 
@@ -1112,7 +1128,12 @@ let runAgentCycle = async (agentRunState = {}) => {
         let currentOrderOfActionsOverall = []
         let currentOrderOfActionDescriptionsOverall = []
 
-        let lastActions = getLastActions(maxActionsInHistory, excludeSpecificMessagePrefixes)
+        let excludeFromHistory = Array.isArray(excludeSpecificMessagePrefixes) ? [...excludeSpecificMessagePrefixes] : []
+        if (!!localsettings?.agentSkipPreviousCOTWhenProcessing) {
+            excludeFromHistory = excludeFromHistory.concat(listOfExclusions)
+        }
+
+        let lastActions = getLastActions(localsettings.agentMaxActionsInHistory, excludeFromHistory)
         lastActions.forEach(action => {
             switch (action.source) {
                 case "system":
@@ -1213,6 +1234,7 @@ let runAgentCycle = async (agentRunState = {}) => {
             }, {}) : {}
         }
         manualOverridesForEnabledCommands = Object.keys(configOverrides)
+        let shouldSkipPlanningStep = !agentRunState?.planToUse && !!localsettings?.agentSkipPlanningStep
 
         let originalConfiguration = await reloadUtils.getCurrentConfigAndModel()
         let previousConfig = JSON.parse(JSON.stringify(originalConfiguration))
@@ -1282,11 +1304,11 @@ let runAgentCycle = async (agentRunState = {}) => {
                 planningPrompt += ` You must respond as ${localsettings.chatopponent.split("||$||").join(" or ")} when using the send_message or userInput actions.`
             }
 
-            if (!agentRunState?.planToUse) {
+            if (!agentRunState?.planToUse && !shouldSkipPlanningStep) {
                 // Planning step: use plan_actions as the only tool
                 let planningTools = commandsToOAITools(getReasoningCommand(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist))
-                currentChainOfThought = currentChainOfThought.splice(-maxActionsInHistory)
-                recentActions = recentActions.splice(-maxActionsInHistory)
+                currentChainOfThought = currentChainOfThought.splice(-localsettings.agentMaxActionsInHistory)
+                recentActions = recentActions.splice(-localsettings.agentMaxActionsInHistory)
                 objRefOverride(agentRunState, { currentChainOfThought, recentActions })
 
                 let planningContext = buildAgentContextState(
@@ -1345,6 +1367,9 @@ let runAgentCycle = async (agentRunState = {}) => {
                 Array(...document.getElementsByClassName("stopThinking")).forEach(elem => elem.classList.remove("hidden"))
 
                 let validCommands = getEnabledCommands(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist).map(c => c.name)
+                if (i === 0 && currentOrderOfActionsOverall.length === 0) {
+                    validCommands = validCommands.filter(name => name !== "stop_thinking")
+                }
                 let plannedCommandName = currentOrderOfActionsOverall.length > i ? currentOrderOfActionsOverall[i] : null
                 let plannedCommand = plannedCommandName ? getCommands(agentRunState).find(c => c.name === plannedCommandName) : null
 
@@ -1364,14 +1389,14 @@ let runAgentCycle = async (agentRunState = {}) => {
                     execTools = commandsToOAITools([plannedCommand])
                     execToolChoice = { type: "function", function: { name: plannedCommand.name } }
                 } else {
-                    let enabledCmds = getEnabledCommands(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist)
+                    let enabledCmds = getEnabledCommands(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist).filter(command => validCommands.includes(command.name))
                     execTools = commandsToOAITools(enabledCmds)
                     execToolChoice = "auto"
                 }
 
                 let promptOverview = currentOrderOfActionDescriptionsOverall.length > i ? currentOrderOfActionDescriptionsOverall[i] : null
-                currentChainOfThought = currentChainOfThought.splice(-maxActionsInHistory)
-                recentActions = recentActions.splice(-maxActionsInHistory)
+                currentChainOfThought = currentChainOfThought.splice(-localsettings.agentMaxActionsInHistory)
+                recentActions = recentActions.splice(-localsettings.agentMaxActionsInHistory)
                 objRefOverride(agentRunState, { currentChainOfThought, recentActions })
 
                 let contextCommands = plannedCommand ? [plannedCommand] : getEnabledCommands(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist)
@@ -1443,11 +1468,13 @@ let runAgentCycle = async (agentRunState = {}) => {
             }
         } else {
         let isCompleted = false
-        for (let i = !!agentRunState?.planToUse ? 1 : 0; i < Number(localsettings.agentCOTMax) + 1 && (currentOrderOfActionsOverall.length === 0 || i < currentOrderOfActionsOverall.length + 1) && agentRunState.endCurrent === false; i++) {
+        let standardLoopStartIndex = (!!agentRunState?.planToUse || shouldSkipPlanningStep) ? 1 : 0
+        for (let i = standardLoopStartIndex; i < Number(localsettings.agentCOTMax) + 1 && (currentOrderOfActionsOverall.length === 0 || i < currentOrderOfActionsOverall.length + 1) && agentRunState.endCurrent === false; i++) {
             Array(...document.getElementsByClassName("stopThinking")).forEach(elem => elem.classList.remove("hidden"))
 
             let nextAction = []
-            let validCommands = getEnabledCommands(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist).map(command => command.name).filter(name => i != 0 || name != "stop_thinking")
+            let isInitialActionSelection = i === standardLoopStartIndex
+            let validCommands = getEnabledCommands(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist).map(command => command.name).filter(name => !isInitialActionSelection || name != "stop_thinking")
             if (i == 0) {
                 nextAction = getReasoningCommand(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist)
             }
@@ -1486,8 +1513,8 @@ let runAgentCycle = async (agentRunState = {}) => {
             }
             let jsonGrammar = await getCommandsGNBF(nextAction)
 
-            currentChainOfThought = currentChainOfThought.splice(-maxActionsInHistory)
-            recentActions = recentActions.splice(-maxActionsInHistory)
+            currentChainOfThought = currentChainOfThought.splice(-localsettings.agentMaxActionsInHistory)
+            recentActions = recentActions.splice(-localsettings.agentMaxActionsInHistory)
             objRefOverride(agentRunState, { currentChainOfThought, recentActions })
 
             let promptOverview = currentOrderOfActionDescriptionsOverall.length > 0 ? currentOrderOfActionDescriptionsOverall[i - 1] : null
@@ -2428,7 +2455,8 @@ let checkIfTaskComplete = async (agentRunState) => {
         return checkIfTaskCompleteOAI(agentRunState)
     }
     try {
-        let latestActions = getLastActions(20)
+        let excludeFromHistory = !!localsettings?.agentSkipPreviousCOTWhenProcessing ? listOfExclusions : []
+        let latestActions = getLastActions(localsettings.agentMaxActionsInHistory, excludeFromHistory)
         let latestActionsText = latestActions.map(action => `${action.source}: ${action.msg}`).join("\n")
         let objective = agentRunState?.agentInputPrompt || agentRunState?.initialPrompt || ""
 
@@ -2452,7 +2480,8 @@ let checkIfTaskComplete = async (agentRunState) => {
 
 let checkIfTaskCompleteOAI = async (agentRunState) => {
     try {
-        let latestActions = getLastActions(20)
+        let excludeFromHistory = !!localsettings?.agentSkipPreviousCOTWhenProcessing ? listOfExclusions : []
+        let latestActions = getLastActions(localsettings.agentMaxActionsInHistory, excludeFromHistory)
         let latestActionsText = latestActions.map(action => `${action.source}: ${action.msg}`).join("\n")
         let objective = agentRunState?.agentInputPrompt || agentRunState?.initialPrompt || ""
 

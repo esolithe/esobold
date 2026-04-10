@@ -3946,6 +3946,7 @@ Current version indicated by LITEVER below.
 	var koboldcpp_has_fs = false;
 	var koboldcpp_has_routermode = false;
 	var koboldcpp_can_search_docs = false;
+	var koboldcpp_has_open_lumara_enabled = false;
 	var no_escape_html = false;
 	var timetaken_timestamp = performance.now();
 	var bg_silence = null;
@@ -9415,6 +9416,9 @@ Current version indicated by LITEVER below.
 	function is_using_kcpp_with_searchable_docs() {
 		return (custom_kobold_endpoint != "" && koboldcpp_version && koboldcpp_version != "" && compare_version_str(koboldcpp_version, "1.111") >= 0 && koboldcpp_can_search_docs);
 	}
+	function is_using_kcpp_with_open_lumara() {
+		return (custom_kobold_endpoint != "" && koboldcpp_version && koboldcpp_version != "" && compare_version_str(koboldcpp_version, "1.111") >= 0 && koboldcpp_has_open_lumara_enabled);
+	}
 	function is_using_kcpp_with_imagegen() {
 		return (custom_kobold_endpoint != "" && koboldcpp_version && koboldcpp_version != "" && compare_version_str(koboldcpp_version, "1.61") >= 0 && koboldcpp_has_txt2img);
 	}
@@ -13982,6 +13986,7 @@ Current version indicated by LITEVER below.
 									koboldcpp_has_fs = (data.fs ? true : false);
 									koboldcpp_has_routermode = (data.router ? true:false);
 									koboldcpp_can_search_docs = (data.canSearchDocuments ? true : false);
+									koboldcpp_has_open_lumara_enabled = (data.hasOpenLumaraEnabled ? true : false);
 									koboldcpp_embedding_model = data?.embeddingModel
 									koboldcpp_has_admin_with_HF = (data.hasAdminWithHF ? true : false)
 									let has_password = (data.protected?true:false);
@@ -13989,6 +13994,9 @@ Current version indicated by LITEVER below.
 									let no_txt_model = (mdlname=="inactive");
 									update_websearch_button_visibility();
 									updateAgentButtonVisibility();
+									if (window?.eso?.afterKoboldCppVersionCheck) {
+										window.eso.afterKoboldCppVersionCheck(data);
+									}
 
 									lastEndpointValidated = null
 
@@ -32717,6 +32725,7 @@ Current version indicated by LITEVER below.
 <!-- Third party libs end -->
 <!-- EsoLite modifications -->
 <script src="static/js/fs.js"></script>
+<script src="static/js/openlumara_client.js"></script>
 <script src="static/js/encryptUtils.js"></script>
 <script src="static/js/serverSideSaving.js"></script>
 <link rel="stylesheet" type="text/css" href="static/css/serverSideScenario.css" />
@@ -32726,7 +32735,7 @@ Current version indicated by LITEVER below.
 <link rel="stylesheet" type="text/css" href="static/css/agent.css" />
 <script src="static/js/agent.js"></script>
 <script src="static/js/newMenuOptions.js"></script>
-<script src="static/js/fsMediaMenu.js"></script>
+<script src="static/js/newMediaButtons.js"></script>
 <link rel="stylesheet" type="text/css" href="static/css/esoStyling.css" />
 <script src="static/js/april.js"></script>
 <link rel="stylesheet" type="text/css" href="static/css/waitingToast.css" />
@@ -32756,5 +32765,6 @@ Current version indicated by LITEVER below.
 <script src="static/js/esoWelcome.js"></script>
 <script src="static/js/enableAllEndpointsLocally.js"></script>
 <script src="static/js/contextUsage.js"></script>
+<script src="static/js/agent/agent_openlumarapolling.js"></script>
 <!-- EsoLite modifications end -->
 </html>
