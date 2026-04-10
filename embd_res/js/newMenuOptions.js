@@ -210,6 +210,9 @@ display_settings = () => {
     document.getElementById("agentCOTRepeatsMaxnumeric").value = localsettings.agentCOTRepeatsMax;
     document.getElementById("agentUseOAITools").checked = localsettings.agentUseOAITools;
     document.getElementById("agentSkipPlanningStep").checked = localsettings.agentSkipPlanningStep;
+    document.getElementById("agentMaxActionsInHistory").value = localsettings.agentMaxActionsInHistory;
+    document.getElementById("agentMaxActionsInHistorynumeric").value = localsettings.agentMaxActionsInHistory;
+    document.getElementById("agentSkipPreviousCOTWhenProcessing").checked = localsettings.agentSkipPreviousCOTWhenProcessing;
     document.getElementById("agentStreamThinking").checked = localsettings.agentStreamThinking;
     document.getElementById("agentLumaraPollingRate").value = localsettings.agentLumaraPollingRate || 0;
     document.getElementById("agentLumaraPollingRatenumeric").value = localsettings.agentLumaraPollingRate || 0;
@@ -246,6 +249,8 @@ confirm_settings = () => {
     localsettings.agentCOTRepeatsMax = document.getElementById("agentCOTRepeatsMax").value;
     localsettings.agentUseOAITools = (document.getElementById("agentUseOAITools").checked ? true : false);
     localsettings.agentSkipPlanningStep = (document.getElementById("agentSkipPlanningStep").checked ? true : false);
+    localsettings.agentMaxActionsInHistory = document.getElementById("agentMaxActionsInHistory").value;
+    localsettings.agentSkipPreviousCOTWhenProcessing = (document.getElementById("agentSkipPreviousCOTWhenProcessing").checked ? true : false);
     localsettings.agentStreamThinking = (document.getElementById("agentStreamThinking").checked ? true : false);
     localsettings.agentLumaraPollingRate = document.getElementById("agentLumaraPollingRate").value || 0;
     localsettings.disableSaveCompressionLocally = (document.getElementById("disableSaveCompressionLocally").checked ? true : false);
@@ -312,6 +317,12 @@ window.addEventListener('load', () => {
     }
     if (localsettings?.agentSkipPlanningStep == undefined) {
         localsettings.agentSkipPlanningStep = false
+    }
+    if (localsettings?.agentMaxActionsInHistory == undefined) {
+        localsettings.agentMaxActionsInHistory = 30
+    }
+    if (localsettings?.agentSkipPreviousCOTWhenProcessing == undefined) {
+        localsettings.agentSkipPreviousCOTWhenProcessing = false
     }
     if (localsettings?.agentStreamThinking == undefined) {
         localsettings.agentStreamThinking = true
@@ -584,6 +595,12 @@ window.addEventListener('load', () => {
     agentElems.push(settingLabelElem)
 
     settingLabelElem = createSettingElemBool("agentSkipPlanningStep", "Skip agent planning step", "When enabled, the agent skips the initial plan_actions step and selects commands directly each cycle. Explicit plans provided by macros still run normally.")
+    agentElems.push(settingLabelElem)
+
+    settingLabelElem = createSettingElemRange("agentMaxActionsInHistory", "Maximum actions in history", "Defines the maximum number of previous actions to load into the current context. This value should be higher than the 'Maximum agent actions per plan' option to maintain history.", 0, 50, 1, 30)
+    agentElems.push(settingLabelElem)
+
+    settingLabelElem = createSettingElemBool("agentSkipPreviousCOTWhenProcessing", "Skip previous COT when processing history", "When enabled, hides previous chain of thought entries during history initialization, similar to 'Hide agent COT' but applied only when loading past actions.")
     agentElems.push(settingLabelElem)
 
     settingLabelElem = createSettingElemBool("agentStreamThinking", "Stream agent thinking", "When enabled, shows the LLM output tokens as they are generated during each agent step, rather than waiting for the full response. For the standard mode this requires KoboldCpp SSE streaming support (v1.40+). For OAI tools mode, streaming is used automatically.")

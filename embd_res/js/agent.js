@@ -340,7 +340,11 @@ let buildOAIBaseMessages = (agentRunState, contextState, persistedMessages = [],
         messages.push({ role: "system", content: systemParts.join("\n\n") })
     }
 
-    let history = getLastActions(maxActionsInHistory, agentRunState.excludeSpecificMessagePrefixes || [])
+    let excludeFromHistory = Array.isArray(agentRunState.excludeSpecificMessagePrefixes) ? [...agentRunState.excludeSpecificMessagePrefixes] : []
+    if (!!localsettings?.agentSkipPreviousCOTWhenProcessing) {
+        excludeFromHistory = excludeFromHistory.concat(listOfExclusions)
+    }
+    let history = getLastActions(localsettings.agentMaxActionsInHistory, excludeFromHistory)
     history.forEach(turn => {
         let role = turn.myturn ? "user" : "assistant"
         if (turn.source === "system") role = "system"
@@ -794,7 +798,7 @@ let actionToText = (action) => {
     return actionAsText
 }
 
-let maxActionsInHistory = 1000, currentAgentCycle = [];
+let currentAgentCycle = [];
 
 window.objRefAssign = (target, ...sources) => {
     sources.forEach(source => {
@@ -1124,7 +1128,12 @@ let runAgentCycle = async (agentRunState = {}) => {
         let currentOrderOfActionsOverall = []
         let currentOrderOfActionDescriptionsOverall = []
 
-        let lastActions = getLastActions(maxActionsInHistory, excludeSpecificMessagePrefixes)
+        let excludeFromHistory = Array.isArray(excludeSpecificMessagePrefixes) ? [...excludeSpecificMessagePrefixes] : []
+        if (!!localsettings?.agentSkipPreviousCOTWhenProcessing) {
+            excludeFromHistory = excludeFromHistory.concat(listOfExclusions)
+        }
+
+        let lastActions = getLastActions(localsettings.agentMaxActionsInHistory, excludeFromHistory)
         lastActions.forEach(action => {
             switch (action.source) {
                 case "system":
@@ -1298,8 +1307,8 @@ let runAgentCycle = async (agentRunState = {}) => {
             if (!agentRunState?.planToUse && !shouldSkipPlanningStep) {
                 // Planning step: use plan_actions as the only tool
                 let planningTools = commandsToOAITools(getReasoningCommand(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist))
-                currentChainOfThought = currentChainOfThought.splice(-maxActionsInHistory)
-                recentActions = recentActions.splice(-maxActionsInHistory)
+                currentChainOfThought = currentChainOfThought.splice(-localsettings.agentMaxActionsInHistory)
+                recentActions = recentActions.splice(-localsettings.agentMaxActionsInHistory)
                 objRefOverride(agentRunState, { currentChainOfThought, recentActions })
 
                 let planningContext = buildAgentContextState(
@@ -1386,8 +1395,8 @@ let runAgentCycle = async (agentRunState = {}) => {
                 }
 
                 let promptOverview = currentOrderOfActionDescriptionsOverall.length > i ? currentOrderOfActionDescriptionsOverall[i] : null
-                currentChainOfThought = currentChainOfThought.splice(-maxActionsInHistory)
-                recentActions = recentActions.splice(-maxActionsInHistory)
+                currentChainOfThought = currentChainOfThought.splice(-localsettings.agentMaxActionsInHistory)
+                recentActions = recentActions.splice(-localsettings.agentMaxActionsInHistory)
                 objRefOverride(agentRunState, { currentChainOfThought, recentActions })
 
                 let contextCommands = plannedCommand ? [plannedCommand] : getEnabledCommands(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist)
@@ -1504,8 +1513,8 @@ let runAgentCycle = async (agentRunState = {}) => {
             }
             let jsonGrammar = await getCommandsGNBF(nextAction)
 
-            currentChainOfThought = currentChainOfThought.splice(-maxActionsInHistory)
-            recentActions = recentActions.splice(-maxActionsInHistory)
+            currentChainOfThought = currentChainOfThought.splice(-localsettings.agentMaxActionsInHistory)
+            recentActions = recentActions.splice(-localsettings.agentMaxActionsInHistory)
             objRefOverride(agentRunState, { currentChainOfThought, recentActions })
 
             let promptOverview = currentOrderOfActionDescriptionsOverall.length > 0 ? currentOrderOfActionDescriptionsOverall[i - 1] : null
@@ -2446,7 +2455,8 @@ let checkIfTaskComplete = async (agentRunState) => {
         return checkIfTaskCompleteOAI(agentRunState)
     }
     try {
-        let latestActions = getLastActions(20)
+        let excludeFromHistory = !!localsettings?.agentSkipPreviousCOTWhenProcessing ? listOfExclusions : []
+        let latestActions = getLastActions(localsettings.agentMaxActionsInHistory, excludeFromHistory)
         let latestActionsText = latestActions.map(action => `${action.source}: ${action.msg}`).join("\n")
         let objective = agentRunState?.agentInputPrompt || agentRunState?.initialPrompt || ""
 
@@ -2470,7 +2480,8 @@ let checkIfTaskComplete = async (agentRunState) => {
 
 let checkIfTaskCompleteOAI = async (agentRunState) => {
     try {
-        let latestActions = getLastActions(20)
+        let excludeFromHistory = !!localsettings?.agentSkipPreviousCOTWhenProcessing ? listOfExclusions : []
+        let latestActions = getLastActions(localsettings.agentMaxActionsInHistory, excludeFromHistory)
         let latestActionsText = latestActions.map(action => `${action.source}: ${action.msg}`).join("\n")
         let objective = agentRunState?.agentInputPrompt || agentRunState?.initialPrompt || ""
 
