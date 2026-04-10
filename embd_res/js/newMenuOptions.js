@@ -683,11 +683,56 @@ window.addEventListener('load', () => {
     settingsBox.append(settingLabelElem)
 
     createStopThinkingButton()
-
-    setTimeout(() => {
-        window.setupLumaraPolling();
-    }, 15*1000);
 })
+
+window.eso.afterKoboldCppVersionCheck = async () => {
+    function injectOpenLumaraButton() {
+        const container = document.getElementById('addmediacontainer');
+        if (!container || container.querySelector('#btn_open_openlumara')) {
+            return;
+        }
+
+        const anchor = container.querySelector('.nspopup.flexsizevsmall.high') || container.querySelector('.nspopup');
+        if (!anchor) {
+            return;
+        }
+
+        const wrapper = document.createElement('div');
+        wrapper.className = 'menutext';
+        wrapper.id = 'btn_open_openlumara';
+
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'btn btn-primary bg_purple';
+        button.textContent = 'Launch OpenLumara UI';
+        button.onclick = function () {
+            try {
+                if (typeof hide_popups === 'function') {
+                    hide_popups();
+                }
+            } catch (_) {}
+            window.open('/openlumara/', '_blank', 'noopener');
+        };
+
+        wrapper.appendChild(button);
+
+        const reference = container.querySelector('#btn_open_fsui') || container.querySelector('#btn_open_lcppui');
+        if (reference && reference.parentElement) {
+            reference.insertAdjacentElement('afterend', wrapper);
+        } else {
+            anchor.appendChild(wrapper);
+        }
+    }
+    
+    if (is_using_kcpp_with_open_lumara()) {
+        localsettings.agentLumaraPollingRate = localsettings?.agentLumaraPollingRate || 60
+        injectOpenLumaraButton();
+    }
+    else {
+        localsettings.agentLumaraPollingRate = 0
+    }
+    window.setupLumaraPolling();
+}
 
 let previousRestartNewGameLumara = restart_new_game, previousLoadSelectedFileLumara = load_selected_file
 restart_new_game = (save = true, keep_memory = false) => {

@@ -13998,6 +13998,9 @@ Current version indicated by LITEVER below.
 									let no_txt_model = (mdlname=="inactive");
 									update_websearch_button_visibility();
 									updateAgentButtonVisibility();
+									if (window?.eso?.afterKoboldCppVersionCheck) {
+										window.eso.afterKoboldCppVersionCheck(data);
+									}
 
 									lastEndpointValidated = null
 
