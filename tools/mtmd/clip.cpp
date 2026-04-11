@@ -53,6 +53,7 @@
 #include "models/models.h"
 #include "models/cogvlm.cpp"
 #include "models/conformer.cpp"
+#include "models/dotsocr.cpp"
 #include "models/gemma4v.cpp"
 #include "models/glm4v.cpp"
 #include "models/hunyuanocr.cpp"
@@ -907,6 +908,10 @@ static ggml_cgraph * clip_image_build_graph(clip_ctx * ctx, const clip_image_f32
             {
                 builder = std::make_unique<clip_graph_pixtral>(ctx, img);
             } break;
+        case PROJECTOR_TYPE_DOTS_OCR:
+            {
+                builder = std::make_unique<clip_graph_dotsocr>(ctx, img);
+            } break;
         case PROJECTOR_TYPE_QWEN2VL:
         case PROJECTOR_TYPE_QWEN25VL:
             {
@@ -1345,6 +1350,14 @@ struct clip_model_loader {
                         hparams.image_longest_edge = hparams.image_size;
                         get_u32(KEY_PREPROC_IMAGE_SIZE, hparams.image_longest_edge, false);
                         hparams.set_warmup_n_tokens(256); // avoid OOM on warmup
+                    } break;
+                case PROJECTOR_TYPE_DOTS_OCR:
+                    {
+                        hparams.rope_theta = 10000.0f;
+                        get_u32(KEY_PROJ_SCALE_FACTOR, hparams.n_merge);
+                        get_u32(KEY_IMAGE_MIN_PIXELS, hparams.image_min_pixels);
+                        get_u32(KEY_IMAGE_MAX_PIXELS, hparams.image_max_pixels);
+                        hparams.set_warmup_n_tokens(46*46); // avoid OOM on warmup
                     } break;
                 case PROJECTOR_TYPE_KIMIVL:
                     {
@@ -2069,6 +2082,17 @@ struct clip_model_loader {
                     model.mm_2_b = get_tensor(string_format(TN_LLAVA_PROJ, 2, "bias"), false);
                     model.mm_input_norm_w   = get_tensor(TN_MM_INP_NORM, false);
                     model.mm_patch_merger_w = get_tensor(string_format(TN_MM_PATCH_MERGER, "weight"), false);
+                } break;
+            case PROJECTOR_TYPE_DOTS_OCR:
+                {
+                    model.mm_0_w = get_tensor(string_format(TN_LLAVA_PROJ, 0, "weight"));
+                    model.mm_0_b = get_tensor(string_format(TN_LLAVA_PROJ, 0, "bias"));
+                    model.mm_2_w = get_tensor(string_format(TN_LLAVA_PROJ, 2, "weight"));
+                    model.mm_2_b = get_tensor(string_format(TN_LLAVA_PROJ, 2, "bias"));
+                    model.mm_input_norm_w = get_tensor(TN_MM_INP_NORM);
+                    model.mm_input_norm_b = get_tensor(TN_MM_INP_NORM_B);
+                    // post_trunk_norm: applied after all ViT blocks, before the merger
+                    model.post_ln_w = get_tensor(string_format(TN_MM_POST_NORM, "weight"));
                 } break;
             case PROJECTOR_TYPE_ULTRAVOX:
                 {
@@ -2828,217 +2852,224 @@ void setup_init_vision_shim_kcpp(struct clip_ctx * ctx_v) {
 
     // =====
     // actual llama.cpp transplanted code from init_vision, starts below here!!! do not modify!
-    GGML_ASSERT(ctx_v != nullptr);
-    image_preproc.reset();
+        GGML_ASSERT(ctx_v != nullptr);
+        image_preproc.reset();
 
-    projector_type proj = clip_get_projector_type(ctx_v);
+        projector_type proj = clip_get_projector_type(ctx_v);
 
-    switch (proj) {
-        case PROJECTOR_TYPE_MLP:
-        case PROJECTOR_TYPE_MLP_NORM:
-        case PROJECTOR_TYPE_LDP:
-        case PROJECTOR_TYPE_LDPV2:
-        case PROJECTOR_TYPE_COGVLM:
-        case PROJECTOR_TYPE_JANUS_PRO:
-        case PROJECTOR_TYPE_GLM_EDGE:
-            {
-                bool has_pinpoints = !clip_get_hparams(ctx_v)->image_res_candidates.empty();
-                if (has_pinpoints) {
+        switch (proj) {
+            case PROJECTOR_TYPE_MLP:
+            case PROJECTOR_TYPE_MLP_NORM:
+            case PROJECTOR_TYPE_LDP:
+            case PROJECTOR_TYPE_LDPV2:
+            case PROJECTOR_TYPE_COGVLM:
+            case PROJECTOR_TYPE_JANUS_PRO:
+            case PROJECTOR_TYPE_GLM_EDGE:
+                {
+                    bool has_pinpoints = !clip_get_hparams(ctx_v)->image_res_candidates.empty();
+                    if (has_pinpoints) {
+                        image_preproc = std::make_unique<mtmd_image_preprocessor_llava_uhd>(ctx_v);
+                    } else {
+                        image_preproc = std::make_unique<mtmd_image_preprocessor_fixed_size>(ctx_v);
+                    }
+                } break;
+            case PROJECTOR_TYPE_MINICPMV:
+                {
+                    int minicpmv_version = clip_is_minicpmv(ctx_v);
+                    if (minicpmv_version == 2) {
+                        // minicpmv 2.5 format:
+                        // <image> (overview) </image><slice><image> (slice) </image><image> (slice) </image>\n ... </slice>
+                        slice_tmpl        = MTMD_SLICE_TMPL_MINICPMV_2_5;
+                        tok_ov_img_start  = {lookup_token("<image>")};
+                        tok_ov_img_end    = {lookup_token("</image>")};
+                        tok_slices_start  = {lookup_token("<slice>")};
+                        tok_slices_end    = {lookup_token("</slice>")};
+                        tok_sli_img_start = tok_ov_img_start;
+                        tok_sli_img_end   = tok_ov_img_end;
+                        tok_row_end       = {lookup_token("\n")};
+                        tok_row_end_trail = false; // no trailing end-of-row token
+                        ov_img_first      = true;
+                    } else if (minicpmv_version == 3 || minicpmv_version == 4 || minicpmv_version == 5 || minicpmv_version == 6 || minicpmv_version == 100045) {
+                        // minicpmv 2.6 format:
+                        // <image> (overview) </image><slice> (slice) </slice><slice> (slice) </slice>\n ...
+                        slice_tmpl        = MTMD_SLICE_TMPL_MINICPMV_2_6;
+                        tok_ov_img_start  = {lookup_token("<image>")};
+                        tok_ov_img_end    = {lookup_token("</image>")};
+                        tok_sli_img_start = {lookup_token("<slice>")};
+                        tok_sli_img_end   = {lookup_token("</slice>")};
+                        tok_row_end       = {lookup_token("\n")};
+                        tok_row_end_trail = false; // no trailing end-of-row token
+                        ov_img_first      = true;
+
+                    } else if (minicpmv_version != 0) {
+                        throw std::runtime_error(string_format("unsupported minicpmv version: %d\n", minicpmv_version));
+                    }
                     image_preproc = std::make_unique<mtmd_image_preprocessor_llava_uhd>(ctx_v);
-                } else {
+                } break;
+            case PROJECTOR_TYPE_QWEN2VL:
+            case PROJECTOR_TYPE_QWEN25VL:
+            case PROJECTOR_TYPE_QWEN3VL:
+                {
+                    // <|vision_start|> ... (image embeddings) ... <|vision_end|>
+                    img_beg = "<|vision_start|>";
+                    img_end = "<|vision_end|>";
+                    image_preproc = std::make_unique<mtmd_image_preprocessor_dyn_size>(ctx_v);
+                } break;
+            case PROJECTOR_TYPE_YOUTUVL:
+                {
+                    // <|vision_start|> ... (image embeddings) ... <|vision_end|>
+                    img_beg = "<|vision_start|>";
+                    img_end = "<|vision_end|>";
+                    image_preproc = std::make_unique<mtmd_image_preprocessor_youtuvl>(ctx_v);
+                } break;
+            case PROJECTOR_TYPE_GEMMA3:
+            case PROJECTOR_TYPE_GEMMA3NV:
+                {
+                    // <start_of_image> ... (image embeddings) ... <end_of_image>
+                    img_beg = "<start_of_image>";
+                    img_end = "<end_of_image>";
                     image_preproc = std::make_unique<mtmd_image_preprocessor_fixed_size>(ctx_v);
-                }
-            } break;
-        case PROJECTOR_TYPE_MINICPMV:
-            {
-                int minicpmv_version = clip_is_minicpmv(ctx_v);
-                if (minicpmv_version == 2) {
-                    // minicpmv 2.5 format:
-                    // <image> (overview) </image><slice><image> (slice) </image><image> (slice) </image>\n ... </slice>
-                    slice_tmpl        = MTMD_SLICE_TMPL_MINICPMV_2_5;
-                    tok_ov_img_start  = {lookup_token("<image>")};
-                    tok_ov_img_end    = {lookup_token("</image>")};
-                    tok_slices_start  = {lookup_token("<slice>")};
-                    tok_slices_end    = {lookup_token("</slice>")};
-                    tok_sli_img_start = tok_ov_img_start;
-                    tok_sli_img_end   = tok_ov_img_end;
-                    tok_row_end       = {lookup_token("\n")};
-                    tok_row_end_trail = false; // no trailing end-of-row token
-                    ov_img_first      = true;
-                } else if (minicpmv_version == 3 || minicpmv_version == 4 || minicpmv_version == 5 || minicpmv_version == 6 || minicpmv_version == 100045) {
-                    // minicpmv 2.6 format:
-                    // <image> (overview) </image><slice> (slice) </slice><slice> (slice) </slice>\n ...
-                    slice_tmpl        = MTMD_SLICE_TMPL_MINICPMV_2_6;
-                    tok_ov_img_start  = {lookup_token("<image>")};
-                    tok_ov_img_end    = {lookup_token("</image>")};
-                    tok_sli_img_start = {lookup_token("<slice>")};
-                    tok_sli_img_end   = {lookup_token("</slice>")};
-                    tok_row_end       = {lookup_token("\n")};
-                    tok_row_end_trail = false; // no trailing end-of-row token
-                    ov_img_first      = true;
+                } break;
+            case PROJECTOR_TYPE_IDEFICS3:
+                {
+                    // https://github.com/huggingface/transformers/blob/a42ba80fa520c784c8f11a973ca9034e5f859b79/src/transformers/models/idefics3/processing_idefics3.py#L192-L215
+                    slice_tmpl         = MTMD_SLICE_TMPL_IDEFICS3;
+                    tok_ov_img_start   = {lookup_token("\n\n"), lookup_token("<fake_token_around_image>"), lookup_token("<global-img>")};
+                    tok_ov_img_end     = {lookup_token("<fake_token_around_image>")};
+                    tok_row_end        = {lookup_token("\n")};
+                    sli_img_start_tmpl = "<fake_token_around_image><row_%d_col_%d>";
+                    image_preproc = std::make_unique<mtmd_image_preprocessor_idefics3>(ctx_v);
+                } break;
+            case PROJECTOR_TYPE_PIXTRAL:
+                {
+                    // https://github.com/huggingface/transformers/blob/1cd110c6cb6a6237614130c470e9a902dbc1a4bd/docs/source/en/model_doc/pixtral.md
+                    img_end = "[IMG_END]";
+                    image_preproc = std::make_unique<mtmd_image_preprocessor_dyn_size>(ctx_v);
+                } break;
+            case PROJECTOR_TYPE_PHI4:
+                {
+                    // Phi-4 uses media marker insertion only. Keep image boundary text empty.
+                    image_preproc = std::make_unique<mtmd_image_preprocessor_dyn_size>(ctx_v);
+                } break;
+            case PROJECTOR_TYPE_LLAMA4:
+                {
+                    // (more details in mtmd_context constructor)
+                    img_beg = "<|image_start|>";
+                    img_end = "<|image_end|>";
+                    LOG_WRN("%s: llama 4 vision is known to have degraded quality:\n"
+                            "    https://github.com/ggml-org/llama.cpp/pull/13282\n", __func__);
+                    image_preproc = std::make_unique<mtmd_image_preprocessor_llava_uhd>(ctx_v);
+                } break;
+            case PROJECTOR_TYPE_STEP3VL:
+                {
+                    // Step3 format:
+                    //   <patch_start> (patch) <patch_end> [<patch_newline>]
+                    //   ... (all patch rows)
+                    //   <im_start> (overview) <im_end>
+                    slice_tmpl        = MTMD_SLICE_TMPL_STEP3VL;
+                    tok_ov_img_start  = {lookup_token("<im_start>")};
+                    tok_ov_img_end    = {lookup_token("<im_end>")};
+                    tok_sli_img_start = {lookup_token("<patch_start>")};
+                    tok_sli_img_end   = {lookup_token("<patch_end>")};
+                    tok_row_end       = {lookup_token("<patch_newline>")};
+                    tok_row_end_trail = false;
+                    ov_img_first      = false; // patches first, overview last
+                    image_preproc = std::make_unique<mtmd_image_preprocessor_step3vl>(ctx_v);
+                } break;
+            case PROJECTOR_TYPE_INTERNVL:
+                {
+                    // <img> ... (image embeddings) ... </img>
+                    img_beg = "<img>";
+                    img_end = "</img>";
+                    image_preproc = std::make_unique<mtmd_image_preprocessor_internvl>(ctx_v);
+                } break;
+            case PROJECTOR_TYPE_KIMIVL:
+                {
+                    // <|media_start|> ... (image embeddings) ... <|media_end|>
+                    img_beg = "<|media_start|>";
+                    img_end = "<|media_end|>";
+                    image_preproc = std::make_unique<mtmd_image_preprocessor_dyn_size>(ctx_v);
+                } break;
+            case PROJECTOR_TYPE_KIMIK25:
+                {
+                    // <|media_begin|> ... (image embeddings) ... <|media_end|>
+                    img_beg = "<|media_begin|>";
+                    img_end = "<|media_end|>";
+                    image_preproc = std::make_unique<mtmd_image_preprocessor_dyn_size>(ctx_v);
+                } break;
+            case PROJECTOR_TYPE_LIGHTONOCR:
+                {
+                    // <|im_start|> ... (image embeddings) ... <|im_end|>
+                    img_beg = "<|im_start|>";
+                    img_end = "<|im_end|>";
+                    image_preproc = std::make_unique<mtmd_image_preprocessor_longest_edge>(ctx_v);
+                } break;
+            case PROJECTOR_TYPE_DOTS_OCR:
+                {
+                    // <|img|> ... (image embeddings) ... <|endofimg|>
+                    img_beg = "<|img|>";
+                    img_end = "<|endofimg|>";
+                    image_preproc = std::make_unique<mtmd_image_preprocessor_dyn_size>(ctx_v);
+                } break;
+            case PROJECTOR_TYPE_NEMOTRON_V2_VL:
+                {
+                    image_preproc = std::make_unique<mtmd_image_preprocessor_fixed_size>(ctx_v);
+                } break;
+            case PROJECTOR_TYPE_LFM2:
+                {
+                    // multi-tile:
+                    //   <|image_start|>
+                    //     <|img_row_1_col_1|> (tile) <|img_row_1_col_2|> (tile) ...
+                    //     <|img_thumbnail|> (thumbnail)
+                    //   <|image_end|>
+                    // single-tile:
+                    //   <|image_start|> (image) <|image_end|>
+                    img_beg            = "<|image_start|>";
+                    img_end            = "<|image_end|>";
+                    slice_tmpl         = MTMD_SLICE_TMPL_LFM2;
+                    sli_img_start_tmpl = "<|img_row_%d_col_%d|>";
+                    tok_ov_img_start   = {lookup_token("<|img_thumbnail|>")};
+                    ov_img_first       = false;
+                    image_preproc = std::make_unique<mtmd_image_preprocessor_lfm2>(ctx_v);
+                } break;
+            case PROJECTOR_TYPE_GLM4V:
+                {
+                    // <|begin_of_image|> ... (image embeddings) ... <|end_of_image|>
+                    img_beg = "<|begin_of_image|>";
+                    img_end = "<|end_of_image|>";
+                    image_preproc = std::make_unique<mtmd_image_preprocessor_dyn_size>(ctx_v);
+                } break;
+            case PROJECTOR_TYPE_PADDLEOCR:
+                {
+                    // <|IMAGE_START|> ... (image embeddings) ... <|IMAGE_END|>
+                    img_beg = "<|IMAGE_START|>";
+                    img_end = "<|IMAGE_END|>";
+                    image_preproc = std::make_unique<mtmd_image_preprocessor_dyn_size>(ctx_v);
+                } break;
+            case PROJECTOR_TYPE_GEMMA4V:
+                {
+                    // <|image> ... (image embeddings) ... <image|>
+                    img_beg = "<|image>";
+                    img_end = "<image|>";
+                    image_preproc = std::make_unique<mtmd_image_preprocessor_dyn_size>(ctx_v);
+                } break;
+            case PROJECTOR_TYPE_DEEPSEEKOCR:
+                {
+                    img_end = "\n"; // prevent empty batch on llama-server
+                    image_preproc = std::make_unique<mtmd_image_preprocessor_deepseekocr>(ctx_v);
+                } break;
+            case PROJECTOR_TYPE_HUNYUANOCR:
+                {
+                    // note: these use fullwidth ｜ (U+FF5C) and ▁ (U+2581) to match the tokenizer vocabulary
+                    img_beg = "<｜hy_place▁holder▁no▁100｜>";
+                    img_end = "<｜hy_place▁holder▁no▁101｜>";
+                    image_preproc = std::make_unique<mtmd_image_preprocessor_dyn_size>(ctx_v);
+                } break;
+            default:
+                throw std::runtime_error(string_format("%s: unexpected vision projector type %d\n", __func__, proj));
+        }
 
-                } else if (minicpmv_version != 0) {
-                    throw std::runtime_error(string_format("unsupported minicpmv version: %d\n", minicpmv_version));
-                }
-                image_preproc = std::make_unique<mtmd_image_preprocessor_llava_uhd>(ctx_v);
-            } break;
-        case PROJECTOR_TYPE_QWEN2VL:
-        case PROJECTOR_TYPE_QWEN25VL:
-        case PROJECTOR_TYPE_QWEN3VL:
-            {
-                // <|vision_start|> ... (image embeddings) ... <|vision_end|>
-                img_beg = "<|vision_start|>";
-                img_end = "<|vision_end|>";
-                image_preproc = std::make_unique<mtmd_image_preprocessor_dyn_size>(ctx_v);
-            } break;
-        case PROJECTOR_TYPE_YOUTUVL:
-            {
-                // <|vision_start|> ... (image embeddings) ... <|vision_end|>
-                img_beg = "<|vision_start|>";
-                img_end = "<|vision_end|>";
-                image_preproc = std::make_unique<mtmd_image_preprocessor_youtuvl>(ctx_v);
-            } break;
-        case PROJECTOR_TYPE_GEMMA3:
-        case PROJECTOR_TYPE_GEMMA3NV:
-            {
-                // <start_of_image> ... (image embeddings) ... <end_of_image>
-                img_beg = "<start_of_image>";
-                img_end = "<end_of_image>";
-                image_preproc = std::make_unique<mtmd_image_preprocessor_fixed_size>(ctx_v);
-            } break;
-        case PROJECTOR_TYPE_IDEFICS3:
-            {
-                // https://github.com/huggingface/transformers/blob/a42ba80fa520c784c8f11a973ca9034e5f859b79/src/transformers/models/idefics3/processing_idefics3.py#L192-L215
-                slice_tmpl         = MTMD_SLICE_TMPL_IDEFICS3;
-                tok_ov_img_start   = {lookup_token("\n\n"), lookup_token("<fake_token_around_image>"), lookup_token("<global-img>")};
-                tok_ov_img_end     = {lookup_token("<fake_token_around_image>")};
-                tok_row_end        = {lookup_token("\n")};
-                sli_img_start_tmpl = "<fake_token_around_image><row_%d_col_%d>";
-                image_preproc = std::make_unique<mtmd_image_preprocessor_idefics3>(ctx_v);
-            } break;
-        case PROJECTOR_TYPE_PIXTRAL:
-            {
-                // https://github.com/huggingface/transformers/blob/1cd110c6cb6a6237614130c470e9a902dbc1a4bd/docs/source/en/model_doc/pixtral.md
-                img_end = "[IMG_END]";
-                image_preproc = std::make_unique<mtmd_image_preprocessor_dyn_size>(ctx_v);
-            } break;
-        case PROJECTOR_TYPE_PHI4:
-            {
-                // Phi-4 uses media marker insertion only. Keep image boundary text empty.
-                image_preproc = std::make_unique<mtmd_image_preprocessor_dyn_size>(ctx_v);
-            } break;
-        case PROJECTOR_TYPE_LLAMA4:
-            {
-                // (more details in mtmd_context constructor)
-                img_beg = "<|image_start|>";
-                img_end = "<|image_end|>";
-                LOG_WRN("%s: llama 4 vision is known to have degraded quality:\n"
-                        "    https://github.com/ggml-org/llama.cpp/pull/13282\n", __func__);
-                image_preproc = std::make_unique<mtmd_image_preprocessor_llava_uhd>(ctx_v);
-            } break;
-        case PROJECTOR_TYPE_STEP3VL:
-            {
-                // Step3 format:
-                //   <patch_start> (patch) <patch_end> [<patch_newline>]
-                //   ... (all patch rows)
-                //   <im_start> (overview) <im_end>
-                slice_tmpl        = MTMD_SLICE_TMPL_STEP3VL;
-                tok_ov_img_start  = {lookup_token("<im_start>")};
-                tok_ov_img_end    = {lookup_token("<im_end>")};
-                tok_sli_img_start = {lookup_token("<patch_start>")};
-                tok_sli_img_end   = {lookup_token("<patch_end>")};
-                tok_row_end       = {lookup_token("<patch_newline>")};
-                tok_row_end_trail = false;
-                ov_img_first      = false; // patches first, overview last
-                image_preproc = std::make_unique<mtmd_image_preprocessor_step3vl>(ctx_v);
-            } break;
-        case PROJECTOR_TYPE_INTERNVL:
-            {
-                // <img> ... (image embeddings) ... </img>
-                img_beg = "<img>";
-                img_end = "</img>";
-                image_preproc = std::make_unique<mtmd_image_preprocessor_internvl>(ctx_v);
-            } break;
-        case PROJECTOR_TYPE_KIMIVL:
-            {
-                // <|media_start|> ... (image embeddings) ... <|media_end|>
-                img_beg = "<|media_start|>";
-                img_end = "<|media_end|>";
-                image_preproc = std::make_unique<mtmd_image_preprocessor_dyn_size>(ctx_v);
-            } break;
-        case PROJECTOR_TYPE_KIMIK25:
-            {
-                // <|media_begin|> ... (image embeddings) ... <|media_end|>
-                img_beg = "<|media_begin|>";
-                img_end = "<|media_end|>";
-                image_preproc = std::make_unique<mtmd_image_preprocessor_dyn_size>(ctx_v);
-            } break;
-        case PROJECTOR_TYPE_LIGHTONOCR:
-            {
-                // <|im_start|> ... (image embeddings) ... <|im_end|>
-                img_beg = "<|im_start|>";
-                img_end = "<|im_end|>";
-                image_preproc = std::make_unique<mtmd_image_preprocessor_longest_edge>(ctx_v);
-            } break;
-        case PROJECTOR_TYPE_NEMOTRON_V2_VL:
-            {
-                image_preproc = std::make_unique<mtmd_image_preprocessor_fixed_size>(ctx_v);
-            } break;
-        case PROJECTOR_TYPE_LFM2:
-            {
-                // multi-tile:
-                //   <|image_start|>
-                //     <|img_row_1_col_1|> (tile) <|img_row_1_col_2|> (tile) ...
-                //     <|img_thumbnail|> (thumbnail)
-                //   <|image_end|>
-                // single-tile:
-                //   <|image_start|> (image) <|image_end|>
-                img_beg            = "<|image_start|>";
-                img_end            = "<|image_end|>";
-                slice_tmpl         = MTMD_SLICE_TMPL_LFM2;
-                sli_img_start_tmpl = "<|img_row_%d_col_%d|>";
-                tok_ov_img_start   = {lookup_token("<|img_thumbnail|>")};
-                ov_img_first       = false;
-                image_preproc = std::make_unique<mtmd_image_preprocessor_lfm2>(ctx_v);
-            } break;
-        case PROJECTOR_TYPE_GLM4V:
-            {
-                // <|begin_of_image|> ... (image embeddings) ... <|end_of_image|>
-                img_beg = "<|begin_of_image|>";
-                img_end = "<|end_of_image|>";
-                image_preproc = std::make_unique<mtmd_image_preprocessor_dyn_size>(ctx_v);
-            } break;
-        case PROJECTOR_TYPE_PADDLEOCR:
-            {
-                // <|IMAGE_START|> ... (image embeddings) ... <|IMAGE_END|>
-                img_beg = "<|IMAGE_START|>";
-                img_end = "<|IMAGE_END|>";
-                image_preproc = std::make_unique<mtmd_image_preprocessor_dyn_size>(ctx_v);
-            } break;
-        case PROJECTOR_TYPE_GEMMA4V:
-            {
-                // <|image> ... (image embeddings) ... <image|>
-                img_beg = "<|image>";
-                img_end = "<image|>";
-                image_preproc = std::make_unique<mtmd_image_preprocessor_dyn_size>(ctx_v);
-            } break;
-        case PROJECTOR_TYPE_DEEPSEEKOCR:
-            {
-                img_end = "\n"; // prevent empty batch on llama-server
-                image_preproc = std::make_unique<mtmd_image_preprocessor_deepseekocr>(ctx_v);
-            } break;
-        case PROJECTOR_TYPE_HUNYUANOCR:
-            {
-                // note: these use fullwidth ｜ (U+FF5C) and ▁ (U+2581) to match the tokenizer vocabulary
-                img_beg = "<｜hy_place▁holder▁no▁100｜>";
-                img_end = "<｜hy_place▁holder▁no▁101｜>";
-                image_preproc = std::make_unique<mtmd_image_preprocessor_dyn_size>(ctx_v);
-            } break;
-        default:
-            throw std::runtime_error(string_format("%s: unexpected vision projector type %d\n", __func__, proj));
-    }
-
-    GGML_ASSERT(image_preproc != nullptr);
+        GGML_ASSERT(image_preproc != nullptr);
     //end of lcpp code block
      // =====
 }
@@ -3243,6 +3274,7 @@ int clip_n_output_tokens(const struct clip_ctx * ctx, struct clip_image_f32 * im
                 n_patches = x_patch * y_patch;
             } break;
         case PROJECTOR_TYPE_PADDLEOCR:
+        case PROJECTOR_TYPE_DOTS_OCR:
             {
                 // dynamic size
                 int n_merge = ctx->model.hparams.n_merge;
@@ -3548,6 +3580,28 @@ bool clip_image_batch_encode(clip_ctx * ctx, const int n_threads, const clip_ima
                                 ptr++;
                             }
                         }
+                    }
+                }
+
+                set_input_i32("positions", positions);
+            } break;
+        case PROJECTOR_TYPE_DOTS_OCR:
+            {
+                const int pw = image_size_width / patch_size;
+                const int ph = image_size_height / patch_size;
+                const int n_pos = ph * pw;
+                std::vector<int> positions(n_pos * 4);
+                int ptr = 0;
+
+                // flat layout: [h, w, h, w] for each patch
+                // patches are in raster order (matching conv2d output)
+                for (int y = 0; y < ph; y++) {
+                    for (int x = 0; x < pw; x++) {
+                        positions[          ptr] = y;
+                        positions[  n_pos + ptr] = x;
+                        positions[2*n_pos + ptr] = y;
+                        positions[3*n_pos + ptr] = x;
+                        ptr++;
                     }
                 }
 
@@ -4065,6 +4119,7 @@ int clip_n_mmproj_embd(const struct clip_ctx * ctx) {
         case PROJECTOR_TYPE_PHI4:
         case PROJECTOR_TYPE_PIXTRAL:
         case PROJECTOR_TYPE_LIGHTONOCR:
+        case PROJECTOR_TYPE_DOTS_OCR:
             return ctx->model.mm_2_w->ne[1];
         case PROJECTOR_TYPE_MLP_NORM:
             return ctx->model.mm_3_b->ne[0];

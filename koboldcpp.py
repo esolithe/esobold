@@ -182,6 +182,14 @@ zenity_permitted = True
 thinkformats = [{"start":"<|channel|>analysis<|message|>","end":"<|start|>assistant<|channel|>final<|message|>"},
                 {"start":"<think>","end":"</think>"},
                 {"start":"<|channel>thought","end":"<channel|>"}]
+tool_call_pairs = [
+    ("<tool_call>", "</tool_call>"),
+    ("<seed:tool_call>", "</seed:tool_call>"),
+    ("<|tool_call_begin|>", "<|tool_call_end|>"),
+    ("<｜tool▁call▁begin｜>", "<｜tool▁call▁end｜>"),
+    ("<minimax:tool_call>", "</minimax:tool_call>"),
+    ("<|tool_call>", "<tool_call|>"),
+]
 
 saved_stdout = None
 saved_stderr = None
@@ -2517,6 +2525,8 @@ def lora_map_name_to_path(request_list):
 def sd_generate(genparams):
     global maxctx, args, currentusergenkey, totalgens, pendingabortkey, chatcompl_adapter
 
+    job_timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+
     default_adapter = {} if chatcompl_adapter is None else chatcompl_adapter
     adapter_obj = genparams.get('adapter', default_adapter)
     forced_negprompt = adapter_obj.get("add_sd_negative_prompt", "")
@@ -2631,6 +2641,7 @@ def sd_generate(genparams):
         data_extra = ret.data_extra.decode("UTF-8","ignore")
         info = json.loads(ret.info.decode("UTF-8","ignore"))
         animated = True if ret.animated else False
+    info["job_timestamp"] = job_timestamp
     return {"animated": animated, "data":data_main, "data_extra":data_extra, "info": info}
 
 
@@ -3818,6 +3829,8 @@ def toolcall_to_normalized_json(text,start_tag,end_tag): #convert weird formats 
             return text
         return json.dumps(results) if len(results) > 1 else json.dumps(results[0])
     def parse_gemma4(text: str) -> str:
+        if text.startswith("call:"):
+            text = text[len("call:"):]
         text = text.replace('<|"|>', '!$$REAL_QUOTE$$!')
         text = text.replace('\"', '\\"')
         text = text.replace('!$$REAL_QUOTE$$!','"')
@@ -3869,7 +3882,7 @@ def toolcall_to_normalized_json(text,start_tag,end_tag): #convert weird formats 
     return text #fallback
 
 def repack_toolcall_tags(text: str, original_tools:list):
-    global thinkformats
+    global thinkformats, tool_call_pairs
     tool_calls = []
     if not text:
         return tool_calls
@@ -3877,16 +3890,8 @@ def repack_toolcall_tags(text: str, original_tools:list):
         pattern = f"{re.escape(fmt['start'])}.*?{re.escape(fmt['end'])}"
         text = re.sub(pattern, '', text, flags=re.DOTALL)
     text = text.strip()
-    tcpairs = [
-        ("<tool_call>", "</tool_call>"),
-        ("<seed:tool_call>", "</seed:tool_call>"),
-        ("<|tool_call_begin|>", "<|tool_call_end|>"),
-        ("<｜tool▁call▁begin｜>", "<｜tool▁call▁end｜>"),
-        ("<minimax:tool_call>", "</minimax:tool_call>"),
-        ("<|tool_call>call:", "<tool_call|>"),
-    ]
     found = False
-    for start, end in tcpairs:
+    for start, end in tool_call_pairs:
         pattern = re.escape(start) + r"(.*?)" + re.escape(end)
         matches = re.findall(pattern, text, flags=re.DOTALL)
         if matches:
@@ -4367,32 +4372,10 @@ ws ::= | " " | "\n" [ \t]{0,20}
         genparams["top_k"] = int(genparams.get('top_k', 100))
         genparams["max_length"] = int(genparams.get('max', args.defaultgenamt))
 
-    elif api_format==2:
-        #tool calls only possible if forced, or if ending with assistant tag
+    elif api_format==2: #note: kobold api does not support tool calling
         adapter_obj = {} if chatcompl_adapter is None else chatcompl_adapter
         assistant_message_start = adapter_obj.get("assistant_start", "\n### Response:\n")
         assistant_message_gen = adapter_obj.get("assistant_gen", assistant_message_start)
-        used_tool_json = determine_tool_json_to_use(genparams, genparams.get('prompt', ""), assistant_message_gen, True)
-        if used_tool_json and not genparams.get('grammar', ""):
-            toolparamjson = None
-            toolname = None
-            # Set temperature lower automatically if function calling, cannot exceed 0.5
-            genparams["temperature"] = (1.0 if genparams.get("temperature", 0.5) > 1.0 else genparams.get("temperature", 0.5))
-            genparams["using_openai_tools"] = True
-            # Set grammar to llamacpp example grammar to force json response (see https://github.com/ggerganov/llama.cpp/blob/master/grammars/json_arr.gbnf)
-            genparams["grammar"] = jsongrammar
-            try:
-                toolname = used_tool_json.get('function').get('name')
-                toolparamjson = used_tool_json.get('function').get('parameters')
-                bettergrammarjson = {"type":"array","items":{"type":"object","properties":{"id":{"type":"string","enum":["call_001"]},"type":{"type":"string","enum":["function"]},"function":{"type":"object","properties":{"name":{"type":"string"},"arguments":{}},"required":["name","arguments"],"additionalProperties":False}},"required":["id","type","function"],"additionalProperties":False}}
-                bettergrammarjson["items"]["properties"]["function"]["properties"]["arguments"] = toolparamjson
-                decoded = convert_json_to_gbnf(bettergrammarjson)
-                if decoded:
-                    genparams["grammar"] = decoded
-            except Exception:
-                pass
-            tool_json_formatting_instruction = f"\nPlease use the provided schema to fill the parameters to create a function call for {toolname}, in the following format: " + json.dumps([{"id": "call_001", "type": "function", "function": {"name": f"{toolname}", "arguments": {"first property key": "first property value", "second property key": "second property value"}}}], indent=0)
-            genparams["prompt"] += f"\n\nJSON Schema:\n{used_tool_json}\n\n{tool_json_formatting_instruction}{assistant_message_gen}"
 
     elif api_format==3 or api_format==4 or api_format==7:
         default_adapter = {} if chatcompl_adapter is None else chatcompl_adapter
@@ -7366,7 +7349,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         self.wfile.flush()
 
     async def handle_sse_stream(self, genparams, api_format):
-        global friendlymodelname, currfinishreason, thinkformats
+        global friendlymodelname, currfinishreason, thinkformats, tool_call_pairs, cached_chat_template
         global autoswapmode, textName, sttName, ttsName, embedName, musicName, imageName, mmprojName
 
         modelNameToReturn = friendlymodelname
@@ -7382,8 +7365,19 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         self.send_header("cache-control", "no-cache")
         self.send_header("connection", "keep-alive")
         self.end_headers(content_type='text/event-stream')
-        if api_format == 4 and using_openai_tools: # if tools, do not send anything else - OAI tool calls will be handled with fakestreaming!
-            return
+
+        # if tools, do not send anything else - OAI tool calls will be handled with fakestreaming!
+        # only exception is if we know the exact toolcall tag to segment!
+        tool_segment_tag = ""
+        for start, end in tool_call_pairs:
+            if cached_chat_template and start in cached_chat_template:
+                tool_segment_tag = start
+                break
+        jinjatools = (args.jinja and args.jinja_tools)
+        if api_format == 4 and using_openai_tools:
+            if not jinjatools or not tool_segment_tag:
+                genparams['sync_toolcall_stream_ineligible'] = True
+                return
 
         think_tag_buf = ""
         encap_in_thinking = False
@@ -7459,7 +7453,19 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                     if sindex != -1 and trim_str!="":
                                         tokenStr = tokenStr[:sindex]
 
+                        sync_potential_toolcall_splitmatch = ""
                         if tokenStr!="" or streamDone:
+                            # Tool boundary detection for tool-capable chat completions.
+                            # if triggered, stop real streaming, and let the buffered fakestreaming take over
+                            if api_format == 4 and using_openai_tools:
+                                tokenStr = tokenReserve + tokenStr
+                                tokenReserve = ""
+                                splitter = tool_segment_tag
+                                if splitter in tokenStr:
+                                    if not genparams.get("sync_toolcall_potential_triggered",False):
+                                        sync_potential_toolcall_splitmatch = splitter
+                                        genparams['sync_toolcall_potential_triggered'] = True #if tool calls is triggered, rest will be sync fake streaming. we'll buffer it for later
+
                             need_split_final_msg = True if (currfinishreason is not None and streamDone and tokenStr!="") else False
 
                             # Hack for lcppui reasoning_content for thinking models
@@ -7519,6 +7525,28 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                             else:
                                 delta['content'] = tokenStr
 
+                            if genparams.get("sync_toolcall_potential_triggered",False) and delta: # if sync_toolcall_potential_triggered, buffer up the impending content chunk for tools in fakestreaming, in case toolcalls fail
+                                ec = genparams.get("sync_toolcall_extra_content","")
+                                erc = genparams.get("sync_toolcall_extra_reasoning_content","")
+                                ec += delta.get("content","")
+                                erc += delta.get("reasoning_content","")
+                                if erc and sync_potential_toolcall_splitmatch and sync_potential_toolcall_splitmatch in erc:
+                                    parts = erc.split(sync_potential_toolcall_splitmatch,1)
+                                    erc = sync_potential_toolcall_splitmatch + parts[1]
+                                    delta["reasoning_content"] = parts[0]
+                                elif ec and sync_potential_toolcall_splitmatch and sync_potential_toolcall_splitmatch in ec:
+                                    parts = ec.split(sync_potential_toolcall_splitmatch,1)
+                                    ec = sync_potential_toolcall_splitmatch + parts[1]
+                                    delta["content"] = parts[0]
+                                genparams['sync_toolcall_extra_content'] = ec
+                                genparams['sync_toolcall_extra_reasoning_content'] = erc
+                                if not sync_potential_toolcall_splitmatch:
+                                    if not streamDone:
+                                        await asyncio.sleep(async_sleep_short)
+                                        continue
+                                    await asyncio.sleep(async_sleep_short)
+                                    return
+
                             if need_split_final_msg: #we need to send one message without the finish reason, then send a finish reason with no msg to follow standards
                                 if api_format == 4:  # if oai chat, set format to expected openai streaming response
                                     event_str = json.dumps({"id":chatcmpl_id,"object":"chat.completion.chunk","created":int(time.time()),"model":modelNameToReturn,"choices":[{"index":0,"finish_reason":None,"delta":delta}]})
@@ -7539,6 +7567,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                     addonstr = json.dumps({"id":chatcmpl_id,"object":"chat.completion.chunk","created":int(time.time()),"model":modelNameToReturn,"choices":[{"index":0,"finish_reason":None,"delta":{'role':'assistant','content':''},"logprobs":logprobsdict}]})
                                     await self.send_oai_sse_event(addonstr)
                                 event_str = json.dumps({"id":chatcmpl_id,"object":"chat.completion.chunk","created":int(time.time()),"model":modelNameToReturn,"choices":[{"index":0,"finish_reason":currfinishreason,"delta":delta}]})
+                                genparams['sync_toolcall_first_role_sent'] = True
                                 await self.send_oai_sse_event(event_str)
                             elif api_format == 3:  # non chat completions
                                 if streamDone and ("logprobs" in genparams and genparams["logprobs"]): # this is a hack that sends an extra message containing ALL the logprobs
@@ -9868,7 +9897,9 @@ Change Mode<br>
                             self.end_headers(content_type='application/json')
                             self.wfile.write(genresp)
                         elif api_format == 4 and genparams.get('using_openai_tools', False): #special case, fake streaming for openai tool calls
-                            content_text = None
+                            # we only send content_text and reasoning_text if tools aren't used. they contain the balance of the output after sync_toolcall_potential_triggered was triggered
+                            content_text = genparams.get('sync_toolcall_extra_content', "") #populated by the sse call, we don't use gendat['choices'][0]['message'].get('content', None)
+                            reasoning_text = genparams.get('sync_toolcall_extra_reasoning_content', "")
                             toolsdata_res = []
                             try:
                                 toolsdata_res = gendat['choices'][0]['message']['tool_calls']
@@ -9876,53 +9907,57 @@ Change Mode<br>
                                     toolsdata_res[0]["index"] = 0 # need to add an index for OWUI
                             except Exception:
                                 toolsdata_res = []
-                            try:
-                                content_text = gendat['choices'][0]['message'].get('content', None)
-                            except Exception:
-                                content_text = None
 
-                           # Send role chunk first
-                            chunk_role = json.dumps({
-                                "id": "koboldcpp",
-                                "object": "chat.completion.chunk",
-                                "created": int(time.time()),
-                                "model": modelNameToReturn,
-                                "choices": [{"index": 0, "finish_reason": None, "delta": {"role": "assistant"}}]
-                            })
-                            self.wfile.write(f"data: {chunk_role}\n\n".encode())
-                            self.wfile.flush()
+                           # Send role chunk first, if needed
+                            if genparams.get('sync_toolcall_first_role_sent', False):
+                                genparams['sync_toolcall_first_role_sent'] = True
+                                chunk_role = json.dumps({
+                                    "id": "koboldcpp",
+                                    "object": "chat.completion.chunk",
+                                    "created": int(time.time()),
+                                    "model": modelNameToReturn,
+                                    "choices": [{"index": 0, "finish_reason": None, "delta": {"role": "assistant"}}]
+                                })
+                                self.wfile.write(f"data: {chunk_role}\n\n".encode())
+                                self.wfile.flush()
 
-                            # Send content if present
-                            if content_text:
-                                reasoning_txt = ""
-                                thinkstrips = [item["start"] for item in thinkformats] #start thinking tags
-                                thinksplitters = [item["end"] for item in thinkformats] #end thinking tags
-                                for tsp in thinksplitters:
-                                    if tsp in content_text:
-                                        parts = content_text.split(tsp, 1)
-                                        reasoning_txt = parts[0]
-                                        content_text = parts[1]
-                                        for ts in thinkstrips:
-                                            reasoning_txt = reasoning_txt.replace(ts, "")
-                                if reasoning_txt:
+                            # if no valid tool splitter, we have to do 100% synchronous
+                            if not content_text and not reasoning_text and genparams.get('sync_toolcall_stream_ineligible', False):
+                                temp_content = ""
+                                try:
+                                    temp_content = gendat['choices'][0]['message'].get('content', None)
+                                except Exception:
+                                    temp_content = None
+                                if temp_content:
+                                    temp_reasoning = ""
+                                    thinkstrips = [item["start"] for item in thinkformats] #start thinking tags
+                                    thinksplitters = [item["end"] for item in thinkformats] #end thinking tags
+                                    for tsp in thinksplitters:
+                                        if tsp in temp_content:
+                                            parts = temp_content.split(tsp, 1)
+                                            temp_reasoning = parts[0]
+                                            temp_content = parts[1]
+                                            for ts in thinkstrips:
+                                                temp_reasoning = temp_reasoning.replace(ts, "")
+                                    if temp_reasoning:
+                                        chunk_content = json.dumps({
+                                            "id": "koboldcpp",
+                                            "object": "chat.completion.chunk",
+                                            "created": int(time.time()),
+                                            "model": modelNameToReturn,
+                                            "choices": [{"index": 0, "finish_reason": None, "delta": {"reasoning_content": temp_reasoning}}]
+                                        })
+                                        self.wfile.write(f"data: {chunk_content}\n\n".encode())
+                                        self.wfile.flush()
                                     chunk_content = json.dumps({
                                         "id": "koboldcpp",
                                         "object": "chat.completion.chunk",
                                         "created": int(time.time()),
                                         "model": modelNameToReturn,
-                                        "choices": [{"index": 0, "finish_reason": None, "delta": {"reasoning_content": reasoning_txt}}]
+                                        "choices": [{"index": 0, "finish_reason": None, "delta": {"content": temp_content}}]
                                     })
                                     self.wfile.write(f"data: {chunk_content}\n\n".encode())
                                     self.wfile.flush()
-                                chunk_content = json.dumps({
-                                    "id": "koboldcpp",
-                                    "object": "chat.completion.chunk",
-                                    "created": int(time.time()),
-                                    "model": modelNameToReturn,
-                                    "choices": [{"index": 0, "finish_reason": None, "delta": {"content": content_text}}]
-                                })
-                                self.wfile.write(f"data: {chunk_content}\n\n".encode())
-                                self.wfile.flush()
 
                             # Send tool calls incrementally in OpenAI format
                             if toolsdata_res and len(toolsdata_res) > 0:
@@ -9961,6 +9996,28 @@ Change Mode<br>
                                         "choices": [{"index": 0, "finish_reason": None, "delta": {"tool_calls": [tc_args]}}]
                                     })
                                     self.wfile.write(f"data: {chunk_args}\n\n".encode())
+                                    self.wfile.flush()
+                            else:
+                                # Send remaining buffered content if no tool calls were made
+                                if reasoning_text:
+                                    chunk_content = json.dumps({
+                                        "id": "koboldcpp",
+                                        "object": "chat.completion.chunk",
+                                        "created": int(time.time()),
+                                        "model": modelNameToReturn,
+                                        "choices": [{"index": 0, "finish_reason": None, "delta": {"reasoning_content": reasoning_text}}]
+                                    })
+                                    self.wfile.write(f"data: {chunk_content}\n\n".encode())
+                                    self.wfile.flush()
+                                if content_text:
+                                    chunk_content = json.dumps({
+                                        "id": "koboldcpp",
+                                        "object": "chat.completion.chunk",
+                                        "created": int(time.time()),
+                                        "model": modelNameToReturn,
+                                        "choices": [{"index": 0, "finish_reason": None, "delta": {"content": content_text}}]
+                                    })
+                                    self.wfile.write(f"data: {chunk_content}\n\n".encode())
                                     self.wfile.flush()
 
                             # Final chunk
