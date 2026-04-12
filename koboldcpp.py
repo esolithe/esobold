@@ -2828,7 +2828,11 @@ def music_generate_audio(genparams):
 
 def tokenize_ids(countprompt,tcaddspecial):
     rawcountdata = handle.token_count(countprompt.encode("UTF-8"),tcaddspecial)
-    countlimit = rawcountdata.count if (rawcountdata.count>=0 and rawcountdata.count<50000) else 0
+    count = rawcountdata.count
+    hardlimit = (2**31) - 1
+    countlimit = count if (count>=0 and count<=hardlimit) else 0
+    if count > hardlimit:
+        utfprint("Warning: TokenCount exceeds max limit.")
     # the above protects the server in case the count limit got corrupted
     countdata = [rawcountdata.ids[i] for i in range(countlimit)]
     return countdata
