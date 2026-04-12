@@ -13291,8 +13291,9 @@ def unregister_koboldcpp():
 
 def get_OpenLumara_dir():
     """Returns the absolute path to the bundled OpenLumara directory."""
-    return os.path.join(getdirpath(), "esoExtras", "opticlaw")
-
+    lumaraPath = os.path.join(os.path.abspath(os.path.dirname(os.path.realpath(__file__))),"esoExtras", "opticlaw")
+    return lumaraPath
+    
 def prepare_OpenLumara_config(launch_args):
     """Generate or update the OpenLumara config YAML with any user-provided overrides."""
     import yaml
@@ -13391,7 +13392,9 @@ def prepare_OpenLumara_config(launch_args):
 def launch_OpenLumara(launch_args):
     """Launch the OpenLumara AI agent as a subprocess."""
     OpenLumara_dir = get_OpenLumara_dir()
+    print(f"OpenLumara directory: {OpenLumara_dir}")    
     OpenLumara_main = os.path.join(OpenLumara_dir, "main.py")
+    print(f"OpenLumara main.py path: {OpenLumara_main}")
     if not os.path.exists(OpenLumara_main):
         print(f"Warning: OpenLumara main.py not found at '{OpenLumara_main}'. Is the submodule checked out?")
         return None
@@ -13401,6 +13404,7 @@ def launch_OpenLumara(launch_args):
         return None
 
     configPath = prepare_OpenLumara_config(launch_args)
+    print(f"Prepared OpenLumara config at: {configPath}")
 
     if not configPath:
         print("Warning: OpenLumara config preparation failed. Skipping launch.")
