@@ -13339,8 +13339,11 @@ def unregister_koboldcpp():
 
 def get_OpenLumara_dir():
     """Returns the absolute path to the bundled OpenLumara directory."""
-    lumaraPath = os.path.join(os.path.abspath(os.path.dirname(os.path.realpath(__file__))),"esoExtras", "opticlaw")
-    return lumaraPath
+    if getattr(sys, 'frozen', False):
+        base = os.path.dirname(sys.executable)
+    else:
+        base = os.path.abspath(os.path.dirname(os.path.realpath(__file__)))
+    return os.path.join(base, "esoExtras", "opticlaw")
     
 def prepare_OpenLumara_config(launch_args):
     OpenLumara_dir = get_OpenLumara_dir()
@@ -13401,8 +13404,24 @@ def launch_OpenLumara(launch_args):
         isHTTPS = launch_args.ssl is not None and len(launch_args.ssl) == 2
         api_url = launch_args.OpenLumara_apiurl if launch_args.OpenLumara_apiurl is not None and launch_args.OpenLumara_apiurl != '' else f"{'https' if isHTTPS else 'http'}://localhost:{defaultport}/v1"
 
+
+        # When running as a frozen binary, sys.executable is the compiled binary,
+        # not a Python interpreter. Find a real Python to run OpenLumara's main.py.
+        if getattr(sys, 'frozen', False):
+            python_exe = shutil.which("python3") or shutil.which("python")
+            if not python_exe:
+                print("Warning: Could not find a Python interpreter (python3 or python) to launch OpenLumara. Please ensure Python is installed and available in PATH.")
+                return None
+        else:
+            python_exe = sys.executable
+
+        # Strip LD_LIBRARY_PATH so the frozen binary's bundled libraries
+        # do not contaminate the OpenLumara subprocess environment.
+        lumara_env = os.environ.copy()
+        lumara_env.pop("LD_LIBRARY_PATH", None)
+
         proc = subprocess.Popen(
-            [sys.executable, OpenLumara_main, 
+            [python_exe, OpenLumara_main, 
                 "--config", configPath,
                 "--api.key", f"{launch_args.password if launch_args.password is not None else 'KEY_HERE'}",
                 "--api.url", f"{api_url}",
@@ -13417,7 +13436,8 @@ def launch_OpenLumara(launch_args):
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            bufsize=1
+            bufsize=1,
+            env=lumara_env
         )
         print(f"OpenLumara started (PID {proc.pid})")
         threading.Thread(target=read_stream, args=(proc.stdout, log_output), daemon=True).start()
