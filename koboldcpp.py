@@ -11820,10 +11820,10 @@ def show_gui():
     OpenLumara_tab = tabcontent["OpenLumara"]
     makelabel(OpenLumara_tab, "OpenLumara AI Agent", 0, 0, tooltiptxt="OpenLumara is a modular, token-efficient AI agent framework that runs alongside KoboldCpp.")
     makecheckbox(OpenLumara_tab, "Enable OpenLumara", OpenLumara_var, 1, tooltiptxt="Launch the OpenLumara AI agent automatically when KoboldCpp starts.")
-    # makelabelentry(OpenLumara_tab, "Config File (required):", OpenLumara_configfile_var, 3, 220, tooltip="Path to the OpenLumara config YAML file. A default config will be generated at this path if the file is absent.\nLeave blank to use the default location in esoExtras/opticlaw/config/config.yml")
-    makefileentry(OpenLumara_tab, "Config File (required):", "Select OpenLumara config file", OpenLumara_configfile_var, 3, width=220, dialog_type=0, tooltiptxt="Path to the OpenLumara config YAML file. A default config will be generated at this path if the file is absent.")
-    makefileentry(OpenLumara_tab, "Data Directory (required):", "Select OpenLumara data directory", OpenLumara_datadir_var, 5, width=220, dialog_type=2, tooltiptxt="Overrides the data_dir field in the OpenLumara config.")
-    makefileentry(OpenLumara_tab, "Sandbox Folder (required):", "Select OpenLumara sandbox folder", OpenLumara_sandboxfolder_var, 7, width=220, dialog_type=2, tooltiptxt="Overrides the sandbox_folder field in the OpenLumara config.")
+    # makefileentry(OpenLumara_tab, "Config File (required):", "Select OpenLumara config file", OpenLumara_configfile_var, 3, width=220, dialog_type=0, tooltiptxt="Path to the OpenLumara config YAML file. A default config will be generated at this path if the file is absent.")
+    makefileentry(OpenLumara_tab, "Config File (required):", "Select OpenLumara config file", OpenLumara_configfile_var,3,width=280,filetypes=[("Lumara Config", "*.yaml"), ("Lumara Config", "*.yml")],dialog_type=1,tooltiptxt="Path to the OpenLumara config YAML file.")
+    makefileentry(OpenLumara_tab, "Data Directory (required):", "Select OpenLumara data directory", OpenLumara_datadir_var, 5, width=220, dialog_type=2, tooltiptxt="Path to the data directory used by OpenLumara to store configurations and conversation history.")
+    makefileentry(OpenLumara_tab, "Sandbox Folder (required):", "Select OpenLumara sandbox folder", OpenLumara_sandboxfolder_var, 7, width=220, dialog_type=2, tooltiptxt="Path to the sandbox directory used by OpenLumara for agent file access.")
     makelabelentry(OpenLumara_tab, "OAI API URL (optional):", OpenLumara_apiurl_var, 9, 220, tooltip=f"Overrides the API URL in the OpenLumara config.\nLeave blank to use the value already in the config.\nExample: https://localhost:{defaultport}/v1")
 
     # refresh
