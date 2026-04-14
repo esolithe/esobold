@@ -2123,14 +2123,19 @@ void kcpp_init_audio_proj(clip_ctx * ctx_a)
     switch (proj) {
         case PROJECTOR_TYPE_QWEN2A:
         case PROJECTOR_TYPE_QWEN25O:
+        case PROJECTOR_TYPE_QWEN3A:
         case PROJECTOR_TYPE_ULTRAVOX:
         case PROJECTOR_TYPE_VOXTRAL:
         case PROJECTOR_TYPE_GLMA:
         case PROJECTOR_TYPE_MUSIC_FLAMINGO:
+        case PROJECTOR_TYPE_MERALION:
             audio_preproc = std::make_unique<mtmd_audio_preprocessor_whisper>(ctx_a);
             break;
         case PROJECTOR_TYPE_LFM2A:
             audio_preproc = std::make_unique<mtmd_audio_preprocessor_conformer>(ctx_a);
+            break;
+        case PROJECTOR_TYPE_GEMMA4A:
+            audio_preproc = std::make_unique<mtmd_audio_preprocessor_gemma4a>(ctx_a);
             break;
         default:
             GGML_ABORT("unsupported audio projector type");
@@ -3699,7 +3704,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
             if(clp_ctx_a)
             {
                 int ptype = clip_get_projector_type_ext(clp_ctx_a);
-                if(ptype==PROJECTOR_TYPE_QWEN2A) //qwen omni
+                if(ptype==PROJECTOR_TYPE_QWEN2A || ptype==PROJECTOR_TYPE_QWEN3A || ptype==PROJECTOR_TYPE_QWEN25O) //qwen omni
                 {
                     aud_start = "<|audio_bos|>";
                     aud_end = "<|audio_eos|>\n";
@@ -3708,6 +3713,11 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                 {
                     aud_start = "[INST][BEGIN_AUDIO]";
                     aud_end = "[/INST]\n";
+                }
+                else if(ptype==PROJECTOR_TYPE_GEMMA4A)
+                {
+                    aud_start = "<|audio>";
+                    aud_end = "<audio|>\n";
                 }
             }
 
@@ -3859,7 +3869,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
     // For the record, the GLM4 one didn't break anyone and everyone forgot GLM4 needed this :D
     if (file_format == FileFormat::GGUF_GENERIC && (file_format_meta.model_architecture == llm_arch::LLM_ARCH_GEMMA4)) {
         std::string temp = gpttype_get_chat_template();
-        if (temp.find("<|channel>thought") != std::string::npos) {
+        if (temp.find("<|channel>thought\\n<channel|>") != std::string::npos) {
             const std::string channel_open  = "<|channel>";
             const std::string channel_close = "<channel|>";
             const std::string channel_prefix = channel_open + channel_close;
