@@ -13339,11 +13339,8 @@ def unregister_koboldcpp():
 
 def get_OpenLumara_dir():
     """Returns the absolute path to the bundled OpenLumara directory."""
-    if getattr(sys, 'frozen', False):
-        base = os.path.dirname(sys.executable)
-    else:
-        base = os.path.abspath(os.path.dirname(os.path.realpath(__file__)))
-    return os.path.join(base, "esoExtras", "opticlaw")
+    lumaraPath = os.path.join(os.path.abspath(os.path.dirname(os.path.realpath(__file__))),"esoExtras", "opticlaw")
+    return lumaraPath
     
 def prepare_OpenLumara_config(launch_args):
     OpenLumara_dir = get_OpenLumara_dir()
