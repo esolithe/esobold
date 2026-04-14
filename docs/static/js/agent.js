@@ -2531,12 +2531,20 @@ let askUserToRetryIncompleteTask = async (agentRunState) => {
     if (!!agentRunState?.skipTaskCompletionCheck || agentRunState.endCurrent) {
         return
     }
+    let autoContinueMode = `${localsettings?.agentAutoContinueMode || ""}`
+    if (autoContinueMode !== "auto" && autoContinueMode !== "prompt" && autoContinueMode !== "disabled") {
+        autoContinueMode = typeof localsettings?.agentAutoContinue === "boolean" && localsettings.agentAutoContinue ? "auto" : "prompt"
+    }
+    if (autoContinueMode === "disabled") {
+        return
+    }
+
     let isTaskComplete = await checkIfTaskComplete(agentRunState), continuePrompt = isTaskComplete?.isTaskComplete === false && !!isTaskComplete?.objectiveForContinuing ? isTaskComplete.objectiveForContinuing : agentRunState?.agentPrompt
     if (isTaskComplete?.isTaskComplete !== false) {
         return
     }
 
-    let retryResult, shouldAutoContinue = !!localsettings?.agentAutoContinue;
+    let retryResult, shouldAutoContinue = autoContinueMode === "auto";
     if (shouldAutoContinue)
     {
         retryResult = "continue"
