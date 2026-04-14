@@ -37,6 +37,17 @@ render_gametext = (...args) => {
 
 let originalDisplaySettings = display_settings, originalConfirmSettings = confirm_settings;
 
+let getAgentAutoContinueMode = () => {
+    let mode = `${localsettings?.agentAutoContinueMode || ""}`
+    if (mode === "auto" || mode === "prompt" || mode === "disabled") {
+        return mode
+    }
+    if (typeof localsettings?.agentAutoContinue === "boolean") {
+        return localsettings.agentAutoContinue ? "auto" : "prompt"
+    }
+    return "auto"
+}
+
 let DEFAULT_AGENT_TOOL_GROUPS = [
     { key: "messaging", label: "Messaging" },
     { key: "planning_input", label: "Planning and User Input" },
@@ -205,7 +216,7 @@ display_settings = () => {
     document.getElementById("agentStopOnRequestForInput").checked = localsettings.agentStopOnRequestForInput;
     document.getElementById("agentCOTMax").value = localsettings.agentCOTMax;
     document.getElementById("agentCOTMaxnumeric").value = localsettings.agentCOTMax;
-    document.getElementById("agentAutoContinue").checked = localsettings.agentAutoContinue;
+    document.getElementById("agentAutoContinue").value = getAgentAutoContinueMode();
     document.getElementById("agentCOTRepeatsMax").value = localsettings.agentCOTRepeatsMax;
     document.getElementById("agentCOTRepeatsMaxnumeric").value = localsettings.agentCOTRepeatsMax;
     document.getElementById("agentUseOAITools").checked = localsettings.agentUseOAITools;
@@ -245,7 +256,8 @@ confirm_settings = () => {
     localsettings.agentHideCOT = (document.getElementById("agentHideCOT").checked ? true : false);
     localsettings.agentStopOnRequestForInput = (document.getElementById("agentStopOnRequestForInput").checked ? true : false);
     localsettings.agentCOTMax = document.getElementById("agentCOTMax").value;
-    localsettings.agentAutoContinue = (document.getElementById("agentAutoContinue").checked ? true : false);
+    localsettings.agentAutoContinueMode = `${document.getElementById("agentAutoContinue").value || "auto"}`;
+    localsettings.agentAutoContinue = localsettings.agentAutoContinueMode === "auto";
     localsettings.agentCOTRepeatsMax = document.getElementById("agentCOTRepeatsMax").value;
     localsettings.agentUseOAITools = (document.getElementById("agentUseOAITools").checked ? true : false);
     localsettings.agentSkipPlanningStep = (document.getElementById("agentSkipPlanningStep").checked ? true : false);
@@ -309,8 +321,16 @@ window.addEventListener('load', () => {
     if (localsettings?.agentCOTRepeatsMax == undefined) {
         localsettings.agentCOTRepeatsMax = 1
     }
+    if (localsettings?.agentAutoContinueMode == undefined) {
+        if (typeof localsettings?.agentAutoContinue === "boolean") {
+            localsettings.agentAutoContinueMode = localsettings.agentAutoContinue ? "auto" : "prompt"
+        }
+        else {
+            localsettings.agentAutoContinueMode = "auto"
+        }
+    }
     if (localsettings?.agentAutoContinue == undefined) {
-        localsettings.agentAutoContinue = true
+        localsettings.agentAutoContinue = localsettings.agentAutoContinueMode === "auto"
     }
     if (localsettings?.agentUseOAITools == undefined) {
         localsettings.agentUseOAITools = false
@@ -503,6 +523,31 @@ window.addEventListener('load', () => {
         return settingLabelElem
     }
 
+    let createSettingElemSelect = (inputElemId, labelTitle, labelText, options = []) => {
+        let settingLabelElem = document.createElement("div")
+        settingLabelElem.classList.add("settinglabel")
+        let settingDiv = document.createElement("div")
+        settingDiv.classList.add("justifyleft", "settingsmall")
+        settingDiv.innerHTML = `${labelTitle} <span class="helpicon">?<span class="helptext">${labelText}</span></span>`
+
+        let settingInput = document.createElement("select")
+        settingInput.title = labelTitle
+        settingInput.id = inputElemId
+        settingInput.style = "margin:0px 0px 0px auto; width: unset;"
+        settingInput.classList.add("form-control")
+
+        options.forEach(option => {
+            let optionElem = document.createElement("option")
+            optionElem.value = option.value
+            optionElem.innerText = option.label
+            settingInput.append(optionElem)
+        })
+
+        settingLabelElem.append(settingDiv)
+        settingLabelElem.append(settingInput)
+        return settingLabelElem
+    }
+
     let createSettingElemRange = (inputElemId, labelTitle, labelText, min, max, step, value) => {
         let settingLabelElem = document.createElement("div")
         settingLabelElem.classList.add("settinglabel")
@@ -588,7 +633,11 @@ window.addEventListener('load', () => {
     settingLabelElem.querySelector("#agentSavedMacros").classList.add("fullScreenTextEditNoAuto")
     agentElems.push(settingLabelElem)
 
-    settingLabelElem = createSettingElemBool("agentAutoContinue", "Agent continues until completion (experimental)", "After prompting the agent, the maximum amount of actions the agent can take within a single plan are based on the maximum agent actions. If this option is ticked, and the agent thinks the task is not complete it will automatically create a new plan and continue. If this option is unticked, the user will be prompted to decide how to proceed.")
+    settingLabelElem = createSettingElemSelect("agentAutoContinue", "Agent continuation mode", "Choose what happens after a chain finishes and may still be incomplete. Automatic asks the AI if it should continue and runs again automatically. Prompt asks you before continuing. Disabled stops immediately without checking task completion.", [
+        { value: "auto", label: "Continue automatically" },
+        { value: "prompt", label: "Prompt before continuing" },
+        { value: "disabled", label: "Disable continuing automatically" },
+    ])
     agentElems.push(settingLabelElem)
 
     settingLabelElem = createSettingElemBool("agentUseOAITools", "Use OpenAI tools for command selection", "When enabled, the agent uses the OpenAI-compatible /v1/chat/completions endpoint with tool calling to select commands, instead of grammar-constrained generation. Requires a KoboldCpp endpoint that supports the OpenAI tools API. The agent performs a planning step (using plan_actions as a tool) followed by executing each planned step.")
