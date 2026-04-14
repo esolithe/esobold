@@ -13343,8 +13343,6 @@ def get_OpenLumara_dir():
     return lumaraPath
     
 def prepare_OpenLumara_config(launch_args):
-    """Generate or update the OpenLumara config YAML with any user-provided overrides."""
-    import yaml
     OpenLumara_dir = get_OpenLumara_dir()
     config_dir = os.path.join(OpenLumara_dir, "config")
 
@@ -13357,84 +13355,7 @@ def prepare_OpenLumara_config(launch_args):
     else:
         config_path = os.path.join(config_dir, "config.yml")
 
-    # Default OpenLumara config template
-    default_cfg = {
-        "data_dir": "./data",
-        "api": {
-            "key": "KEY_HERE",
-            "max_context": 8192,
-            "max_messages": 200,
-            "url": f"https://localhost:{defaultport}/v1",
-            "insecure_skip_tls_verify": True,
-        },
-        "channels": {
-            "disabled": ["discord", "matrix", "telegram", "cli"],
-            "enabled": ["webui"],
-            "settings": {
-                "discord": {"token": "TOKEN_HERE"},
-                "matrix": {
-                    "device_id": "OpenLumara-bot",
-                    "device_name": "OpenLumara",
-                    "homeserver": "https://matrix.org",
-                    "password": "your_password_here",
-                    "user_id": "@your_bot:matrix.org",
-                },
-                "telegram": {"token": "TOKEN_HERE"},
-                "webui": {"host": "localhost", "port": OpenLumara_default_webui_port},
-            },
-        },
-        "model": {"name": "MODEL_HERE", "temperature": 0.2, "use_tools": True},
-        "modules": {
-            "disabled": [
-                "modules", "calculator", "characters", "daily_todo",
-                "files", "http", "safe_eval", "settings", "shell_unsafe",
-            ],
-            "disabled_prompts": [],
-            "enabled": [
-                "channel", "chats", "context", "identity", "memory",
-                "models", "notes", "scheduler", "system", "time", "tokens",
-            ],
-            "settings": {"files": {"sandbox_folder": "./sandbox"}},
-        },
-    }
-
-    # Load existing config or start from template
-    cfg = default_cfg
-    if os.path.exists(config_path):
-        try:
-            with open(config_path, "r", encoding="utf-8") as f:
-                loaded = yaml.safe_load(f) or {}
-            # Merge: user settings take precedence, fill missing keys from default
-            def deep_merge(base, override):
-                result = dict(base)
-                for k, v in override.items():
-                    if k in result and isinstance(result[k], dict) and isinstance(v, dict):
-                        result[k] = deep_merge(result[k], v)
-                    else:
-                        result[k] = v
-                return result
-            cfg = deep_merge(default_cfg, loaded)
-        except Exception as e:
-            print(f"Warning: Could not load OpenLumara config '{config_path}': {e}. Using defaults.")
-
-    # Apply overrides from KoboldCpp args
-    if launch_args.OpenLumara_datadir:
-        cfg["data_dir"] = launch_args.OpenLumara_datadir
-    if launch_args.OpenLumara_sandboxfolder:
-        cfg.setdefault("modules", {}).setdefault("settings", {}).setdefault("files", {})["sandbox_folder"] = launch_args.OpenLumara_sandboxfolder
-    if launch_args.OpenLumara_apiurl:
-        cfg.setdefault("api", {})["url"] = launch_args.OpenLumara_apiurl
-
-    # Ensure config directory exists and save
-    os.makedirs(os.path.dirname(config_path), exist_ok=True)
-    try:
-        with open(config_path, "w", encoding="utf-8") as f:
-            yaml.dump(cfg, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
-        print(f"OpenLumara config saved to: {config_path}")
-        return config_path
-    except Exception as e:
-        print(f"Warning: Could not save OpenLumara config: {e}")
-        return None
+    return config_path
     
 
 def launch_OpenLumara(launch_args):
@@ -13477,8 +13398,21 @@ def launch_OpenLumara(launch_args):
             """Callback to handle captured errors."""
             print(f"[Subprocess Error] {line}")
         
+        isHTTPS = launch_args.ssl is not None and len(launch_args.ssl) == 2
+        api_url = launch_args.OpenLumara_apiurl if launch_args.OpenLumara_apiurl is not None and launch_args.OpenLumara_apiurl != '' else f"{'https' if isHTTPS else 'http'}://localhost:{defaultport}/v1"
+
         proc = subprocess.Popen(
-            [sys.executable, OpenLumara_main, "--config", configPath],
+            [sys.executable, OpenLumara_main, 
+                "--config", configPath,
+                "--api.key", f"{launch_args.password if launch_args.password is not None else 'KEY_HERE'}",
+                "--api.url", f"{api_url}",
+                "--api.insecure_skip_tls_verify", f"true",
+                "--api.max_context", f"{launch_args.contextsize if launch_args.contextsize is not None else 8192}",
+                "--channels.settings.webui.port", f"{OpenLumara_default_webui_port}",
+                # "--model.name", f"MODEL_HERE",
+                "--core.data_folder", f"{launch_args.OpenLumara_datadir if launch_args.OpenLumara_datadir is not None else 'data'}",
+                "--modules.settings.files.sandbox_folder", f"{launch_args.OpenLumara_sandboxfolder if launch_args.OpenLumara_sandboxfolder is not None else 'sandbox'}"
+            ],
             cwd=OpenLumara_dir,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
