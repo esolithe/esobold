@@ -13358,29 +13358,42 @@ def prepare_OpenLumara_config(launch_args):
     return config_path
 
 OpenLumara_launch_lock = threading.Lock()
-    
-def run_OpenLumara(*args):
-    import importlib.util
+
+def execAndWrapError(errorPrefix, func, *args, **kwargs):
+    import traceback
     try:
-        with OpenLumara_launch_lock:
-            OpenLumara_dir = get_OpenLumara_dir()
-            if OpenLumara_dir not in sys.path:
-                sys.path.append(OpenLumara_dir)
-
-            OpenLumara_main = os.path.join(OpenLumara_dir, "main.py")
-            if not os.path.exists(OpenLumara_main):
-                print(f"Warning: OpenLumara main.py not found at '{OpenLumara_main}'. Is the submodule checked out?")
-                return None
-
-            spec = importlib.util.spec_from_file_location("OpenLumaraMain", OpenLumara_main)
-            OpenLumaraMain = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(OpenLumaraMain)
-            if hasattr(OpenLumaraMain, "run_from_argv"):
-                OpenLumaraMain.run_from_argv(list(args))
+        return func(*args, **kwargs)
+    except Exception:
+        tb = traceback.format_exc()
+    finally:
+        if (tb is not None):
+            if (errorPrefix is not None):
+                print(f"{errorPrefix}:\n{tb}")
             else:
-                print("Warning: OpenLumara main.py does not have a run_from_argv() function.")
-    except Exception as e:
-        print(f"Error running OpenLumara: {e}")
+                print(tb)
+
+def _run_OpenLumara(*args):
+    import importlib.util
+    with OpenLumara_launch_lock:
+        OpenLumara_dir = get_OpenLumara_dir()
+        if OpenLumara_dir not in sys.path:
+            sys.path.append(OpenLumara_dir)
+
+        OpenLumara_main = os.path.join(OpenLumara_dir, "main.py")
+        if not os.path.exists(OpenLumara_main):
+            print(f"Warning: OpenLumara main.py not found at '{OpenLumara_main}'. Is the submodule checked out?")
+            return None
+
+        spec = importlib.util.spec_from_file_location("OpenLumaraMain", OpenLumara_main)
+        OpenLumaraMain = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(OpenLumaraMain)
+        if hasattr(OpenLumaraMain, "run_from_argv"):
+            OpenLumaraMain.run_from_argv(list(args))
+        else:
+            print("Warning: OpenLumara main.py does not have a run_from_argv() function.")
+
+def run_OpenLumara(*args):
+    execAndWrapError("OpenLumara Execution Error", _run_OpenLumara, *args)
 
 def launch_OpenLumara(launch_args):
     """Launch the OpenLumara AI agent as a subprocess."""
