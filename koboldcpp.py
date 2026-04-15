@@ -13401,7 +13401,6 @@ def launch_OpenLumara(launch_args):
         isHTTPS = launch_args.ssl is not None and len(launch_args.ssl) == 2
         api_url = launch_args.OpenLumara_apiurl if launch_args.OpenLumara_apiurl is not None and launch_args.OpenLumara_apiurl != '' else f"{'https' if isHTTPS else 'http'}://localhost:{defaultport}/v1"
 
-
         # When running as a frozen binary, sys.executable is the compiled binary,
         # not a Python interpreter. Find a real Python to run OpenLumara's main.py.
         if getattr(sys, 'frozen', False):
@@ -13414,8 +13413,8 @@ def launch_OpenLumara(launch_args):
 
         # Strip LD_LIBRARY_PATH so the frozen binary's bundled libraries
         # do not contaminate the OpenLumara subprocess environment.
-        lumara_env = os.environ.copy()
-        lumara_env.pop("LD_LIBRARY_PATH", None)
+        # lumara_env = os.environ.copy()
+        # lumara_env.pop("LD_LIBRARY_PATH", None)
 
         proc = subprocess.Popen(
             [python_exe, OpenLumara_main, 
@@ -13434,7 +13433,7 @@ def launch_OpenLumara(launch_args):
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
-            env=lumara_env
+            # env=lumara_env
         )
         print(f"OpenLumara started (PID {proc.pid})")
         threading.Thread(target=read_stream, args=(proc.stdout, log_output), daemon=True).start()
