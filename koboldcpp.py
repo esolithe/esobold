@@ -13456,13 +13456,16 @@ def launch_OpenLumara(launch_args):
         args_to_add = ["--config", configPath,
                 "--api.key", f"{launch_args.password if launch_args.password is not None else 'KEY_HERE'}",
                 "--api.url", f"{api_url}",
-                "--api.insecure_skip_tls_verify", f"true",
+                "--insecure_tls",
                 "--api.max_context", f"{launch_args.contextsize if launch_args.contextsize is not None else 8192}",
                 "--channels.settings.webui.port", f"{OpenLumara_default_webui_port}",
                 # "--model.name", f"MODEL_HERE",
                 "--core.data_folder", f"{launch_args.OpenLumara_datadir if launch_args.OpenLumara_datadir is not None else 'data'}",
                 "--modules.settings.files.sandbox_folder", f"{launch_args.OpenLumara_sandboxfolder if launch_args.OpenLumara_sandboxfolder is not None else 'sandbox'}"
                 ]
+        
+        for arg in args_to_add:
+            print(f"OpenLumara launch argument: {arg}")
 
         proc = subprocess.Popen(
             [python_exe, OpenLumara_main] + args_to_add,
