@@ -13413,7 +13413,7 @@ def launch_OpenLumara(launch_args):
 
         # Strip LD_LIBRARY_PATH so the frozen binary's bundled libraries
         # do not contaminate the OpenLumara subprocess environment.
-        # lumara_env = os.environ.copy()
+        lumara_env = os.environ.copy()
         # lumara_env.pop("LD_LIBRARY_PATH", None)
 
         proc = subprocess.Popen(
@@ -13433,7 +13433,7 @@ def launch_OpenLumara(launch_args):
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
-            # env=lumara_env
+            env=lumara_env
         )
         print(f"OpenLumara started (PID {proc.pid})")
         threading.Thread(target=read_stream, args=(proc.stdout, log_output), daemon=True).start()
