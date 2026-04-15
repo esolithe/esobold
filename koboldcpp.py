@@ -13356,7 +13356,31 @@ def prepare_OpenLumara_config(launch_args):
         config_path = os.path.join(config_dir, "config.yml")
 
     return config_path
+
+OpenLumara_launch_lock = threading.Lock()
     
+def run_OpenLumara(*args):
+    import importlib.util
+    try:
+        with OpenLumara_launch_lock:
+            OpenLumara_dir = get_OpenLumara_dir()
+            if OpenLumara_dir not in sys.path:
+                sys.path.append(OpenLumara_dir)
+
+            OpenLumara_main = os.path.join(OpenLumara_dir, "main.py")
+            if not os.path.exists(OpenLumara_main):
+                print(f"Warning: OpenLumara main.py not found at '{OpenLumara_main}'. Is the submodule checked out?")
+                return None
+
+            spec = importlib.util.spec_from_file_location("OpenLumaraMain", OpenLumara_main)
+            OpenLumaraMain = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(OpenLumaraMain)
+            if hasattr(OpenLumaraMain, "run_from_argv"):
+                OpenLumaraMain.run_from_argv(list(args))
+            else:
+                print("Warning: OpenLumara main.py does not have a run_from_argv() function.")
+    except Exception as e:
+        print(f"Error running OpenLumara: {e}")
 
 def launch_OpenLumara(launch_args):
     """Launch the OpenLumara AI agent as a subprocess."""
@@ -13411,48 +13435,6 @@ def launch_OpenLumara(launch_args):
         else:
             python_exe = sys.executable
 
-        # Strip LD_LIBRARY_PATH so the frozen binary's bundled libraries
-        # do not contaminate the OpenLumara subprocess environment.
-        lumara_env = os.environ.copy()
-        # lumara_env.pop("LD_LIBRARY_PATH", None)
-
-        # All methods to find packages
-        packages = []
-        # try:
-        #     import site;
-        #     packages += site.getsitepackages()
-        #     print(f"Site packages directories: {packages}")
-        # except Exception as e:
-        #     print(f"Error getting site packages: {e}")
-
-        # try:
-        #     import sysconfig; 
-        #     packages += [sysconfig.get_paths()["purelib"]]
-        #     print(f"Sysconfig purelib directory: {packages}")
-        # except Exception as e:
-        #     print(f"Error getting sysconfig purelib directory: {e}")
-
-        # try:
-        #     from distutils.sysconfig import get_python_lib
-        #     packages += [get_python_lib()]
-        #     print(f"Distutils python lib directory: {packages}")
-        # except Exception as e:
-        #     print(f"Error getting distutils python lib directory: {e}")
-
-        # # Distinct paths only
-        # distinct_packages = []
-        # for pkg in packages:
-        #     if pkg and pkg not in distinct_packages:
-        #         distinct_packages.append(pkg)
-        # packages = distinct_packages
-
-        try:
-            for path in sys.path:
-                print(f"Sys.path entry: {path}")
-                lumara_env["PYTHONPATH"] = lumara_env.get("PYTHONPATH", "") + os.pathsep + path
-        except Exception as e:
-            print(f"Error processing sys.path for PYTHONPATH: {e}")
-
         args_to_add = ["--config", configPath,
                 "--api.key", f"{launch_args.password if launch_args.password is not None else 'KEY_HERE'}",
                 "--api.url", f"{api_url}",
@@ -13466,20 +13448,12 @@ def launch_OpenLumara(launch_args):
         
         for arg in args_to_add:
             print(f"OpenLumara launch argument: {arg}")
-
-        proc = subprocess.Popen(
-            [python_exe, OpenLumara_main] + args_to_add,
-            cwd=OpenLumara_dir,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            env=lumara_env
-        )
-        print(f"OpenLumara started (PID {proc.pid})")
-        threading.Thread(target=read_stream, args=(proc.stdout, log_output), daemon=True).start()
-        threading.Thread(target=read_stream, args=(proc.stderr, log_error), daemon=True).start()
-        return proc
+        
+        # Create a thread for the method
+        thread = threading.Thread(target=run_OpenLumara, args=tuple(args_to_add), daemon=True)
+        # Start the thread
+        thread.start()
+        return True
     except Exception as e:
         print(f"Warning: Failed to launch OpenLumara: {e}")
         return None
