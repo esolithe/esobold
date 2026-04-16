@@ -27,6 +27,7 @@ dependencies:
     - tiktoken
     - prompt_toolkit
     - msgpack
+    - numpy
     - pyyaml
     - json-repair
     - aiofiles
