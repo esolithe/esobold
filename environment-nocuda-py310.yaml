@@ -1,0 +1,38 @@
+name: koboldcpp
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - cxx-compiler
+  - gxx=10
+  - pip
+  - git
+  - ninja
+  - make
+  - packaging
+  - pyinstaller
+  - libcblas
+  - ocl-icd-system
+  - libvulkan-loader
+  - tk=*=xft_*
+  - psutil
+  - jinja2
+  - pip:
+    - customtkinter
+    - pdfplumber
+    - PyMuPdf
+    - tqdm
+    - openai
+    - tiktoken
+    - prompt_toolkit
+    - msgpack
+    - pyyaml
+    - json-repair
+    - aiofiles
+    - python-ulid
+    - requests
+    - flask
+    - discord.py
+    - python-telegram-bot
+    - matrix-nio
