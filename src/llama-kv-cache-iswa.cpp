@@ -10,6 +10,8 @@
 //
 // llama_kv_cache_iswa
 //
+//kcpp: use a global flag to adjust swa padding
+static int kcpp_extra_swa_padding = 0;
 
 llama_kv_cache_iswa::llama_kv_cache_iswa(
         const llama_model & model,
@@ -51,6 +53,7 @@ llama_kv_cache_iswa::llama_kv_cache_iswa(
 
     //kcpp: pad the swa kv cache as well, similar to extra_context_handle_fragmentation
     size_swa += 128;
+    size_swa += kcpp_extra_swa_padding;
     size_swa = GGML_PAD(size_swa, n_pad);
 
     // when using full-size SWA cache, we set the SWA cache size to be equal to the base cache size

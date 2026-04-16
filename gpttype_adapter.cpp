@@ -2173,6 +2173,7 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
     kcpp_data->use_fastforward = inputs.use_fastforward;
     kcpp_data->smartcache = inputs.smartcache;
     kcpp_data->swa_full = !inputs.swa_support;
+    kcpp_extra_swa_padding = inputs.swa_padding;
     if (!kcpp_data->swa_full) {
         if (inputs.use_contextshift) {
             kcpp_data->swa_full = true;  //cannot use SWA
