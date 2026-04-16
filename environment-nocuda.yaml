@@ -28,6 +28,7 @@ dependencies:
     - prompt_toolkit
     - msgpack
     - numpy
+    - asyncssh
     - pyyaml
     - json-repair
     - aiofiles
