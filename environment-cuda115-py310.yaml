@@ -26,6 +26,7 @@ dependencies:
     - pdfplumber
     - PyMuPdf
     - tqdm
+    - chardet
     - openai
     - tiktoken
     - prompt_toolkit
