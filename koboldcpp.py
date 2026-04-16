@@ -85,7 +85,7 @@ extra_images_max = 4 # for kontext/qwen img
 KcppVersion = "1.112"
 showdebug = True
 kcpp_instance = None #global running instance
-global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "base_config":"", "swapReqType": None, "autoswapmode": False, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}, "restart_override_base_config": "", "current_model_override": "", "OpenLumara": False}
+global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "currentBaseConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "base_config":"", "swapReqType": None, "autoswapmode": False, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}, "restart_override_base_config": "", "current_model_override": "", "OpenLumara": False}
 using_gui_launcher = False
 fs_lock = threading.Lock()
 # Used only by in-memory filesystem mode to represent empty directories.
@@ -8644,6 +8644,15 @@ Change Mode<br>
                     response_body = ("").encode()
                 else:
                     response_body = (str(os.path.basename(global_memory["currentConfig"]))).encode()
+        elif clean_path=="/api/admin/current_base_config": # Returns the current config loaded
+            if not args.admin:
+                response_body = ("Admin API disabled").encode()
+            else:
+                content_type = 'text/plain'
+                if global_memory["currentBaseConfig"] is None:
+                    response_body = ("").encode()
+                else:
+                    response_body = (str(os.path.basename(global_memory["currentBaseConfig"]))).encode()
         elif clean_path.endswith(('/api')) or clean_path.endswith(('/api/v1')):
             self.send_response(302)
             self.send_header("location", "/api")
@@ -13664,7 +13673,7 @@ def main(launch_args, default_args):
             input()
     else:  # manager command queue for admin mode
         with multiprocessing.Manager() as mp_manager:
-            global_memory = mp_manager.dict({"tunnel_url": "", "restart_target": "", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "base_config":"", "swapReqType": None, "autoswapmode": False, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}, "restart_override_base_config": "", "current_model_override": "", "OpenLumara": False})
+            global_memory = mp_manager.dict({"tunnel_url": "", "restart_target": "", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "currentBaseConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "base_config":"", "swapReqType": None, "autoswapmode": False, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}, "restart_override_base_config": "", "current_model_override": "", "OpenLumara": False})
 
             if args.OpenLumara and not args.prompt and not args.benchmark and not args.cli:
                 res = launch_OpenLumara(args)
@@ -13674,6 +13683,7 @@ def main(launch_args, default_args):
 
             # Sets the current configuration
             global_memory["currentConfig"] = args.config[0] if "config" in args and args.config is not None and len(args.config) > 0 else None
+            global_memory["currentBaseConfig"] = args.baseconfig if "baseconfig" in args and args.baseconfig is not None else None
 
             # Takes a copy of original args for failure recovery
             original_args = copy.deepcopy(args)
@@ -13788,8 +13798,9 @@ def main(launch_args, default_args):
                                     reload_from_new_args(defaultargs)
                                     reload_new_config(maintarget_filepath,vars(args),True)
 
-                                args.currentConfig = targetfilepath
-                                global_memory["currentConfig"] = targetfilepath
+                                args.currentConfig = maintarget_filepath
+                                global_memory["currentConfig"] = maintarget_filepath
+                                global_memory["currentBaseConfig"] = basecfg_filepath
                                 global_memory["modelOverride"] = None
                                 if (args.admin and args.admintextmodelsdir and restart_model != ""):
                                     dirpath = os.path.abspath(args.admintextmodelsdir)
@@ -13967,6 +13978,7 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
     embedName = None
     musicName = None
     imageName = None
+    global_memory["currentModel"] = None
     if args.autoswapmode is not None and args.autoswapmode:
         autoswapmode = True
         global_memory["autoswapmode"] = True
@@ -13974,6 +13986,7 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
             tempName = os.path.basename(os.path.abspath(args.model_param))
             tempName = os.path.splitext(tempName)[0]
             textName = "koboldcpp/" + sanitize_string(tempName)
+            global_memory["currentModel"] = textName
             if args.mmproj and args.mmproj!="": # multimodal vision and audio support is assumed to work with mmproj - this may be incorrect!
                 tempName = os.path.basename(os.path.abspath(args.mmproj))
                 tempName = os.path.splitext(tempName)[0]
@@ -14006,9 +14019,9 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
             disableSwappedFieldsInConfig(args, "nomodel")
     else:
         global_memory["autoswapmode"] = False
-    
-    noModelLoaded = args.nomodel and not ("model_param" in args and args.model_param is not None and len(args.model_param) > 0 and len(args.model_param[0]) > 0)
-    global_memory["currentModel"] = None if noModelLoaded else args.model_param
+        
+        noModelLoaded = args.nomodel and not ("model_param" in args and args.model_param is not None and len(args.model_param) > 0 and len(args.model_param[0]) > 0)
+        global_memory["currentModel"] = None if noModelLoaded else args.model_param
 
     if args.model_param and (args.benchmark or args.prompt or args.cli):
         start_server = False

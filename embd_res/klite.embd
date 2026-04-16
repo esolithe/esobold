@@ -14541,7 +14541,7 @@ Current version indicated by LITEVER below.
 			}
 			
 			let tasks = []
-			let adminmodeldropdown = document.getElementById("adminmodeldropdown"), adminconfigdropdownlabel = document.getElementById("adminconfigdropdownlabel"), adminmodeldropdownlabel = document.getElementById("adminmodeldropdownlabel");
+			let adminmodeldropdown = document.getElementById("adminmodeldropdown"), adminconfigdropdownlabel = document.getElementById("adminconfigdropdownlabel"), adminmodeldropdownlabel = document.getElementById("adminmodeldropdownlabel"), adminbaseconfigdropdown = document.getElementById("adminbaseconfigdropdownlabel");
 
 			tasks.push(fetch(`${custom_kobold_endpoint}/api/admin/list_models`, {
 				method: 'GET',
@@ -14561,6 +14561,18 @@ Current version indicated by LITEVER below.
 			}).catch((error) => {
 				console.log("Error: " + error);
 				msgbox(error,"Error");
+			}));
+
+			tasks.push(fetch(`${custom_kobold_endpoint}/api/admin/current_base_config`, {
+				method: 'GET',
+				headers: header,
+			})
+			.then(x => x.text())
+			.then(value => {
+				adminbaseconfigdropdown.innerText = `Current base config: ${value}`
+			}).catch((error) => {
+				console.log("Error: " + error);
+				adminbaseconfigdropdown.innerText = `Current base config: N/A`
 			}));
 
 			tasks.push(fetch(`${custom_kobold_endpoint}/api/admin/current_config`, {
@@ -32206,12 +32218,17 @@ Current version indicated by LITEVER below.
 					Select Base Config (optional): <select title="Base Config" style="padding:4px; width:100%" class="form-control" id="adminbaseconfigdropdown">
 					</select>
 					</div>
+					<label for="adminbaseconfigdropdown" id="adminbaseconfigdropdownlabel" style="color: white"></label>
 					<div style="padding-top:3px">
 					Select New Model or Config (required): <select title="Select New Model or Config" style="padding:4px; width:100%" class="form-control" id="adminconfigdropdown">
 					</select>
+					</div>
+					<label for="adminconfigdropdown" id="adminconfigdropdownlabel" style="color: white"></label>
+					<div style="padding-top:3px">
+					Select a Text Model override (optional): <select title="Select a Text Model override" style="padding:4px; width:100%" class="form-control" id="adminmodeldropdown">
+					</select>
+					</div>
 					<label for="adminmodeldropdown" id="adminmodeldropdownlabel" style="color: white"></label>
-					<select title="Select New Model" style="padding:4px;" class="form-control" id="adminmodeldropdown">
-					</select>					
 					<label for="adminmodelfromhf" id="adminmodelfromhflabel"></label>
 					<button title="Click to download a new model from HF" style="padding:4px;" class="form-control btn btn-primary" id="adminmodelfromhf">
 						Click to download a new model from HF
