@@ -72,6 +72,7 @@ overridekv_max = 16
 default_autofit_padding = 1024
 lora_filenames_max = 4
 multiuser_concurrent_limit = 10
+swa_padding_default = 1024
 
 # abuse prevention
 stop_token_max = 256
@@ -84,7 +85,7 @@ extra_images_max = 4 # for kontext/qwen img
 KcppVersion = "1.112"
 showdebug = True
 kcpp_instance = None #global running instance
-global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "current_override":"", "swapReqType": None, "autoswapmode": False, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}, "restart_override_config_target": "", "current_model_override": "", "OpenLumara": False}
+global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "base_config":"", "swapReqType": None, "autoswapmode": False, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}, "restart_override_base_config": "", "current_model_override": "", "OpenLumara": False}
 using_gui_launcher = False
 fs_lock = threading.Lock()
 # Used only by in-memory filesystem mode to represent empty directories.
@@ -246,6 +247,8 @@ class load_model_inputs(ctypes.Structure):
                 ("mmproj_filename", ctypes.c_char_p),
                 ("mmproj_cpu", ctypes.c_bool),
                 ("visionmaxres", ctypes.c_int),
+                ("visionmintokens", ctypes.c_int),
+                ("visionmaxtokens", ctypes.c_int),
                 ("use_mmap", ctypes.c_bool),
                 ("use_mlock", ctypes.c_bool),
                 ("use_smartcontext", ctypes.c_bool),
@@ -273,6 +276,7 @@ class load_model_inputs(ctypes.Structure):
                 ("check_slowness", ctypes.c_bool),
                 ("highpriority", ctypes.c_bool),
                 ("swa_support", ctypes.c_bool),
+                ("swa_padding", ctypes.c_int),
                 ("smartcache", ctypes.c_bool),
                 ("smartcacheslots", ctypes.c_int),
                 ("pipelineparallel", ctypes.c_bool),
@@ -1922,6 +1926,8 @@ def load_model(model_filename):
     inputs.mmproj_filename = args.mmproj.encode("UTF-8") if args.mmproj else "".encode("UTF-8")
     inputs.mmproj_cpu = (True if args.mmprojcpu else False)
     inputs.visionmaxres = (512 if args.visionmaxres < 512 else (2048 if args.visionmaxres > 2048 else args.visionmaxres))
+    inputs.visionmintokens = args.visionmintokens
+    inputs.visionmaxtokens = args.visionmaxtokens
     inputs.use_smartcontext = args.smartcontext
     inputs.use_contextshift = (0 if args.noshift else 1)
     inputs.use_fastforward = (0 if args.nofastforward else 1)
@@ -1976,6 +1982,7 @@ def load_model(model_filename):
     inputs.check_slowness = (not args.highpriority and os.name == 'nt' and 'Intel' in platform.processor())
     inputs.highpriority = args.highpriority
     inputs.swa_support = args.useswa
+    inputs.swa_padding = args.swapadding
     scint = int(args.smartcache)
     inputs.smartcache = False if scint<=0 else True
     sclimit = (savestate_limit_default if scint<=1 else scint)
@@ -6458,14 +6465,19 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                     except Exception:
                         pass
 
+                is_different_model = False
+                # we only need to check if the currently loaded model is different from the requested model. everything else is handled downstream in the stack
+                if model_name and model_name != global_memory["current_model"]:
+                    is_different_model = True
+
                 was_auto_unloaded = (global_memory["triggered_sleeping"] and global_memory["current_model"]=="unload_model")
-                if (isValidModelRequest and model_name and model_name != global_memory["current_model"]) or (was_auto_unloaded and not autoswapEnabled):
+                if (is_different_model and isValidModelRequest) or (was_auto_unloaded and not autoswapEnabled):
                     hasReloaded = True
                     with proxy_reload_lock:
                         whitelist = get_current_admindir_list() # see if its an allowed swap
                         if was_auto_unloaded and not model_name:
                             model_name = "initial_model"
-                        if model_name != global_memory["current_model"] and (model_name in whitelist):
+                        if is_different_model and (model_name in whitelist):
                             global_memory["last_active_timestamp"] = datetime.now()
                             global_memory["triggered_sleeping"] = False
                             reqbody = json.dumps({"filename":model_name})
@@ -6516,7 +6528,7 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
 
                 if (global_memory["swapReqType"] is not None and swapModeChanged):
                     with proxy_reload_lock:
-                        reqbody = json.dumps({"filename":global_memory["current_model"], "overrideconfig": global_memory["current_override"], "modelName": global_memory["current_model_override"]})
+                        reqbody = json.dumps({"filename":global_memory["current_model"], "baseconfig": global_memory["base_config"], "modelName": global_memory["current_model_override"]})
                         reqheaders = {
                             'Content-Type': 'application/json',
                             'Content-Length': str(len(reqbody)),
@@ -9510,12 +9522,12 @@ Change Mode<br>
             resp = {"success": False}
             if global_memory and args.admin and args.admindir and os.path.exists(args.admindir) and self.check_header_password(args.adminpassword):
                 targetfile = ""
-                targetModel = ""
+                baseconfig = ""
                 try:
                     tempbody = json.loads(body)
                     if isinstance(tempbody, dict):
                         targetfile = tempbody.get('filename', "")
-                        overrideconfig = tempbody.get('overrideconfig', "")
+                        baseconfig = tempbody.get('baseconfig', tempbody.get('overrideconfig', ""))
                         targetModel = tempbody.get('modelName', "")
                 except Exception:
                     targetfile = ""
@@ -9523,7 +9535,7 @@ Change Mode<br>
                     if targetfile=="unload_model" or targetfile=="initial_model": #special request to simply unload model or swap back top intial model
                         print("Admin: Received request to unload model")
                         global_memory["restart_target"] = targetfile
-                        global_memory["restart_override_config_target"] = ""
+                        global_memory["restart_override_base_config"] = ""
                         global_memory["restart_model"] = ""
                         resp = {"success": True}
                     else:
@@ -9531,13 +9543,13 @@ Change Mode<br>
                         targetfilepath = os.path.join(dirpath, targetfile)
                         opts = [f for f in os.listdir(dirpath) if (f.lower().endswith(".kcpps") or f.lower().endswith(".kcppt") or f.lower().endswith(".gguf")) and os.path.isfile(os.path.join(dirpath, f))]
                         if targetfile in opts and os.path.exists(targetfilepath):
-                            global_memory["restart_override_config_target"] = "" # Jail enforcement
-                            if targetfile and overrideconfig:
-                                overrideconfigfilepath = os.path.abspath(os.path.join(dirpath, overrideconfig))
+                            global_memory["restart_override_base_config"] = "" # Jail enforcement
+                            if targetfile and baseconfig:
+                                baseconfigfilepath = os.path.abspath(os.path.join(dirpath, baseconfig))
                                 allowed_files = get_current_admindir_list()
-                                if (overrideconfig in allowed_files and os.path.commonpath([dirpath, overrideconfigfilepath]) == dirpath and os.path.exists(overrideconfigfilepath)):
-                                    print(f"Admin: Override base config set to {overrideconfig}")
-                                    global_memory["restart_override_config_target"] = overrideconfig
+                                if (baseconfig in allowed_files and os.path.commonpath([dirpath, baseconfigfilepath]) == dirpath and os.path.exists(baseconfigfilepath)):
+                                    print(f"Admin: Override base config set to {baseconfig}")
+                                    global_memory["restart_override_base_config"] = baseconfig
                             # Now check targetModel
                             if targetModel and targetModel!="":
                                 dirpath = os.path.abspath(args.admintextmodelsdir)
@@ -10771,6 +10783,7 @@ def show_gui():
     contextshift_var = ctk.IntVar(value=1)
     fastforward_var = ctk.IntVar(value=1)
     swa_var = ctk.IntVar(value=0)
+    swa_padding_var = ctk.StringVar(value=str(swa_padding_default))
     smartcache_var = ctk.IntVar(value=0)
     smartcacheslots_var = ctk.StringVar(value=str(savestate_limit_default))
     remotetunnel_var = ctk.IntVar(value=0)
@@ -10804,6 +10817,8 @@ def show_gui():
     mmproj_var = ctk.StringVar()
     mmprojcpu_var = ctk.IntVar(value=0)
     visionmaxres_var = ctk.StringVar(value=str(default_visionmaxres))
+    vision_min_tokens_var = ctk.StringVar(value="-1")
+    vision_max_tokens_var = ctk.StringVar(value="-1")
     draftmodel_var = ctk.StringVar()
     draftamount_var = ctk.StringVar(value=str(default_draft_amount))
     draftgpulayers_var = ctk.StringVar(value=str(999))
@@ -10873,6 +10888,7 @@ def show_gui():
 
     admin_var = ctk.IntVar(value=0)
     admin_dir_var = ctk.StringVar()
+    baseconfig_var = ctk.StringVar()
     admin_text_model_dir_var = ctk.StringVar()
     admin_data_dir_var = ctk.StringVar()
     admin_docs_dir_var = ctk.StringVar()
@@ -11279,6 +11295,7 @@ def show_gui():
         if fastforward_var.get()==0:
             contextshift_var.set(0)
             smartcontext_var.set(0)
+            smartcache_var.set(0)
 
     def togglectxshift(a,b,c):
         if contextshift_var.get()==0:
@@ -11497,7 +11514,8 @@ def show_gui():
     smartcontextbox = makecheckbox(context_tab, "Use SmartContext", smartcontext_var, 1,tooltiptxt="Uses SmartContext. Now considered outdated and not recommended.\nCheck the wiki for more info.")
     makecheckbox(context_tab, "Use ContextShift", contextshift_var, 2,tooltiptxt="Uses Context Shifting to reduce reprocessing.\nRecommended. Check the wiki for more info.", command=togglectxshift)
     makecheckbox(context_tab, "Use FastForwarding", fastforward_var, 3,tooltiptxt="Use fast forwarding to recycle previous context (always reprocess if disabled).\nRecommended.", command=togglefastforward)
-    makecheckbox(context_tab, "Use Sliding Window Attention (SWA)", swa_var, 4,tooltiptxt="Allows Sliding Window Attention (SWA) KV Cache, which saves memory but cannot be used with context shifting.", command=toggleswa)
+    makecheckbox(context_tab, "Use SWA", swa_var, 4,tooltiptxt="Allows Sliding Window Attention (SWA) KV Cache, which saves memory but cannot be used with context shifting.", command=toggleswa)
+    swa_padding_entry,swa_padding_label = makelabelentry(context_tab,"SWA Padding Tokens:", swa_padding_var, 4, 50, padx=300,singleline=True,tooltip="If the SWA is too small, you can expand it with padding, allowing for greater distance context rewinds.",labelpadx=160)
     makecheckbox(context_tab, "Use SmartCache", smartcache_var, 5,tooltiptxt="Enables intelligent context switching by saving KV cache snapshots to RAM. Requires fast forwarding.", command=togglesmartcache)
     makelabelentry(context_tab, "CacheSlots:", smartcacheslots_var, row=5, padx=(300), singleline=True, tooltip="Number of slots for smartcache",labelpadx=(220))
 
@@ -11568,8 +11586,10 @@ def show_gui():
     makefileentry(model_tab, "Text Lora:", "Select Lora File",lora_var, 3,width=160,singlerow=True,tooltiptxt="Select an optional GGML Text LoRA adapter to use.\nLeave blank to skip.")
     makelabelentry(model_tab, "Multiplier: ", loramult_var, 3, 50,padx=(390),singleline=True,tooltip="Scale multiplier for Text LoRA Strength. Default is 1.0", labelpadx=(330))
     makefileentry(model_tab, "Mmproj File:", "Select Audio or Vision mmproj File", mmproj_var, 7,width=280,singlerow=True,tooltiptxt="Select a mmproj file to use for multimodal models for vision and audio recognition.\nLeave blank to skip.")
-    makecheckbox(model_tab, "Vision Force CPU", mmprojcpu_var, 9, tooltiptxt="Force CLIP for Vision mmproj always on CPU.")
-    makelabelentry(model_tab, "Vision MaxRes:", visionmaxres_var, 9, padx=(320), singleline=True, tooltip=f"Clamp MMProj vision maximum allowed resolution. Allowed values are between 512 to 2048 px (default {default_visionmaxres}).", labelpadx=(220))
+    makelabelentry(model_tab, "Vision MaxRes:", visionmaxres_var, 9, width=40, padx=(100), singleline=True, tooltip=f"Clamp MMProj vision maximum allowed resolution. Allowed values are between 512 to 2048 px (default {default_visionmaxres}).")
+    makelabelentry(model_tab, "V.Min/Max Tok:", vision_min_tokens_var, 9, width=36, padx=(244), singleline=True, tooltip="Override the minimum tokens for the MMProj embedding (default -1).", labelpadx=(150))
+    makelabelentry(model_tab, "", vision_max_tokens_var, 9, padx=(284),width=36, singleline=True, tooltip="Override the maximum tokens for the MMProj embedding (default -1).", labelpadx=(260))
+    makecheckbox(model_tab, "V.Force CPU", mmprojcpu_var, 9, padx=340, tooltiptxt="Force CLIP for Vision mmproj always on CPU.")
     makefileentry(model_tab, "Draft Model:", "Select Speculative Text Model File", draftmodel_var, 11,width=280,singlerow=True,tooltiptxt="Select a draft text model file to use for speculative decoding.\nLeave blank to skip.")
     makelabelentry(model_tab, "Draft Amount: ", draftamount_var, 13, 50,padx=(100),singleline=True,tooltip="How many tokens to draft per chunk before verifying results")
     makelabelentry(model_tab, "Splits: ", draftgpusplit_str_vars, 13, 50,padx=(210),singleline=True,tooltip="Distribution of draft model layers. Leave blank to follow main model's gpu split. Only works if multi-gpu (All) selected in main model.", labelpadx=(160))
@@ -11729,15 +11749,16 @@ def show_gui():
     makecheckbox(admin_tab, "Enable Model Administration", admin_var, 1, 0, command=toggleadmin,tooltiptxt="Enable a admin server, allowing you to remotely relaunch and swap models and configs.")
     makelabelentry(admin_tab, "Admin Password:" , admin_password_var, 3, 150,padx=(120),singleline=True,tooltip="Require a password to access admin functions. You are strongly advised to use one for publically accessible instances!")
     makefileentry(admin_tab, "Config Directory (Required):", "Select directory containing .gguf or .kcpps files to relaunch from", admin_dir_var, 5, width=280, dialog_type=2, tooltiptxt="Specify a directory to look for .kcpps configs in, which can be used to swap models.")
-    makelabelentry(admin_tab, "Auto Unload Timeout:" , admin_unload_timeout_var, 7, 70,padx=(150),singleline=True,tooltip="Set an idle timeout in seconds after which KoboldCpp will automatically unload the current model.")
-    makefileentry(admin_tab, "Model Directory:", "Select directory containing .gguf text model files to allow overriding configs with", admin_text_model_dir_var, 9, width=280, dialog_type=2, tooltiptxt="Specify a directory to look for .gguf text model files in, which can be used to swap models within a config.")
-    makefileentry(admin_tab, "Data Directory:", "Select directory which will be used to store user data if desired", admin_data_dir_var, 11, width=280, dialog_type=2, tooltiptxt="Specify a directory to store user data in.")
-    makefileentry(admin_tab, "Documents Directory:", "Select directory containing text or PDF documents for semantic search", admin_docs_dir_var, 13, width=280, dialog_type=2, tooltiptxt="Specify a directory containing text or PDF files. Accessible read-only at /INTERNAL_READ_ONLY/Documents via filesystem API endpoints.")
-    makecheckbox(admin_tab, "Allow Model Download From HuggingFace", admin_allow_hf_var, 15, 0,tooltiptxt="Allows model downloading from HuggingFace within the Lite UI.")
-    makecheckbox(admin_tab, "SingleInstance Mode", singleinstance_var, 17, 0,tooltiptxt="Allows this server to be shut down by another KoboldCpp instance with singleinstance starting on the same port.")
-    makecheckbox(admin_tab, "Developer Mode", developer_mode_var, 19, 0,tooltiptxt="Enables developer utilities such as hot reloading of Kobold Lite from disk.")
-    router_mode_box = makecheckbox(admin_tab, "Router Mode", router_mode_var, 21, 0, command=togglerouter, tooltiptxt="Router mode uses a reverse proxy router, allowing you to easily hotswap models and configs within a single request. Requires admin mode.")
-    autoswap_mode_box = makecheckbox(admin_tab, "Autoswap Mode", autoswap_mode_var, 23, 0,tooltiptxt="Autoswap mode builds on router mode to allow switching of model types within the same config automatically. Requires admin mode and router mode. All models desired must be defined within the same config.")
+    makefileentry(admin_tab, "Base config .kcpps (For reloading):", "", baseconfig_var, 7, width=280, dialog_type=0, tooltiptxt="Specify a base .kcpps config to apply, if no custom base config is selected during a model swap.")
+    makelabelentry(admin_tab, "Auto Unload Timeout:" , admin_unload_timeout_var, 9, 70,padx=(150),singleline=True,tooltip="Set an idle timeout in seconds after which KoboldCpp will automatically unload the current model.")
+    makefileentry(admin_tab, "Model Directory:", "Select directory containing .gguf text model files to allow overriding configs with", admin_text_model_dir_var, 11, width=280, dialog_type=2, tooltiptxt="Specify a directory to look for .gguf text model files in, which can be used to swap models within a config.")
+    makefileentry(admin_tab, "Data Directory:", "Select directory which will be used to store user data if desired", admin_data_dir_var, 13, width=280, dialog_type=2, tooltiptxt="Specify a directory to store user data in.")
+    makefileentry(admin_tab, "Documents Directory:", "Select directory containing text or PDF documents for semantic search", admin_docs_dir_var, 15, width=280, dialog_type=2, tooltiptxt="Specify a directory containing text or PDF files. Accessible read-only at /INTERNAL_READ_ONLY/Documents via filesystem API endpoints.")
+    makecheckbox(admin_tab, "Allow Model Download From HuggingFace", admin_allow_hf_var, 17, 0,tooltiptxt="Allows model downloading from HuggingFace within the Lite UI.")
+    makecheckbox(admin_tab, "SingleInstance Mode", singleinstance_var, 19, 0,tooltiptxt="Allows this server to be shut down by another KoboldCpp instance with singleinstance starting on the same port.")
+    makecheckbox(admin_tab, "Developer Mode", developer_mode_var, 21, 0,tooltiptxt="Enables developer utilities such as hot reloading of Kobold Lite from disk.")
+    router_mode_box = makecheckbox(admin_tab, "Router Mode", router_mode_var, 23, 0, command=togglerouter, tooltiptxt="Router mode uses a reverse proxy router, allowing you to easily hotswap models and configs within a single request. Requires admin mode.")
+    autoswap_mode_box = makecheckbox(admin_tab, "Autoswap Mode", autoswap_mode_var, 25, 0,tooltiptxt="Autoswap mode builds on router mode to allow switching of model types within the same config automatically. Requires admin mode and router mode. All models desired must be defined within the same config.")
 
     tempfs_tab = tabcontent["Filesystem"]
     def togglefsdiskmode(a,b,c):
@@ -11865,6 +11886,7 @@ def show_gui():
         args.noshift = contextshift_var.get()==0
         args.nofastforward = fastforward_var.get()==0
         args.useswa = swa_var.get()==1
+        args.swapadding = int(swa_padding_var.get()) if swa_padding_var.get()!="" else swa_padding_default
         args.smartcache = (0 if smartcache_var.get()!=1 else int(smartcacheslots_var.get()))
         args.remotetunnel = remotetunnel_var.get()==1
         args.foreground = keepforeground.get()==1
@@ -11992,6 +12014,8 @@ def show_gui():
         args.mmproj = None if mmproj_var.get() == "" else mmproj_var.get()
         args.mmprojcpu = (mmprojcpu_var.get()==1)
         args.visionmaxres = int(visionmaxres_var.get()) if visionmaxres_var.get()!="" else default_visionmaxres
+        args.visionmintokens = int(vision_min_tokens_var.get()) if vision_min_tokens_var.get()!="" else -1
+        args.visionmaxtokens = int(vision_max_tokens_var.get()) if vision_max_tokens_var.get()!="" else -1
         args.draftmodel = None if draftmodel_var.get() == "" else draftmodel_var.get()
         args.draftamount = int(draftamount_var.get()) if draftamount_var.get()!="" else default_draft_amount
         args.draftgpulayers = int(draftgpulayers_var.get()) if draftgpulayers_var.get()!="" else 999
@@ -12093,6 +12117,7 @@ def show_gui():
         args.singleinstance = (singleinstance_var.get()==1)
         args.routermode = (router_mode_var.get()==1 and admin_var.get()==1)
         args.autoswapmode = (autoswap_mode_var.get()==1 and router_mode_var.get()==1 and admin_var.get()==1)
+        args.baseconfig = baseconfig_var.get()
         args.adminunloadtimeout = (0 if admin_unload_timeout_var.get()=="" else int(admin_unload_timeout_var.get()))
         args.fsmaxsize = max(0, tryparseint(fs_maxsize_var.get(), 0))
         args.fsdir = fs_dir_var.get()
@@ -12125,6 +12150,7 @@ def show_gui():
         contextshift_var.set(0 if "noshift" in mydict and mydict["noshift"] else 1)
         fastforward_var.set(0 if "nofastforward" in mydict and mydict["nofastforward"] else 1)
         swa_var.set(1 if "useswa" in mydict and mydict["useswa"] else 0)
+        swa_padding_var.set(mydict["swapadding"] if ("swapadding" in mydict) else swa_padding_default)
         smartcache_var.set(1 if "smartcache" in mydict and mydict["smartcache"] else 0)
         smartcacheslots_var.set(mydict["smartcache"] if ("smartcache" in mydict and mydict["smartcache"] and int(mydict["smartcache"])>1) else savestate_limit_default)
         remotetunnel_var.set(1 if "remotetunnel" in mydict and mydict["remotetunnel"] else 0)
@@ -12274,6 +12300,10 @@ def show_gui():
         mmprojcpu_var.set(1 if ("mmprojcpu" in mydict and mydict["mmprojcpu"]) else 0)
         if "visionmaxres" in mydict and mydict["visionmaxres"]:
             visionmaxres_var.set(mydict["visionmaxres"])
+        if "visionmintokens" in mydict and mydict["visionmintokens"]:
+            vision_min_tokens_var.set(mydict["visionmintokens"])
+        if "visionmaxtokens" in mydict and mydict["visionmaxtokens"]:
+            vision_max_tokens_var.set(mydict["visionmaxtokens"])
         draftmodel_var.set(mydict["draftmodel"] if ("draftmodel" in mydict and mydict["draftmodel"]) else "")
         if "draftamount" in mydict:
             draftamount_var.set(mydict["draftamount"])
@@ -12367,6 +12397,7 @@ def show_gui():
         router_mode_var.set(mydict["routermode"] if ("routermode" in mydict) else 0)
         autoswap_mode_var.set(mydict["autoswapmode"] if ("autoswapmode" in mydict) else 0)
         admin_dir_var.set(mydict["admindir"] if ("admindir" in mydict and mydict["admindir"]) else "")
+        baseconfig_var.set(mydict["baseconfig"] if ("baseconfig" in mydict and mydict["baseconfig"]) else "")
         admin_text_model_dir_var.set(mydict["admintextmodelsdir"] if ("admintextmodelsdir" in mydict and mydict["admintextmodelsdir"]) else "")
         admin_data_dir_var.set(mydict["admindatadir"] if ("admindatadir" in mydict and mydict["admindatadir"]) else "")
         admin_docs_dir_var.set(mydict["admindocsdir"] if ("admindocsdir" in mydict and mydict["admindocsdir"]) else "")
@@ -12944,7 +12975,7 @@ def reload_from_new_args(newargs):
         args.istemplate = False
         newargs = convert_invalid_args(newargs)
         for key, value in newargs.items(): #do not overwrite certain values
-            if key not in ["remotetunnel","showgui","port","host","port_param","admin","adminpassword","password","adminunloadtimeout","routermode","admindir","admintextmodelsdir","admindatadir","admindocsdir","adminallowhf","developerMode","fsmaxsize","fsdir","fsdirect","OpenLumara", "OpenLumara_configfile", "OpenLumara_datadir", "OpenLumara_sandboxfolder", "OpenLumara_apiurl","ssl","nocertify","benchmark","prompt","config","downloaddir"]:
+            if key not in ["remotetunnel","showgui","port","host","port_param","admin","adminpassword","password","adminunloadtimeout","routermode","admindir","admintextmodelsdir","admindatadir","admindocsdir","adminallowhf","developerMode","fsmaxsize","fsdir","fsdirect","OpenLumara", "OpenLumara_configfile", "OpenLumara_datadir", "OpenLumara_sandboxfolder", "OpenLumara_apiurl","ssl","nocertify","benchmark","prompt","config","baseconfig","downloaddir"]:
                 setattr(args, key, value)
         setattr(args,"showgui",False)
         setattr(args,"benchmark",False)
@@ -12970,7 +13001,7 @@ def reload_new_config(filename,defaultargs,overwrite_blank=False): #for changing
             print(f"Reload New Config Failed: {e}")
 
 def load_config_cli(filename):
-    print("Loading .kcpps configuration file...")
+    print(f"Loading configuration file {filename}...")
     with open(filename, 'r', encoding='utf-8', errors='ignore') as f:
         config = json.load(f)
         config = convert_invalid_args(config)
@@ -13520,8 +13551,11 @@ def main(launch_args, default_args):
         analyze_gguf_model_wrapper(args.analyze)
         return
 
+    cfgname = ""
     if args.config and len(args.config)==1: #handle initial config loading for launch
-        cfgname = args.config[0]
+        cfgname = args.config[0] #store first so baseconfig wont overwrite it
+
+    if cfgname: #handle initial config loading for launch
         if isinstance(cfgname, str):
             dlfile = download_model_from_url(cfgname,[".kcpps",".kcppt"])
             if dlfile:
@@ -13630,7 +13664,7 @@ def main(launch_args, default_args):
             input()
     else:  # manager command queue for admin mode
         with multiprocessing.Manager() as mp_manager:
-            global_memory = mp_manager.dict({"tunnel_url": "", "restart_target": "", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "current_override":"", "swapReqType": None, "autoswapmode": False, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}, "restart_override_config_target": "", "current_model_override": "", "OpenLumara": False})
+            global_memory = mp_manager.dict({"tunnel_url": "", "restart_target": "", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "base_config":"", "swapReqType": None, "autoswapmode": False, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}, "restart_override_base_config": "", "current_model_override": "", "OpenLumara": False})
 
             if args.OpenLumara and not args.prompt and not args.benchmark and not args.cli:
                 res = launch_OpenLumara(args)
@@ -13654,6 +13688,7 @@ def main(launch_args, default_args):
             while True: # keep the manager alive
                 try:
                     restart_target = ""
+                    restart_override_base_config = ""
                     if not kcpp_instance or not kcpp_instance.is_alive():
                         if fault_recovery_mode:
                             #attempt to recover
@@ -13668,7 +13703,7 @@ def main(launch_args, default_args):
                             kcpp_instance.daemon = True
                             kcpp_instance.start()
                             global_memory["restart_target"] = ""
-                            global_memory["restart_override_config_target"] = ""
+                            global_memory["restart_override_base_config"] = ""
                             global_memory["restart_model"] = ""
                             global_memory["swapReqType"] = None
                             time.sleep(3)
@@ -13677,7 +13712,7 @@ def main(launch_args, default_args):
                     if fault_recovery_mode and global_memory["load_complete"]:
                         fault_recovery_mode = False
                     restart_target = global_memory["restart_target"]
-                    restart_override_config_target = global_memory["restart_override_config_target"]
+                    restart_override_base_config = global_memory["restart_override_base_config"]
                     restart_model = global_memory["restart_model"]
                     last_active = global_memory["last_active_timestamp"]
                     if last_active and args.adminunloadtimeout>0:
@@ -13695,19 +13730,33 @@ def main(launch_args, default_args):
                                 restart_target = "unload_model"
                                 global_memory["triggered_sleeping"] = True
                     if restart_target!="":
+                        overridetxt = ("" if not restart_override_base_config else f" with override config {restart_override_base_config}")
                         if restart_model != "":
                             global_memory["restart_model"] = ""
-                            print(f"Reloading new config: {restart_target} with model {restart_model}")
+                            print(f"Reloading new config: {restart_target}{overridetxt} with model {restart_model}")
                         else:
-                            print(f"Reloading new model/config: {restart_target}")
+                            print(f"Reloading new model/config: {restart_target}{overridetxt}")
                         global_memory["restart_target"] = ""
+                        global_memory["restart_override_base_config"] = ""
                         time.sleep(0.5) #sleep for 0.5s then restart
                         if args.admin and args.admindir:
                             dirpath = os.path.abspath(args.admindir)
-                            targetfilepath = os.path.abspath(os.path.join(dirpath, restart_target))
-                            targetfilepath2 = os.path.abspath(os.path.join(dirpath, restart_override_config_target)) if restart_override_config_target else ""
+                            maintarget_filepath = os.path.abspath(os.path.join(dirpath, restart_target))
+                            basecfg_filepath = os.path.abspath(os.path.join(dirpath, restart_override_base_config)) if restart_override_base_config else ""
+                            if os.path.commonpath([dirpath, maintarget_filepath]) != dirpath: # Enforce admindir jail
+                                print("Security: Invalid restart target path.")
+                                continue
+                            if basecfg_filepath and os.path.commonpath([dirpath, basecfg_filepath]) != dirpath:
+                                print("Security: Invalid override config path.")
+                                continue
+                            #if override config is not specified, AND baseconfig is, swap it as our override
+                            if restart_target!="unload_model" and restart_target!="initial_model" and args.baseconfig and not basecfg_filepath:
+                                my_basecfg_path = os.path.abspath(args.baseconfig)
+                                if os.path.exists(my_basecfg_path):
+                                    basecfg_filepath = my_basecfg_path
+                                    print(f"No override config provided, using baseconfig {args.baseconfig}")
                             defaultargs = vars(default_args)
-                            if (os.path.exists(targetfilepath) or restart_target=="unload_model" or restart_target=="initial_model"):
+                            if (os.path.exists(maintarget_filepath) or restart_target=="unload_model" or restart_target=="initial_model") and (restart_override_base_config=="" or os.path.exists(basecfg_filepath)):
                                 print("Terminating old process...")
                                 global_memory["load_complete"] = False
                                 kcpp_instance.terminate()
@@ -13715,6 +13764,7 @@ def main(launch_args, default_args):
                                 kcpp_instance = None
                                 print("Restarting KoboldCpp...")
                                 fault_recovery_mode = True
+                                #then, apply the rest of the config stack
                                 if restart_target=="unload_model":
                                     reload_from_new_args(defaultargs)
                                     args.model_param = None
@@ -13722,14 +13772,21 @@ def main(launch_args, default_args):
                                     args.nomodel = True
                                 elif restart_target=="initial_model":
                                     reload_from_new_args(vars(original_args))
-                                elif targetfilepath.endswith(".gguf"):
+                                elif maintarget_filepath.endswith(".gguf") and basecfg_filepath=="":
                                     reload_from_new_args(defaultargs)
-                                    args.model_param = targetfilepath
-                                elif targetfilepath and targetfilepath2 and restart_override_config_target!="":
-                                    reload_new_config(targetfilepath,defaultargs)
-                                    reload_new_config(targetfilepath2,vars(args),True)
+                                    args.model_param = maintarget_filepath
+                                elif maintarget_filepath.endswith(".gguf") and basecfg_filepath!="":
+                                    reload_from_new_args(defaultargs)
+                                    reload_new_config(basecfg_filepath,vars(args),True)
+                                    args.model_param = maintarget_filepath
+                                elif maintarget_filepath and basecfg_filepath and basecfg_filepath!="":
+                                    # stuff applied later overwrites stuff applied earlier, if they have the same field names
+                                    reload_from_new_args(defaultargs)
+                                    reload_new_config(basecfg_filepath,vars(args),True)
+                                    reload_new_config(maintarget_filepath,vars(args),True)
                                 else:
-                                    reload_new_config(targetfilepath,defaultargs)
+                                    reload_from_new_args(defaultargs)
+                                    reload_new_config(maintarget_filepath,vars(args),True)
 
                                 args.currentConfig = targetfilepath
                                 global_memory["currentConfig"] = targetfilepath
@@ -13753,12 +13810,12 @@ def main(launch_args, default_args):
                                     global_memory["current_model_override"] = restart_model
                                 else:
                                     global_memory["current_model_override"] = ""
-                                if (restart_override_config_target and restart_override_config_target!=""):
-                                    global_memory["current_override"] = restart_override_config_target
+                                if (restart_override_base_config and restart_override_base_config!=""):
+                                    global_memory["base_config"] = restart_override_base_config
                                 else:
-                                    global_memory["current_override"] = ""
+                                    global_memory["base_config"] = ""
                                 global_memory["restart_model"] = ""
-                                global_memory["restart_override_config_target"] = ""
+                                global_memory["restart_override_base_config"] = ""
                                 global_memory["current_model"] = restart_target
                                 time.sleep(3)
                     else:
@@ -14898,6 +14955,7 @@ if __name__ == '__main__':
     advparser.add_argument("--noshift","--no-context-shift", help="If set, do not attempt to Trim and Shift the GGUF context.", action='store_true')
     advparser.add_argument("--nofastforward", help="If set, do not attempt to fast forward GGUF context (always reprocess). Will also enable noshift", action='store_true')
     advparser.add_argument("--useswa", help="If set, allows Sliding Window Attention (SWA) KV Cache, which saves memory but cannot be used with context shifting.", action='store_true')
+    advparser.add_argument("--swapadding", help="How much extra to pad the SWA KV cache, this affects the rewind limit before reprocessing is forced.", type=int, default=swa_padding_default)
     advparser.add_argument("--smartcache", help="Enables intelligent context switching by saving KV cache snapshots to RAM. Requires fast forwarding.", metavar=('limit'), nargs='?', const=1, type=int, default=0)
     advparser.add_argument("--ropeconfig", help="If set, uses customized RoPE scaling from configured frequency scale and frequency base (e.g. --ropeconfig 0.25 10000). Otherwise, uses NTK-Aware scaling set automatically based on context size. For linear rope, simply set the freq-scale and ignore the freq-base",metavar=('[rope-freq-scale]', '[rope-freq-base]'), default=[0.0, 10000.0], type=float, nargs='+')
     advparser.add_argument("--overridenativecontext", help="Overrides the native trained context of the loaded model with a custom value to be used for Rope scaling.",metavar=('[trained context]'), type=int, default=0)
@@ -14926,6 +14984,8 @@ if __name__ == '__main__':
     advparser.add_argument("--mmproj", metavar=('[filename]'), help="Select a multimodal projector file for vision models like LLaVA.", default="")
     advparser.add_argument("--mmprojcpu","--no-mmproj-offload", help="Force CLIP for Vision mmproj always on CPU.", action='store_true')
     advparser.add_argument("--visionmaxres", metavar=('[max px]'), help="Clamp MMProj vision maximum allowed resolution. Allowed values are between 512 to 2048 px (default 1024).", type=int, default=default_visionmaxres)
+    advparser.add_argument("--visionmintokens","--image-min-tokens", metavar=('[tokens]'), help="Override the minimum tokens for the MMProj embedding (default -1).", type=int, default=-1)
+    advparser.add_argument("--visionmaxtokens","--image-max-tokens", metavar=('[tokens]'), help="Override the maximum tokens for the MMProj embedding (default -1).", type=int, default=-1)
     advparser.add_argument("--draftmodel","--model-draft","-md", metavar=('[filename]'), help="Load a small draft model for speculative decoding. It will be fully offloaded. Vocab must match the main model.", default="")
     advparser.add_argument("--draftamount","--draft-max","--draft-n", metavar=('[tokens]'), help="How many tokens to draft per chunk before verifying results", type=int, default=default_draft_amount)
     advparser.add_argument("--draftgpulayers","--gpu-layers-draft","--n-gpu-layers-draft","-ngld", metavar=('[layers]'), help="How many layers to offload to GPU for the draft model (default=full offload)", type=int, default=999)
@@ -15035,6 +15095,7 @@ if __name__ == '__main__':
     admingroup.add_argument("--adminallowhf", help="Enables downloading of HuggingFace models through the Lite UI.", action='store_true')
     admingroup.add_argument("--routermode", help="Router mode uses a reverse proxy router, allowing you to easily hotswap models and configs within a single request. Requires admin mode.", action='store_true')
     admingroup.add_argument("--autoswapmode", help="Autoswap mode builds on router mode to allow switching of model types within the same config automatically. Requires admin mode and router mode. All models desired must be defined within the same config.", action='store_true')
+    admingroup.add_argument("--baseconfig", help="Specify a base .kcpps config to apply, if no custom base config is selected during a model swap", default="")
 
     OpenLumaragroup = parser.add_argument_group('OpenLumara Commands')
     OpenLumaragroup.add_argument("--OpenLumara", help="Enable and launch the OpenLumara AI agent alongside KoboldCpp.", action='store_true')

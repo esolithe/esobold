@@ -47,6 +47,8 @@ struct load_model_inputs
     const char * mmproj_filename = nullptr;
     const bool mmproj_cpu = false;
     const int visionmaxres = 2048;
+    const int visionmintokens = -1;
+    const int visionmaxtokens = -1;
     const bool use_mmap = false;
     const bool use_mlock = false;
     const bool use_smartcontext = false;
@@ -74,6 +76,7 @@ struct load_model_inputs
     const bool check_slowness = false;
     const bool highpriority = false;
     const bool swa_support = false;
+    const int swa_padding = 0;
     const bool smartcache = false;
     const int smartcacheslots = 0;
     const bool pipelineparallel = false;

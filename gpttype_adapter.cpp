@@ -1943,39 +1943,6 @@ static bool kcpp_eval_media(llama_context * ctx_llama, const media_chunk & media
     return true;
 }
 
-//counts the number of matching prefix tokens between two sequences, returns percentage matched 0.0 to 1.0
-float ComputePrefixMatchPercent(std::vector<int> &current_context_tokens, std::vector<int> &new_context_tokens)
-{
-    int match_count = 0;
-    size_t min_length = std::min(current_context_tokens.size(), new_context_tokens.size());
-    for (size_t i = 0; i < min_length; ++i) {
-        if (current_context_tokens[i] == new_context_tokens[i]) {
-            match_count++;
-        } else {
-            break;
-        }
-    }
-    // Handle case where both sequences are empty to avoid division by zero
-    if (min_length == 0) {
-        return 0.0f; // Both empty sequences are considered not matched
-    }
-    return static_cast<float>(match_count) / static_cast<float>(min_length);
-}
-
-//returns true if and only if sequence 1 is fully contained within the starting of sequence 2
-bool FullyContainedPrefix(std::vector<int> &sequence1, std::vector<int> &sequence2)
-{
-    if (sequence1.size() > sequence2.size() || sequence1.size()==0 || sequence2.size()==0) {
-        return false;
-    }
-    for (size_t i = 0; i < sequence1.size(); ++i) {
-        if (sequence1[i] != sequence2[i]) {
-            return false;
-        }
-    }
-    return true;
-}
-
 //given an old GGUF context and a new context that has some middle portion removed,
 //find and remove the middle portion from the old context from the KV. Does not fast forward after this destructive action
 //returns true if contextshift is doable, executes it if dryrun is false
@@ -2159,6 +2126,8 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
     kcpp_pipeline_parallelism = inputs.pipelineparallel;
     kcpp_data->n_batch = GetBatchSize(inputs.batchsize, in_file_format);
     kcpp_data->n_ubatch = kcpp_data->n_batch;
+    kcpp_data->vision_min_tokens = inputs.visionmintokens;
+    kcpp_data->vision_max_tokens = inputs.visionmaxtokens;
     if(isGguf && kcpp_pipeline_parallelism)
     {
         //double the logical batch, while keeping the physical batch the same, pipeline parallel set GGML_SCHED_MAX_COPIES to 2
@@ -2171,6 +2140,7 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
     kcpp_data->use_fastforward = inputs.use_fastforward;
     kcpp_data->smartcache = inputs.smartcache;
     kcpp_data->swa_full = !inputs.swa_support;
+    kcpp_extra_swa_padding = inputs.swa_padding;
     if (!kcpp_data->swa_full) {
         if (inputs.use_contextshift) {
             kcpp_data->swa_full = true;  //cannot use SWA
@@ -2179,6 +2149,8 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
             printf("\nSWA Mode is ENABLED!\nNote that using SWA Mode cannot be used with Context Shifting, and can lead to degraded recall when combined with Fast Forwarding!\n");
         } else {
             printf("\nSWA Mode IS ENABLED!\nNote that using SWA Mode cannot be used with Context Shifting\n");
+            //since fastforward is disabled, we need no swa padding, because full reprocess always happens
+            kcpp_extra_swa_padding = 0;
         }
     }
     debugmode = inputs.debugmode;
@@ -2748,8 +2720,8 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
             clip_context_params ctx_clip_params {
                 /* use_gpu           */ true,
                 /* flash_attn_type   */ clip_fa,
-                /* image_min_tokens  */ -1,
-                /* image_max_tokens  */ -1,
+                /* image_min_tokens  */ kcpp_data->vision_min_tokens,
+                /* image_max_tokens  */ kcpp_data->vision_max_tokens,
             };
             clip_init_result cres = clip_init(mmproj_filename.c_str(), ctx_clip_params);
             clp_ctx_v = cres.ctx_v;
@@ -4322,14 +4294,29 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
     else
     {
         bool triggersc = kcpp_data->use_smartcontext;
+        bool triggerff = kcpp_data->use_fastforward;
         if(!blank_prompt) //special case for blank prompts, no fast forward or shifts
         {
-            if(kcpp_data->use_fastforward && kcpp_data->use_contextshift && (file_format == FileFormat::GGUF_GENERIC))
+            if(triggerff && !kcpp_data->swa_full && (file_format == FileFormat::GGUF_GENERIC))
+            {
+                const int swa_pos_min = llama_memory_seq_pos_min(llama_get_memory(llama_ctx_v4), 0); //this is the furthest back we can rewind to.
+                int goal_npast = ComputeSharedPrefixLength(current_context_tokens,embd_inp); //this is where we want to rewind to.
+                goal_npast -= 4;
+                goal_npast = goal_npast < 0 ? 0 : goal_npast;
+                if (swa_pos_min < 0 || goal_npast <= swa_pos_min) {
+                    triggerff = false;
+                    if (debugmode==1 && !is_quiet)
+                    {
+                         printf("\nNote: Context cannot be reused (Desired n_past=%d, SWA lowest n_past=%d), doing a full reprocess... to avoid this, disable SWA or increase SWA padding)\n", goal_npast, swa_pos_min);
+                    }
+                }
+            }
+            if(triggerff && kcpp_data->use_contextshift && (file_format == FileFormat::GGUF_GENERIC))
             {
                 DoContextShifting(llama_ctx_v4, draft_ctx, current_context_tokens, embd_inp, inputs.max_length, nctx, false);
                 triggersc = false;
             }
-            if(kcpp_data->use_fastforward)
+            if(triggerff)
             {
                 ContextFastForward(current_context_tokens, embd_inp, n_past, last_n_tokens, nctx, smartcontext, triggersc, false, 4);
             }

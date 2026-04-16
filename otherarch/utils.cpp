@@ -1087,3 +1087,46 @@ std::string kcpp_rstrip(const std::string& s) {
     size_t end = s.find_last_not_of(" \t\n\r\f\v");
     return (end == std::string::npos) ? "" : s.substr(0, end + 1);
 }
+
+//counts the number of matching prefix tokens between two sequences
+int ComputeSharedPrefixLength(const std::vector<int> &tokens_a,const std::vector<int> &tokens_b)
+{
+    size_t min_length = std::min(tokens_a.size(), tokens_b.size());
+
+    int match_count = 0;
+    for (size_t i = 0; i < min_length; ++i) {
+        if (tokens_a[i] != tokens_b[i]) {
+            break;
+        }
+        match_count++;
+    }
+
+    return match_count;
+}
+
+//counts the number of matching prefix tokens between two sequences, returns percentage matched 0.0 to 1.0
+float ComputePrefixMatchPercent(const std::vector<int> &tokens_a,const std::vector<int> &tokens_b)
+{
+    size_t min_length = std::min(tokens_a.size(), tokens_b.size());
+
+    if (min_length == 0) {
+        return 0.0f;
+    }
+
+    int match_count = ComputeSharedPrefixLength(tokens_a, tokens_b);
+    return static_cast<float>(match_count) / static_cast<float>(min_length);
+}
+
+//returns true if and only if sequence 1 is fully contained within the starting of sequence 2
+bool FullyContainedPrefix(std::vector<int> &sequence1, std::vector<int> &sequence2)
+{
+    if (sequence1.size() > sequence2.size() || sequence1.size()==0 || sequence2.size()==0) {
+        return false;
+    }
+    for (size_t i = 0; i < sequence1.size(); ++i) {
+        if (sequence1[i] != sequence2[i]) {
+            return false;
+        }
+    }
+    return true;
+}

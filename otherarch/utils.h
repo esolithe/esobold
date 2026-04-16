@@ -77,6 +77,9 @@ std::vector<ggml_backend_dev_t> kcpp_parse_device_list(const std::string & value
 
 bool kcpp_string_ends_with(const std::string& str, const std::string& suffix);
 std::string kcpp_rstrip(const std::string& s);
+int ComputeSharedPrefixLength(const std::vector<int> &tokens_a,const std::vector<int> &tokens_b);
+float ComputePrefixMatchPercent(const std::vector<int> &tokens_a,const std::vector<int> &tokens_b);
+bool FullyContainedPrefix(std::vector<int> &sequence1, std::vector<int> &sequence2);
 
 //duplcated and modified from llava_embd_batch
 struct kcpp_embd_batch {

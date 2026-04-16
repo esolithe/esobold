@@ -7527,6 +7527,11 @@ Current version indicated by LITEVER below.
 		function stashLatex(text) { //this function preserves the contents of multiline latex blocks so they don't get corrupted by markdown
 			const latexBlocks = [];
 			let counter = 0;
+			text = text.replace(/(^> \$\$\n([\s\S]*?)\n\$\$)/gm, (match) => {
+				const key = `%%LATEXBLK${counter++}%%`;
+				latexBlocks.push({ key, value: match.slice(2) });
+				return key;
+			});
 			text = text.replace(/(^ {0,6}\\\[\n([\s\S]*?)\n {0,6}\\\] {0,2}$|^\$\$\n([\s\S]*?)\n\$\$$|^ {2}\$\$\n {2}([\s\S]*?)\n {2}\$\$$|\$\$([^\n]+?)\$\$|\\\(([^\n]+?)\\\)|\\\[([^\n]+?)\\\])/gm, (match, p1, p2, p3, p4, p5, p6, p7) => {
 				const key = `%%LATEXBLK${counter++}%%`;
 				latexBlocks.push({ key, value: match });
@@ -13694,7 +13699,7 @@ Current version indicated by LITEVER below.
 				document.getElementById("featherlessdesc").classList.remove("hidden");
 				document.getElementById("custom_oai_key").value = (localsettings.saved_featherless_key==dummy_api_key?"":localsettings.saved_featherless_key);
 				document.getElementById("custom_oai_endpoint").value = default_featherless_base;
-				try_fetch_oai_models_auto();
+				// try_fetch_oai_models_auto(); //no more autofetch for featherless, too many models!
 			}
 			else if(epchoice==9)
 			{
@@ -14603,34 +14608,28 @@ Current version indicated by LITEVER below.
 		let targetfile = document.getElementById("adminconfigdropdown").value;
 		if(targetfile)
 		{
-			let overridedropdown = document.getElementById("adminconfigoverridedropdown");
+			let basecfgdropdown = document.getElementById("adminbaseconfigdropdown");
 			var dropdown = document.getElementById("adminconfigdropdown");
-			if (!!overridedropdown)
+			for (var i = basecfgdropdown.options.length; i >= 0; i--) {
+				var option = basecfgdropdown.options[i];
+				basecfgdropdown.remove(option);
+			}
+			var el = document.createElement("option");
+			el.textContent = "Base Config";
+			el.value = "";
+			basecfgdropdown.appendChild(el);
+			for(var i=0;i<dropdown.options.length;++i)
 			{
-				for (var i = overridedropdown.options.length; i >= 0; i--) {
-					var option = overridedropdown.options[i];
-					overridedropdown.remove(option);
-				}
-			
+				let str = dropdown.options[i].value;
+				if(str.endsWith(".gguf") || str=="unload_model" || str=="initial_model")
+				{continue;}
 				var el = document.createElement("option");
-				el.textContent = "Default Config";
-				el.value = "";
-				overridedropdown.appendChild(el);
-
-				for(var i=0;i<dropdown.options.length;++i)
-				{
-					let str = dropdown.options[i].value;
-					if(str.endsWith(".gguf") || str=="unload_model" || str=="initial_model")
-					{continue;}
-					var el = document.createElement("option");
-					el.textContent = str;
-					el.value = str;
-					overridedropdown.appendChild(el);
-				}
+				el.textContent = str;
+				el.value = str;
+				basecfgdropdown.appendChild(el);
 			}
 		}
 	}
-
 	var adminrebootflag = 0;
 	function trigger_admin_reload()
 	{
@@ -14644,10 +14643,9 @@ Current version indicated by LITEVER below.
 
 		let header = {'Content-Type': 'application/json'};
 		let payload = {"filename": targetfile};
-		let configOverride = document.getElementById("adminconfigoverridedropdown");
-		if(!!configOverride && configOverride.value && configOverride.value!="")
+		if(document.getElementById("adminbaseconfigdropdown").value && document.getElementById("adminbaseconfigdropdown").value!="")
 		{
-			payload["overrideconfig"] = configOverride.value;
+			payload["baseconfig"] = document.getElementById("adminbaseconfigdropdown").value;
 		}
 		payload["modelName"] = modelName
 
@@ -18022,6 +18020,16 @@ Current version indicated by LITEVER below.
 			new_randomness_seed();
 			localsettings.inject_randomness_seed = document.getElementById("inject_randomness_seed").value;
 		}
+		if ('speechSynthesis' in window) {
+			window.speechSynthesis.cancel();
+		}
+		if(ttsAudioContext)
+		{
+		    ttsMasterGain.disconnect();
+			ttsMasterGain = ttsAudioContext.createGain();
+			ttsMasterGain.connect(ttsAudioContext.destination);
+			tts_speak_output_queue = [];
+		}
 		warn_unsaved = false;
 		last_used_saveslot = -1;
 		show_corpo_leftpanel(false);
@@ -19231,6 +19239,9 @@ Current version indicated by LITEVER below.
 	var tts_speak_output_queue = [];
 	var tts_queue_embed = false;
 	var tts_queue_download = false;
+	var ttsAudioContext = new (window.AudioContext || window.webkitAudioContext)();
+	var ttsMasterGain = ttsAudioContext.createGain();
+	ttsMasterGain.connect(ttsAudioContext.destination);
 	var ttsIsBeingGenerated = false
 	function tts_speak(text, do_download=false, do_embed_tts=false, is_test=false, voice_override="")
 	{
@@ -19263,12 +19274,14 @@ Current version indicated by LITEVER below.
 			let firstAudio = tts_speak_output_queue.shift();
 			if(firstAudio)
 			{
-				const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-				const playSound = audioContext.createBufferSource();
+				ttsMasterGain.disconnect();
+				ttsMasterGain = ttsAudioContext.createGain();
+				ttsMasterGain.connect(ttsAudioContext.destination);
+				const playSound = ttsAudioContext.createBufferSource();
 				playSound.buffer = firstAudio;
-				playSound.connect(audioContext.destination);
+				playSound.connect(ttsMasterGain);
 				update_submit_button(false);
-				playSound.start(audioContext.currentTime);
+				playSound.start(ttsAudioContext.currentTime);
 				tts_is_playing = true;
 				playSound.onended = function() {
 					setTimeout(() => {
@@ -19333,11 +19346,8 @@ Current version indicated by LITEVER below.
 			let is_xtts = (ssval==XTTS_ID);
 			let is_oai_tts = (ssval==OAI_TTS_ID);
 			let is_kcpp_tts = (ssval==KCPP_TTS_ID);
-			const audioContext = new (window.AudioContext || window.webkitAudioContext)();
 			let audiofile_ref = null;
-
 			tts_is_processing = true;
-
 			if(is_oai_tts || is_kcpp_tts)
 			{
 				let payload = {};
@@ -19388,7 +19398,7 @@ Current version indicated by LITEVER below.
 				.then(response => response.arrayBuffer())
 				.then(data => {
 					audiofile_ref = data.slice(0);
-					return audioContext.decodeAudioData(data);
+					return ttsAudioContext.decodeAudioData(data);
 				})
 				.then(decodedData => {
 					if(do_download)
@@ -19407,12 +19417,15 @@ Current version indicated by LITEVER below.
 					}
 					else
 					{
-						const playSound = audioContext.createBufferSource();
+						ttsMasterGain.disconnect();
+						ttsMasterGain = ttsAudioContext.createGain();
+						ttsMasterGain.connect(ttsAudioContext.destination);
+						const playSound = ttsAudioContext.createBufferSource();
 						playSound.buffer = decodedData;
-						playSound.connect(audioContext.destination);
+						playSound.connect(ttsMasterGain);
 						tts_is_playing = true;
 						update_submit_button(false);
-						playSound.start(audioContext.currentTime);
+						playSound.start(ttsAudioContext.currentTime);
 						playSound.onended = function() {
 							setTimeout(() => {
 								tts_is_playing = false;
@@ -19447,7 +19460,7 @@ Current version indicated by LITEVER below.
 					.then(response => response.arrayBuffer())
 					.then(data => {
 						audiofile_ref = data.slice(0);
-						return audioContext.decodeAudioData(data);
+						return ttsAudioContext.decodeAudioData(data);
 					})
 					.then(decodedData => {
 						if(do_download)
@@ -19466,12 +19479,15 @@ Current version indicated by LITEVER below.
 						}
 						else
 						{
-							const playSound = audioContext.createBufferSource();
+							ttsMasterGain.disconnect();
+							ttsMasterGain = ttsAudioContext.createGain();
+							ttsMasterGain.connect(ttsAudioContext.destination);
+							const playSound = ttsAudioContext.createBufferSource();
 							playSound.buffer = decodedData;
-							playSound.connect(audioContext.destination);
+							playSound.connect(ttsMasterGain);
 							tts_is_playing = true;
 							update_submit_button(false);
-							playSound.start(audioContext.currentTime);
+							playSound.start(ttsAudioContext.currentTime);
 							playSound.onended = function() {
 								setTimeout(() => {
 									tts_is_playing = false;
@@ -19502,12 +19518,15 @@ Current version indicated by LITEVER below.
 						}
 						else
 						{
-							const playSound = audioContext.createBufferSource();
+							ttsMasterGain.disconnect();
+							ttsMasterGain = ttsAudioContext.createGain();
+							ttsMasterGain.connect(ttsAudioContext.destination);
+							const playSound = ttsAudioContext.createBufferSource();
 							playSound.buffer = decodedData;
-							playSound.connect(audioContext.destination);
+							playSound.connect(ttsMasterGain);
 							tts_is_playing = true;
 							update_submit_button(false);
-							playSound.start(audioContext.currentTime);
+							playSound.start(ttsAudioContext.currentTime);
 							playSound.onended = function() {
 								setTimeout(() => {
 									tts_is_playing = false;
@@ -19533,7 +19552,7 @@ Current version indicated by LITEVER below.
 						.then(response => response.arrayBuffer())
 						.then(data => {
 							audiofile_ref = data.slice(0);
-							return audioContext.decodeAudioData(data);
+							return ttsAudioContext.decodeAudioData(data);
 						})
 						.then(decodedData => {
 							ttsIsBeingGenerated = false
@@ -19591,7 +19610,7 @@ Current version indicated by LITEVER below.
 										.then(response => response.arrayBuffer())
 										.then(data => {
 											audiofile_ref = data.slice(0);
-											return audioContext.decodeAudioData(data);
+											return ttsAudioContext.decodeAudioData(data);
 										})
 										.then(decodedData => {
 											ttsIsBeingGenerated = false
@@ -19632,7 +19651,7 @@ Current version indicated by LITEVER below.
 							{
 								return response.arrayBuffer().then(data => {
 									audiofile_ref = data.slice(0);
-									return audioContext.decodeAudioData(data);
+									return ttsAudioContext.decodeAudioData(data);
 								})
 								.then(decodedData => {
 									ttsIsBeingGenerated = false
@@ -19677,6 +19696,7 @@ Current version indicated by LITEVER below.
 					let utterance = new window.SpeechSynthesisUtterance(text);
 					utterance.voice = voicelist[pickedwebvoice];
 					utterance.rate = ssrate;
+					window.speechSynthesis.cancel();
 					window.speechSynthesis.speak(utterance);
 					utterance.onend = function(event) {
 						update_submit_button(false);
@@ -32181,12 +32201,13 @@ Current version indicated by LITEVER below.
 
 			<div>
 				<b class="color_white" style="padding: 5px;">Change Loaded Model / Config:</b><br>
-				<div style="padding: 5px;">
-					<label for="adminconfigdropdown" id="adminconfigdropdownlabel" style="color: white">Select Primary Target: </label>
-					<select title="Select Primary Target" style="padding:4px;" class="form-control" id="adminconfigdropdown">
+				<div class="color_white" style="padding: 5px;">
+					<div style="padding-top:3px">
+					Select Base Config (optional): <select title="Base Config" style="padding:4px; width:100%" class="form-control" id="adminbaseconfigdropdown">
 					</select>
-					<label for="adminconfigoverridedropdown" id="adminconfigoverridedropdownlabel" style="color: white">Select Secondary Target (optional): </label>
-					<select title="Select Secondary Target" style="padding:4px;" class="form-control" id="adminconfigoverridedropdown">
+					</div>
+					<div style="padding-top:3px">
+					Select New Model or Config (required): <select title="Select New Model or Config" style="padding:4px; width:100%" class="form-control" id="adminconfigdropdown">
 					</select>
 					<label for="adminmodeldropdown" id="adminmodeldropdownlabel" style="color: white"></label>
 					<select title="Select New Model" style="padding:4px;" class="form-control" id="adminmodeldropdown">

@@ -160,7 +160,7 @@ llama_kv_cache::llama_kv_cache(
 
     for (uint32_t il = 0; il < hparams.n_layer; il++) {
         if (!hparams.has_kv(il)) {
-            LLAMA_LOG_DEBUG("%s: layer %3d: does not have KV cache\n", __func__, il);
+            // LLAMA_LOG_DEBUG("%s: layer %3d: does not have KV cache\n", __func__, il);
             continue;
         }
 
@@ -232,12 +232,12 @@ llama_kv_cache::llama_kv_cache(
             const int32_t il_reuse = reuse(il);
 
             if (il_reuse < 0) {
-                LLAMA_LOG_DEBUG("%s: - layer %3d: no reuse\n", __func__, il);
+                // LLAMA_LOG_DEBUG("%s: - layer %3d: no reuse\n", __func__, il);
                 continue;
             }
 
             if (filter && !filter(il)) {
-                LLAMA_LOG_DEBUG("%s: - layer %3d: filtered\n", __func__, il);
+                // LLAMA_LOG_DEBUG("%s: - layer %3d: filtered\n", __func__, il);
                 continue;
             }
 
