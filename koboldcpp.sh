@@ -6,11 +6,14 @@ fi
 
 resolve_python_suffix() {
 	if [ -z "$KCPP_PYTHON_VERSION" ]; then
-		echo ""
+		echo "-py310"
 		return 0
 	fi
 
 	case "$KCPP_PYTHON_VERSION" in
+		3.8)
+			echo ""
+			;;
 		3.10)
 			echo "-py310"
 			;;
