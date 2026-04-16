@@ -13401,6 +13401,7 @@ OpenLumara_launch_lock = threading.Lock()
 
 def execAndWrapError(errorPrefix, func, *args, **kwargs):
     import traceback
+    tb = None
     try:
         return func(*args, **kwargs)
     except Exception:
