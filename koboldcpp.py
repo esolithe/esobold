@@ -1945,7 +1945,7 @@ def load_model(model_filename):
     inputs.check_slowness = (not args.highpriority and os.name == 'nt' and 'Intel' in platform.processor())
     inputs.highpriority = args.highpriority
     inputs.swa_support = args.useswa
-    inputs.swa_padding = args.swapadding
+    inputs.swa_padding = args.swapadding if args.useswa else 0
     scint = int(args.smartcache)
     inputs.smartcache = False if scint<=0 else True
     sclimit = (savestate_limit_default if scint<=1 else scint)
@@ -7736,6 +7736,11 @@ def show_gui():
     def toggleswa(a,b,c):
         if swa_var.get()==1:
             contextshift_var.set(0)
+            swa_padding_entry.grid()
+            swa_padding_label.grid()
+        else:
+            swa_padding_entry.grid_remove()
+            swa_padding_label.grid_remove()
 
     def togglesmartcache(a,b,c):
         if smartcache_var.get()==1:
@@ -7961,8 +7966,8 @@ def show_gui():
     # Context Tab
     context_tab = tabcontent["Context"]
     # Context checkboxes
-    smartcontextbox = makecheckbox(context_tab, "Use SmartContext", smartcontext_var, 1,tooltiptxt="Uses SmartContext. Now considered outdated and not recommended.\nCheck the wiki for more info.")
-    makecheckbox(context_tab, "Use ContextShift", contextshift_var, 2,tooltiptxt="Uses Context Shifting to reduce reprocessing.\nRecommended. Check the wiki for more info.", command=togglectxshift)
+    smartcontextbox = makecheckbox(context_tab, "Use SmartContext", smartcontext_var, 3, padx=330,tooltiptxt="Uses SmartContext. Now considered outdated and not recommended.\nCheck the wiki for more info.")
+    makecheckbox(context_tab, "Use ContextShift", contextshift_var, 3,padx=180,tooltiptxt="Uses Context Shifting to reduce reprocessing.\nRecommended. Check the wiki for more info.", command=togglectxshift)
     makecheckbox(context_tab, "Use FastForwarding", fastforward_var, 3,tooltiptxt="Use fast forwarding to recycle previous context (always reprocess if disabled).\nRecommended.", command=togglefastforward)
     makecheckbox(context_tab, "Use SWA", swa_var, 4,tooltiptxt="Allows Sliding Window Attention (SWA) KV Cache, which saves memory but cannot be used with context shifting.", command=toggleswa)
     swa_padding_entry,swa_padding_label = makelabelentry(context_tab,"SWA Padding Tokens:", swa_padding_var, 4, 50, padx=300,singleline=True,tooltip="If the SWA is too small, you can expand it with padding, allowing for greater distance context rewinds.",labelpadx=160)
@@ -8023,10 +8028,10 @@ def show_gui():
     jinjatoolsbox = makecheckbox(context_tab, "Jinja for Tools", jinja_tools_var, row=45 ,padx=(140), tooltiptxt="Allows jinja even with tool calls. If unchecked, jinja will be disabled when tools are used.")
     jinjakwargsbox,jinjakwargsboxlbl = makelabelentry(context_tab, "Jj.Kwargs:", jinja_kwargs_var, row=45, width=80, padx=(350), singleline=True, tooltip='Set additiona fields for Jinja JSON template parser, must be a valid json object.\nSpecified as JSON fields: {"KEY1":"VALUE1", "KEY2":"VALUE2"...}', labelpadx=285)
     jinja_var.trace_add("write", togglejinja)
-    makelabelentry(context_tab, "MoE Experts:", moeexperts_var, row=55, padx=(120), singleline=True, tooltip="Override number of MoE experts.")
-    moecpu_box,moecpu_box_lbl = makelabelentry(context_tab, "MoE CPU Layers:", moecpu_var, row=55, padx=(320), singleline=True, tooltip="Force Mixture of Experts (MoE) weights of the first N layers to the CPU.\nSetting it higher than GPU layers has no effect.", labelpadx=(210))
-    makelabelentry(context_tab, "Override KV:", override_kv_var, row=57, padx=(120), singleline=True, width=150, tooltip="Override metadata value by key. Separate multiple values with commas. Format is name=type:value. Types: int, float, bool, str")
-    tenos_box,tenos_box_lbl = makelabelentry(context_tab, "Override Tensors:", override_tensors_var, row=59, padx=(120), singleline=True, width=150, tooltip="Override selected backend for specific tensors matching tensor_name_regex_pattern=buffer_type, same as in llama.cpp.")
+    makelabelentry(context_tab, "MoE Experts:", moeexperts_var, row=55, padx=(86), singleline=True, tooltip="Override number of MoE experts.")
+    moecpu_box,moecpu_box_lbl = makelabelentry(context_tab, "MoE CPU Layers:", moecpu_var, row=55, padx=(334), singleline=True, tooltip="Force Mixture of Experts (MoE) weights of the first N layers to the CPU.\nSetting it higher than GPU layers has no effect.", labelpadx=(230))
+    makelabelentry(context_tab, "Override KV:", override_kv_var, row=57, padx=(86), singleline=True, width=130, tooltip="Override metadata value by key. Separate multiple values with commas. Format is name=type:value. Types: int, float, bool, str")
+    tenos_box,tenos_box_lbl = makelabelentry(context_tab, "Override Tensors:", override_tensors_var, row=57, padx=(334), singleline=True, width=130, tooltip="Override selected backend for specific tensors matching tensor_name_regex_pattern=buffer_type, same as in llama.cpp.", labelpadx=(230))
 
     # Model Tab
     model_tab = tabcontent["Loaded Files"]
