@@ -1,9 +1,9 @@
 #include "ggml.h"
 #include "gguf.h"
 
+#include "build-info.h"
 #include "common.h"
 #include "log.h"
-#include "build-info.h"
 #include "log.cpp"
 // Change JSON_ASSERT from assert() to GGML_ASSERT:
 #define JSON_ASSERT GGML_ASSERT
@@ -379,7 +379,7 @@ void common_init() {
     const char * build_type = " (debug)";
 #endif
 
-    LOG_DBG("build: %d (%s) with %s for %s%s\n", LLAMA_BUILD_NUMBER, LLAMA_COMMIT, LLAMA_COMPILER, LLAMA_BUILD_TARGET, build_type);
+    LOG_DBG("build: %d (%s) with %s for %s%s\n", llama_build_number(), llama_commit(), llama_compiler(), llama_build_target(), build_type);
 }
 
 std::string common_params_get_system_info(const common_params & params) {

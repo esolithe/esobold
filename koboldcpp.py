@@ -72,7 +72,7 @@ overridekv_max = 16
 default_autofit_padding = 1024
 lora_filenames_max = 4
 multiuser_concurrent_limit = 10
-swa_padding_default = 1024
+swa_padding_default = 0
 
 # abuse prevention
 stop_token_max = 256
@@ -1445,7 +1445,7 @@ def dump_gguf_metadata(file_path): #if you're gonna copy this into your own proj
         data = None
         fptr = 0
         dt_table = ["u8","i8","u16","i16","u32","i32","f32","bool","str","arr","u64","i64","f64"] #13 types, else error
-        tt_table = ["f32","f16","q4_0","q4_1","q4_2","q4_3","q5_0","q5_1","q8_0","q8_1","q2_k","q3_k","q4_k","q5_k","q6_k","q8_k","iq2_xxs","iq2_xs","iq3_xxs","iq1_s","iq4_nl","iq3_s","iq2_s","iq4_xs","i8","i16","i32","i64","f64","iq1_m","bf16","q4_0_4_4","q4_0_4_8","q4_0_8_8","tq1_0","tq2_0","iq4_nl_4_4","unknown","unknown","unknown","unknown","unknown"]
+        tt_table = ["f32","f16","q4_0","q4_1","q4_2","q4_3","q5_0","q5_1","q8_0","q8_1","q2_k","q3_k","q4_k","q5_k","q6_k","q8_k","iq2_xxs","iq2_xs","iq3_xxs","iq1_s","iq4_nl","iq3_s","iq2_s","iq4_xs","i8","i16","i32","i64","f64","iq1_m","bf16","q4_0_4_4","q4_0_4_8","q4_0_8_8","tq1_0","tq2_0","iq4_nl_4_4","iq4_nl_4_8","iq4_nl_8_8","mxfp4","nvfp4","q1_0","unknown","unknown","unknown","unknown"]
         def read_data(datatype):
             nonlocal fptr, data, dt_table
             if datatype=="u32":
@@ -1634,7 +1634,7 @@ def extract_modelfile_params(filepath,sdfilepath,whisperfilepath,mmprojfilepath,
         except Exception:
             modelfile_extracted_meta = None
 
-def autoset_gpu_layers(ctxsize, sdquanted, bbs, qkv_level, musiclowvram): #shitty algo to determine how many layers to use
+def autoset_gpu_layers(ctxsize, sdquanted, bbs, musiclowvram): #shitty algo to determine how many layers to use
     global showusedmemwarning, showmultigpuwarning, modelfile_extracted_meta, calulated_gpu_overhead # reference cached values instead
     gpumem = MaxMemory[0]
     usedmem = 0
@@ -1707,7 +1707,7 @@ def autoset_gpu_layers(ctxsize, sdquanted, bbs, qkv_level, musiclowvram): #shitt
                 ratio = (mem-usedmem)/(fsize*csmul*1.6*(1.0 if bbs <= 512 else 1.2))
                 if headcount > 0:
                     # rubbish random formula. apply batchsize calculations if over 512
-                    fattn_discount = 1.0/(3.2 if qkv_level==2 else (1.6 if qkv_level==1 else 1.0))
+                    fattn_discount = 1.0
                     mem1 = layers*(4 if bbs <= 512 else (bbs/128))*headkvlen*cs*fattn_discount*4*1.45
                     mem2 = layers*headcount*headkvlen*cs*fattn_discount*4*1.15
                     ratio = max(ratio,(mem - reservedmem - mem1) / (fsize + mem2))
@@ -1932,13 +1932,24 @@ def load_model(model_filename):
     inputs.use_contextshift = (0 if args.noshift else 1)
     inputs.use_fastforward = (0 if args.nofastforward else 1)
     inputs.flash_attention =  (False if args.noflashattention else True)
-    if args.quantkv>0:
+    if args.quantkv:
+        qkvstr = str(args.quantkv).lower()
+        qkvval = 0
+        if qkvstr=="bf16" or qkvstr=="3": #migration for old index based values
+            qkvval = 1
+        elif qkvstr=="q8_0" or qkvstr=="1":
+            qkvval = 2
+        elif qkvstr=="q5_1":
+            qkvval = 3
+        elif qkvstr=="q4_0" or qkvstr=="2":
+            qkvval = 4
         if args.noflashattention:
-            inputs.quant_k = args.quantkv
-            inputs.quant_v = 0 if args.quantkv!=3 else args.quantkv
-            print("\nWarning: Quantized KV was used without flash attention! This is NOT RECOMMENDED!\nOnly K cache can be quantized, and performance can suffer.\nIn some cases, it might even use more VRAM when doing a full offload.\nYou are strongly encouraged to use flash attention if you want to use quantkv.")
+            inputs.quant_k = qkvval
+            inputs.quant_v = 0 if qkvval!=1 else qkvval
+            if qkvval>1:
+                print("\nWarning: Quantized KV was used without flash attention! This is NOT RECOMMENDED!\nOnly K cache can be quantized, and performance can suffer.\nIn some cases, it might even use more VRAM when doing a full offload.\nYou are strongly encouraged to use flash attention if you want to use quantkv.")
         else:
-            inputs.quant_k = inputs.quant_v = args.quantkv
+            inputs.quant_k = inputs.quant_v = qkvval
     else:
         inputs.quant_k = inputs.quant_v = 0
     inputs.batchsize = args.batchsize
@@ -1982,7 +1993,7 @@ def load_model(model_filename):
     inputs.check_slowness = (not args.highpriority and os.name == 'nt' and 'Intel' in platform.processor())
     inputs.highpriority = args.highpriority
     inputs.swa_support = args.useswa
-    inputs.swa_padding = args.swapadding
+    inputs.swa_padding = args.swapadding if args.useswa else 0
     scint = int(args.smartcache)
     inputs.smartcache = False if scint<=0 else True
     sclimit = (savestate_limit_default if scint<=1 else scint)
@@ -10754,7 +10765,7 @@ def show_gui():
     batchsize_values = ["-1","16","32","64","128","256","512","1024","2048","4096"]
     batchsize_text = ["Don't Batch","16","32","64","128","256","512","1024","2048","4096"]
     contextsize_text = ["256", "512", "1024", "2048", "3072", "4096", "6144", "8192", "10240", "12288", "14336", "16384", "20480", "24576", "28672", "32768", "40960", "49152", "57344", "65536", "81920", "98304", "114688", "131072","163840","196608","229376","262144"]
-    quantkv_text = ["F16 (Off)","8-Bit","4-Bit","BF16"]
+    quantkv_text = ["f16","bf16","q8_0","q5_1","q4_0"]
 
     if not any(runopts):
         exitcounter = 999
@@ -10982,10 +10993,11 @@ def show_gui():
             temp.bind("<Leave>", hide_tooltip)
         return temp
 
-    def makeslider(parent, label, options, var, from_ , to,  row=0, width=160, height=10, set=0, tooltip=""):
+    def makeslider(parent, label, options, var, row=0, width=160, height=10, set=0, tooltip=""):
         sliderLabel = makelabel(parent, options[set], row + 1, 0, columnspan=2, padx=(width+12))
         titleLabel = makelabel(parent, label, row,0,tooltip)
-
+        from_ = 0
+        to = len(options)-1
         def sliderUpdate(a,b,c):
             sliderLabel.configure(text = options[int(var.get())])
         var.trace_add("write", sliderUpdate)
@@ -11246,7 +11258,7 @@ def show_gui():
         changed_gpulayers_estimate()
 
     def changed_gpulayers_estimate(*args):
-        autoset_gpu_layers(int(contextsize_text[context_var.get()]),sd_quant_option(sd_quant_var.get()),int(batchsize_values[int(blas_size_var.get())]),(quantkv_var.get() if flashattention_var.get()==1 else 0),musiclowvram_var.get()==1)
+        autoset_gpu_layers(int(contextsize_text[context_var.get()]),sd_quant_option(sd_quant_var.get()),int(batchsize_values[int(blas_size_var.get())]),musiclowvram_var.get()==1)
         max_gpu_layers = (f"{modelfile_extracted_meta[1][0]+1}" if (modelfile_extracted_meta and modelfile_extracted_meta[1] and modelfile_extracted_meta[1][0]!=0) else "")
         index = runopts_var.get()
         gpu_be = (index == "Use Vulkan" or index == "Use Vulkan (Old CPU)" or index == "Use Vulkan (Older CPU)" or index == "Use CUDA" or index == "Use hipBLAS (ROCm)")
@@ -11295,6 +11307,11 @@ def show_gui():
     def toggleswa(a,b,c):
         if swa_var.get()==1:
             contextshift_var.set(0)
+            swa_padding_entry.grid()
+            swa_padding_label.grid()
+        else:
+            swa_padding_entry.grid_remove()
+            swa_padding_label.grid_remove()
 
     def togglesmartcache(a,b,c):
         if smartcache_var.get()==1:
@@ -11315,7 +11332,7 @@ def show_gui():
             smartcontextbox.grid_remove()
         qkvslider.grid()
         qkvlabel.grid()
-        if flashattention_var.get()==0 and (quantkv_var.get()>0 and quantkv_var.get()!=3):
+        if flashattention_var.get()==0 and (quantkv_var.get()>1):
             noqkvlabel.grid()
         else:
             noqkvlabel.grid_remove()
@@ -11324,7 +11341,7 @@ def show_gui():
     def toggleflashattn(a,b,c):
         qkvslider.grid()
         qkvlabel.grid()
-        if flashattention_var.get()==0 and (quantkv_var.get()>0 and quantkv_var.get()!=3):
+        if flashattention_var.get()==0 and (quantkv_var.get()>1):
             noqkvlabel.grid()
         else:
             noqkvlabel.grid_remove()
@@ -11452,7 +11469,7 @@ def show_gui():
         makecheckbox(quick_tab, name, properties[0], int(idx/2) + 20, idx % 2, tooltiptxt=properties[1])
 
     # context size
-    makeslider(quick_tab, "Context Size:", contextsize_text, context_var, 0, len(contextsize_text)-1, 40, width=280, set=7,tooltip="What is the maximum context size to support. Model specific. You cannot exceed it.\nLarger contexts require more memory, and not all models support it.")
+    makeslider(quick_tab, "Context Size:", contextsize_text, context_var, 40, width=280, set=7,tooltip="What is the maximum context size to support. Model specific. You cannot exceed it.\nLarger contexts require more memory, and not all models support it.")
 
     # load model
     makefileentry(quick_tab, "GGUF Text Model:", "Select GGUF or GGML Model File", model_var, 50, 280, onchoosefile=on_picked_model_file,tooltiptxt="Select a GGUF or GGML model file on disk to be loaded.")
@@ -11508,7 +11525,7 @@ def show_gui():
         makecheckbox(hardware_tab, name, properties[0], int(idx/2) + 30, 0, padx=(160 if idx % 2 else 8), tooltiptxt=properties[1])
 
     # blas batch size
-    makeslider(hardware_tab, "Batch Size:", batchsize_text, blas_size_var, 0, len(batchsize_values)-1, 16,width=200, set=6,tooltip="How many tokens to process at once per batch.\nLarger values use more memory.")
+    makeslider(hardware_tab, "Batch Size:", batchsize_text, blas_size_var, 16,width=200, set=6,tooltip="How many tokens to process at once per batch.\nLarger values use more memory.")
     blas_size_var.trace_add("write", changed_gpulayers_estimate)
 
     makecheckbox(hardware_tab, "Use FlashAttention", flashattention_var, 100, command=toggleflashattn,  tooltiptxt="Enable flash attention for GGUF models.")
@@ -11520,8 +11537,8 @@ def show_gui():
     # Context Tab
     context_tab = tabcontent["Context"]
     # Context checkboxes
-    smartcontextbox = makecheckbox(context_tab, "Use SmartContext", smartcontext_var, 1,tooltiptxt="Uses SmartContext. Now considered outdated and not recommended.\nCheck the wiki for more info.")
-    makecheckbox(context_tab, "Use ContextShift", contextshift_var, 2,tooltiptxt="Uses Context Shifting to reduce reprocessing.\nRecommended. Check the wiki for more info.", command=togglectxshift)
+    smartcontextbox = makecheckbox(context_tab, "Use SmartContext", smartcontext_var, 3, padx=330,tooltiptxt="Uses SmartContext. Now considered outdated and not recommended.\nCheck the wiki for more info.")
+    makecheckbox(context_tab, "Use ContextShift", contextshift_var, 3,padx=180,tooltiptxt="Uses Context Shifting to reduce reprocessing.\nRecommended. Check the wiki for more info.", command=togglectxshift)
     makecheckbox(context_tab, "Use FastForwarding", fastforward_var, 3,tooltiptxt="Use fast forwarding to recycle previous context (always reprocess if disabled).\nRecommended.", command=togglefastforward)
     makecheckbox(context_tab, "Use SWA", swa_var, 4,tooltiptxt="Allows Sliding Window Attention (SWA) KV Cache, which saves memory but cannot be used with context shifting.", command=toggleswa)
     swa_padding_entry,swa_padding_label = makelabelentry(context_tab,"SWA Padding Tokens:", swa_padding_var, 4, 50, padx=300,singleline=True,tooltip="If the SWA is too small, you can expand it with padding, allowing for greater distance context rewinds.",labelpadx=160)
@@ -11529,7 +11546,7 @@ def show_gui():
     makelabelentry(context_tab, "CacheSlots:", smartcacheslots_var, row=5, padx=(300), singleline=True, tooltip="Number of slots for smartcache",labelpadx=(220))
 
     # context size
-    makeslider(context_tab, "Context Size:",contextsize_text, context_var, 0, len(contextsize_text)-1, 18, width=280, set=7,tooltip="What is the maximum context size to support. Model specific. You cannot exceed it.\nLarger contexts require more memory, and not all models support it.")
+    makeslider(context_tab, "Context Size:",contextsize_text, context_var, 18, width=280, set=7,tooltip="What is the maximum context size to support. Model specific. You cannot exceed it.\nLarger contexts require more memory, and not all models support it.")
     context_var.trace_add("write", changed_gpulayers_estimate)
     makelabelentry(context_tab, "Default Gen Amt:", defaultgenamt_var, row=20, padx=(120), singleline=True, tooltip="How many tokens to generate by default, if not specified. Must be smaller than context size. Usually, your frontend GUI will override this.")
     makelabelentry(context_tab, "Prompt Limit:", genlimit_var, row=20, padx=(300), singleline=True, tooltip="If set, restricts max output tokens to this limit regardless of API request. Set to 0 to disable.",labelpadx=(210))
@@ -11563,7 +11580,7 @@ def show_gui():
     makecheckbox(context_tab, "Custom RoPE Config", variable=customrope_var, row=22, command=togglerope,tooltiptxt="Override the default RoPE configuration with custom RoPE scaling.")
     noqkvlabel = makelabel(context_tab,"(Note: QuantKV works best with flash attention)",30,0,"Only K cache can be quantized, and performance can suffer.\nIn some cases, it might even use more VRAM when doing a full offload.",padx=160)
     noqkvlabel.configure(text_color="#ff5555")
-    qkvslider,qkvlabel,qkvtitle = makeslider(context_tab, "Quantize KV Cache:", quantkv_text, quantkv_var, 0, 3, 30, set=0,tooltip="Enable quantization of KV cache.\nRequires Flash Attention for full effect, otherwise only K cache is quantized.")
+    qkvslider,qkvlabel,qkvtitle = makeslider(context_tab, "Quantize KV Cache:", quantkv_text, quantkv_var, 30, set=0,tooltip="Enable quantization of KV cache.\nRequires Flash Attention for full effect, otherwise only K cache is quantized.")
     quantkv_var.trace_add("write", toggleflashattn)
     makecheckbox(context_tab, "No BOS Token", nobostoken_var, 43, tooltiptxt="Prevents BOS token from being added at the start of any prompt. Usually NOT recommended for most models.")
     makecheckbox(context_tab, "Enable Guidance", enableguidance_var, 43,padx=(140), tooltiptxt="Enables the use of Classifier-Free-Guidance, which allows the use of negative prompts. Has performance and memory impact.")
@@ -11582,10 +11599,10 @@ def show_gui():
     jinjatoolsbox = makecheckbox(context_tab, "Jinja for Tools", jinja_tools_var, row=45 ,padx=(140), tooltiptxt="Allows jinja even with tool calls. If unchecked, jinja will be disabled when tools are used.")
     jinjakwargsbox,jinjakwargsboxlbl = makelabelentry(context_tab, "Jj.Kwargs:", jinja_kwargs_var, row=45, width=80, padx=(350), singleline=True, tooltip='Set additiona fields for Jinja JSON template parser, must be a valid json object.\nSpecified as JSON fields: {"KEY1":"VALUE1", "KEY2":"VALUE2"...}', labelpadx=285)
     jinja_var.trace_add("write", togglejinja)
-    makelabelentry(context_tab, "MoE Experts:", moeexperts_var, row=55, padx=(120), singleline=True, tooltip="Override number of MoE experts.")
-    moecpu_box,moecpu_box_lbl = makelabelentry(context_tab, "MoE CPU Layers:", moecpu_var, row=55, padx=(320), singleline=True, tooltip="Force Mixture of Experts (MoE) weights of the first N layers to the CPU.\nSetting it higher than GPU layers has no effect.", labelpadx=(210))
-    makelabelentry(context_tab, "Override KV:", override_kv_var, row=57, padx=(120), singleline=True, width=150, tooltip="Override metadata value by key. Separate multiple values with commas. Format is name=type:value. Types: int, float, bool, str")
-    tenos_box,tenos_box_lbl = makelabelentry(context_tab, "Override Tensors:", override_tensors_var, row=59, padx=(120), singleline=True, width=150, tooltip="Override selected backend for specific tensors matching tensor_name_regex_pattern=buffer_type, same as in llama.cpp.")
+    makelabelentry(context_tab, "MoE Experts:", moeexperts_var, row=55, padx=(86), singleline=True, tooltip="Override number of MoE experts.")
+    moecpu_box,moecpu_box_lbl = makelabelentry(context_tab, "MoE CPU Layers:", moecpu_var, row=55, padx=(334), singleline=True, tooltip="Force Mixture of Experts (MoE) weights of the first N layers to the CPU.\nSetting it higher than GPU layers has no effect.", labelpadx=(230))
+    makelabelentry(context_tab, "Override KV:", override_kv_var, row=57, padx=(86), singleline=True, width=130, tooltip="Override metadata value by key. Separate multiple values with commas. Format is name=type:value. Types: int, float, bool, str")
+    tenos_box,tenos_box_lbl = makelabelentry(context_tab, "Override Tensors:", override_tensors_var, row=57, padx=(334), singleline=True, width=130, tooltip="Override selected backend for specific tensors matching tensor_name_regex_pattern=buffer_type, same as in llama.cpp.", labelpadx=(230))
 
     # Model Tab
     model_tab = tabcontent["Loaded Files"]
@@ -11904,7 +11921,8 @@ def show_gui():
         args.quiet = quietmode.get()==1
         args.nocertify = nocertifymode.get()==1
         args.nomodel = nomodel.get()==1
-        args.quantkv = quantkv_var.get()
+        qkvopt = quantkv_text[quantkv_var.get()].lower() if (quantkv_var.get()>=0 and quantkv_var.get() < len(quantkv_text)) else "f16"
+        args.quantkv = qkvopt
         args.lowvram = lowvram_var.get()==1
 
         gpuchoiceidx = 0
@@ -12171,7 +12189,17 @@ def show_gui():
         nomodel.set(1 if "nomodel" in mydict and mydict["nomodel"] else 0)
         lowvram_var.set(1 if "lowvram" in mydict and mydict["lowvram"] else 0)
         if "quantkv" in mydict:
-            quantkv_var.set(mydict["quantkv"])
+            qkvstr = str(mydict["quantkv"]).lower()
+            qkvval = 0
+            if qkvstr=="bf16" or qkvstr=="3": #migration for old index based values
+                qkvval = 1
+            elif qkvstr=="q8_0" or qkvstr=="1":
+                qkvval = 2
+            elif qkvstr=="q5_1":
+                qkvval = 3
+            elif qkvstr=="q4_0" or qkvstr=="2":
+                qkvval = 4
+            quantkv_var.set(qkvval)
         if "usecuda" in mydict and mydict["usecuda"]:
             if cublas_option is not None or hipblas_option is not None:
                 if cublas_option:
@@ -14319,7 +14347,7 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
                 if (not args.usecpu) and ((args.usecuda is not None) or (args.usevulkan is not None) or sys.platform=="darwin"):
                     if MaxMemory[0] > 0:
                         extract_modelfile_params(args.model_param,args.sdmodel,args.whispermodel,args.mmproj,args.draftmodel,args.ttsmodel if args.ttsgpu else "",args.embeddingsmodel if args.embeddingsgpu else "", args.musicllm, args.musicdiffusion)
-                        layeramt = autoset_gpu_layers(args.contextsize,args.sdquant,args.batchsize,(0 if args.noflashattention else args.quantkv),args.musiclowvram)
+                        layeramt = autoset_gpu_layers(args.contextsize,args.sdquant,args.batchsize,args.musiclowvram)
                         print(f"Auto Recommended GPU Layers: {layeramt}")
                         args.gpulayers = layeramt
                     else:
@@ -15013,7 +15041,7 @@ if __name__ == '__main__':
     advparser.add_argument("--jinja_kwargs","--jinja-kwargs","--jinjakwargs","--chat-template-kwargs", metavar=('{"parameter":"value",...}'), help="Set additiona fields for Jinja JSON template parser, must be a valid JSON object.", default="")
     advparser.add_argument("--noflashattention","--no-flash-attn","-nofa", help="Disables flash attention.", action='store_true')
     advparser.add_argument("--lowvram","-nkvo","--no-kv-offload", help="If supported by the backend, do not offload KV to GPU (lowvram mode). Not recommended, will be slow.", action='store_true')
-    advparser.add_argument("--quantkv", help="Sets the KV cache data type quantization, 0=f16, 1=q8, 2=q4, 3=bf16. Requires Flash Attention for full effect, otherwise only K cache is quantized.",metavar=('[quantization level 0/1/2]'), type=int, choices=[0,1,2,3], default=0)
+    advparser.add_argument("--quantkv", help="Sets the KV cache data type quantization, options are f16/bf16/q8_0/q5_1/q4_0. Requires Flash Attention for full effect, otherwise only K cache is quantized.",metavar=('[quantization level f16/bf16/q8_0/q5_1/q4_0]'), type=str, choices=["f16","bf16","q8_0","q5_1","q4_0","0","1","2","3"], default="f16")
     advparser.add_argument("--smartcontext", help="Reserving a portion of context to try processing less frequently. Outdated. Not recommended.", action='store_true')
     advparser.add_argument("--unpack", help="Extracts the file contents of the KoboldCpp binary into a target directory.", metavar=('destination'), type=str, default="")
     advparser.add_argument("--exportconfig", help="Exports the current selected arguments as a .kcpps settings file", metavar=('[filename]'), type=str, default="")

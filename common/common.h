@@ -2,10 +2,11 @@
 
 #pragma once
 
+#include "build-info.h"
+#include "llama-cpp.h"
+
 #include "ggml-opt.h"
 #include "ggml.h"
-#include "llama-cpp.h"
-#include "build-info.h"
 
 #include <set>
 #include <sstream>
@@ -28,11 +29,6 @@
 #define die(msg)          do { fputs("error: " msg "\n", stderr);                exit(1); } while (0)
 #define die_fmt(fmt, ...) do { fprintf(stderr, "error: " fmt "\n", __VA_ARGS__); exit(1); } while (0)
 
-#define print_build_info() do {                                                                     \
-    fprintf(stderr, "%s: build = %d (%s)\n",      __func__, LLAMA_BUILD_NUMBER, LLAMA_COMMIT);      \
-    fprintf(stderr, "%s: built with %s for %s\n", __func__, LLAMA_COMPILER, LLAMA_BUILD_TARGET);    \
-} while(0)
-
 struct common_time_meas {
     common_time_meas(int64_t & t_acc, bool disable = false);
     ~common_time_meas();
@@ -53,10 +49,6 @@ struct common_adapter_lora_info {
 };
 
 using llama_tokens = std::vector<llama_token>;
-
-// build info
-
-const static std::string build_info("b" + std::to_string(LLAMA_BUILD_NUMBER) + "-" + LLAMA_COMMIT);
 
 struct common_control_vector_load_info;
 

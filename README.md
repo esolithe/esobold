@@ -182,7 +182,7 @@ Finally, obtain and load a GGUF model. See [here](#Obtaining-a-GGUF-model)
 - Note that KoboldCpp is not responsible for your usage of this Colab Notebook, you should ensure that your own usage complies with Google Colab's terms of use.
 
 ## Run on RunPod
-- KoboldCpp can now be used on RunPod cloud GPUs! This is an easy way to get started without installing anything in a minute or two, and is very scalable, capable of running 70B+ models at afforable cost. [Try our RunPod image here!](https://koboldai.org/runpodcpp).
+- KoboldCpp can now be used on RunPod cloud GPUs! This is an easy way to get started without installing anything in a minute or two, and is very scalable, capable of running 70B+ models at afforable cost. [Try our RunPod image here!](https://koboldai.org/runpodcpp). Alternatively, you can also try [SimplePod](https://koboldai.org/simplepod) for smaller models
 
 ## Docker
 - The official docker can be found at https://hub.docker.com/r/koboldai/koboldcpp

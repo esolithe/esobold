@@ -2528,8 +2528,8 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
         //set some ctx params early so autofit can use them.
         llama_ctx_params.flash_attn_type = (kcpp_data->flash_attn?LLAMA_FLASH_ATTN_TYPE_ENABLED:LLAMA_FLASH_ATTN_TYPE_DISABLED);
         llama_ctx_params.swa_full = kcpp_data->swa_full;
-        llama_ctx_params.type_k = (inputs.quant_k==2?GGML_TYPE_Q4_0:(inputs.quant_k==1?GGML_TYPE_Q8_0:(inputs.quant_k==3?GGML_TYPE_BF16:GGML_TYPE_F16)));
-        llama_ctx_params.type_v = (inputs.quant_v==2?GGML_TYPE_Q4_0:(inputs.quant_v==1?GGML_TYPE_Q8_0:(inputs.quant_v==3?GGML_TYPE_BF16:GGML_TYPE_F16)));
+        llama_ctx_params.type_k = (inputs.quant_k==4?GGML_TYPE_Q4_0:(inputs.quant_k==3?GGML_TYPE_Q5_1:(inputs.quant_k==2?GGML_TYPE_Q8_0:(inputs.quant_k==1?GGML_TYPE_BF16:GGML_TYPE_F16))));
+        llama_ctx_params.type_v = (inputs.quant_v==4?GGML_TYPE_Q4_0:(inputs.quant_v==3?GGML_TYPE_Q5_1:(inputs.quant_v==2?GGML_TYPE_Q8_0:(inputs.quant_v==1?GGML_TYPE_BF16:GGML_TYPE_F16))));
 
 
         //apply overrides from autofit
@@ -4245,7 +4245,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
         {
             if(kcpp_data->use_fastforward)
             {
-                ContextFastForward(current_context_tokens, embd_inp, n_past, last_n_tokens, nctx, smartcontext, false, true, 0);
+                ContextFastForward(current_context_tokens, embd_inp, n_past, last_n_tokens, nctx, smartcontext, false, true, 0, 0);
             }
         }
         if(is_recurrent)
@@ -4297,6 +4297,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
         bool triggerff = kcpp_data->use_fastforward;
         if(!blank_prompt) //special case for blank prompts, no fast forward or shifts
         {
+            int ff_swa_retain_amount = 0; //a hack for SWA to improve coherency for illegal rewinds
             if(triggerff && !kcpp_data->swa_full && (file_format == FileFormat::GGUF_GENERIC))
             {
                 const int swa_pos_min = llama_memory_seq_pos_min(llama_get_memory(llama_ctx_v4), 0); //this is the furthest back we can rewind to.
@@ -4304,10 +4305,10 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                 goal_npast -= 4;
                 goal_npast = goal_npast < 0 ? 0 : goal_npast;
                 if (swa_pos_min < 0 || goal_npast <= swa_pos_min) {
-                    triggerff = false;
+                    ff_swa_retain_amount = kcpp_active_swa_size;
                     if (debugmode==1 && !is_quiet)
                     {
-                         printf("\nNote: Context cannot be reused (Desired n_past=%d, SWA lowest n_past=%d), doing a full reprocess... to avoid this, disable SWA or increase SWA padding)\n", goal_npast, swa_pos_min);
+                         printf("\nNote: SWA context cannot be reused (Desired n_past=%d, SWA lowest n_past=%d), to avoid this, disable SWA or increase SWA padding), output may degrade.\n", goal_npast, swa_pos_min);
                     }
                 }
             }
@@ -4318,7 +4319,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
             }
             if(triggerff)
             {
-                ContextFastForward(current_context_tokens, embd_inp, n_past, last_n_tokens, nctx, smartcontext, triggersc, false, 4);
+                ContextFastForward(current_context_tokens, embd_inp, n_past, last_n_tokens, nctx, smartcontext, triggersc, false, 4, ff_swa_retain_amount);
             }
         }
         if(file_format == FileFormat::GGUF_GENERIC)
@@ -4383,6 +4384,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
     bool draft_used = false;
     int draft_successes = 0;
     int draft_failures = 0;
+    int realnprocessed = 0;
 
     time0 = timer_check();
     timer_start();
@@ -4450,6 +4452,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
         //print progress
         if (!startedsampling && allow_regular_prints)
         {
+            realnprocessed = embd_inp.size();
             printf("\rProcessing Prompt%s (%d / %zu tokens)", (blasmode ? " [BATCH]" : ""), input_consumed, embd_inp.size());
         }
         fflush(stdout);
@@ -5243,14 +5246,8 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
     float ts2 = (pt2>0?(1000.0/pt2):0);
     float tottime = (time1 + time2);
     float tokens_per_second = tottime>0?(realnpredict <= 0 ? 0 : realnpredict / tottime):0;
-    if(debugmode==1)
-    {
-        printf("\n[%s] CtxLimit:%d/%d, Amt:%d/%d, Init:%.2fs, Process:%.2fs (%.1fms/T = %.2fT/s), Generate:%.2fs (%.1fms/T = %.2fT/s), Total:%.2fs (%.2fT/s)",get_timestamp_str().c_str(),(int)current_context_tokens.size(),(int)nctx, realnpredict, kcpp_data->n_predict, time0, time1, pt1, ts1, time2, pt2, ts2, (time1 + time2), tokens_per_second);
-    }
-    else
-    {
-         printf("\n[%s] CtxLimit:%d/%d, Amt:%d/%d, Init:%.2fs, Process:%.2fs (%.2fT/s), Generate:%.2fs (%.2fT/s), Total:%.2fs",get_timestamp_str().c_str(),(int)current_context_tokens.size(),(int)nctx, realnpredict, kcpp_data->n_predict, time0, time1, ts1, time2, ts2, (time1 + time2));
-    }
+    printf("\n[%s] CtxLimit:%d/%d, Init:%.2fs, Processed:%d in %.2fs (%.2fT/s), Generated:%d/%d in %.2fs (%.2fT/s), Total:%.2fs",
+    get_timestamp_str().c_str(),(int)current_context_tokens.size(),(int)nctx, realnprocessed, time0, time1, ts1, realnpredict, kcpp_data->n_predict, time2, ts2, (time1 + time2));
     if(debugmode==1 && !is_quiet && (draft_successes+draft_failures)>0)
     {
         printf("\n(Draft Results - Success:%d, Failure:%d)",draft_successes,draft_failures);

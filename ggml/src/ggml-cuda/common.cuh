@@ -932,6 +932,13 @@ struct ggml_cuda_type_traits<GGML_TYPE_F16> {
 };
 
 template<>
+struct ggml_cuda_type_traits<GGML_TYPE_Q1_0> {
+    static constexpr int qk = QK1_0;
+    static constexpr int qr = QR1_0;
+    static constexpr int qi = QI1_0;
+};
+
+template<>
 struct ggml_cuda_type_traits<GGML_TYPE_Q4_0> {
     static constexpr int qk = QK4_0;
     static constexpr int qr = QR4_0;
@@ -1099,10 +1106,6 @@ struct ggml_cuda_device_info {
     cuda_device_info devices[GGML_CUDA_MAX_DEVICES] = {};
 
     std::array<float, GGML_CUDA_MAX_DEVICES> default_tensor_split = {};
-
-#ifdef GGML_USE_NCCL
-    ncclComm_t comms[GGML_CUDA_MAX_DEVICES];
-#endif // GGML_USE_NCCL
 };
 
 const ggml_cuda_device_info & ggml_cuda_info();
@@ -1190,6 +1193,7 @@ struct ggml_cuda_graph {
     std::vector<cudaGraphNode_t> nodes;
     bool disable_due_to_gpu_arch = false;
     bool warmup_complete = false;
+    uint64_t uid = 0;
     struct node_properties {
         ggml_tensor node;
         void *   node_src_data_ptrs[GGML_MAX_SRC];
