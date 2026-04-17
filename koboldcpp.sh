@@ -4,69 +4,24 @@ if [ ! -f "bin/micromamba" ]; then
 	curl -Ls https://anaconda.org/conda-forge/micromamba/1.5.3/download/linux-64/micromamba-1.5.3-0.tar.bz2 | tar -xvj bin/micromamba
 fi
 
-resolve_python_suffix() {
-	if [ -z "$KCPP_PYTHON_VERSION" ]; then
-		echo "-py310"
-		return 0
-	fi
-
-	case "$KCPP_PYTHON_VERSION" in
-		3.8)
-			echo ""
-			;;
-		3.10)
-			echo "-py310"
-			;;
-		*)
-			echo "Unsupported KCPP_PYTHON_VERSION: $KCPP_PYTHON_VERSION"
-			return 1
-			;;
-	esac
-}
-
-resolve_cuda_env_file() {
-	local python_suffix="$1"
-	case "$KCPP_CUDA" in
-		""|12.1.0)
-			echo "environment${python_suffix}.yaml"
-			;;
-		11.5.0)
-			echo "environment-cuda115${python_suffix}.yaml"
-			;;
-		rocm)
-			echo "environment-nocuda${python_suffix}.yaml"
-			;;
-		*)
-			echo "Unsupported KCPP_CUDA: $KCPP_CUDA"
-			return 1
-			;;
-	esac
-}
-
-python_suffix=$(resolve_python_suffix) || exit 1
-selected_env_file=$(resolve_cuda_env_file "$python_suffix") || exit 1
-
-env_needs_rebuild=0
-if [ ! -f "conda/envs/linux/envspec" ] || [ "$(<conda/envs/linux/envspec)" != "$selected_env_file" ]; then
-	env_needs_rebuild=1
-fi
-
-if [[ (! -f "conda/envs/linux/bin/python" || $1 == "rebuild" || $env_needs_rebuild -eq 1) && $KCPP_CUDA != "rocm" ]]; then
-	if [ -z "$KCPP_CUDA" ]; then
+if [[ ! -f "conda/envs/linux/bin/python" && $KCPP_CUDA != "rocm" || $1 == "rebuild" && $KCPP_CUDA != "rocm" ]]; then
+	cp environment.yaml environment.tmp.yaml
+	if [ -n "$KCPP_CUDA" ]; then
+		sed -i -e "s/nvidia\/label\/cuda-12.1.0/nvidia\/label\/cuda-$KCPP_CUDA/g" environment.tmp.yaml
+	else
 		KCPP_CUDA=12.1.0
 	fi
-	bin/micromamba create --no-rc --no-shortcuts -r conda -p conda/envs/linux -f "$selected_env_file" -y
-	bin/micromamba create --no-rc --no-shortcuts -r conda -p conda/envs/linux -f "$selected_env_file" -y
+	bin/micromamba create --no-rc --no-shortcuts -r conda -p conda/envs/linux -f environment.tmp.yaml -y
+	bin/micromamba create --no-rc --no-shortcuts -r conda -p conda/envs/linux -f environment.tmp.yaml -y
 	bin/micromamba run -r conda -p conda/envs/linux make clean
 	echo $KCPP_CUDA > conda/envs/linux/cudaver
-	echo "$selected_env_file" > conda/envs/linux/envspec
+	echo rm environment.tmp.yaml
 fi
 
-if [[ (! -f "conda/envs/linux/bin/python" || $1 == "rebuild" || $env_needs_rebuild -eq 1) && $KCPP_CUDA == "rocm" ]]; then
-	bin/micromamba create --no-rc --no-shortcuts -r conda -p conda/envs/linux -f "$selected_env_file" -y
+if [[ ! -f "conda/envs/linux/bin/python" && $KCPP_CUDA == "rocm" || $1 == "rebuild" && $KCPP_CUDA == "rocm" ]]; then
+	bin/micromamba create --no-rc --no-shortcuts -r conda -p conda/envs/linux -f environment-nocuda.yaml -y
 	bin/micromamba run -r conda -p conda/envs/linux make clean
 	echo "rocm" > conda/envs/linux/cudaver
-	echo "$selected_env_file" > conda/envs/linux/envspec
 fi
 
 KCPP_CUDA=$(<conda/envs/linux/cudaver)
