@@ -142,7 +142,7 @@ struct generation_inputs
     const logit_bias * logit_biases = nullptr;
     const int banned_tokens_len = 0;
     const char ** banned_tokens = nullptr;
-    const int reasoning_budget = 0;
+    const int reasoning_budget = -1;
 };
 struct generation_outputs
 {

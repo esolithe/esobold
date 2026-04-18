@@ -2009,7 +2009,7 @@ def generate(genparams, stream_flag=False):
     ban_eos_token = genparams.get('ban_eos_token', False)
     stream_sse = stream_flag
     grammar = genparams.get('grammar', '')
-    reasoning_budget = tryparseint(genparams.get('reasoning_budget', 0),0)
+
     #translate grammar if its json
     try:
         grammarjson = json.loads(grammar)
@@ -2075,6 +2075,17 @@ def generate(genparams, stream_flag=False):
         if max_length >= (max_context_length-min_remain_hardlimit):
             max_length = max_context_length-min_remain_hardlimit
 
+    reasoning_effort = genparams.get('reasoning_effort', '')
+    reasoning_effort = reasoning_effort.strip().lower() if reasoning_effort else ''
+    reasoning_budget = -1
+    if reasoning_effort == "none":
+        reasoning_budget = 0
+    elif reasoning_effort == "minimal" or reasoning_effort == "low":
+        reasoning_budget = tryparseint(0.25 * max_length,-1)  # 25% of gen amount
+    elif reasoning_effort == "medium":
+        reasoning_budget = tryparseint(0.5 * max_length,-1)  # 50% of gen amount
+    else:
+        pass #unrestricted
 
     inputs.max_context_length = max_context_length   # this will resize the context buffer if changed
     inputs.max_length = max_length
