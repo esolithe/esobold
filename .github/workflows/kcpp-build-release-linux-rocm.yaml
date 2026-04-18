@@ -16,7 +16,6 @@ env:
   BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
   KCPP_CUDA: rocm
   ARCHES_CU12: 1
-  KCPP_PYTHON_VERSION: '3.10'
 
 jobs:
   linux:
