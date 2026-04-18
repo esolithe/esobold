@@ -13,7 +13,6 @@ env:
   NOAVX1: 1
   ARCHES_CU11: 1
   KCPP_CUDA: 11.5.0
-  KCPP_PYTHON_VERSION: '3.8'
 
 jobs:
   linux:
