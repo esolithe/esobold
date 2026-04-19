@@ -274,6 +274,28 @@
 		flex-direction: column;
 		gap: 10px;
 		padding: 12px;
+		background-color: var(--theme_color_bg_popups);
+	}
+
+	.agent-user-input-inline {
+		display: flex;
+		flex-direction: column;
+		border-radius: 6px;
+		overflow: hidden;
+		background-color: var(--theme_color_bg_popups);
+		border: 1px solid var(--theme_color_border);
+		color: var(--theme_color_fg);
+	}
+
+	.agent-user-input-inline > .agent-user-input-header {
+		background-color: var(--theme_color_accent_bg);
+		color: var(--theme_color_fg);
+		border-radius: 0;
+	}
+
+	.agent-user-input-inline > div:not(.agent-user-input-header) {
+		padding: 12px;
+		background-color: var(--theme_color_bg_popups);
 	}
 
 	.agent-user-input-suggestions,
