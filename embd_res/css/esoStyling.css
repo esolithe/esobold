@@ -372,6 +372,32 @@
 		white-space: pre-wrap;
 	}
 
+	.agent-fs-picker-overlay {
+		background-color: rgba(0, 0, 0, 0.45);
+	}
+
+	.agent-fs-picker-popup {
+		width: min(1180px, 96vw);
+		max-height: 92vh;
+	}
+
+	.agent-fs-picker-body {
+		padding: 0;
+		height: min(76vh, 900px);
+	}
+
+	.agent-fs-picker-frame {
+		width: 100%;
+		height: 100%;
+		min-height: 540px;
+		border: 0;
+		background: transparent;
+	}
+
+	.agent-fs-picker-close {
+		margin-left: auto;
+	}
+
 	/* Context usage floating popup */
 	.context-usage-inline {
 		display: flex;

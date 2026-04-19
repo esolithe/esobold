@@ -295,6 +295,16 @@ html, body {
     justify-content: flex-end;
 }
 
+.picker-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 8px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--text-dim);
+    font-size: 11px;
+}
+
 #listing {
     width: 100%;
     border-collapse: collapse;
@@ -316,6 +326,27 @@ html, body {
 }
 
 #listing tbody tr:hover { background: var(--hover); }
+
+.fs-picker-mode .entry-file[data-picker-toggle-file],
+.fs-picker-mode .tile-card.entry-file[data-picker-toggle-file] {
+    cursor: pointer;
+}
+
+.fs-picker-mode .entry-file.picker-selected,
+.fs-picker-mode .tile-card.entry-file.picker-selected {
+    outline: 2px solid var(--accent2);
+    background: rgba(74, 144, 217, 0.22);
+}
+
+.fs-picker-mode #header-right {
+    align-items: center;
+}
+
+.picker-selection-hint {
+    color: var(--text-dim);
+    font-size: 12px;
+    margin-right: 6px;
+}
 
 #listing tbody td {
     padding: 7px 10px;

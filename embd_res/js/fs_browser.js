@@ -7,6 +7,10 @@
 
     const DIR_MARKER_NAME = '.kcpp_dir_marker';
     const VIEW_MODE_KEY = 'kcpp_fs_view_mode';
+    const urlParams = new URLSearchParams(window.location.search || '');
+    const isPickerMode = urlParams.get('picker') === '1';
+    const shouldForceTileView = urlParams.get('view') === 'tile';
+    const pickerSelectedFiles = new Set();
     const MEDIA_EXT_RE = {
         image: /\.(png|jpe?g|gif|webp|bmp|svg|avif)$/i,
         video: /\.(mp4|webm|mov|mkv|m4v|avi)$/i,
@@ -86,6 +90,84 @@
             viewBtn.innerHTML = isTile ? '&#8801; List View' : '&#9638; Tile View';
             viewBtn.setAttribute('aria-pressed', String(isTile));
         }
+    }
+
+    function notifyPickerParent(type, payload) {
+        if (!isPickerMode || !window.parent || window.parent === window) {
+            return;
+        }
+        try {
+            window.parent.postMessage(Object.assign({ type }, payload || {}), window.location.origin);
+        } catch (_) {}
+    }
+
+    function updatePickerSelectionStatus() {
+        if (!isPickerMode) {
+            return;
+        }
+        const btn = document.getElementById('btn-picker-confirm');
+        const hint = document.getElementById('picker-selection-hint');
+        if (!btn || !hint) {
+            return;
+        }
+        const count = pickerSelectedFiles.size;
+        btn.disabled = count === 0;
+        btn.textContent = count > 0 ? `Use selected (${count})` : 'Use selected';
+        hint.textContent = count > 0
+            ? `${count} file${count === 1 ? '' : 's'} selected`
+            : 'Select one or more files to continue';
+    }
+
+    function setPickerSelection(path, shouldSelect) {
+        if (!path) {
+            return;
+        }
+        if (shouldSelect) {
+            pickerSelectedFiles.add(path);
+        } else {
+            pickerSelectedFiles.delete(path);
+        }
+        updatePickerSelectionStatus();
+    }
+
+    function togglePickerSelection(path) {
+        if (!path) {
+            return;
+        }
+        setPickerSelection(path, !pickerSelectedFiles.has(path));
+    }
+
+    function bindPickerSelectionHandlers(container) {
+        if (!isPickerMode) {
+            return;
+        }
+
+        container.querySelectorAll('[data-picker-toggle-file]').forEach(elem => {
+            elem.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                let filePath = elem.dataset.pickerToggleFile || '';
+                togglePickerSelection(filePath);
+                let isSelected = pickerSelectedFiles.has(filePath);
+                elem.classList.toggle('picker-selected', isSelected);
+                elem.setAttribute('aria-pressed', String(isSelected));
+            });
+        });
+
+        container.querySelectorAll('[data-picker-file-anchor]').forEach(anchor => {
+            anchor.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                let filePath = anchor.dataset.pickerFileAnchor || '';
+                togglePickerSelection(filePath);
+                let row = anchor.closest('[data-picker-toggle-file]');
+                if (row) {
+                    let isSelected = pickerSelectedFiles.has(filePath);
+                    row.classList.toggle('picker-selected', isSelected);
+                    row.setAttribute('aria-pressed', String(isSelected));
+                }
+            });
+        });
     }
 
     // ── Path helpers ───────────────────────────────────────────────────
@@ -225,6 +307,9 @@
         const href = esc(fileHref(filePath));
         const kind = getFileKind(fileName);
         if (kind === 'image') {
+            if (isPickerMode) {
+                return `<div class="tile-preview"><img src="${href}" alt="${esc(fileName)}"></div>`;
+            }
             return `<a class="tile-preview" href="${href}" target="_blank" rel="noopener noreferrer"><img src="${href}" alt="${esc(fileName)}"></a>`;
         }
         if (kind === 'video') {
@@ -362,13 +447,19 @@
             for (const { f, filePath, meta } of fileMetas) {
                 const size = meta ? formatBytes(meta.size_bytes != null ? meta.size_bytes : meta.size) : '—';
                 const mod = meta ? formatDate(meta.last_modified != null ? meta.last_modified : meta.modified) : '—';
-                tiles.push(`<article class="tile-card entry-file">
+                const isSelected = isPickerMode && pickerSelectedFiles.has(filePath);
+                const tileClasses = `tile-card entry-file${isSelected ? ' picker-selected' : ''}`;
+                const tileAttributes = isPickerMode ? ` data-picker-toggle-file="${esc(filePath)}" aria-pressed="${isSelected ? 'true' : 'false'}"` : '';
+                const nameAnchor = isPickerMode
+                    ? `<a class="tile-name" href="#" data-picker-file-anchor="${esc(filePath)}">${esc(f)}</a>`
+                    : `<a class="tile-name" href="${esc(fileHref(filePath))}" target="_blank" rel="noopener noreferrer">${esc(f)}</a>`;
+                tiles.push(`<article class="${tileClasses}"${tileAttributes}>
                     ${tilePreviewHtml(filePath, f)}
                     <div class="tile-meta">
-                        <a class="tile-name" href="${esc(fileHref(filePath))}" target="_blank" rel="noopener noreferrer">${esc(f)}</a>
+                        ${nameAnchor}
                         <div class="tile-sub">${esc(size)} | ${esc(mod)}</div>
                     </div>
-                    <div class="tile-actions"><button class="btn btn-danger" data-delete="${esc(filePath)}" title="Delete">&#128465;</button></div>
+                    ${isPickerMode ? '<div class="tile-actions"><span class="picker-chip">Tap to select</span></div>' : `<div class="tile-actions"><button class="btn btn-danger" data-delete="${esc(filePath)}" title="Delete">&#128465;</button></div>`}
                 </article>`);
             }
 
@@ -376,7 +467,12 @@
             tileGrid.innerHTML = tiles.join('');
             tileGrid.hidden = false;
             listContainer.classList.add('tile-mode');
-            bindDeleteHandlers(tileGrid, dir);
+            if (isPickerMode) {
+                bindPickerSelectionHandlers(tileGrid);
+                updatePickerSelectionStatus();
+            } else {
+                bindDeleteHandlers(tileGrid, dir);
+            }
             return;
         }
 
@@ -404,16 +500,27 @@
         for (const { f, filePath, meta } of fileMetas) {
             const size = meta ? formatBytes(meta.size_bytes != null ? meta.size_bytes : meta.size) : '—';
             const mod = meta ? formatDate(meta.last_modified != null ? meta.last_modified : meta.modified) : '—';
-            rows.push(`<tr class="entry-file">
-                <td class="col-name">&#128196; <a href="${esc(fileHref(filePath))}" target="_blank" rel="noopener noreferrer">${esc(f)}</a></td>
+            const isSelected = isPickerMode && pickerSelectedFiles.has(filePath);
+            const rowClasses = `entry-file${isSelected ? ' picker-selected' : ''}`;
+            const rowAttributes = isPickerMode ? ` data-picker-toggle-file="${esc(filePath)}" aria-pressed="${isSelected ? 'true' : 'false'}"` : '';
+            const nameAnchor = isPickerMode
+                ? `<a href="#" data-picker-file-anchor="${esc(filePath)}">${esc(f)}</a>`
+                : `<a href="${esc(fileHref(filePath))}" target="_blank" rel="noopener noreferrer">${esc(f)}</a>`;
+            rows.push(`<tr class="${rowClasses}"${rowAttributes}>
+                <td class="col-name">&#128196; ${nameAnchor}</td>
                 <td class="col-size">${esc(size)}</td>
                 <td class="col-modified">${esc(mod)}</td>
-                <td class="col-actions"><button class="btn btn-danger" data-delete="${esc(filePath)}" title="Delete">&#128465;</button></td>
+                <td class="col-actions">${isPickerMode ? '<span class="picker-chip">Select</span>' : `<button class="btn btn-danger" data-delete="${esc(filePath)}" title="Delete">&#128465;</button>`}</td>
             </tr>`);
         }
 
         tbody.innerHTML = rows.join('');
-        bindDeleteHandlers(tbody, dir);
+        if (isPickerMode) {
+            bindPickerSelectionHandlers(tbody);
+            updatePickerSelectionStatus();
+        } else {
+            bindDeleteHandlers(tbody, dir);
+        }
     }
 
     // ── Upload ─────────────────────────────────────────────────────────
@@ -550,7 +657,11 @@
 
     function init() {
         const dir = currentFsDir();
-        setViewMode(loadViewMode());
+        setViewMode(shouldForceTileView ? 'tile' : loadViewMode());
+
+        if (isPickerMode) {
+            document.body.classList.add('fs-picker-mode');
+        }
 
         renderBreadcrumbs(dir);
         renderListing(dir);
@@ -563,19 +674,71 @@
             zipBtn.href = '/fs.zip?dir=' + encodeURIComponent(dir.replace(/\/$/, ''));
         }
 
+        if (isPickerMode) {
+            let uploadLabel = document.getElementById('upload-label');
+            let createFolderBtn = document.getElementById('btn-create-folder');
+            let headerRight = document.getElementById('header-right');
+            let dropzone = document.getElementById('dropzone');
+
+            if (zipBtn) {
+                zipBtn.hidden = true;
+            }
+            if (uploadLabel) {
+                uploadLabel.hidden = true;
+            }
+            if (createFolderBtn) {
+                createFolderBtn.hidden = true;
+            }
+            if (dropzone) {
+                dropzone.hidden = true;
+            }
+
+            let hint = document.createElement('span');
+            hint.id = 'picker-selection-hint';
+            hint.className = 'picker-selection-hint';
+            hint.textContent = 'Select one or more files to continue';
+
+            let cancelBtn = document.createElement('button');
+            cancelBtn.type = 'button';
+            cancelBtn.className = 'btn btn-secondary';
+            cancelBtn.textContent = 'Cancel';
+            cancelBtn.addEventListener('click', () => {
+                notifyPickerParent('kcpp-fs-picker-cancel', {});
+            });
+
+            let confirmBtn = document.createElement('button');
+            confirmBtn.type = 'button';
+            confirmBtn.id = 'btn-picker-confirm';
+            confirmBtn.className = 'btn btn-primary';
+            confirmBtn.textContent = 'Use selected';
+            confirmBtn.disabled = true;
+            confirmBtn.addEventListener('click', () => {
+                notifyPickerParent('kcpp-fs-picker-select', { files: Array.from(pickerSelectedFiles) });
+            });
+
+            headerRight.appendChild(hint);
+            headerRight.appendChild(cancelBtn);
+            headerRight.appendChild(confirmBtn);
+            updatePickerSelectionStatus();
+        }
+
         // File input button
         const fileInput = document.getElementById('file-input');
-        fileInput.addEventListener('change', () => {
-            if (fileInput.files.length > 0) {
-                uploadFiles(fileInput.files, dir);
-                fileInput.value = ''; // reset so same file can be re-selected
-            }
-        });
+        if (fileInput) {
+            fileInput.addEventListener('change', () => {
+                if (fileInput.files.length > 0) {
+                    uploadFiles(fileInput.files, dir);
+                    fileInput.value = ''; // reset so same file can be re-selected
+                }
+            });
+        }
 
         const createFolderBtn = document.getElementById('btn-create-folder');
-        createFolderBtn.addEventListener('click', () => {
-            createFolder(currentFsDir());
-        });
+        if (createFolderBtn) {
+            createFolderBtn.addEventListener('click', () => {
+                createFolder(currentFsDir());
+            });
+        }
 
         const viewModeBtn = document.getElementById('btn-view-mode');
         viewModeBtn.addEventListener('click', () => {
@@ -583,7 +746,9 @@
             renderListing(currentFsDir());
         });
 
-        initDragDrop(dir);
+        if (!isPickerMode) {
+            initDragDrop(dir);
+        }
     }
 
     if (document.readyState === 'loading') {

@@ -1792,8 +1792,16 @@ let originalPrepareSubmitGeneration = prepare_submit_generation, originalRestart
 
 prepare_submit_generation = async () => {
     if (isAgentModeEnabledAndSetCorrectly()) {
-        let inputText = document.getElementById("input_text").value;
-        document.getElementById("input_text").value = "";
+        if (pendingAgentUserInputRequest && !pendingAgentUserInputRequest.resolved) {
+            await resolvePendingAgentUserInputFromMainInput("continue")
+            return
+        }
+
+        let { input } = getAgentInputUiTargets()
+        let inputText = `${input?.value || ""}`
+        if (input) {
+            input.value = ""
+        }
         // Hack to ensure that images are always saved as new turns		
         localsettings.img_newturn = true
         if (currentAgentCycle.length > 0) {
@@ -1812,6 +1820,9 @@ prepare_submit_generation = async () => {
 restart_new_game = (save = true, keep_memory = false) => {
     loadingNewGame = true
     stopAgentThinking()
+    if (pendingAgentUserInputRequest && !pendingAgentUserInputRequest.resolved) {
+        completePendingAgentUserInputRequest({ action: "stop" })
+    }
     clearSuggestions()
     originalRestartNewGame(save, keep_memory)
 }
@@ -1869,6 +1880,9 @@ window.addEventListener("load", () => {
 })
 
 let stopAgentThinking = async (agentRunState = null) => {
+    if (pendingAgentUserInputRequest && !pendingAgentUserInputRequest.resolved) {
+        completePendingAgentUserInputRequest({ action: "stop" })
+    }
     if (agentRunState !== null) {
         agentRunState.endCurrent = true
     }
@@ -1946,6 +1960,29 @@ let removeChoiceContainer = () => {
     }
 }
 
+let getAgentInputUiTargets = () => {
+    switch (parseInt(localsettings.gui_type_instruct)) {
+        case 2:
+            return {
+                container: document.getElementById("chat_msg_body"),
+                input: document.getElementById("cht_inp"),
+                sendButton: document.getElementById("chat_msg_send_btn")
+            }
+        case 3:
+            return {
+                container: document.getElementById("corpo_body"),
+                input: document.getElementById("corpo_cht_inp"),
+                sendButton: document.getElementById("corpo_chat_send_btn")
+            }
+        default:
+            return {
+                container: document.getElementById("gametext"),
+                input: document.getElementById("input_text"),
+                sendButton: document.getElementById("btnsend")
+            }
+    }
+}
+
 let currentSuggestions = []
 let setSuggestions = (suggestions) => {
     currentSuggestions = suggestions
@@ -1953,6 +1990,10 @@ let setSuggestions = (suggestions) => {
 
 let clearSuggestions = () => {
     currentSuggestions = []
+    if (pendingAgentUserInputRequest && !pendingAgentUserInputRequest.resolved) {
+        renderSuggestions()
+        return
+    }
     removeChoiceContainer()
 }
 
@@ -1980,6 +2021,283 @@ let buildAgentUploadFsPath = (fileName = "upload.bin") => {
     let stamp = `${now.getUTCFullYear()}${`${now.getUTCMonth() + 1}`.padStart(2, "0")}${`${now.getUTCDate()}`.padStart(2, "0")}_${`${now.getUTCHours()}`.padStart(2, "0")}${`${now.getUTCMinutes()}`.padStart(2, "0")}${`${now.getUTCSeconds()}`.padStart(2, "0")}`
     let randomSuffix = `${Math.floor(Math.random() * 1000000)}`.padStart(6, "0")
     return `/agent_uploads/${stamp}_${randomSuffix}_${sanitizeAgentUploadFilename(fileName)}`
+}
+
+let pendingAgentUserInputRequest = null
+let pendingAgentUserInputRequestId = 0
+let pendingAgentFsPickerRequest = null
+
+let removeAgentFsPickerOverlay = () => {
+    if (document.getElementById("agentFsPickerOverlay")) {
+        document.getElementById("agentFsPickerOverlay").remove()
+    }
+}
+
+let closeAgentFsPickerRequest = (selectedFiles = null) => {
+    if (!pendingAgentFsPickerRequest) {
+        return
+    }
+    if (typeof pendingAgentFsPickerRequest.cleanup === "function") {
+        pendingAgentFsPickerRequest.cleanup()
+    }
+    let resolve = pendingAgentFsPickerRequest.resolve
+    pendingAgentFsPickerRequest = null
+    resolve(Array.isArray(selectedFiles) ? selectedFiles : null)
+}
+
+let openAgentFsPickerPopup = () => {
+    if (pendingAgentFsPickerRequest) {
+        return Promise.resolve(null)
+    }
+
+    return new Promise((resolve) => {
+        removeAgentFsPickerOverlay()
+
+        let overlay = document.createElement("div")
+        overlay.id = "agentFsPickerOverlay"
+        overlay.classList.add("agent-user-input-overlay", "agent-fs-picker-overlay")
+
+        let popup = document.createElement("div")
+        popup.classList.add("agent-user-input-popup", "agent-fs-picker-popup")
+
+        let header = document.createElement("div")
+        header.classList.add("agent-user-input-header")
+        header.innerText = "Select files from filesystem"
+
+        let closeButton = document.createElement("button")
+        closeButton.type = "button"
+        closeButton.classList.add("btn-primary", "agent-fs-picker-close")
+        closeButton.innerText = "Close"
+        closeButton.onclick = () => {
+            closeAgentFsPickerRequest(null)
+        }
+        header.appendChild(closeButton)
+
+        let body = document.createElement("div")
+        body.classList.add("agent-user-input-body", "agent-fs-picker-body")
+
+        let iframe = document.createElement("iframe")
+        iframe.classList.add("agent-fs-picker-frame")
+        iframe.src = "/fs/?picker=1&view=tile"
+        iframe.title = "Filesystem picker"
+
+        body.appendChild(iframe)
+        popup.appendChild(header)
+        popup.appendChild(body)
+        overlay.appendChild(popup)
+        document.body.appendChild(overlay)
+
+        let onMessage = (event) => {
+            if (event.origin !== window.location.origin) {
+                return
+            }
+            let type = `${event?.data?.type || ""}`
+            if (type === "kcpp-fs-picker-cancel") {
+                closeAgentFsPickerRequest(null)
+            }
+            if (type === "kcpp-fs-picker-select") {
+                let selected = Array.isArray(event?.data?.files) ? event.data.files.map(String).map(path => path.trim()).filter(path => path.length > 0) : []
+                closeAgentFsPickerRequest(selected)
+            }
+        }
+
+        window.addEventListener("message", onMessage)
+        pendingAgentFsPickerRequest = {
+            resolve,
+            cleanup: () => {
+                window.removeEventListener("message", onMessage)
+                removeAgentFsPickerOverlay()
+            }
+        }
+    })
+}
+
+let completePendingAgentUserInputRequest = (result) => {
+    let request = pendingAgentUserInputRequest
+    if (!request || request.resolved) {
+        return
+    }
+    request.resolved = true
+    if (Array.isArray(request.cleanupHandlers) && request.cleanupHandlers.length > 0) {
+        request.cleanupHandlers.forEach(handler => {
+            try {
+                handler()
+            }
+            catch {}
+        })
+    }
+    pendingAgentUserInputRequest = null
+    closeAgentFsPickerRequest(null)
+    removeAgentUserInputPopup()
+    renderSuggestions()
+    request.resolve(result)
+}
+
+let getPendingSelectedFileKey = (entry) => {
+    if (entry.source === "fs") {
+        return `fs:${entry.path}`
+    }
+    return `local:${entry.fileName}:${entry.fileSize}:${entry.fileLastModified}`
+}
+
+let addFilesToPendingAgentRequest = (entries = []) => {
+    if (!pendingAgentUserInputRequest) {
+        return 0
+    }
+    let existingKeys = pendingAgentUserInputRequest.selectedFiles.map(getPendingSelectedFileKey)
+    let addedCount = 0
+    entries.forEach(entry => {
+        let key = getPendingSelectedFileKey(entry)
+        if (!existingKeys.includes(key)) {
+            pendingAgentUserInputRequest.selectedFiles.push(entry)
+            existingKeys.push(key)
+            addedCount++
+        }
+    })
+    renderSuggestions()
+    return addedCount
+}
+
+let preparePendingAgentUserInputFiles = async (request) => {
+    let preparedFiles = []
+    let canUseFsUpload = !!request.enableFileUpload && !!request.isFsEnabled && typeof window?.fsClient?.write === "function"
+
+    for (let i = 0; i < request.selectedFiles.length; i++) {
+        let currentFile = request.selectedFiles[i]
+        if (currentFile.source === "fs") {
+            preparedFiles.push({
+                source: "fs",
+                fileName: currentFile.fileName,
+                path: currentFile.path,
+            })
+            continue
+        }
+
+        if (!canUseFsUpload) {
+            throw new Error("Local file upload is unavailable because filesystem upload is not supported by the current endpoint.")
+        }
+
+        request.fileStatus = `Uploading file ${i + 1}/${request.selectedFiles.length}: ${currentFile.fileName}`
+        renderSuggestions()
+        let uploadPath = buildAgentUploadFsPath(currentFile.fileName)
+        let bytes = new Uint8Array(await currentFile.localFile.arrayBuffer())
+        await window.fsClient.write([{ path: uploadPath, content: bytes, isB64: true }])
+        preparedFiles.push({
+            source: "local",
+            fileName: currentFile.fileName,
+            path: uploadPath,
+        })
+    }
+
+    if (preparedFiles.length > 0) {
+        request.fileStatus = `Prepared file path${preparedFiles.length === 1 ? "" : "s"}:\n${preparedFiles.map(file => file.path).join("\n")}`
+        renderSuggestions()
+    }
+
+    return preparedFiles
+}
+
+let resolvePendingAgentUserInputFromMainInput = async (action = "continue") => {
+    let request = pendingAgentUserInputRequest
+    if (!request || request.resolved || request.isResolving) {
+        return
+    }
+
+    if (action === "stop") {
+        completePendingAgentUserInputRequest({ action: "stop" })
+        return
+    }
+
+    request.isResolving = true
+    renderSuggestions()
+
+    try {
+        let { input } = getAgentInputUiTargets()
+        let inputText = `${input?.value || ""}`
+        let preparedFiles = request.enableFileUpload ? await preparePendingAgentUserInputFiles(request) : []
+        if (input) {
+            input.value = ""
+        }
+        completePendingAgentUserInputRequest({
+            action: "continue",
+            input: inputText,
+            files: preparedFiles,
+            filePaths: preparedFiles.map(file => file.path),
+            filePath: preparedFiles[0]?.path || "",
+            fileName: preparedFiles[0]?.fileName || "",
+        })
+    }
+    catch (e) {
+        request.fileStatus = `File upload failed: ${e?.message || e}`
+        request.isResolving = false
+        renderSuggestions()
+    }
+}
+
+let createAgentUserInputInline = ({ prompt, suggestions = [], enableFileUpload = true }) => {
+    let { input, sendButton } = getAgentInputUiTargets()
+    if (!input) {
+        return createAgentUserInputPopup({ prompt, suggestions, enableFileUpload })
+    }
+
+    if (pendingAgentUserInputRequest && !pendingAgentUserInputRequest.resolved) {
+        completePendingAgentUserInputRequest({ action: "stop" })
+    }
+
+    return new Promise((resolve) => {
+        pendingAgentUserInputRequestId++
+        let isFsEnabled = is_using_kcpp_with_fs()
+        pendingAgentUserInputRequest = {
+            id: pendingAgentUserInputRequestId,
+            prompt: `${prompt || "Please provide input"}`,
+            suggestions: Array.isArray(suggestions) ? suggestions.map(String).map(text => text.trim()).filter(text => text.length > 0) : [],
+            enableFileUpload: !!enableFileUpload,
+            isFsEnabled,
+            selectedFiles: [],
+            fileStatus: "",
+            isResolving: false,
+            resolved: false,
+            cleanupHandlers: [],
+            resolve,
+        }
+
+        let requestId = pendingAgentUserInputRequest.id
+        let submitFromPendingRequest = async (e) => {
+            if (!pendingAgentUserInputRequest || pendingAgentUserInputRequest.id !== requestId || pendingAgentUserInputRequest.resolved) {
+                return
+            }
+            if (e) {
+                e.preventDefault()
+                if (typeof e.stopImmediatePropagation === "function") {
+                    e.stopImmediatePropagation()
+                }
+                e.stopPropagation()
+            }
+            await resolvePendingAgentUserInputFromMainInput("continue")
+        }
+
+        let onInputKeyDown = async (e) => {
+            if (e.key !== "Enter") {
+                return
+            }
+            await submitFromPendingRequest(e)
+        }
+
+        input.addEventListener("keydown", onInputKeyDown, true)
+        pendingAgentUserInputRequest.cleanupHandlers.push(() => {
+            input.removeEventListener("keydown", onInputKeyDown, true)
+        })
+
+        if (sendButton) {
+            sendButton.addEventListener("click", submitFromPendingRequest, true)
+            pendingAgentUserInputRequest.cleanupHandlers.push(() => {
+                sendButton.removeEventListener("click", submitFromPendingRequest, true)
+            })
+        }
+
+        renderSuggestions()
+        input.focus()
+    })
 }
 
 let createAgentUserInputPopup = ({ prompt, suggestions = [], enableFileUpload = true }) => {
@@ -2416,7 +2734,7 @@ let createAgentUserInputPopup = ({ prompt, suggestions = [], enableFileUpload = 
     })
 }
 
-window.requestAgentUserInput = createAgentUserInputPopup
+window.requestAgentUserInput = createAgentUserInputInline
 
 let getTaskCompletionCheckGrammar = async () => {
     let completionSchema = {
@@ -2581,24 +2899,206 @@ let askUserToRetryIncompleteTask = async (agentRunState) => {
 
 let renderSuggestions = () => {
     removeChoiceContainer()
-    if (!!currentSuggestions && currentSuggestions.length > 0) {
+    let hasPendingAgentInput = !!pendingAgentUserInputRequest && !pendingAgentUserInputRequest.resolved
+    if ((!!currentSuggestions && currentSuggestions.length > 0) || hasPendingAgentInput) {
         let choiceContainer = document.createElement("span");
         choiceContainer.style.padding = "10px";
 
         choiceContainer.id = "choiceContainer"
+
+        if (hasPendingAgentInput) {
+            let request = pendingAgentUserInputRequest
+            let canUseFsUpload = !!request.enableFileUpload && !!request.isFsEnabled && typeof window?.fsClient?.write === "function"
+            let canSelectFsFiles = !!request.enableFileUpload && !!request.isFsEnabled
+
+            let inlineWrap = document.createElement("div")
+            inlineWrap.id = "agentInlineInputRequest"
+            inlineWrap.classList.add("agent-user-input-inline")
+
+            let title = document.createElement("div")
+            title.classList.add("agent-user-input-header")
+            title.innerText = "Agent input required"
+            inlineWrap.appendChild(title)
+
+            let promptText = document.createElement("div")
+            promptText.classList.add("agent-user-input-status")
+            promptText.innerText = request.prompt || "Please provide input"
+            inlineWrap.appendChild(promptText)
+
+            if (request.suggestions.length > 0) {
+                let pendingSuggestions = document.createElement("div")
+                pendingSuggestions.classList.add("agent-user-input-suggestions")
+                request.suggestions.forEach(suggestion => {
+                    let button = document.createElement("button")
+                    button.type = "button"
+                    button.classList.add("btn-primary")
+                    button.innerText = suggestion
+                    button.onclick = () => {
+                        let { input } = getAgentInputUiTargets()
+                        if (input) {
+                            input.value = suggestion
+                            input.focus()
+                        }
+                    }
+                    pendingSuggestions.appendChild(button)
+                })
+                inlineWrap.appendChild(pendingSuggestions)
+            }
+
+            if (request.enableFileUpload) {
+                let fileActions = document.createElement("div")
+                fileActions.classList.add("agent-user-input-controls")
+
+                let localInput = document.createElement("input")
+                localInput.type = "file"
+                localInput.multiple = true
+                localInput.style.display = "none"
+                localInput.setAttribute("aria-hidden", "true")
+
+                if (canUseFsUpload) {
+                    let addLocalButton = document.createElement("button")
+                    addLocalButton.type = "button"
+                    addLocalButton.classList.add("btn-primary")
+                    addLocalButton.innerText = "Add local files"
+                    addLocalButton.onclick = () => {
+                        localInput.click()
+                    }
+                    fileActions.appendChild(addLocalButton)
+                }
+
+                localInput.onchange = () => {
+                    let filesToAdd = Array.from(localInput.files || []).map(file => ({
+                        source: "local",
+                        fileName: file.name,
+                        fileSize: file.size,
+                        fileLastModified: file.lastModified,
+                        localFile: file,
+                    }))
+                    let addedCount = addFilesToPendingAgentRequest(filesToAdd)
+                    if (pendingAgentUserInputRequest) {
+                        pendingAgentUserInputRequest.fileStatus = addedCount > 0
+                            ? `Added ${addedCount} local file${addedCount === 1 ? "" : "s"}.`
+                            : "Selected local files were already in the list."
+                    }
+                    localInput.value = ""
+                    renderSuggestions()
+                }
+
+                fileActions.appendChild(localInput)
+
+                if (canSelectFsFiles) {
+                    let addFsButton = document.createElement("button")
+                    addFsButton.type = "button"
+                    addFsButton.classList.add("btn-primary")
+                    addFsButton.innerText = "Browse FS"
+                    addFsButton.onclick = async () => {
+                        let selectedFiles = await openAgentFsPickerPopup()
+                        if (!pendingAgentUserInputRequest || !Array.isArray(selectedFiles)) {
+                            return
+                        }
+                        let entries = selectedFiles.map(path => ({
+                            source: "fs",
+                            path,
+                            fileName: path.split("/").filter(part => part.length > 0).slice(-1)[0] || path,
+                        }))
+                        let addedCount = addFilesToPendingAgentRequest(entries)
+                        if (pendingAgentUserInputRequest) {
+                            pendingAgentUserInputRequest.fileStatus = addedCount > 0
+                                ? `Added ${addedCount} FS file${addedCount === 1 ? "" : "s"}.`
+                                : "Selected FS files were already in the list."
+                        }
+                        renderSuggestions()
+                    }
+
+                    fileActions.appendChild(addFsButton)
+                }
+
+                if (!canUseFsUpload && !canSelectFsFiles) {
+                    let capabilityText = document.createElement("div")
+                    capabilityText.classList.add("agent-user-input-status")
+                    capabilityText.innerText = "File upload and FS file selection are unavailable because filesystem access is not supported by the current endpoint."
+                    inlineWrap.appendChild(capabilityText)
+                }
+
+                inlineWrap.appendChild(fileActions)
+
+                let selectedFilesContainer = document.createElement("div")
+                selectedFilesContainer.classList.add("agent-user-input-selected-files")
+                request.selectedFiles.forEach((entry, index) => {
+                    let item = document.createElement("div")
+                    item.classList.add("agent-user-input-selected-file")
+
+                    let label = document.createElement("div")
+                    label.classList.add("agent-user-input-selected-file-label")
+                    label.innerText = entry.source === "fs" ? `FS: ${entry.path}` : `Local: ${entry.fileName}`
+
+                    let removeButton = document.createElement("button")
+                    removeButton.type = "button"
+                    removeButton.classList.add("agent-user-input-remove-file")
+                    removeButton.innerText = "x"
+                    removeButton.onclick = () => {
+                        if (!pendingAgentUserInputRequest) {
+                            return
+                        }
+                        pendingAgentUserInputRequest.selectedFiles.splice(index, 1)
+                        renderSuggestions()
+                    }
+
+                    item.appendChild(label)
+                    item.appendChild(removeButton)
+                    selectedFilesContainer.appendChild(item)
+                })
+                inlineWrap.appendChild(selectedFilesContainer)
+            }
+
+            let statusText = document.createElement("div")
+            statusText.classList.add("agent-user-input-status")
+            if (request.fileStatus) {
+                statusText.innerText = request.fileStatus
+            }
+            else {
+                statusText.innerText = request.selectedFiles.length > 0
+                    ? `${request.selectedFiles.length} file${request.selectedFiles.length === 1 ? "" : "s"} selected.`
+                    : "Type a response in the main input box, then press Enter or Continue."
+            }
+            inlineWrap.appendChild(statusText)
+
+            let controls = document.createElement("div")
+            controls.classList.add("agent-user-input-controls")
+
+            let continueButton = document.createElement("button")
+            continueButton.type = "button"
+            continueButton.classList.add("btn-primary")
+            continueButton.innerText = request.isResolving ? "Preparing..." : "Continue"
+            continueButton.disabled = !!request.isResolving
+            continueButton.onclick = async () => {
+                await resolvePendingAgentUserInputFromMainInput("continue")
+            }
+
+            let stopButton = document.createElement("button")
+            stopButton.type = "button"
+            stopButton.classList.add("btn-primary")
+            stopButton.innerText = "Stop"
+            stopButton.disabled = !!request.isResolving
+            stopButton.onclick = async () => {
+                await resolvePendingAgentUserInputFromMainInput("stop")
+            }
+
+            controls.appendChild(continueButton)
+            controls.appendChild(stopButton)
+            inlineWrap.appendChild(controls)
+
+            choiceContainer.appendChild(inlineWrap)
+        }
+
         currentSuggestions.forEach(suggestion => {
             let choice = document.createElement("button");
             choice.classList.add("btn-primary")
             choice.innerText = suggestion;
             choice.onclick = () => {
-                if (localsettings.gui_type_instruct == "3") {
-                    document.getElementById("corpo_cht_inp").value = suggestion;
-                }
-                else if (localsettings.gui_type_instruct == "2") {
-                    document.getElementById("cht_inp").value = suggestion;
-                }
-                else {
-                    document.getElementById("input_text").value = suggestion;
+                let { input } = getAgentInputUiTargets()
+                if (input) {
+                    input.value = suggestion
                 }
 
                 // clearSuggestions();
@@ -2607,33 +3107,20 @@ let renderSuggestions = () => {
             choiceContainer.appendChild(choice)
         })
 
-        let cancelChoice = document.createElement("button");
-        cancelChoice.classList.add("btn-primary")
-        cancelChoice.innerText = "Clear suggestions";
-        cancelChoice.onclick = () => {
-            clearSuggestions()
+        if (!!currentSuggestions && currentSuggestions.length > 0) {
+            let cancelChoice = document.createElement("button");
+            cancelChoice.classList.add("btn-primary")
+            cancelChoice.innerText = "Clear suggestions";
+            cancelChoice.onclick = () => {
+                clearSuggestions()
+            }
+            choiceContainer.appendChild(cancelChoice)
         }
-        choiceContainer.appendChild(cancelChoice)
 
-        let container, input, sendButton;
-        switch (parseInt(localsettings.gui_type_instruct)) {
-            case 2:
-                container = document.getElementById("chat_msg_body");
-                input = document.getElementById("cht_inp");
-                sendButton = document.getElementById("chat_msg_send_btn");
-                break;
-            case 3:
-                container = document.getElementById("corpo_body");
-                input = document.getElementById("corpo_cht_inp");
-                sendButton = document.getElementById("corpo_chat_send_btn");
-                break;
-            default:
-                container = document.getElementById("gametext");
-                input = document.getElementById("input_text");
-                sendButton = document.getElementById("btnsend");
-                break
+        let { container } = getAgentInputUiTargets()
+        if (container) {
+            container.appendChild(choiceContainer)
         }
-        container.appendChild(choiceContainer);
     }
 }
 
@@ -2645,6 +3132,9 @@ render_gametext = (save = true, forceScroll) => {
         renderSuggestions()
     }
     else {
+        if (pendingAgentUserInputRequest && !pendingAgentUserInputRequest.resolved) {
+            completePendingAgentUserInputRequest({ action: "stop" })
+        }
         removeChoiceContainer()
     }
 }
