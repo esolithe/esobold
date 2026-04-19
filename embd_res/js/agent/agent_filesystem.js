@@ -287,7 +287,7 @@ let openFsEmbedByName = async (args = {}) => {
 		expandBtn.onclick = () => {
 			let srcUrl = container?.querySelector(".kcpp-fs-embed-content")?.src
 			if (!!srcUrl) {
-				window.open(srcUrl, "_blank", "noopener,noreferrer")
+				window.open(srcUrl, "_blank")
 			}
 		}
 

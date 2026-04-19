@@ -112,14 +112,17 @@
         if (!isPickerMode) {
             return;
         }
-        const btn = document.getElementById('btn-picker-confirm');
+        const useBtn = document.getElementById('btn-picker-use-selected');
+        const embedBtn = document.getElementById('btn-picker-embed-selected');
         const hint = document.getElementById('picker-selection-hint');
-        if (!btn || !hint) {
+        if (!useBtn || !embedBtn || !hint) {
             return;
         }
         const count = pickerSelectedEntries.size;
-        btn.disabled = count === 0;
-        btn.textContent = count > 0 ? `Use selected (${count})` : 'Use selected';
+        useBtn.disabled = count === 0;
+        embedBtn.disabled = count === 0;
+        useBtn.textContent = count > 0 ? `Use selected (${count})` : 'Use selected';
+        embedBtn.textContent = count > 0 ? `Embed selected (${count})` : 'Embed selected';
         hint.textContent = count > 0
             ? `${count} file${count === 1 ? '' : 's'} selected`
             : 'Select one or more files to continue';
@@ -769,19 +772,30 @@
                 notifyPickerParent('kcpp-fs-picker-cancel', {});
             });
 
-            let confirmBtn = document.createElement('button');
-            confirmBtn.type = 'button';
-            confirmBtn.id = 'btn-picker-confirm';
-            confirmBtn.className = 'btn btn-primary';
-            confirmBtn.textContent = 'Use selected';
-            confirmBtn.disabled = true;
-            confirmBtn.addEventListener('click', () => {
+            let useSelectedBtn = document.createElement('button');
+            useSelectedBtn.type = 'button';
+            useSelectedBtn.id = 'btn-picker-use-selected';
+            useSelectedBtn.className = 'btn btn-primary';
+            useSelectedBtn.textContent = 'Use selected';
+            useSelectedBtn.disabled = true;
+            useSelectedBtn.addEventListener('click', () => {
+                notifyPickerParent('kcpp-fs-picker-use-as-text', { files: Array.from(pickerSelectedEntries.values()) });
+            });
+
+            let embedSelectedBtn = document.createElement('button');
+            embedSelectedBtn.type = 'button';
+            embedSelectedBtn.id = 'btn-picker-embed-selected';
+            embedSelectedBtn.className = 'btn btn-primary';
+            embedSelectedBtn.textContent = 'Embed selected';
+            embedSelectedBtn.disabled = true;
+            embedSelectedBtn.addEventListener('click', () => {
                 notifyPickerParent('kcpp-fs-picker-select', { files: Array.from(pickerSelectedEntries.values()) });
             });
 
             headerRight.appendChild(hint);
             headerRight.appendChild(cancelBtn);
-            headerRight.appendChild(confirmBtn);
+            headerRight.appendChild(useSelectedBtn);
+            headerRight.appendChild(embedSelectedBtn);
             updatePickerSelectionStatus();
         }
 

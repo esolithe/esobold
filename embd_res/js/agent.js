@@ -644,8 +644,8 @@ let getFinalAgentPrompt = (agentRunState, commands, objectiveForCurrentAction) =
             `- Behavior: If macro is provided, the runtime sends "<macro>::<prompt>" to the agent.`,
             `- Example:`,
             "```js",
-            `window.parent.triggerAgentResponse("Summarize the current scene and suggest 3 next actions.")`,
-            `window.parent.triggerAgentResponse("Find latest weather and report it.", "searchWeb")`,
+            `(window?.opener || window?.parent).triggerAgentResponse("Summarize the current scene and suggest 3 next actions.")`,
+            `(window?.opener || window?.parent).triggerAgentResponse("Find latest weather and report it.", "searchWeb")`,
             "```",
             `2) generateTextFromAI(prompt)`,
             `- Purpose: Get plain text from the model directly without launching an agent cycle.`,
@@ -654,7 +654,7 @@ let getFinalAgentPrompt = (agentRunState, commands, objectiveForCurrentAction) =
             `- Behavior: Returns a text string (or null on failure).`,
             `- Example:`,
             "```js",
-            `let summary = await window.parent.generateTextFromAI("Write a one-paragraph summary of this page.")`,
+            `let summary = await (window?.opener || window?.parent).generateTextFromAI("Write a one-paragraph summary of this page.")`,
             `if (summary) document.querySelector("#summary").textContent = summary`,
             "```",
             `3) generateObjectFromAI(prompt, objectStructure?)`,
@@ -665,7 +665,7 @@ let getFinalAgentPrompt = (agentRunState, commands, objectiveForCurrentAction) =
             `- Example:`,
             "```js",
             `let schemaShape = { title: "", priority: "", tags: [""], isBlocking: false }`,
-            `let task = await window.parent.generateObjectFromAI(`,
+            `let task = await (window?.opener || window?.parent).generateObjectFromAI(`,
             `  "Extract task details from the user message.",`,
             `  schemaShape`,
             `)`,
@@ -2140,6 +2140,45 @@ let openAgentFsPickerPopup = () => {
             }
             let type = `${event?.data?.type || ""}`
             if (type === "kcpp-fs-picker-cancel") {
+                closeAgentFsPickerRequest(null)
+            }
+            if (type === "kcpp-fs-picker-use-as-text") {
+                // Handle "Use selected" - add file paths to game text array
+                let selected = Array.isArray(event?.data?.files)
+                    ? event.data.files.map(entry => {
+                        if (typeof entry === "string") {
+                            let path = entry.trim()
+                            return path.length > 0 ? { path, isDirectory: false, source: "fs" } : null
+                        }
+                        let path = `${entry?.path || ""}`.trim()
+                        if (path.length === 0) {
+                            return null
+                        }
+                        return {
+                            path,
+                            isDirectory: !!entry?.isDirectory,
+                            source: "fs"
+                        }
+                    }).filter(entry => entry !== null)
+                    : []
+                
+                // Add selected files to game text array
+                if (selected.length > 0 && typeof gametext_arr !== 'undefined' && typeof render_gametext === 'function') {
+                    // Format file paths similar to agent_planning_input.js
+                    let fileLines = selected.map(file => `- ${file.path}${file?.source === "fs" ? " (selected from FS)" : " (uploaded from local device)"}`)
+                    let formattedText = `User has selected the following files available in filesystem:\n${fileLines.join("\n")}`
+                    
+                    // Use createInstructPrompt if available to format it properly
+                    let wrappedPrompt = typeof createInstructPrompt === 'function' 
+                        ? createInstructPrompt(formattedText)
+                        : formattedText
+                    
+                    // Add to game text array and render
+                    gametext_arr.push(wrappedPrompt.replace(/\\\\/g, ""))
+                    render_gametext()
+                }
+                
+                // Close the picker
                 closeAgentFsPickerRequest(null)
             }
             if (type === "kcpp-fs-picker-select") {
