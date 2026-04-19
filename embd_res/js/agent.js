@@ -642,6 +642,7 @@ let getFinalAgentPrompt = (agentRunState, commands, objectiveForCurrentAction) =
         prompt.push(`Current unique identifiers for world info: ${currentAgentWIs.join(", ")}`)
     }
     prompt.push(`Current date/time (UTC): ${new Date().toUTCString()}`)
+    prompt.push(`When using content from the file system in web pages, access is hosted on /fs/<path>. For example, to access the file at /test.html you would use <current host>/fs/test.html. To save a file, include the file path and content in the command input, for example {"path": "/test.txt", "content": "This is a test"}`)
     prompt.push(`System prompt for all responses: ${agentPrompt}`)
     if (!!initialPrompt) {
         prompt.push(`Most recent input from user: ${initialPrompt}`)
