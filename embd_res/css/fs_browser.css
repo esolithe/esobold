@@ -328,12 +328,16 @@ html, body {
 #listing tbody tr:hover { background: var(--hover); }
 
 .fs-picker-mode .entry-file[data-picker-toggle-file],
-.fs-picker-mode .tile-card.entry-file[data-picker-toggle-file] {
+.fs-picker-mode .tile-card.entry-file[data-picker-toggle-file],
+.fs-picker-mode .entry-dir[data-picker-toggle-dir],
+.fs-picker-mode .tile-card.entry-dir[data-picker-toggle-dir] {
     cursor: pointer;
 }
 
 .fs-picker-mode .entry-file.picker-selected,
-.fs-picker-mode .tile-card.entry-file.picker-selected {
+.fs-picker-mode .tile-card.entry-file.picker-selected,
+.fs-picker-mode .entry-dir.picker-selected,
+.fs-picker-mode .tile-card.entry-dir.picker-selected {
     outline: 2px solid var(--accent2);
     background: rgba(74, 144, 217, 0.22);
 }

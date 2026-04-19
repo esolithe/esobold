@@ -2096,7 +2096,22 @@ let openAgentFsPickerPopup = () => {
                 closeAgentFsPickerRequest(null)
             }
             if (type === "kcpp-fs-picker-select") {
-                let selected = Array.isArray(event?.data?.files) ? event.data.files.map(String).map(path => path.trim()).filter(path => path.length > 0) : []
+                let selected = Array.isArray(event?.data?.files)
+                    ? event.data.files.map(entry => {
+                        if (typeof entry === "string") {
+                            let path = entry.trim()
+                            return path.length > 0 ? { path, isDirectory: false } : null
+                        }
+                        let path = `${entry?.path || ""}`.trim()
+                        if (path.length === 0) {
+                            return null
+                        }
+                        return {
+                            path,
+                            isDirectory: !!entry?.isDirectory
+                        }
+                    }).filter(entry => entry !== null)
+                    : []
                 closeAgentFsPickerRequest(selected)
             }
         }
@@ -2156,6 +2171,41 @@ let addFilesToPendingAgentRequest = (entries = []) => {
     })
     renderSuggestions()
     return addedCount
+}
+
+let getPendingAgentSelectionSummary = (selectedFiles = []) => {
+    let localFiles = 0
+    let fsFiles = 0
+    let fsDirectories = 0
+
+    selectedFiles.forEach(entry => {
+        if (entry?.source === "fs") {
+            if (!!entry?.isDirectory) {
+                fsDirectories++
+            }
+            else {
+                fsFiles++
+            }
+            return
+        }
+        localFiles++
+    })
+
+    let parts = []
+    if (localFiles > 0) {
+        parts.push(`${localFiles} local file${localFiles === 1 ? "" : "s"}`)
+    }
+    if (fsFiles > 0) {
+        parts.push(`${fsFiles} FS file${fsFiles === 1 ? "" : "s"}`)
+    }
+    if (fsDirectories > 0) {
+        parts.push(`${fsDirectories} FS director${fsDirectories === 1 ? "y" : "ies"}`)
+    }
+
+    return {
+        total: localFiles + fsFiles + fsDirectories,
+        text: parts.join(", ")
+    }
 }
 
 let preparePendingAgentUserInputFiles = async (request) => {
@@ -2992,14 +3042,15 @@ let renderSuggestions = () => {
                     addFsButton.classList.add("btn-primary")
                     addFsButton.innerText = "Browse FS"
                     addFsButton.onclick = async () => {
-                        let selectedFiles = await openAgentFsPickerPopup()
-                        if (!pendingAgentUserInputRequest || !Array.isArray(selectedFiles)) {
+                        let selectedEntries = await openAgentFsPickerPopup()
+                        if (!pendingAgentUserInputRequest || !Array.isArray(selectedEntries)) {
                             return
                         }
-                        let entries = selectedFiles.map(path => ({
+                        let entries = selectedEntries.map(entry => ({
                             source: "fs",
-                            path,
-                            fileName: path.split("/").filter(part => part.length > 0).slice(-1)[0] || path,
+                            isDirectory: !!entry.isDirectory,
+                            path: `${entry.path}${entry.isDirectory ? " (directory)" : ""}`,
+                            fileName: entry.path.split("/").filter(part => part.length > 0).slice(-1)[0] || entry.path,
                         }))
                         let addedCount = addFilesToPendingAgentRequest(entries)
                         if (pendingAgentUserInputRequest) {
@@ -3030,7 +3081,12 @@ let renderSuggestions = () => {
 
                     let label = document.createElement("div")
                     label.classList.add("agent-user-input-selected-file-label")
-                    label.innerText = entry.source === "fs" ? `FS: ${entry.path}` : `Local: ${entry.fileName}`
+                    if (entry.source === "fs") {
+                        label.innerText = entry.isDirectory ? `FS directory: ${entry.path}` : `FS: ${entry.path}`
+                    }
+                    else {
+                        label.innerText = `Local: ${entry.fileName}`
+                    }
 
                     let removeButton = document.createElement("button")
                     removeButton.type = "button"
@@ -3057,8 +3113,9 @@ let renderSuggestions = () => {
                 statusText.innerText = request.fileStatus
             }
             else {
-                statusText.innerText = request.selectedFiles.length > 0
-                    ? `${request.selectedFiles.length} file${request.selectedFiles.length === 1 ? "" : "s"} selected.`
+                let selectionSummary = getPendingAgentSelectionSummary(request.selectedFiles)
+                statusText.innerText = selectionSummary.total > 0
+                    ? `${selectionSummary.total} selected: ${selectionSummary.text}.`
                     : "Type a response in the main input box, then press Enter or Continue."
             }
             inlineWrap.appendChild(statusText)

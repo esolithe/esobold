@@ -10,7 +10,7 @@
     const urlParams = new URLSearchParams(window.location.search || '');
     const isPickerMode = urlParams.get('picker') === '1';
     const shouldForceTileView = urlParams.get('view') === 'tile';
-    const pickerSelectedFiles = new Set();
+    const pickerSelectedEntries = new Map();
     const MEDIA_EXT_RE = {
         image: /\.(png|jpe?g|gif|webp|bmp|svg|avif)$/i,
         video: /\.(mp4|webm|mov|mkv|m4v|avi)$/i,
@@ -92,6 +92,13 @@
         }
     }
 
+    function pickerQuerySuffix() {
+        if (!isPickerMode) {
+            return '';
+        }
+        return '?picker=1&view=tile';
+    }
+
     function notifyPickerParent(type, payload) {
         if (!isPickerMode || !window.parent || window.parent === window) {
             return;
@@ -110,7 +117,7 @@
         if (!btn || !hint) {
             return;
         }
-        const count = pickerSelectedFiles.size;
+        const count = pickerSelectedEntries.size;
         btn.disabled = count === 0;
         btn.textContent = count > 0 ? `Use selected (${count})` : 'Use selected';
         hint.textContent = count > 0
@@ -119,22 +126,32 @@
     }
 
     function setPickerSelection(path, shouldSelect) {
+        setPickerEntrySelection(path, false, shouldSelect);
+    }
+
+    function setPickerEntrySelection(path, isDirectory, shouldSelect) {
         if (!path) {
             return;
         }
+        const key = `${isDirectory ? 'dir' : 'file'}:${path}`;
         if (shouldSelect) {
-            pickerSelectedFiles.add(path);
+            pickerSelectedEntries.set(key, { path, isDirectory: !!isDirectory });
         } else {
-            pickerSelectedFiles.delete(path);
+            pickerSelectedEntries.delete(key);
         }
         updatePickerSelectionStatus();
     }
 
     function togglePickerSelection(path) {
+        togglePickerEntrySelection(path, false);
+    }
+
+    function togglePickerEntrySelection(path, isDirectory) {
         if (!path) {
             return;
         }
-        setPickerSelection(path, !pickerSelectedFiles.has(path));
+        const key = `${isDirectory ? 'dir' : 'file'}:${path}`;
+        setPickerEntrySelection(path, isDirectory, !pickerSelectedEntries.has(key));
     }
 
     function bindPickerSelectionHandlers(container) {
@@ -148,7 +165,19 @@
                 e.stopPropagation();
                 let filePath = elem.dataset.pickerToggleFile || '';
                 togglePickerSelection(filePath);
-                let isSelected = pickerSelectedFiles.has(filePath);
+                let isSelected = pickerSelectedEntries.has(`file:${filePath}`);
+                elem.classList.toggle('picker-selected', isSelected);
+                elem.setAttribute('aria-pressed', String(isSelected));
+            });
+        });
+
+        container.querySelectorAll('[data-picker-toggle-dir]').forEach(elem => {
+            elem.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                let dirPath = elem.dataset.pickerToggleDir || '';
+                togglePickerEntrySelection(dirPath, true);
+                let isSelected = pickerSelectedEntries.has(`dir:${dirPath}`);
                 elem.classList.toggle('picker-selected', isSelected);
                 elem.setAttribute('aria-pressed', String(isSelected));
             });
@@ -162,7 +191,29 @@
                 togglePickerSelection(filePath);
                 let row = anchor.closest('[data-picker-toggle-file]');
                 if (row) {
-                    let isSelected = pickerSelectedFiles.has(filePath);
+                    let isSelected = pickerSelectedEntries.has(`file:${filePath}`);
+                    row.classList.toggle('picker-selected', isSelected);
+                    row.setAttribute('aria-pressed', String(isSelected));
+                }
+            });
+        });
+
+        container.querySelectorAll('[data-picker-dir-anchor]').forEach(anchor => {
+            anchor.addEventListener('click', (e) => {
+                // Directory anchors keep native navigation in picker mode.
+                e.stopPropagation();
+            });
+        });
+
+        container.querySelectorAll('[data-picker-select-dir-btn]').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                let dirPath = btn.dataset.pickerSelectDirBtn || '';
+                togglePickerEntrySelection(dirPath, true);
+                let row = btn.closest('[data-picker-toggle-dir]');
+                if (row) {
+                    let isSelected = pickerSelectedEntries.has(`dir:${dirPath}`);
                     row.classList.toggle('picker-selected', isSelected);
                     row.setAttribute('aria-pressed', String(isSelected));
                 }
@@ -197,8 +248,8 @@
 
     /** Build href for navigating to a fs directory. */
     function dirHref(dir) {
-        if (dir === '/') return '/fs/';
-        return '/fs' + encodeURIPath(dir.endsWith('/') ? dir : dir + '/');
+        if (dir === '/') return '/fs/' + pickerQuerySuffix();
+        return '/fs' + encodeURIPath(dir.endsWith('/') ? dir : dir + '/') + pickerQuerySuffix();
     }
 
     /** Build href for a fs file. */
@@ -228,7 +279,7 @@
     function renderBreadcrumbs(dir) {
         const el = document.getElementById('breadcrumbs');
         const parts = dir === '/' ? [] : dir.replace(/\/$/, '').split('/').filter(Boolean);
-        let html = '<a href="/fs/">/ (root)</a>';
+        let html = `<a href="${esc(dirHref('/'))}">/ (root)</a>`;
         let accumulated = '/';
         for (let i = 0; i < parts.length; i++) {
             accumulated += parts[i] + '/';
@@ -434,20 +485,26 @@
 
             for (const d of dirs) {
                 const childDir = dir === '/' ? '/' + d + '/' : dir + d + '/';
-                tiles.push(`<article class="tile-card entry-dir">
+                const isDirSelected = isPickerMode && pickerSelectedEntries.has(`dir:${childDir}`);
+                const dirTileClass = `tile-card entry-dir${isDirSelected ? ' picker-selected' : ''}`;
+                const dirTileAttrs = isPickerMode ? ` data-picker-toggle-dir="${esc(childDir)}" aria-pressed="${isDirSelected ? 'true' : 'false'}"` : '';
+                const dirActions = isPickerMode
+                    ? `<div class="tile-actions"><button class="btn btn-secondary" data-picker-select-dir-btn="${esc(childDir)}" title="Select folder">Select folder</button></div>`
+                    : `<div class="tile-actions"><button class="btn btn-danger" data-delete-dir="${esc(childDir)}" title="Delete Folder">&#128465;</button></div>`;
+                tiles.push(`<article class="${dirTileClass}"${dirTileAttrs}>
                     <div class="tile-preview">&#128193;</div>
                     <div class="tile-meta">
-                        <a class="tile-name" href="${esc(dirHref(childDir))}">${esc(d)}/</a>
+                        <a class="tile-name" href="${esc(dirHref(childDir))}" data-picker-dir-anchor="${esc(childDir)}">${esc(d)}/</a>
                         <div class="tile-sub">Folder</div>
                     </div>
-                    <div class="tile-actions"><button class="btn btn-danger" data-delete-dir="${esc(childDir)}" title="Delete Folder">&#128465;</button></div>
+                    ${dirActions}
                 </article>`);
             }
 
             for (const { f, filePath, meta } of fileMetas) {
                 const size = meta ? formatBytes(meta.size_bytes != null ? meta.size_bytes : meta.size) : '—';
                 const mod = meta ? formatDate(meta.last_modified != null ? meta.last_modified : meta.modified) : '—';
-                const isSelected = isPickerMode && pickerSelectedFiles.has(filePath);
+                const isSelected = isPickerMode && pickerSelectedEntries.has(`file:${filePath}`);
                 const tileClasses = `tile-card entry-file${isSelected ? ' picker-selected' : ''}`;
                 const tileAttributes = isPickerMode ? ` data-picker-toggle-file="${esc(filePath)}" aria-pressed="${isSelected ? 'true' : 'false'}"` : '';
                 const nameAnchor = isPickerMode
@@ -489,18 +546,24 @@
 
         for (const d of dirs) {
             const childDir = dir === '/' ? '/' + d + '/' : dir + d + '/';
-            rows.push(`<tr class="entry-dir">
-                <td class="col-name">&#128193; <a href="${esc(dirHref(childDir))}">${esc(d)}/</a></td>
+            const isDirSelected = isPickerMode && pickerSelectedEntries.has(`dir:${childDir}`);
+            const dirRowClass = `entry-dir${isDirSelected ? ' picker-selected' : ''}`;
+            const dirRowAttrs = isPickerMode ? ` data-picker-toggle-dir="${esc(childDir)}" aria-pressed="${isDirSelected ? 'true' : 'false'}"` : '';
+            const dirActions = isPickerMode
+                ? `<button class="btn btn-secondary" data-picker-select-dir-btn="${esc(childDir)}" title="Select folder">Select folder</button>`
+                : `<button class="btn btn-danger" data-delete-dir="${esc(childDir)}" title="Delete Folder">&#128465;</button>`;
+            rows.push(`<tr class="${dirRowClass}"${dirRowAttrs}>
+                <td class="col-name">&#128193; <a href="${esc(dirHref(childDir))}" data-picker-dir-anchor="${esc(childDir)}">${esc(d)}/</a></td>
                 <td class="col-size">—</td>
                 <td class="col-modified">—</td>
-                <td class="col-actions"><button class="btn btn-danger" data-delete-dir="${esc(childDir)}" title="Delete Folder">&#128465;</button></td>
+                <td class="col-actions">${dirActions}</td>
             </tr>`);
         }
 
         for (const { f, filePath, meta } of fileMetas) {
             const size = meta ? formatBytes(meta.size_bytes != null ? meta.size_bytes : meta.size) : '—';
             const mod = meta ? formatDate(meta.last_modified != null ? meta.last_modified : meta.modified) : '—';
-            const isSelected = isPickerMode && pickerSelectedFiles.has(filePath);
+            const isSelected = isPickerMode && pickerSelectedEntries.has(`file:${filePath}`);
             const rowClasses = `entry-file${isSelected ? ' picker-selected' : ''}`;
             const rowAttributes = isPickerMode ? ` data-picker-toggle-file="${esc(filePath)}" aria-pressed="${isSelected ? 'true' : 'false'}"` : '';
             const nameAnchor = isPickerMode
@@ -713,7 +776,7 @@
             confirmBtn.textContent = 'Use selected';
             confirmBtn.disabled = true;
             confirmBtn.addEventListener('click', () => {
-                notifyPickerParent('kcpp-fs-picker-select', { files: Array.from(pickerSelectedFiles) });
+                notifyPickerParent('kcpp-fs-picker-select', { files: Array.from(pickerSelectedEntries.values()) });
             });
 
             headerRight.appendChild(hint);
