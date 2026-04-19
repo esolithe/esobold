@@ -180,6 +180,7 @@ let getFsMediaKindByUrl = (url = "") => {
 	let imageExtensions = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".avif", ".ico"]
 	let videoExtensions = [".mp4", ".webm", ".ogv", ".mov", ".m4v"]
 	let audioExtensions = [".mp3", ".wav", ".m4a", ".aac", ".flac", ".opus", ".oga", ".ogg"]
+	let htmlExtensions = [".html", ".htm"]
 	if (imageExtensions.some((ext) => normalized.endsWith(ext))) {
 		return "image"
 	}
@@ -188,6 +189,9 @@ let getFsMediaKindByUrl = (url = "") => {
 	}
 	if (audioExtensions.some((ext) => normalized.endsWith(ext))) {
 		return "audio"
+	}
+	if (htmlExtensions.some((ext) => normalized.endsWith(ext))) {
+		return "html"
 	}
 	return "embed"
 }
@@ -211,6 +215,12 @@ let createFsEmbedContentElement = (kind) => {
 		audioElem.className = "kcpp-fs-embed-content kcpp-fs-embed-audio"
 		audioElem.controls = true
 		return audioElem
+	}
+	if (kind === "html") {
+		let iframeElem = document.createElement("iframe")
+		iframeElem.className = "kcpp-fs-embed-content kcpp-fs-embed-iframe"
+		iframeElem.frameBorder = "0"
+		return iframeElem
 	}
 	let embedElem = document.createElement("embed")
 	embedElem.className = "kcpp-fs-embed-content"

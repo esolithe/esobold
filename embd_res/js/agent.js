@@ -633,6 +633,52 @@ let getFinalAgentPrompt = (agentRunState, commands, objectiveForCurrentAction) =
         let macroNames = Object.keys(availableAgentMacros).join(", ")
         prompt.push(`All available agent macros: ${macroNames}`)
     }
+    if (is_using_kcpp_with_fs()) {
+        prompt.push(`KCPP with file system access is enabled.`)
+        let embeddedFunctionGuidance = [
+            `Embedded content can call three helper functions. Use the right one for the task:`,
+            `1) triggerAgentResponse(prompt, macro?)`,
+            `- Purpose: Start a full agent cycle that can use planning, tools, and macros.`,
+            `- Use when: The embedded UI needs the agent to take actions or continue a workflow.`,
+            `- Inputs: prompt is required text. macro is optional and should be a valid macro name.`,
+            `- Behavior: If macro is provided, the runtime sends "<macro>::<prompt>" to the agent.`,
+            `- Example:`,
+            "```js",
+            `window.parent.triggerAgentResponse("Summarize the current scene and suggest 3 next actions.")`,
+            `window.parent.triggerAgentResponse("Find latest weather and report it.", "searchWeb")`,
+            "```",
+            `2) generateTextFromAI(prompt)`,
+            `- Purpose: Get plain text from the model directly without launching an agent cycle.`,
+            `- Use when: You only need a direct textual result and no command/tool execution.`,
+            `- Inputs: prompt is required text.`,
+            `- Behavior: Returns a text string (or null on failure).`,
+            `- Example:`,
+            "```js",
+            `let summary = await window.parent.generateTextFromAI("Write a one-paragraph summary of this page.")`,
+            `if (summary) document.querySelector("#summary").textContent = summary`,
+            "```",
+            `3) generateObjectFromAI(prompt, objectStructure?)`,
+            `- Purpose: Get structured JSON that matches a target shape.`,
+            `- Use when: Embedded content needs machine-readable output for UI logic.`,
+            `- Inputs: prompt is required text. objectStructure is an optional example schema shape.`,
+            `- Behavior: Uses grammar-constrained generation and returns a parsed object (or null on parse failure).`,
+            `- Example:`,
+            "```js",
+            `let schemaShape = { title: "", priority: "", tags: [""], isBlocking: false }`,
+            `let task = await window.parent.generateObjectFromAI(`,
+            `  "Extract task details from the user message.",`,
+            `  schemaShape`,
+            `)`,
+            `if (task) renderTaskCard(task)`,
+            "```",
+            `Rules:`,
+            `- Prefer generateObjectFromAI for data that will be parsed or rendered as structured fields.`,
+            `- Prefer generateTextFromAI for simple prose output.`,
+            `- Prefer triggerAgentResponse only when an actual agent loop/action workflow is needed.`
+        ].join("\n")
+        prompt.push(`When using content from the file system in web pages, access is hosted on /fs/<path>. For example, to access the file at /test.html you would use <current host>/fs/test.html. To save a file, include the file path and content in the command input, for example {"path": "/test.txt", "content": "This is a test"}`)
+        prompt.push(embeddedFunctionGuidance)
+    }
 
     if (state != null) {
         prompt.push(`Current state: ${state}`)
@@ -642,7 +688,6 @@ let getFinalAgentPrompt = (agentRunState, commands, objectiveForCurrentAction) =
         prompt.push(`Current unique identifiers for world info: ${currentAgentWIs.join(", ")}`)
     }
     prompt.push(`Current date/time (UTC): ${new Date().toUTCString()}`)
-    prompt.push(`When using content from the file system in web pages, access is hosted on /fs/<path>. For example, to access the file at /test.html you would use <current host>/fs/test.html. To save a file, include the file path and content in the command input, for example {"path": "/test.txt", "content": "This is a test"}`)
     prompt.push(`System prompt for all responses: ${agentPrompt}`)
     if (!!initialPrompt) {
         prompt.push(`Most recent input from user: ${initialPrompt}`)
