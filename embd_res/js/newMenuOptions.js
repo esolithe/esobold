@@ -326,7 +326,7 @@ window.addEventListener('load', () => {
             localsettings.agentAutoContinueMode = localsettings.agentAutoContinue ? "auto" : "prompt"
         }
         else {
-            localsettings.agentAutoContinueMode = "auto"
+            localsettings.agentAutoContinueMode = "disabled"
         }
     }
     if (localsettings?.agentAutoContinue == undefined) {
