@@ -211,6 +211,90 @@ html, body {
     overflow-x: auto;
 }
 
+#listing-container.tile-mode {
+    overflow-x: visible;
+}
+
+#listing-container.tile-mode #listing {
+    display: none;
+}
+
+#tile-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+    gap: 10px;
+}
+
+.tile-card {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 10px;
+    min-height: 160px;
+}
+
+.tile-card.entry-parent {
+    justify-content: center;
+}
+
+.tile-preview {
+    height: 110px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    background: var(--bg2);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    color: var(--text-dim);
+    font-size: 28px;
+}
+
+.tile-preview img,
+.tile-preview video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.tile-preview audio {
+    width: 100%;
+    height: 32px;
+}
+
+.tile-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.tile-name {
+    color: var(--text);
+    text-decoration: none;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.tile-name:hover {
+    color: var(--accent2);
+}
+
+.tile-sub {
+    color: var(--text-dim);
+    font-size: 12px;
+}
+
+.tile-actions {
+    margin-top: auto;
+    display: flex;
+    justify-content: flex-end;
+}
+
 #listing {
     width: 100%;
     border-collapse: collapse;

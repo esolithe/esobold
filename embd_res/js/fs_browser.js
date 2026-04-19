@@ -6,6 +6,14 @@
     'use strict';
 
     const DIR_MARKER_NAME = '.kcpp_dir_marker';
+    const VIEW_MODE_KEY = 'kcpp_fs_view_mode';
+    const MEDIA_EXT_RE = {
+        image: /\.(png|jpe?g|gif|webp|bmp|svg|avif)$/i,
+        video: /\.(mp4|webm|mov|mkv|m4v|avi)$/i,
+        audio: /\.(mp3|wav|ogg|m4a|flac|aac)$/i,
+    };
+
+    let currentViewMode = 'list';
 
     // ── Utilities ──────────────────────────────────────────────────────
 
@@ -43,6 +51,41 @@
             t.classList.add('toast-fading');
             setTimeout(() => t.remove(), 600);
         }, isError ? 4000 : 2500);
+    }
+
+    function getFileKind(name) {
+        if (MEDIA_EXT_RE.image.test(name)) return 'image';
+        if (MEDIA_EXT_RE.video.test(name)) return 'video';
+        if (MEDIA_EXT_RE.audio.test(name)) return 'audio';
+        return 'other';
+    }
+
+    function loadViewMode() {
+        try {
+            const stored = localStorage.getItem(VIEW_MODE_KEY);
+            return stored === 'tile' ? 'tile' : 'list';
+        } catch (_) {
+            return 'list';
+        }
+    }
+
+    function saveViewMode(mode) {
+        try {
+            localStorage.setItem(VIEW_MODE_KEY, mode);
+        } catch (_) {
+            // Ignore storage failures (private mode/quota).
+        }
+    }
+
+    function setViewMode(mode) {
+        currentViewMode = mode === 'tile' ? 'tile' : 'list';
+        saveViewMode(currentViewMode);
+        const viewBtn = document.getElementById('btn-view-mode');
+        if (viewBtn) {
+            const isTile = currentViewMode === 'tile';
+            viewBtn.innerHTML = isTile ? '&#8801; List View' : '&#9638; Tile View';
+            viewBtn.setAttribute('aria-pressed', String(isTile));
+        }
     }
 
     // ── Path helpers ───────────────────────────────────────────────────
@@ -178,12 +221,79 @@
         } catch (_) { return null; }
     }
 
+    function tilePreviewHtml(filePath, fileName) {
+        const href = esc(fileHref(filePath));
+        const kind = getFileKind(fileName);
+        if (kind === 'image') {
+            return `<a class="tile-preview" href="${href}" target="_blank" rel="noopener noreferrer"><img src="${href}" alt="${esc(fileName)}"></a>`;
+        }
+        if (kind === 'video') {
+            return `<div class="tile-preview"><video src="${href}" controls preload="metadata"></video></div>`;
+        }
+        if (kind === 'audio') {
+            return `<div class="tile-preview"><audio src="${href}" controls preload="metadata"></audio></div>`;
+        }
+        return '<div class="tile-preview">&#128196;</div>';
+    }
+
+    function bindDeleteHandlers(container, dir) {
+        container.querySelectorAll('[data-delete]').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const path = btn.dataset.delete;
+                if (!confirm(`Delete "${path}"?`)) return;
+                try {
+                    const r = await fetch('/api/extra/fs/delete', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ operations: [{ path }] }),
+                    });
+                    const data = await r.json();
+                    if (data.success) {
+                        showToast(`Deleted ${path}`, false);
+                        renderListing(dir);
+                    } else {
+                        showToast(`Delete failed: ${data.error || 'unknown error'}`, true);
+                    }
+                } catch (e) {
+                    showToast(`Delete error: ${e}`, true);
+                }
+            });
+        });
+
+        container.querySelectorAll('[data-delete-dir]').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const path = btn.dataset.deleteDir;
+                if (!confirm(`Delete folder "${path}" and all contents?`)) return;
+                try {
+                    const r = await fetch('/api/extra/fs/rmdir', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ operations: [{ path }] }),
+                    });
+                    const data = await r.json();
+                    if (data.success) {
+                        showToast(`Deleted folder ${path}`, false);
+                        renderListing(dir);
+                    } else {
+                        showToast(`Folder delete failed: ${data.error || 'unknown error'}`, true);
+                    }
+                } catch (e) {
+                    showToast(`Folder delete error: ${e}`, true);
+                }
+            });
+        });
+    }
+
     async function renderListing(dir) {
         const tbody = document.getElementById('listing-body');
+        const tileGrid = document.getElementById('tile-grid');
         const emptyNotice = document.getElementById('empty-notice');
         const listContainer = document.getElementById('listing-container');
 
         tbody.innerHTML = '<tr id="loading-row"><td colspan="4">Loading\u2026</td></tr>';
+        tileGrid.innerHTML = '';
+        tileGrid.hidden = true;
+        listContainer.classList.remove('tile-mode');
 
         // Fetch all files/directories
         let allPaths = [];
@@ -221,9 +331,57 @@
         listContainer.hidden = false;
         emptyNotice.hidden = true;
 
+        // Files metadata for either rendering mode
+        const fileMetaPromises = files.map(f => {
+            const filePath = dir === '/' ? '/' + f : dir.replace(/\/$/, '') + '/' + f;
+            return fetchMetadata(filePath).then(meta => ({ f, filePath, meta }));
+        });
+        const fileMetas = await Promise.all(fileMetaPromises);
+
+        if (currentViewMode === 'tile') {
+            const tiles = [];
+
+            if (parent !== null) {
+                tiles.push(`<article class="tile-card entry-parent">
+                    <a class="tile-name" href="${esc(dirHref(parent))}">&#128194; ..</a>
+                </article>`);
+            }
+
+            for (const d of dirs) {
+                const childDir = dir === '/' ? '/' + d + '/' : dir + d + '/';
+                tiles.push(`<article class="tile-card entry-dir">
+                    <div class="tile-preview">&#128193;</div>
+                    <div class="tile-meta">
+                        <a class="tile-name" href="${esc(dirHref(childDir))}">${esc(d)}/</a>
+                        <div class="tile-sub">Folder</div>
+                    </div>
+                    <div class="tile-actions"><button class="btn btn-danger" data-delete-dir="${esc(childDir)}" title="Delete Folder">&#128465;</button></div>
+                </article>`);
+            }
+
+            for (const { f, filePath, meta } of fileMetas) {
+                const size = meta ? formatBytes(meta.size_bytes != null ? meta.size_bytes : meta.size) : '—';
+                const mod = meta ? formatDate(meta.last_modified != null ? meta.last_modified : meta.modified) : '—';
+                tiles.push(`<article class="tile-card entry-file">
+                    ${tilePreviewHtml(filePath, f)}
+                    <div class="tile-meta">
+                        <a class="tile-name" href="${esc(fileHref(filePath))}" target="_blank" rel="noopener noreferrer">${esc(f)}</a>
+                        <div class="tile-sub">${esc(size)} | ${esc(mod)}</div>
+                    </div>
+                    <div class="tile-actions"><button class="btn btn-danger" data-delete="${esc(filePath)}" title="Delete">&#128465;</button></div>
+                </article>`);
+            }
+
+            tbody.innerHTML = '';
+            tileGrid.innerHTML = tiles.join('');
+            tileGrid.hidden = false;
+            listContainer.classList.add('tile-mode');
+            bindDeleteHandlers(tileGrid, dir);
+            return;
+        }
+
         const rows = [];
 
-        // Parent link
         if (parent !== null) {
             rows.push(`<tr class="entry-parent">
                 <td class="col-name"><a href="${esc(dirHref(parent))}">&#128194; ..</a></td>
@@ -233,7 +391,6 @@
             </tr>`);
         }
 
-        // Directories (no metadata needed)
         for (const d of dirs) {
             const childDir = dir === '/' ? '/' + d + '/' : dir + d + '/';
             rows.push(`<tr class="entry-dir">
@@ -244,16 +401,9 @@
             </tr>`);
         }
 
-        // Files — fetch metadata in parallel for size/date
-        const fileMetaPromises = files.map(f => {
-            const filePath = dir === '/' ? '/' + f : dir.replace(/\/$/, '') + '/' + f;
-            return fetchMetadata(filePath).then(meta => ({ f, filePath, meta }));
-        });
-        const fileMetas = await Promise.all(fileMetaPromises);
-
         for (const { f, filePath, meta } of fileMetas) {
             const size = meta ? formatBytes(meta.size_bytes != null ? meta.size_bytes : meta.size) : '—';
-            const mod  = meta ? formatDate(meta.last_modified != null ? meta.last_modified : meta.modified) : '—';
+            const mod = meta ? formatDate(meta.last_modified != null ? meta.last_modified : meta.modified) : '—';
             rows.push(`<tr class="entry-file">
                 <td class="col-name">&#128196; <a href="${esc(fileHref(filePath))}" target="_blank" rel="noopener noreferrer">${esc(f)}</a></td>
                 <td class="col-size">${esc(size)}</td>
@@ -263,54 +413,7 @@
         }
 
         tbody.innerHTML = rows.join('');
-
-        // Delete handlers
-        tbody.querySelectorAll('[data-delete]').forEach(btn => {
-            btn.addEventListener('click', async () => {
-                const path = btn.dataset.delete;
-                if (!confirm(`Delete "${path}"?`)) return;
-                try {
-                    const r = await fetch('/api/extra/fs/delete', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ operations: [{ path }] }),
-                    });
-                    const data = await r.json();
-                    if (data.success) {
-                        showToast(`Deleted ${path}`, false);
-                        renderListing(dir);
-                    } else {
-                        showToast(`Delete failed: ${data.error || 'unknown error'}`, true);
-                    }
-                } catch (e) {
-                    showToast(`Delete error: ${e}`, true);
-                }
-            });
-        });
-
-        // Folder delete handlers
-        tbody.querySelectorAll('[data-delete-dir]').forEach(btn => {
-            btn.addEventListener('click', async () => {
-                const path = btn.dataset.deleteDir;
-                if (!confirm(`Delete folder "${path}" and all contents?`)) return;
-                try {
-                    const r = await fetch('/api/extra/fs/rmdir', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ operations: [{ path }] }),
-                    });
-                    const data = await r.json();
-                    if (data.success) {
-                        showToast(`Deleted folder ${path}`, false);
-                        renderListing(dir);
-                    } else {
-                        showToast(`Folder delete failed: ${data.error || 'unknown error'}`, true);
-                    }
-                } catch (e) {
-                    showToast(`Folder delete error: ${e}`, true);
-                }
-            });
-        });
+        bindDeleteHandlers(tbody, dir);
     }
 
     // ── Upload ─────────────────────────────────────────────────────────
@@ -447,6 +550,7 @@
 
     function init() {
         const dir = currentFsDir();
+        setViewMode(loadViewMode());
 
         renderBreadcrumbs(dir);
         renderListing(dir);
@@ -471,6 +575,12 @@
         const createFolderBtn = document.getElementById('btn-create-folder');
         createFolderBtn.addEventListener('click', () => {
             createFolder(currentFsDir());
+        });
+
+        const viewModeBtn = document.getElementById('btn-view-mode');
+        viewModeBtn.addEventListener('click', () => {
+            setViewMode(currentViewMode === 'tile' ? 'list' : 'tile');
+            renderListing(currentFsDir());
         });
 
         initDragDrop(dir);
