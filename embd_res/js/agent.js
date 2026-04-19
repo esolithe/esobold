@@ -1962,6 +1962,7 @@ let removeChoiceContainer = () => {
 
 let getAgentInputUiTargets = () => {
     switch (parseInt(localsettings.gui_type_instruct)) {
+        case 1:
         case 2:
             return {
                 container: document.getElementById("chat_msg_body"),
