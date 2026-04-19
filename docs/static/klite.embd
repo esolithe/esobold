@@ -3768,7 +3768,7 @@ Current version indicated by LITEVER below.
 	const alltalk_voices_endpoint = "/api/voices";
 	const alltalk_rvc_voices_endpoint = "/api/rvcvoices";
 
-	const pollinations_img_endpoint = "https://gen.pollinations.ai/image";
+	const pollinations_img_endpoint = "https://image.pollinations.ai/prompt";
 	const pollinations_text_endpoint = "https://text.pollinations.ai/openai";
 	const dummy_api_key = "kobo";
 
@@ -3994,7 +3994,6 @@ Current version indicated by LITEVER below.
 		saved_palm_jailbreak:"", //gemini system prompt
 		saved_palm_jailbreak2:"", //gemini postfix
 		saved_openrouter_provider:"", //for overriding provider
-		saved_oai_reasoning:"", //if set, reasoning level "none,minimal,low,medium,high", else default
 		saved_oai_custommodel: "", //customized oai custom model
 		saved_oai_role: 3, //0=user,1=assistant,2=system, 3=auto
 		saved_a1111_url: default_a1111_base,
@@ -4004,9 +4003,9 @@ Current version indicated by LITEVER below.
 		saved_alltalk_url: default_alltalk_base,
 		saved_mcp_urls: "",
 		prev_custom_endpoint_type: 0, //show a reconnect box to custom endpoint if needed. 0 is horde, otherwise its dropdown value+1
-		prev_custom_endpoint_model: "", //we may not be able to match, but set it if we do
+		prev_custom_endpoint_model_dict: {}, //we may not be able to match, but set it if we do
 		prev_custom_endpoint_ischatcmpl: true,
-		generate_images_mode: (localflag?0:1), //0=off, 1=horde, 2=a1111, 3=dalle, 4=comfy
+		generate_images_mode: (localflag?0:1), //0=off, 1=horde, 2=a1111, 3=dalle, 4=comfy, 5=pollinations
 
 		autoscroll: true, //automatically scroll to bottom on render
 		printer_view: false, //automatically scroll to bottom on render
@@ -4137,6 +4136,7 @@ Current version indicated by LITEVER below.
 		handle_mismatched_think: true,
 		think_injected: 0, //0=normal, 1=force
 		strip_thinking_mode: 1, //0=no stripping, 1=strip except recent, 2=strip all
+		reasoning_effort: "", //if set, reasoning level "none,minimal,low,medium,high", else default empty string
 		websearch_enabled: false,
 		websearch_multipass: false,
 		websearch_retain: false,
@@ -4837,12 +4837,14 @@ Current version indicated by LITEVER below.
 			if (before) {
 				input += `${before}`;
 			}
-			if (middle) {
+			if (middle && middle.trim()) {
 				input += `<span class="color_lightgreen">${middle}</span>`;
 			}
 			if (after) {
 				input += `${after}`;
 			}
+			input = input.replaceAll(thinkstartpl, escape_html(localsettings.start_thinking_tag));
+			input = input.replaceAll(thinkendpl, escape_html(localsettings.stop_thinking_tag));
 		}
 		input = replaceAll(input,"\n","<br>",false);
 		return input;
@@ -5238,7 +5240,7 @@ Current version indicated by LITEVER below.
 
 				//offer to reconnect
 				let pending_eptype = localsettings.prev_custom_endpoint_type;
-				let pending_custmodel = localsettings.prev_custom_endpoint_model;
+				let pending_custmodel = (localsettings.prev_custom_endpoint_model_dict?(localsettings.prev_custom_endpoint_model_dict[pending_eptype] || ""):"");
 				let pending_ischatcmpl = localsettings.prev_custom_endpoint_ischatcmpl;
 				if((window.eso.allowHordeEvenWithLocalAccess() && pending_eptype>0) || (localflag && pending_eptype==2))
 				{
@@ -7749,7 +7751,7 @@ Current version indicated by LITEVER below.
 			.replace(/\[(.*?)\]\(\)/gm, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>')
 			.replace(/\[(.*?)\]\((.*?)\)/gm, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
 
-			.replace(/^[\*+-][ .](.*)/gm, "<ul><li>$1</li></ul>")
+			.replace(/^[\*+-][ ](.*)/gm, "<ul><li>$1</li></ul>")
 			.replace(/\%SpcEtg\%(\d\d?)[.](.*)([\n]?)/gm, "\%SpcEtg\%\n$1.$2\n")
 			.replace(/(^\d\d?[ .] .*)\%SpcStg\%/gm, "$1\n\%SpcTemp\%") //fix misalign
 			.replace(/^(\d\d?)[ .] (.*)([\n]??)/gm, function(match, p1, p2) {
@@ -7958,7 +7960,7 @@ Current version indicated by LITEVER below.
 			if(data.data && data.data.length > 0)
 			{
 				let dropdown = get_custom_ep_model_dropdown("2");
-				update_oai_model_list(data,dropdown);
+				update_oai_model_list(data,dropdown,2);
 				onDone(data.data); //probe success
 			}
 			else
@@ -9142,18 +9144,23 @@ Current version indicated by LITEVER below.
 		let prompt = splits[0].trim();
 		let negprompt = (splits.length > 1 ? splits[1] : "");
 
-		const pollinations_params = new URLSearchParams({
+		let pollinations_params = new URLSearchParams({
 			model:req_payload.models[0],
 			seed:Math.floor(Math.random() * 99999999),
 			width: req_payload.params.width,
 			height: req_payload.params.height,
 			nologo: true,
 			private: true,
-			referrer: "koboldai",
-			key: localsettings.saved_dalle_key
+			referrer: "koboldai"
 		});
 
 		let gen_endpoint = `${pollinations_img_endpoint}/${encodeURIComponent(prompt)}?${pollinations_params.toString()}`;
+		if(localsettings.saved_dalle_url.toLowerCase().includes("gen.pollinations.ai"))
+		{
+			let gen_prefix = "https://gen.pollinations.ai/image";
+			pollinations_params.append('key', localsettings.saved_dalle_key);
+			gen_endpoint = `${gen_prefix}/${encodeURIComponent(prompt)}?${pollinations_params.toString()}`;
+		}
 
 		console.log(gen_endpoint);
 		let imgid = "PollAIimg"+(Math.floor(10000 + Math.random() * 90000)).toString();
@@ -10547,6 +10554,7 @@ Current version indicated by LITEVER below.
 					{
 						if (storyobj.savedaestheticsettings && storyobj.savedaestheticsettings != "") {
 							import_props_into_object(aestheticInstructUISettings, storyobj.savedaestheticsettings);
+							refreshAestheticPreview(false);
 						}
 					}
 				}
@@ -13504,7 +13512,7 @@ Current version indicated by LITEVER below.
 			});
 		});
 	}
-	function update_oai_model_list(data, dropdown)
+	function update_oai_model_list(data, dropdown, epchoice)
 	{
 		var lastOption = dropdown.lastElementChild;
 		for (var i = dropdown.options.length - 1; i >= 0; i--) {
@@ -13518,12 +13526,13 @@ Current version indicated by LITEVER below.
 			sortedarr.push(opt.id);
 		}
 		sortedarr.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+		let pending_custmodel = (localsettings.prev_custom_endpoint_model_dict?(localsettings.prev_custom_endpoint_model_dict[epchoice] || ""):"");
 		for(var i=0;i<sortedarr.length;++i)
 		{
 			var el = document.createElement("option");
 			el.textContent = sortedarr[i];
 			el.value = sortedarr[i];
-			if(localsettings.prev_custom_endpoint_model && sortedarr[i]==localsettings.prev_custom_endpoint_model)
+			if(pending_custmodel && sortedarr[i]==pending_custmodel)
 			{
 				selidx = i;
 				document.getElementById("useoaichatcompl").checked = localsettings.prev_custom_endpoint_ischatcmpl;
@@ -13579,7 +13588,7 @@ Current version indicated by LITEVER below.
 
 			if (!data.error && data.data && data.data.length > 0)
 			{
-				update_oai_model_list(data,dropdown);
+				update_oai_model_list(data,dropdown,epchoice);
 			}
 			else
 			{
@@ -13712,7 +13721,7 @@ Current version indicated by LITEVER below.
 			document.getElementById("oaidesc").classList.add("hidden");
 			document.getElementById("pollinationsdesc").classList.add("hidden");
 			document.getElementById("openrouterproviderbox").classList.add("hidden");
-			document.getElementById("oaireasoningeffort").value = localsettings.saved_oai_reasoning;
+			document.getElementById("oaireasoningeffort").value = localsettings.reasoning_effort;
 			if(epchoice==2)
 			{
 				document.getElementById("oaidesc").classList.remove("hidden");
@@ -14346,7 +14355,7 @@ Current version indicated by LITEVER below.
 					localsettings.saved_openrouter_key = custom_oai_key;
 					localsettings.saved_openrouter_provider = document.getElementById("openrouterproviders").value;
 				}
-				localsettings.saved_oai_reasoning = document.getElementById("oaireasoningeffort").value;
+				localsettings.reasoning_effort = document.getElementById("oaireasoningeffort").value;
 				localsettings.saved_oai_jailbreak = document.getElementById("jailbreakprompttext").value;
 				if(localsettings.saved_oai_jailbreak=="")
 				{
@@ -15896,10 +15905,6 @@ Current version indicated by LITEVER below.
 		mainmenu_untab(true);
 		document.getElementById("settingscontainer").classList.remove("hidden");
 		display_settings_tab(current_settings_tab_idx);
-
-		if(localsettings.generate_images_mode>=5){localsettings.generate_images_mode=0;} //todo: temp hack to remove pollinations images
-		if(localsettings.tts_mode>=6){localsettings.tts_mode=0;} //todo: temp hack to remove pollinations tts
-
 		document.getElementById("max_context_length").value = document.getElementById("max_context_length_slide").value = localsettings.max_context_length;
 		document.getElementById("max_length").value = document.getElementById("max_length_slide").value = localsettings.max_length;
 		document.getElementById("temperature").value = document.getElementById("temperature_slide").value = localsettings.temperature;
@@ -16984,6 +16989,7 @@ Current version indicated by LITEVER below.
 		}
 		localsettings.hide_think_stream = (document.getElementById("hide_think_stream").checked?true:false);
 		localsettings.handle_mismatched_think = (document.getElementById("handle_mismatched_think").checked?true:false);
+		localsettings.reasoning_effort = document.getElementById("reasoningeffort").value;
 
 		localsettings.tts_mode = document.getElementById("ttsselect").value;
 		localsettings.xtts_voice = document.getElementById("xtts_voices").value;
@@ -17275,6 +17281,7 @@ Current version indicated by LITEVER below.
 		document.getElementById("generate_images_dalle_container").classList.add("hidden");
 		document.getElementById("generate_images_local_model_container").classList.add("hidden");
 		document.getElementById("generate_images_comfy_container").classList.add("hidden");
+		document.getElementById("generate_images_pollinations_container").classList.add("hidden");
 		if(document.getElementById("generate_images_mode").value==1){
 			document.getElementById("generate_images_model_container").classList.remove("hidden");
 			if(!image_models_fetched)
@@ -17293,7 +17300,10 @@ Current version indicated by LITEVER below.
 		}else if(document.getElementById("generate_images_mode").value==4){
 			document.getElementById("generate_images_comfy_container").classList.remove("hidden");
 			connect_to_comfyui(silent);
-		}
+		}else if(document.getElementById("generate_images_mode").value==5)
+        {
+            document.getElementById("generate_images_pollinations_container").classList.remove("hidden");
+        }
 	}
 
 	function get_theme_desc(themeid)
@@ -21029,6 +21039,7 @@ Current version indicated by LITEVER below.
 			submit_payload.params.banned_tokens = get_token_bans();
 			submit_payload.params.render_special = localsettings.render_special_tags;
 			submit_payload.params.logprobs = localsettings.request_logprobs;
+			submit_payload.params.reasoning_effort = localsettings.reasoning_effort;
 			let st = get_instruct_starttag(true);
 			let et = get_instruct_endtag(true);
 			if(st=="{{[INPUT]}}" || et=="{{[OUTPUT]}}")
@@ -21343,10 +21354,20 @@ Current version indicated by LITEVER below.
 
 				if (document.getElementById("useoaichatcompl").checked)
 				{
-					let cannotreason = (targetep.toLowerCase().includes("text.pollinations.ai") || targetep.toLowerCase().includes("api.nvidia.com"));
+					let cannotreason = (targetep.toLowerCase().includes("text.pollinations.ai"));
 					if(!cannotreason)
 					{
-						let reasoneffort = document.getElementById("oaireasoningeffort").value;
+						let reasoneffort = localsettings.reasoning_effort;
+						if (targetep.toLowerCase().includes("api.nvidia.com")) {
+							if (reasoneffort=="minimal")
+							{
+								reasoneffort = "low";
+							}
+							if (reasoneffort != "low" && reasoneffort != "medium" && reasoneffort != "high") //only accepts low, medium and high
+							{
+								reasoneffort = "";
+							}
+						}
 						if(reasoneffort && reasoneffort!="")
 						{
 							oai_payload.reasoning_effort = reasoneffort;
@@ -21542,7 +21563,7 @@ Current version indicated by LITEVER below.
 				//pollinations always uses the exact same url for text gen regardless
 				if(targetep.toLowerCase().includes("text.pollinations.ai"))
 				{
-					targetep = apply_proxy_url(pollinations_text_endpoint,true);
+					targetep = pollinations_text_endpoint;
 					oai_payload.private = true;
 					oai_payload.referrer = "koboldai";
 					oai_payload.seed = Math.floor(Math.random() * 99999999);
@@ -22345,6 +22366,12 @@ Current version indicated by LITEVER below.
 			genimg_payload.models = [desired_model];
 			imgid = generate_comfy_image(genimg_payload, autoappend);
 		}
+		else if(localsettings.generate_images_mode==5) //pollinations
+        {
+            let desired_model = document.getElementById("generate_images_pollinations_model").value;
+            genimg_payload.models = [desired_model];
+            imgid = generate_pollinations_image(genimg_payload, autoappend);
+        }
 
 		return imgid;
 	}
@@ -26007,6 +26034,25 @@ Current version indicated by LITEVER below.
 		let et = get_instruct_endtag(false);
 		let sys = get_instruct_systag(false);
 
+		let ste = get_instruct_starttag_end(false);
+		let ete = get_instruct_endtag_end(false);
+		let foundpreset = find_matching_instruct_preset(st,et);
+		if(foundpreset && !ete && foundpreset.assistant_end && !ste && foundpreset.user_end)
+		{
+			ete = replaceAll(foundpreset.assistant_end, "\\n", "\n");
+			st = st.replace(ete,"");
+			ste = replaceAll(foundpreset.user_end, "\\n", "\n");
+			et = et.replace(ste,"");
+			if(ete)
+			{
+				input = replaceAll(input, ete, "");
+			}
+			if(ste)
+			{
+				input = replaceAll(input, ste, "");
+			}
+		}
+
 		let turns = repack_instruct_turns(input,st,et,sys,allow_blank);
 		return turns;
 	}
@@ -26844,7 +26890,10 @@ Current version indicated by LITEVER below.
 	function update_prev_custom_endpoint_type()
 	{
 		localsettings.prev_custom_endpoint_type = 0;
-		localsettings.prev_custom_endpoint_model = "";
+		if(!localsettings.prev_custom_endpoint_model_dict)
+		{
+			localsettings.prev_custom_endpoint_model_dict = {};
+		}
 		localsettings.prev_custom_endpoint_ischatcmpl = true;
 		if (custom_kobold_endpoint != "") {
 			localsettings.prev_custom_endpoint_type = 1;
@@ -26890,7 +26939,7 @@ Current version indicated by LITEVER below.
 			let dropdown = get_custom_ep_model_dropdown(localsettings.prev_custom_endpoint_type);
 			if(dropdown && dropdown.value)
 			{
-				localsettings.prev_custom_endpoint_model = dropdown.value;
+				localsettings.prev_custom_endpoint_model_dict[localsettings.prev_custom_endpoint_type] = dropdown.value;
 				localsettings.prev_custom_endpoint_ischatcmpl = document.getElementById("useoaichatcompl").checked?true:false;
 			}
 		}
@@ -27084,6 +27133,7 @@ Current version indicated by LITEVER below.
 		document.getElementById("stop_thinking_tag").value = localsettings.stop_thinking_tag;
 		document.getElementById("hide_think_stream").checked = (localsettings.hide_think_stream?true:false);
 		document.getElementById("handle_mismatched_think").checked = (localsettings.handle_mismatched_think?true:false);
+		document.getElementById("reasoningeffort").value = localsettings.reasoning_effort;
 	}
 
 	function populate_placeholder_tags()
@@ -28216,7 +28266,10 @@ Current version indicated by LITEVER below.
 	}
 
 	function hideAestheticUISettingsMenu(confirm) {
-		if (!confirm) { aestheticInstructUISettings = deepCopyAestheticSettings(tempAestheticInstructUISettings); updateUIFromData(); }
+		if (!confirm) {
+			aestheticInstructUISettings = deepCopyAestheticSettings(tempAestheticInstructUISettings);
+			refreshAestheticPreview(false);
+		}
 		tempAestheticInstructUISettings = null;
 		document.getElementById("aestheticsettingscontainer").classList.add("hidden");
 		render_gametext();
@@ -28340,7 +28393,7 @@ Current version indicated by LITEVER below.
 			var childInput = element.querySelector('.colorpickerchild');
 			if (childInput && newColor.includes("rgb")) {
 				childInput.value = rgb_to_hex(newColor);
-			} else {
+			} else if(childInput) {
 				childInput.value = newColor;
 			}
 		}
@@ -30793,6 +30846,7 @@ Current version indicated by LITEVER below.
 									<option value="2">KCPP / Forge / A1111</option>
 									<option value="3">OpenAI Compatible Img</option>
 									<option value="4">ComfyUI</option>
+									<option value="5">Pollinations.ai</option>
 								</select>
 							</div>
 						</div>
@@ -30850,6 +30904,16 @@ Current version indicated by LITEVER below.
 							<td><button type="button" class="btn btn-primary" style="width:100%; padding:2px 3px;margin-top:2px;font-size: var(--theme_font_size_medium);" onclick="set_dalle_model()">Model</button></td>
 							</tr></table>
 						</div>
+
+						<div id="generate_images_pollinations_container" class="settinglabel hidden settingsbox">
+                            <div class="settinglabel" style="display: flex; width: 100%">
+                            <div class="justifyleft">Model</div>
+                            <select title="Select Image Model" class="form-control push-right" id="generate_images_pollinations_model">
+                                <option value="turbo" selected>turbo</option>
+								<option value="flux">flux</option>
+                            </select>
+                            </div>
+                        </div>
 
 						<div>
 							<div class="settinglabel">
@@ -31287,6 +31351,19 @@ Current version indicated by LITEVER below.
 								<span class="helptext">Handles cases where the closing think block exists without the opening. Note that this only visually hides the broken thinking, it will still be treated like normal context.</span>
 							</span> </div>
 							<input title="Handle Mismatched Thinking" type="checkbox" id="handle_mismatched_think" class="push-right">
+						</div>
+						<div class="settinglabel">
+							<div class="justifyleft">Reasoning Effort <span class="helpicon">?<span class="helptext">If set, restricts thinking length to this many tokens before forcing a reply.</span></span></div>
+							<div class="push-right">
+								<select title="Reasoning Effort" class="form-control" style="display:inline;" id="reasoningeffort">
+									<option value="" selected>Reasoning: Default</option>
+									<option value="none">Reasoning: None</option>
+									<option value="minimal">Reasoning: Minimal</option>
+									<option value="low">Reasoning: Low</option>
+									<option value="medium">Reasoning: Medium</option>
+									<option value="high">Reasoning: High</option>
+								</select>
+							</div>
 						</div>
 					</div>
 
