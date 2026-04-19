@@ -752,9 +752,9 @@ static bool ggml_is_view_op(enum ggml_op op) {
 #ifndef GGML_SCHED_MAX_BACKENDS
 #define GGML_SCHED_MAX_BACKENDS 16
 #endif
-//kcpp yolo fix: decreased from 30 to 16 in order to try resolve tts oom issues.
+//kcpp yolo fix: decreased from 30 to 16 in order to try resolve tts oom issues. edit: reverted, new hack to solve kokoro added as kcpp_kokoro_alloc_hack
 #ifndef GGML_SCHED_MAX_SPLIT_INPUTS
-#define GGML_SCHED_MAX_SPLIT_INPUTS 16
+#define GGML_SCHED_MAX_SPLIT_INPUTS 30
 #endif
 
 #ifndef GGML_SCHED_MAX_COPIES
@@ -1731,6 +1731,9 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
     return GGML_STATUS_SUCCESS;
 }
 
+bool kcpp_kokoro_alloc_hack = false; //the kokoro allocation is too big due to the massive graph but there is nowhere else we can patch this
+//it doesnt need such a big alloc as there are not many graph splits. So, just adjust the allocation if triggered
+
 ggml_backend_sched_t ggml_backend_sched_new(
         ggml_backend_t * backends,
         ggml_backend_buffer_type_t * bufts,
@@ -1764,7 +1767,8 @@ ggml_backend_sched_t ggml_backend_sched_new(
     sched->hv_tensor_copies      = (ggml_tensor **) malloc(sched->hash_set.size * sched->n_backends * sched->n_copies * sizeof(struct ggml_tensor *));
 
     const size_t ggml_sched_max_splits = graph_size; // at most there is one split for each node in the graph
-    const size_t nodes_size = graph_size + ggml_sched_max_splits*GGML_SCHED_MAX_SPLIT_INPUTS*2;
+    const size_t alloc_mul_adjust = (kcpp_kokoro_alloc_hack?4:1); //kcpp: kokoro needs this as the graph size is too big
+    const size_t nodes_size = graph_size + ggml_sched_max_splits*GGML_SCHED_MAX_SPLIT_INPUTS*2/alloc_mul_adjust;
     sched->node_backend_ids = (int *) calloc(nodes_size, sizeof(sched->node_backend_ids[0]));
     sched->leaf_backend_ids = (int *) calloc(nodes_size, sizeof(sched->leaf_backend_ids[0]));
     sched->prev_node_backend_ids = (int *) calloc(nodes_size, sizeof(sched->prev_node_backend_ids[0]));
@@ -1773,7 +1777,7 @@ ggml_backend_sched_t ggml_backend_sched_new(
     sched->debug_graph_size = 0;
     sched->debug_prev_graph_size = 0;
 
-    sched->context_buffer_size = ggml_sched_max_splits*GGML_SCHED_MAX_SPLIT_INPUTS*2*sizeof(struct ggml_tensor) + ggml_graph_overhead_custom(graph_size, false);
+    sched->context_buffer_size = ggml_sched_max_splits*GGML_SCHED_MAX_SPLIT_INPUTS*2*sizeof(struct ggml_tensor)/alloc_mul_adjust + ggml_graph_overhead_custom(graph_size, false);
     sched->context_buffer = (char *) malloc(sched->context_buffer_size);
 
     const int initial_splits_capacity = 16;

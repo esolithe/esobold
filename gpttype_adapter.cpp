@@ -156,6 +156,7 @@ static bool check_slowness = false; //will display a suggestion to use highprior
 static bool showed_rnn_warning = false;
 static bool highpriority = false;
 static int rnn_reusable_slot_idx = -1;
+static std::string overridden_jinja_template = ""; //if set, overrides jinja template
 
 static int delayed_generated_tokens_limit = 0;
 std::deque<std::string> delayed_generated_tokens; //for use with antislop sampling
@@ -1754,9 +1755,63 @@ void sample_guidance(struct llama_context * ctx, struct llama_context * guidance
     }
 }
 
+static int apply_reasoning_budget(int id, const std::vector<int> & start_think, const std::vector<int> & end_think, std::vector<int> & think_end_phrase_toks, int budget)
+{
+    if(budget<0 || start_think.size()==0 || end_think.size()!=1 || think_end_phrase_toks.size()==0) //start_think can be 1-3 tokens long, end_think is always 1 token
+    {
+        return id;
+    }
+
+    int end_think_index = -1;
+    int start_think_index = -1;
+    int ctx_size = (int)current_context_tokens.size();
+
+    for (int i = ctx_size - 1; i >= 0; --i) { // Search backwards for the latest end_think token
+        if (end_think_index == -1 && current_context_tokens[i] == end_think[0]) {
+            end_think_index = i;
+        }
+        if (start_think_index == -1) {  // Search backwards for the latest start_think sequence
+            int seq_len = (int) start_think.size();
+            if (i - seq_len + 1 >= 0) {
+                bool match = true;
+                for (int j = 0; j < seq_len; ++j) {
+                    if (current_context_tokens[i - seq_len + 1 + j] != start_think[j]) {
+                        match = false;
+                        break;
+                    }
+                }
+                if (match) {
+                    start_think_index = i;  // index of the last token of the start_think sequence
+                }
+            }
+        }
+        if (start_think_index != -1 && end_think_index != -1) {  // Early exit once both are found
+            break;
+        }
+    }
+
+    if (start_think_index == -1) {  // If no start_think found, do nothing
+        return id;
+    }
+
+    if (end_think_index != -1 && end_think_index > start_think_index) { // If end_think comes after start_think, thinking is already closed
+        return id;
+    }
+
+    int tokens_since_start = ctx_size - 1 - start_think_index; // start_think is unclosed, check budget
+    if (tokens_since_start >= budget) {
+        int popped = think_end_phrase_toks[0]; // Force-close thinking by returning the end thinking phrase, pop front and return
+        think_end_phrase_toks.erase(think_end_phrase_toks.begin()); // Elements shift left
+        return popped;
+    }
+
+    return id;
+}
+
 int SampleLogits(const float * logits, int n_ctx, int n_vocab, int rep_pen_range, float rep_pen, float rep_pen_slope, float presence_penalty, float top_k, float top_a, float top_p, float min_p, float typical_p, float tfs, float nsigma, float temp, std::mt19937 & rng,
 int mirostat, float mirostat_tau, float mirostat_eta, float dry_multiplier, float dry_base, int dry_allowed_length, int dry_penalty_last_n, float xtc_threshold, float xtc_probability,
-const std::vector<samplers> & sampler_order, llama_grammar * grammar, float dynatemp_range, float dynatemp_exponent, float smoothing_factor, float smoothing_curve, float adaptive_target)
+const std::vector<samplers> & sampler_order, llama_grammar * grammar, float dynatemp_range, float dynatemp_exponent, float smoothing_factor, float smoothing_curve, float adaptive_target,
+const std::vector<int> & think_start_seq, const std::vector<int> & think_end_seq, std::vector<int> & think_end_phrase_toks, int reasoning_budget)
 {
     // printf("SampleLogits called with: n_ctx=%d, n_vocab=%d, rep_pen_range=%d, rep_pen=%f, rep_pen_slope=%f, presence_penalty=%f, top_k=%f, top_a=%f, top_p=%f, min_p=%f, typical_p=%f, tfs=%f, nsigma=%f, temp=%f, mirostat=%d, mirostat_tau=%f, mirostat_eta=%f, dry_multiplier=%f, dry_base=%f, dry_allowed_length=%d, dry_penalty_last_n=%d, xtc_threshold=%f, xtc_probability=%f, sampler_order_size=%zu, dynatemp_range=%f, dynatemp_exponent=%f, smoothing_factor=%f\n",
     // n_ctx, n_vocab, rep_pen_range, rep_pen, rep_pen_slope, presence_penalty, top_k, top_a, top_p, min_p, typical_p, tfs, nsigma, temp, mirostat, mirostat_tau, mirostat_eta, dry_multiplier, dry_base, dry_allowed_length, dry_penalty_last_n, xtc_threshold, xtc_probability, sampler_order.size(), dynatemp_range, dynatemp_exponent, smoothing_factor);
@@ -1775,6 +1830,19 @@ const std::vector<samplers> & sampler_order, llama_grammar * grammar, float dyna
     }
 
     llama_token_data_array candidates_p = { candidates.data(), candidates.size(), false };
+
+    //apply reasoning budget
+    int newid = apply_reasoning_budget(id, think_start_seq, think_end_seq, think_end_phrase_toks, kcpp_data->reasoning_budget);
+    if (id != newid) {
+        if(!is_quiet && debugmode!=-1)
+        {
+            printf("\n(Reasoning Budget of %d tokens exceeded! Finishing thinking...)\n", kcpp_data->reasoning_budget);
+        }
+        candidates[newid].logit += 99999;
+        sample_top_k(&candidates_p, 1);
+        id = sample_token(&candidates_p, rng);
+        return id;
+    }
 
     //dry always first as logits cannot be resorted
     sample_dry(n_ctx, dry_penalty_last_n, dry_multiplier, dry_base, dry_allowed_length, dry_sequence_breakers, &candidates_p);
@@ -1869,7 +1937,6 @@ const std::vector<samplers> & sampler_order, llama_grammar * grammar, float dyna
 
     return id;
 }
-
 
 static void grammar_accept_token(FileFormat file_format, int32_t n_vocab, struct llama_grammar * grammar, llama_token token)
 {
@@ -2159,6 +2226,7 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
     audio_multimodal_supported = false;
     vision_multimodal_supported = false;
     use_mrope = false;
+    overridden_jinja_template = inputs.jinja_template;
 
     auto clamped_max_context_length = inputs.max_context_length;
 
@@ -3206,6 +3274,10 @@ std::string gpttype_get_chat_template()
         printf("\nWarning: KCPP text generation not initialized!\n");
         return "";
     }
+    if(overridden_jinja_template!="")
+    {
+        return overridden_jinja_template;
+    }
     if(file_format!=FileFormat::GGUF_GENERIC || !llama_ctx_v4)
     {
         return "";
@@ -3488,7 +3560,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
     top_picks_history.clear();
     early_abort = false;
 
-    double time0 = 0, time1 = 0, time2 = 0;
+    double init_time = 0, process_time = 0, gen_time = 0;
     timer_start();
 
     bool media_data_changed = false;
@@ -3741,6 +3813,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
     kcpp_data->smoothing_curve = inputs.smoothing_curve;
     kcpp_data->adaptive_target = inputs.adaptive_target;
     kcpp_data->adaptive_decay = inputs.adaptive_decay;
+    kcpp_data->reasoning_budget = inputs.reasoning_budget;
 
     adaptive_p_weighted_sum = 0;
     adaptive_p_total_weight = 0;
@@ -3861,6 +3934,39 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
             }
         }
     }
+
+    //thinking budget handling
+    std::vector<int> thinking_start_sequence;
+    std::vector<int> thinking_end_sequence;
+    std::vector<int> thinking_end_phrase_toksleft;
+    std::string chat_template = "";
+    if (file_format == FileFormat::GGUF_GENERIC) {
+        chat_template = gpttype_get_chat_template();
+        if (file_format_meta.model_architecture == llm_arch::LLM_ARCH_GEMMA4) {
+            TokenizeString("<|channel>thought",thinking_start_sequence,file_format,false);
+            TokenizeString("<channel|>",thinking_end_sequence,file_format,false);
+            TokenizeString("\n(Reasoning Budget Exceeded)\n<channel|>",thinking_end_phrase_toksleft,file_format,false);
+            //sanity check, start is 2 tokens and end is 1
+            if(thinking_start_sequence.size()!=2 || thinking_end_sequence.size()!=1)
+            {
+                thinking_start_sequence.clear();
+                thinking_end_sequence.clear();
+                thinking_end_phrase_toksleft.clear();
+            }
+        } else {
+            TokenizeString("<think>",thinking_start_sequence,file_format,false);
+            TokenizeString("</think>",thinking_end_sequence,file_format,false);
+            TokenizeString("\n(Reasoning Budget Exceeded)\n</think>",thinking_end_phrase_toksleft,file_format,false);
+            //sanity check, start is 1 tokens and end is 1
+            if(thinking_start_sequence.size()!=1 || thinking_end_sequence.size()!=1)
+            {
+                thinking_start_sequence.clear();
+                thinking_end_sequence.clear();
+                thinking_end_phrase_toksleft.clear();
+            }
+        }
+    }
+
 
     bool stream_sse = inputs.stream_sse;
     bool allow_regular_prints = (!is_quiet && debugmode!=-1);
@@ -4384,9 +4490,9 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
     bool draft_used = false;
     int draft_successes = 0;
     int draft_failures = 0;
-    int realnprocessed = 0;
+    int real_n_processed = 0;
 
-    time0 = timer_check();
+    init_time = timer_check();
     timer_start();
 
     if(file_format == FileFormat::RWKV_1 || file_format==FileFormat::RWKV_2)
@@ -4452,7 +4558,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
         //print progress
         if (!startedsampling && allow_regular_prints)
         {
-            realnprocessed = embd_inp.size();
+            real_n_processed = embd_inp.size();
             printf("\rProcessing Prompt%s (%d / %zu tokens)", (blasmode ? " [BATCH]" : ""), input_consumed, embd_inp.size());
         }
         fflush(stdout);
@@ -4678,7 +4784,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
             if (!startedsampling)
             {
                 startedsampling = true;
-                time1 = timer_check();
+                process_time = timer_check();
                 timer_start();
                 if(allow_regular_prints)
                 {
@@ -4835,7 +4941,8 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                 kcpp_data->mirostat, kcpp_data->mirostat_tau, kcpp_data->mirostat_eta,
                 kcpp_data->dry_multiplier, kcpp_data->dry_base,
                 kcpp_data->dry_allowed_length, kcpp_data->dry_penalty_last_n, kcpp_data->xtc_threshold, kcpp_data->xtc_probability,
-                sampler_order, grammar, dynatemp_range, dynatemp_exponent, smoothing_factor, smoothing_curve, adaptive_target);
+                sampler_order, grammar, dynatemp_range, dynatemp_exponent, smoothing_factor, smoothing_curve, adaptive_target,
+                thinking_start_sequence, thinking_end_sequence, thinking_end_phrase_toksleft, kcpp_data->reasoning_budget);
 
                 if (adaptive_target > 0.0f) {
                     float original_prob = original_candidates[id].p;
@@ -5238,21 +5345,21 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
         llama_perf_context_print(llama_ctx_v4);
     }
 
-    time2 = timer_check();
-    float pt1 = (time1*1000.0/(embd_inp.size()==0?1:embd_inp.size()));
-    float ts1 = (pt1>0?(1000.0/pt1):0);
-    int realnpredict = kcpp_data->n_predict-remaining_tokens;
-    float pt2 = (time2*1000.0/(realnpredict<=0?1:realnpredict));
-    float ts2 = (pt2>0?(1000.0/pt2):0);
-    float tottime = (time1 + time2);
-    float tokens_per_second = tottime>0?(realnpredict <= 0 ? 0 : realnpredict / tottime):0;
+    gen_time = timer_check();
+    float pt1 = (process_time*1000.0/(embd_inp.size()==0?1:embd_inp.size()));
+    float processed_tps = (pt1>0?(1000.0/pt1):0);
+    int real_n_generated = kcpp_data->n_predict-remaining_tokens;
+    float pt2 = (gen_time*1000.0/(real_n_generated<=0?1:real_n_generated));
+    float generated_tps = (pt2>0?(1000.0/pt2):0);
+    float total_time = (init_time + process_time + gen_time);
     printf("\n[%s] CtxLimit:%d/%d, Init:%.2fs, Processed:%d in %.2fs (%.2fT/s), Generated:%d/%d in %.2fs (%.2fT/s), Total:%.2fs",
-    get_timestamp_str().c_str(),(int)current_context_tokens.size(),(int)nctx, realnprocessed, time0, time1, ts1, realnpredict, kcpp_data->n_predict, time2, ts2, (time1 + time2));
+    get_timestamp_str().c_str(),(int)current_context_tokens.size(),(int)nctx, init_time, real_n_processed, process_time, processed_tps, real_n_generated, kcpp_data->n_predict, gen_time, generated_tps, total_time);
+
     if(debugmode==1 && !is_quiet && (draft_successes+draft_failures)>0)
     {
         printf("\n(Draft Results - Success:%d, Failure:%d)",draft_successes,draft_failures);
     }
-    if(check_slowness && ts2<2.0f)
+    if(check_slowness && generated_tps<2.0f)
     {
         check_slowness = false;
         if(!is_quiet)
@@ -5262,13 +5369,13 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
     }
     fflush(stdout);
     output.status = 1;
-    int finaltokcount = (int)current_context_tokens.size()-realnpredict;
+    int finaltokcount = (int)current_context_tokens.size()-real_n_generated;
     output.prompt_tokens = (finaltokcount<0?0:finaltokcount);
-    output.completion_tokens = realnpredict;
+    output.completion_tokens = real_n_generated;
     output.stopreason = last_stop_reason;
     last_eval_time = pt2;
     last_process_time = pt1;
-    last_token_count = realnpredict;
+    last_token_count = real_n_generated;
     last_input_count = (finaltokcount<0?0:finaltokcount);
     last_seed = kcpp_data->seed;
     last_draft_failed = draft_failures;

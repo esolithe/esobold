@@ -148,6 +148,7 @@ has_audio_support = False
 has_vision_support = False
 has_whisper = False
 cached_chat_template = None
+cached_sd_info = {}
 savedata_obj = None
 mcp_connections = [] #every element is linked to one mcp source, contains obj {"client":obj, "tools":[]}
 mcp_lock = threading.Lock()
@@ -170,6 +171,7 @@ embedded_kcpp_sdui_gz = None
 embedded_lcpp_ui_gz = None
 embedded_musicui = None
 embedded_musicui_gz = None
+preloaded_custom_jinja = ""
 voicebank = {}
 voicelist = ["kobo","cheery","sleepy","shouty","chatty"]
 sslvalid = False
@@ -274,6 +276,7 @@ class load_model_inputs(ctypes.Structure):
                 ("quant_k", ctypes.c_int),
                 ("quant_v", ctypes.c_int),
                 ("check_slowness", ctypes.c_bool),
+                ("jinja_template", ctypes.c_char_p),
                 ("highpriority", ctypes.c_bool),
                 ("swa_support", ctypes.c_bool),
                 ("swa_padding", ctypes.c_int),
@@ -340,7 +343,8 @@ class generation_inputs(ctypes.Structure):
                 ("logit_biases_len", ctypes.c_int),
                 ("logit_biases", ctypes.POINTER(logit_bias)),
                 ("banned_tokens_len", ctypes.c_int),
-                ("banned_tokens", ctypes.POINTER(ctypes.c_char_p))]
+                ("banned_tokens", ctypes.POINTER(ctypes.c_char_p)),
+                ("reasoning_budget", ctypes.c_int)]
 
 class generation_outputs(ctypes.Structure):
     _fields_ = [("status", ctypes.c_int),
@@ -842,7 +846,9 @@ def init_library():
 
     libname = lib_default
 
-    if args.noavx2: #failsafe implies noavx2 always
+    if not args: # debug helper: koboldcpp.py loaded by external script
+        pass
+    elif args.noavx2: #failsafe implies noavx2 always
         if args.failsafe and (args.usevulkan is not None) and file_exists(lib_vulkan_failsafe):
             libname = lib_vulkan_failsafe
         elif (args.usevulkan is not None) and file_exists(lib_vulkan_noavx2):
@@ -1991,6 +1997,7 @@ def load_model(model_filename):
     inputs.override_tensors = args.overridetensors.encode("UTF-8") if args.overridetensors else "".encode("UTF-8")
     inputs.moecpu = (200 if args.moecpu > 200 else args.moecpu)
     inputs.check_slowness = (not args.highpriority and os.name == 'nt' and 'Intel' in platform.processor())
+    inputs.jinja_template = preloaded_custom_jinja.encode("UTF-8")
     inputs.highpriority = args.highpriority
     inputs.swa_support = args.useswa
     inputs.swa_padding = args.swapadding if args.useswa else 0
@@ -2045,6 +2052,7 @@ def generate(genparams, stream_flag=False):
     ban_eos_token = genparams.get('ban_eos_token', False)
     stream_sse = stream_flag
     grammar = genparams.get('grammar', '')
+
     #translate grammar if its json
     try:
         grammarjson = json.loads(grammar)
@@ -2110,6 +2118,19 @@ def generate(genparams, stream_flag=False):
         if max_length >= (max_context_length-min_remain_hardlimit):
             max_length = max_context_length-min_remain_hardlimit
 
+    reasoning_effort = genparams.get('reasoning_effort', '')
+    reasoning_effort = reasoning_effort.strip().lower() if reasoning_effort else ''
+    reasoning_budget = -1
+    if reasoning_effort == "none":
+        reasoning_budget = 0
+    elif reasoning_effort == "minimal":
+        reasoning_budget = tryparseint(0.1 * max_length,-1)  # 10% of gen amount
+    elif reasoning_effort == "low":
+        reasoning_budget = tryparseint(0.25 * max_length,-1)  # 25% of gen amount
+    elif reasoning_effort == "medium":
+        reasoning_budget = tryparseint(0.5 * max_length,-1)  # 50% of gen amount
+    else:
+        pass #unrestricted
 
     inputs.max_context_length = max_context_length   # this will resize the context buffer if changed
     inputs.max_length = max_length
@@ -2221,6 +2242,8 @@ def generate(genparams, stream_flag=False):
     for n, tok in enumerate(banned_tokens):
         inputs.banned_tokens[n] = tok.encode("UTF-8")
 
+    inputs.reasoning_budget = reasoning_budget
+
     currentusergenkey = genkey
     totalgens += 1
     #early exit if aborted
@@ -2252,9 +2275,49 @@ def sd_get_info():
         print("An error occurred while getting sd metadata info")
     return {}
 
-def sd_get_available_schedulers():
-    info = sd_get_info()
-    return info.get('available_schedulers', [])
+sampler_aliases = [
+    # sd.cpp name, UI name, aliases
+    ['euler',         'Euler',    'k_euler'],
+    ['euler_a',       'Euler A',  'k_euler_a', 'euler a'],
+    ['heun',          'Heun',     'k_heun'],
+    ['dpm2',          'DPM2',     'k_dpm_2'],
+    ['lcm',           'LCM',      'k_lcm'],
+    ['dpm++2m',       'DPM++ 2M', 'k_dpmpp_2m', 'dpm++ 2m karras', 'dpm++ 2m'],
+    ['ddim_trailing', 'DDIM',     'ddim'],
+    ['res_multistep', 'Res Multistep', 'k_res_multistep', 'res multistep'],
+    ['res_2s',        'Res 2s',        'k_res_2s', 'res 2s'],
+]
+
+def sd_sampler_canonical_name(name):
+    global cached_sd_info
+    available = cached_sd_info.get('available_samplers', [])
+    alias_map = {}
+    for aliases in sampler_aliases:
+        for alias in aliases:
+            alias_map[alias] = aliases[0]
+            alias_map[alias.lower()] = aliases[0]
+    cname = alias_map.get(name.lower(), name)
+    if cname in available:
+        return cname
+    return 'default'
+
+def sd_sdapi_samplers():
+    global cached_sd_info
+    result = []
+    available = set(cached_sd_info.get('available_samplers', []))
+    # ensure we only advertise supported samplers
+    smap = {}
+    for aliases in sampler_aliases:
+        if aliases[0] in available:
+            smap[aliases[1]] = aliases[0:1] + aliases[2:]
+            available.remove(aliases[0])
+    for sampler in available:
+        if sampler not in smap:
+            smap[sampler] = []
+    result = [{'name': k, 'aliases': v, 'options':{}}
+                  for k, v in smap.items()]
+    return result
+
 
 sd_convdirect_choices = ['off', 'vaeonly', 'full']
 
@@ -2582,7 +2645,7 @@ def sd_generate(genparams):
     seed = tryparseint(genparams.get("seed", -1),-1)
     if seed < 0:
         seed = random.randint(100000, 999999)
-    sample_method = (genparams.get("sampler_name") or "default").lower()
+    sample_method = (genparams.get("sampler_name") or "default")
     scheduler = (genparams.get("scheduler") or "default").lower()
     clip_skip = tryparseint(genparams.get("clip_skip", -1),-1)
     vid_req_frames = tryparseint(genparams.get("frames", 1),1)
@@ -2635,7 +2698,7 @@ def sd_generate(genparams):
     inputs.width = width
     inputs.height = height
     inputs.seed = ((seed + 2**31) % 2**32) - 2**31
-    inputs.sample_method = sample_method.encode("UTF-8")
+    inputs.sample_method = sd_sampler_canonical_name(sample_method).encode("UTF-8")
     inputs.scheduler = scheduler.encode("UTF-8")
     inputs.clip_skip = clip_skip
     inputs.vid_req_frames = vid_req_frames
@@ -7292,7 +7355,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                     recvtxt = None
                     currfinishreason = "tool_calls"
                     if args.debugmode:
-                        print(f"Debug ToolCall Response: {json.dumps(tool_calls)}")
+                        print(f"\nDebug ToolCall Response: {json.dumps(tool_calls)}")
 
         modelNameToReturn = friendlymodelname
         if autoswapmode and textName is not None:
@@ -7998,7 +8061,7 @@ Change Mode<br>
 
     def do_GET(self):
         global embedded_kailite, embedded_kcpp_docs, embedded_kcpp_sdui, embedded_kailite_gz, embedded_kcpp_docs_gz, embedded_kcpp_sdui_gz, embedded_lcpp_ui_gz, embedded_musicui, embedded_musicui_gz
-        global last_req_time, start_time, cached_chat_template, has_vision_support, has_audio_support, has_whisper, friendlymodelname
+        global last_req_time, start_time, cached_chat_template, cached_sd_info, has_vision_support, has_audio_support, has_whisper, friendlymodelname
         global savedata_obj, has_multiplayer, multiplayer_turn_major, multiplayer_turn_minor, multiplayer_story_data_compressed, multiplayer_dataformat, multiplayer_lastactive, maxctx, maxhordelen, friendlymodelname, lastuploadedcomfyimg, lastgeneratedcomfyimg, KcppVersion, totalgens, preloaded_story, exitcounter, currentusergenkey, friendlysdmodelname, fullsdmodelpath, password, friendlyembeddingsmodelname, voicelist
         global autoswapmode, textName, sttName, ttsName, embedName, musicName, imageName, mmprojName
 
@@ -8456,13 +8519,12 @@ Change Mode<br>
             if (friendlysdmodelname=="inactive" or fullsdmodelpath=="") and not(autoswapmode and imageName is not None):
                 response_body = (json.dumps([]).encode())
             else:
-                response_body = (json.dumps([{"name":"Euler","aliases":["k_euler"],"options":{}},{"name":"Euler a","aliases":["k_euler_a","k_euler_ancestral"],"options":{}},{"name":"Heun","aliases":["k_heun"],"options":{}},{"name":"DPM2","aliases":["k_dpm_2"],"options":{}},{"name":"DPM++ 2M","aliases":["k_dpmpp_2m"],"options":{}},{"name":"DDIM","aliases":["ddim"],"options":{}},{"name":"LCM","aliases":["k_lcm"],"options":{}},{"name":"Res 2s","aliases":["k_res_2s"],"options":{}},{"name":"Res Multistep","aliases":["k_res_multistep"],"options":{}},
-                      {"name":"Default","aliases":["default"],"options":{}}]).encode())
+                response_body = (json.dumps(sd_sdapi_samplers()).encode())
         elif clean_path.endswith('/sdapi/v1/schedulers'):
             if (friendlysdmodelname=="inactive" or fullsdmodelpath=="") and not(autoswapmode and imageName is not None):
                 response_body = (json.dumps([]).encode())
             else:
-                response_body = (json.dumps([{"name":name,"label":name} for name in sd_get_available_schedulers()]).encode())
+                response_body = (json.dumps([{"name":name,"label":name} for name in cached_sd_info.get('available_schedulers', [])]).encode())
         elif clean_path.endswith('/sdapi/v1/latent-upscale-modes'):
            response_body = (json.dumps([]).encode())
         elif clean_path.endswith('/sdapi/v1/upscalers'):
@@ -10816,6 +10878,7 @@ def show_gui():
     customrope_base = ctk.StringVar(value="10000")
     customrope_nativectx = ctk.StringVar(value=str(default_native_ctx))
     chatcompletionsadapter_var = ctk.StringVar(value="AutoGuess")
+    jinjatemplate_var = ctk.StringVar()
     jinja_var = ctk.IntVar(value=0)
     jinja_tools_var = ctk.IntVar(value=0)
     jinja_kwargs_var = ctk.StringVar()
@@ -11635,10 +11698,11 @@ def show_gui():
         if fnam:
             chatcompletionsadapter_var.set(fnam)
     ctk.CTkButton(model_tab, 64, text="Pick Premade", command=pickpremadetemplate).grid(row=24, column=0, padx=(350), pady=2, stick="nw")
+    makefileentry(model_tab, "Jinja Template:", "Select a custom Jinja chat template", jinjatemplate_var, 30, width=280, filetypes=[("Jinja Template", "*.jinja")], singlerow=True, tooltiptxt="Select a custom Jinja chat template, will overwrite model jinja chat template")
 
     mmproj_var.trace_add("write", gui_changed_modelfile)
     draftmodel_var.trace_add("write", gui_changed_modelfile)
-    makefileentry(model_tab, "Download Dir:", "Select directory to store all model downloads", download_dir_var, 27, width=280, singlerow=True, dialog_type=2, tooltiptxt="Specify a directory to store any downloaded models.")
+    makefileentry(model_tab, "Download Dir:", "Select directory to store all model downloads", download_dir_var, 35, width=280, singlerow=True, dialog_type=2, tooltiptxt="Specify a directory to store any downloaded models.")
     makecheckbox(model_tab, "Allow Launch Without Models", nomodel, 40, tooltiptxt="Allows running the WebUI with no model loaded.")
 
     # Network Tab
@@ -12005,6 +12069,8 @@ def show_gui():
         args.jinja_tools = (jinja_tools_var.get()==1)
         if jinja_kwargs_var.get() != "":
             args.jinja_kwargs = jinja_kwargs_var.get()
+        if jinjatemplate_var.get() != "":
+            args.jinjatemplate = jinjatemplate_var.get()
         args.enableguidance = (enableguidance_var.get()==1)
         args.overridekv = None if override_kv_var.get() == "" else override_kv_var.get()
         args.overridetensors = None if override_tensors_var.get() == "" else override_tensors_var.get()
@@ -12307,6 +12373,7 @@ def show_gui():
         if isinstance(jinja_kwargs, type({})):
             jinja_kwargs = json.dumps(jinja_kwargs)
         jinja_kwargs_var.set(jinja_kwargs)
+        jinjatemplate_var.set(mydict["jinjatemplate"] if ("jinjatemplate" in mydict and mydict["jinjatemplate"]) else "")
 
         enableguidance_var.set(mydict["enableguidance"] if ("enableguidance" in mydict) else 0)
         if "overridekv" in mydict and mydict["overridekv"]:
@@ -13981,7 +14048,7 @@ def disableSwappedFieldsInConfig(args, swapReqType):
 
 def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
     global embedded_kailite, embedded_kcpp_docs, embedded_kcpp_sdui, embedded_kailite_gz, embedded_kcpp_docs_gz, embedded_kcpp_sdui_gz, embedded_lcpp_ui_gz, embedded_musicui, embedded_musicui_gz, start_time, exitcounter, global_memory, using_gui_launcher
-    global libname, args, friendlymodelname, friendlysdmodelname, fullsdmodelpath, password, fullwhispermodelpath, ttsmodelpath, embeddingsmodelpath, musicdiffusionmodelpath, musicllmmodelpath, friendlyembeddingsmodelname, has_audio_support, has_vision_support, cached_chat_template
+    global libname, args, friendlymodelname, friendlysdmodelname, fullsdmodelpath, password, fullwhispermodelpath, ttsmodelpath, embeddingsmodelpath, musicdiffusionmodelpath, musicllmmodelpath, friendlyembeddingsmodelname, has_audio_support, has_vision_support, cached_chat_template, cached_sd_info, preloaded_custom_jinja
 
     start_server = True
 
@@ -14221,6 +14288,23 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
         dlfile = download_model_from_url(args.musicvae,[".gguf"],min_file_size=500000)
         if dlfile:
             args.musicvae = dlfile
+    if args.mcpfile and args.mcpfile!="":
+        dlfile = download_model_from_url(args.mcpfile,[".json"],min_file_size=64)
+        if dlfile:
+            args.mcpfile = dlfile
+    if args.jinjatemplate and args.jinjatemplate!="":
+        dlfile = download_model_from_url(args.jinjatemplate,[".jinja"],min_file_size=64)
+        if dlfile:
+            args.jinjatemplate = dlfile
+
+    if args.jinjatemplate and os.path.exists(args.jinjatemplate):
+        try:
+            print(f"Using custom Jinja template: {args.jinjatemplate}")
+            with open(args.jinjatemplate, 'r', encoding='utf-8', errors='ignore') as f:
+                preloaded_custom_jinja = f.read()
+        except Exception as e:
+            print(f"Error loading jinja templat: {e}")
+            preloaded_custom_jinja = ""
 
     # sanitize and replace the default vanity name. remember me....
     if args.model_param and args.model_param!="":
@@ -14524,6 +14608,7 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
             friendlysdmodelname = os.path.splitext(friendlysdmodelname)[0]
             friendlysdmodelname = sanitize_string(friendlysdmodelname)
             loadok = sd_load_model(imgmodel,imgvae,imgt5xxl,imgclip1,imgclip2,imgphotomaker,imgupscaler)
+            cached_sd_info = sd_get_info()
             print("Load Image Model OK: " + str(loadok))
             if not loadok:
                 exitcounter = 999
@@ -15038,7 +15123,8 @@ if __name__ == '__main__':
     advparser.add_argument("--chatcompletionsadapter", metavar=('[filename]'), help="Select an optional ChatCompletions Adapter JSON file to force custom instruct tags.", default="AutoGuess")
     advparser.add_argument("--jinja", help="Enables using jinja chat template formatting for chat completions endpoint. Other endpoints are unaffected. Tool calls are done without jinja.", action='store_true')
     advparser.add_argument("--jinja_tools","--jinja-tools","--jinjatools", help="Enables using jinja chat template formatting for chat completions endpoint. Other endpoints are unaffected. Tool calls are done with jinja.", action='store_true')
-    advparser.add_argument("--jinja_kwargs","--jinja-kwargs","--jinjakwargs","--chat-template-kwargs", metavar=('{"parameter":"value",...}'), help="Set additiona fields for Jinja JSON template parser, must be a valid JSON object.", default="")
+    advparser.add_argument("--jinja_kwargs","--jinja-kwargs","--jinjakwargs","--chat-template-kwargs", metavar=('{"parameter":"value",...}'), help="Set additional fields for Jinja JSON template parser, must be a valid JSON object.", default="")
+    advparser.add_argument("--jinjatemplate","--chat-template-file", metavar=('[filename]'), help="Select a custom Jinja chat template, will overwrite model jinja chat template", default="")
     advparser.add_argument("--noflashattention","--no-flash-attn","-nofa", help="Disables flash attention.", action='store_true')
     advparser.add_argument("--lowvram","-nkvo","--no-kv-offload", help="If supported by the backend, do not offload KV to GPU (lowvram mode). Not recommended, will be slow.", action='store_true')
     advparser.add_argument("--quantkv", help="Sets the KV cache data type quantization, options are f16/bf16/q8_0/q5_1/q4_0. Requires Flash Attention for full effect, otherwise only K cache is quantized.",metavar=('[quantization level f16/bf16/q8_0/q5_1/q4_0]'), type=str, choices=["f16","bf16","q8_0","q5_1","q4_0","0","1","2","3"], default="f16")
