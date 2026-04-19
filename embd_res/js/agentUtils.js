@@ -487,6 +487,26 @@ let getCommandsSchema = (commands = getEnabledCommands()) => {
 	}
 }
 
+let getObjectGNBF = async (object) => {
+	let opt = {
+		method: 'POST', // or 'PUT'
+		headers: get_kobold_header(),
+		body: JSON.stringify({ schema: getCommandsSchema([object]) }),
+	}
+
+	return fetch(`${custom_kobold_endpoint}/api/extra/json_to_grammar`, opt)
+		.then((response) => response.json())
+		.then(resp => {
+			if (!!resp && !!resp?.success) {
+				return resp.result
+			}
+			else {
+				// Generic JSON response if it fails
+				return "root   ::= object\nvalue  ::= object | array | string | number | (\"true\" | \"false\" | \"null\") ws\n\nobject ::=\n  \"{\" ws (\n            string \":\" ws value\n    (\",\" ws string \":\" ws value)*\n  )? \"}\" ws\n\narray  ::=\n  \"[\" ws (\n            value\n    (\",\" ws value)*\n  )? \"]\" ws\n\nstring ::=\n  \"\\\"\" (\n    [^\"\\\\\\x7F\\x00-\\x1F] |\n    \"\\\\\" ([\"\\\\bfnrt] | \"u\" [0-9a-fA-F]{4}) # escapes\n  )* \"\\\"\" ws\n\nnumber ::= (\"-\"? ([0-9] | [1-9] [0-9]{0,15})) (\".\" [0-9]+)? ([eE] [-+]? [0-9] [1-9]{0,15})? ws\n\n# Optional space: by convention, applied in this grammar after literal chars when allowed\nws ::= | \" \" | \"\\n\" [ \\t]{0,20}"
+			}
+		})
+}
+
 let getCommandsGNBF = async (commands = getEnabledCommands()) => {
 	let opt = {
 		method: 'POST', // or 'PUT'
