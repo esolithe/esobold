@@ -13594,7 +13594,7 @@ def launch_OpenLumara(launch_args):
                 "--channels.settings.webui.port", f"{OpenLumara_default_webui_port}",
                 # "--model.name", f"MODEL_HERE",
                 "--core.data_folder", f"{launch_args.OpenLumara_datadir if launch_args.OpenLumara_datadir is not None else 'data'}",
-                "--modules.settings.files.sandbox_folder", f"{launch_args.OpenLumara_sandboxfolder if launch_args.OpenLumara_sandboxfolder is not None else 'sandbox'}"
+                "--modules.settings.sandboxed_files", f"{launch_args.OpenLumara_sandboxfolder if launch_args.OpenLumara_sandboxfolder is not None else 'sandbox'}"
                 ]
         
         for arg in args_to_add:
