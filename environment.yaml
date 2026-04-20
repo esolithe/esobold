@@ -14,7 +14,7 @@ dependencies:
   - ninja
   - make
   - packaging
-  - pyinstaller
+  - pyinstaller=6.10
   - libcblas
   - ocl-icd-system
   - libvulkan-loader
