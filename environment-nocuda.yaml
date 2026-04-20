@@ -39,3 +39,4 @@ dependencies:
     - discord.py
     - python-telegram-bot
     - matrix-nio
+    - beautifulsoup4

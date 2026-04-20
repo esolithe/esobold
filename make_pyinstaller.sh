@@ -1,7 +1,7 @@
 #!/bin/bash
 chmod +x "./create_ver_file.sh"
 . create_ver_file.sh
-pyinstaller --noconfirm --onefile --clean --console --collect-all customtkinter --collect-all jinja2 --collect-all psutil --collect-all pdfplumber --collect-all PyMuPdf --collect-all fitz --collect-all tqdm --collect-all chardet --collect-all openai --collect-all tiktoken --hidden-import=tiktoken_ext.openai_public --hidden-import=tiktoken_ext --collect-all prompt_toolkit --collect-all msgpack --collect-all numpy --collect-all asyncssh --collect-all yaml --collect-all json_repair --collect-all aiofiles --collect-all ulid --collect-all requests --collect-all flask --collect-all discord --collect-all telegram --collect-all matrix-nio --add-data "./esoExtras/opticlaw:./esoExtras/opticlaw" --icon "./niko.ico" \
+pyinstaller --noconfirm --onefile --clean --console --collect-all customtkinter --collect-all jinja2 --collect-all psutil --collect-all pdfplumber --collect-all PyMuPdf --collect-all fitz --collect-all tqdm --collect-all chardet --collect-all openai --collect-all tiktoken --hidden-import=tiktoken_ext.openai_public --hidden-import=tiktoken_ext --collect-all prompt_toolkit --collect-all msgpack --collect-all numpy --collect-all asyncssh --collect-all yaml --collect-all json_repair --collect-all aiofiles --collect-all ulid --collect-all requests --collect-all flask --collect-all discord --collect-all telegram --collect-all matrix-nio --collect-all bs4 --add-data "./esoExtras/opticlaw:./esoExtras/opticlaw" --icon "./niko.ico" \
 --add-data "./kcpp_adapters:./kcpp_adapters" \
 --add-data "./koboldcpp.py:." \
 --add-data "./json_to_gbnf.py:." \
