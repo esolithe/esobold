@@ -96,6 +96,79 @@ let confirmFsMutation = async (mutationName, payload = {}) => {
 	)
 }
 
+let getAgentFsContentCharLimit = () => {
+	let parsedLimit = parseInt(`${localsettings?.agentFsContentCharLimit ?? 5000}`)
+	if (!Number.isFinite(parsedLimit) || parsedLimit <= 0) {
+		return 5000
+	}
+	return parsedLimit
+}
+
+let limitFsContentResultForAgent = (result, limit = 5000) => {
+	let truncateEntry = (entry) => {
+		if (!entry || !Array.isArray(entry.lines)) {
+			return entry
+		}
+
+		let usedCharacters = 0
+		let didTruncate = false
+		let truncatedLines = []
+		for (let lineObj of entry.lines) {
+			let lineContent = `${lineObj?.content ?? ""}`
+			if (usedCharacters >= limit) {
+				didTruncate = true
+				break
+			}
+			let remainingCharacters = limit - usedCharacters
+			if (lineContent.length <= remainingCharacters) {
+				truncatedLines.push({ ...lineObj, content: lineContent })
+				usedCharacters += lineContent.length
+				continue
+			}
+
+			truncatedLines.push({ ...lineObj, content: lineContent.substring(0, remainingCharacters) })
+			usedCharacters += remainingCharacters
+			didTruncate = true
+			break
+		}
+
+		if (!didTruncate) {
+			return entry
+		}
+
+		let totalLines = parseInt(`${entry?.total_lines ?? 0}`, 10) || 0
+		let startLine = parseInt(`${entry?.start_line ?? 0}`, 10) || 0
+		let endLine = parseInt(`${entry?.end_line ?? 0}`, 10) || 0
+		let wholeFileWasRequested = totalLines > 0 && startLine <= 1 && endLine >= totalLines
+		let fallbackTotalCharacters = Array.isArray(entry.lines)
+			? entry.lines.reduce((sum, lineObj) => sum + `${lineObj?.content ?? ""}`.length, 0)
+			: 0
+		let totalCharacters = parseInt(`${entry?.total_characters ?? fallbackTotalCharacters}`, 10) || fallbackTotalCharacters
+
+		return {
+			...entry,
+			lines: truncatedLines,
+			end_line: truncatedLines.length > 0 ? truncatedLines[truncatedLines.length - 1].line : 0,
+			total_characters: totalCharacters,
+			truncated_by_agent_char_limit: true,
+			agent_content_char_limit: limit,
+			returned_content_characters: usedCharacters,
+			truncation_note: wholeFileWasRequested
+				? `Content truncated to ${limit} characters for agent context. File totals: ${totalLines} lines, ${totalCharacters} characters.`
+				: `Content truncated to ${limit} characters for agent context.`,
+		}
+	}
+
+	if (Array.isArray(result?.results)) {
+		return {
+			...result,
+			results: result.results.map(entry => truncateEntry(entry)),
+		}
+	}
+
+	return truncateEntry(result)
+}
+
 let generateA1111ImageBase64 = async (prompt, aspect, sourceImageBase64 = "", extraImages = []) => {
 	let styledPrompt = `${prompt || ""}`
 	if (!!localsettings.image_styles && localsettings.image_styles !== "") {
@@ -772,7 +845,8 @@ export const buildFilesystemCommands = (ctx) => {
 						throw new Error("operations must be a non-empty array of {path, start, end} objects.")
 					}
 					let result = await window.fsClient.content(operations)
-					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: content result\n${objToText(result)}`)
+					let limitedResult = limitFsContentResultForAgent(result, getAgentFsContentCharLimit())
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: content result\n${objToText(limitedResult)}`)
 				}
 				catch (e) {
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: content failed - ${e?.message || e}`)

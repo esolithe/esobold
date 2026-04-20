@@ -676,7 +676,7 @@ let getFinalAgentPrompt = (agentRunState, commands, objectiveForCurrentAction) =
             `- Prefer generateTextFromAI for simple prose output.`,
             `- Prefer triggerAgentResponse only when an actual agent loop/action workflow is needed.`
         ].join("\n")
-        prompt.push(`When using content from the file system in web pages, access is hosted on /fs/<path>. For example, to access the file at /test.html you would use <current host>/fs/test.html. To save a file, include the file path and content in the command input, for example {"path": "/test.txt", "content": "This is a test"}`)
+        prompt.push(`When using content from the file system in web pages, access is hosted on "./<path>". For example, to access the file at /test.png you would use src="./test.png". All paths used to access the file system hosted APIs should be relative. To save a file, include the file path and content in the command input, for example {"path": "/test.txt", "content": "This is a test"}.`)
         prompt.push(embeddedFunctionGuidance)
     }
 

@@ -5530,13 +5530,14 @@ def fs_read_lines(path, start_line=1, end_line=None):
     content_bytes = entry.get("content", b"")
     if fs_is_binary(content_bytes):
         raise ValueError(f"Filesystem file is binary and cannot be read as lines: {normalized_path}")
-    lines = fs_decode_text(content_bytes).splitlines()
+    text_content = fs_decode_text(content_bytes)
+    lines = text_content.splitlines()
     start_idx = max(1, tryparseint(start_line, 1))
     end_idx = len(lines) if (end_line is None or min(-1, tryparseint(end_line, -1)) == -1) else max(start_idx, tryparseint(end_line, start_idx))
     selected = []
     for line_number in range(start_idx, min(end_idx, len(lines)) + 1):
         selected.append({"line": line_number, "content": lines[line_number - 1]})
-    return normalized_path, lines, selected
+    return normalized_path, lines, selected, len(text_content)
 
 def fs_apply_line_updates(path, line_updates, start_line=1, append=False):
     normalized_path = fs_normalize_path(path)
@@ -8293,12 +8294,13 @@ Change Mode<br>
                         p = path_args[index]
                         start_line = _pick_query_arg(start_args, index, 1, "start")
                         end_line = _pick_query_arg(end_args, index, None, "end")
-                        normalized_path, all_lines, selected_lines = fs_read_lines(p, start_line, end_line)
+                        normalized_path, all_lines, selected_lines, total_characters = fs_read_lines(p, start_line, end_line)
                         return {
                             "path": normalized_path,
                             "start_line": selected_lines[0]["line"] if selected_lines else 0,
                             "end_line": selected_lines[-1]["line"] if selected_lines else 0,
                             "total_lines": len(all_lines),
+                            "total_characters": total_characters,
                             "lines": selected_lines,
                         }
                     response_body = (json.dumps(fs_batch_apply(list(range(len(path_args))), _read_for_index, item_key="index")).encode())
