@@ -2408,6 +2408,8 @@ def sd_comfyui_tranform_params(genparams):
 
 # json with top-level dict
 def parse_json_object(value, field):
+    if not value:
+        return None
     broken = False
     if isinstance(value, str):
         retry = False
