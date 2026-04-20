@@ -225,6 +225,8 @@ display_settings = () => {
     document.getElementById("agentMaxActionsInHistorynumeric").value = localsettings.agentMaxActionsInHistory;
     document.getElementById("agentSkipPreviousCOTWhenProcessing").checked = localsettings.agentSkipPreviousCOTWhenProcessing;
     document.getElementById("agentStreamThinking").checked = localsettings.agentStreamThinking;
+    document.getElementById("agentFsContentCharLimit").value = localsettings.agentFsContentCharLimit || 5000;
+    document.getElementById("agentFsContentCharLimitnumeric").value = localsettings.agentFsContentCharLimit || 5000;
     document.getElementById("agentLumaraPollingRate").value = localsettings.agentLumaraPollingRate || 0;
     document.getElementById("agentLumaraPollingRatenumeric").value = localsettings.agentLumaraPollingRate || 0;
     document.getElementById("disableSaveCompressionLocally").checked = localsettings.disableSaveCompressionLocally;
@@ -264,6 +266,7 @@ confirm_settings = () => {
     localsettings.agentMaxActionsInHistory = document.getElementById("agentMaxActionsInHistory").value;
     localsettings.agentSkipPreviousCOTWhenProcessing = (document.getElementById("agentSkipPreviousCOTWhenProcessing").checked ? true : false);
     localsettings.agentStreamThinking = (document.getElementById("agentStreamThinking").checked ? true : false);
+    localsettings.agentFsContentCharLimit = document.getElementById("agentFsContentCharLimit").value || 5000;
     localsettings.agentLumaraPollingRate = document.getElementById("agentLumaraPollingRate").value || 0;
     localsettings.disableSaveCompressionLocally = (document.getElementById("disableSaveCompressionLocally").checked ? true : false);
     localsettings.enableRunningMemory = (document.getElementById("enableRunningMemory").checked ? true : false);
@@ -326,7 +329,7 @@ window.addEventListener('load', () => {
             localsettings.agentAutoContinueMode = localsettings.agentAutoContinue ? "auto" : "prompt"
         }
         else {
-            localsettings.agentAutoContinueMode = "auto"
+            localsettings.agentAutoContinueMode = "disabled"
         }
     }
     if (localsettings?.agentAutoContinue == undefined) {
@@ -346,6 +349,9 @@ window.addEventListener('load', () => {
     }
     if (localsettings?.agentStreamThinking == undefined) {
         localsettings.agentStreamThinking = true
+    }
+    if (localsettings?.agentFsContentCharLimit == undefined) {
+        localsettings.agentFsContentCharLimit = 5000
     }
     if (localsettings?.disableSaveCompressionLocally == undefined) {
         localsettings.disableSaveCompressionLocally = true
@@ -653,6 +659,9 @@ window.addEventListener('load', () => {
     agentElems.push(settingLabelElem)
 
     settingLabelElem = createSettingElemBool("agentStreamThinking", "Stream agent thinking", "When enabled, shows the LLM output tokens as they are generated during each agent step, rather than waiting for the full response. For the standard mode this requires KoboldCpp SSE streaming support (v1.40+). For OAI tools mode, streaming is used automatically.")
+    agentElems.push(settingLabelElem)
+
+    settingLabelElem = createSettingElemRange("agentFsContentCharLimit", "FS content character limit", "Maximum file-content characters sent to agent context per file read via fs_content. If content is truncated, the response includes total file lines and characters.", 500, 100000, 100, 5000)
     agentElems.push(settingLabelElem)
 
     settingLabelElem = createSettingElemRange("agentLumaraPollingRate", "Lumara polling rate", "Defines the rate at which the agent polls Lumara for new messages (in seconds). Zero means no polling.", 0, 1000, 1, is_using_kcpp_with_open_lumara() ? 60 : 0)

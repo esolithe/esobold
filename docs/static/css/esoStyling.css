@@ -274,6 +274,28 @@
 		flex-direction: column;
 		gap: 10px;
 		padding: 12px;
+		background-color: var(--theme_color_bg_popups);
+	}
+
+	.agent-user-input-inline {
+		display: flex;
+		flex-direction: column;
+		border-radius: 6px;
+		overflow: hidden;
+		background-color: var(--theme_color_bg_popups);
+		border: 1px solid var(--theme_color_border);
+		color: var(--theme_color_fg);
+	}
+
+	.agent-user-input-inline > .agent-user-input-header {
+		background-color: var(--theme_color_accent_bg);
+		color: var(--theme_color_fg);
+		border-radius: 0;
+	}
+
+	.agent-user-input-inline > div:not(.agent-user-input-header) {
+		padding: 12px;
+		background-color: var(--theme_color_bg_popups);
 	}
 
 	.agent-user-input-suggestions,
@@ -370,6 +392,32 @@
 	.agent-user-input-status {
 		opacity: 0.85;
 		white-space: pre-wrap;
+	}
+
+	.agent-fs-picker-overlay {
+		background-color: rgba(0, 0, 0, 0.45);
+	}
+
+	.agent-fs-picker-popup {
+		width: min(1180px, 96vw);
+		max-height: 92vh;
+	}
+
+	.agent-fs-picker-body {
+		padding: 0;
+		height: min(76vh, 900px);
+	}
+
+	.agent-fs-picker-frame {
+		width: 100%;
+		height: 100%;
+		min-height: 540px;
+		border: 0;
+		background: transparent;
+	}
+
+	.agent-fs-picker-close {
+		margin-left: auto;
 	}
 
 	/* Context usage floating popup */

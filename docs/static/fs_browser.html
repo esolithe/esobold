@@ -14,6 +14,7 @@
                 <nav id="breadcrumbs"></nav>
             </div>
             <div id="header-right">
+                <button id="btn-view-mode" class="btn btn-secondary" type="button" aria-pressed="false">&#9638; Tile View</button>
                 <a id="btn-zip" class="btn btn-secondary" href="#">&#8659; Download ZIP</a>
                 <button id="btn-create-folder" class="btn btn-secondary" type="button">&#128193; New Folder</button>
                 <label class="btn btn-primary" id="upload-label">
@@ -52,6 +53,7 @@
                     <tr id="loading-row"><td colspan="4">Loading&hellip;</td></tr>
                 </tbody>
             </table>
+            <div id="tile-grid" hidden></div>
         </div>
 
         <div id="empty-notice" hidden>

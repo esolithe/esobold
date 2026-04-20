@@ -6,6 +6,18 @@
     'use strict';
 
     const DIR_MARKER_NAME = '.kcpp_dir_marker';
+    const VIEW_MODE_KEY = 'kcpp_fs_view_mode';
+    const urlParams = new URLSearchParams(window.location.search || '');
+    const isPickerMode = urlParams.get('picker') === '1';
+    const shouldForceTileView = urlParams.get('view') === 'tile';
+    const pickerSelectedEntries = new Map();
+    const MEDIA_EXT_RE = {
+        image: /\.(png|jpe?g|gif|webp|bmp|svg|avif)$/i,
+        video: /\.(mp4|webm|mov|mkv|m4v|avi)$/i,
+        audio: /\.(mp3|wav|ogg|m4a|flac|aac)$/i,
+    };
+
+    let currentViewMode = 'list';
 
     // ── Utilities ──────────────────────────────────────────────────────
 
@@ -45,6 +57,173 @@
         }, isError ? 4000 : 2500);
     }
 
+    function getFileKind(name) {
+        if (MEDIA_EXT_RE.image.test(name)) return 'image';
+        if (MEDIA_EXT_RE.video.test(name)) return 'video';
+        if (MEDIA_EXT_RE.audio.test(name)) return 'audio';
+        return 'other';
+    }
+
+    function loadViewMode() {
+        try {
+            const stored = localStorage.getItem(VIEW_MODE_KEY);
+            return stored === 'tile' ? 'tile' : 'list';
+        } catch (_) {
+            return 'list';
+        }
+    }
+
+    function saveViewMode(mode) {
+        try {
+            localStorage.setItem(VIEW_MODE_KEY, mode);
+        } catch (_) {
+            // Ignore storage failures (private mode/quota).
+        }
+    }
+
+    function setViewMode(mode) {
+        currentViewMode = mode === 'tile' ? 'tile' : 'list';
+        saveViewMode(currentViewMode);
+        const viewBtn = document.getElementById('btn-view-mode');
+        if (viewBtn) {
+            const isTile = currentViewMode === 'tile';
+            viewBtn.innerHTML = isTile ? '&#8801; List View' : '&#9638; Tile View';
+            viewBtn.setAttribute('aria-pressed', String(isTile));
+        }
+    }
+
+    function pickerQuerySuffix() {
+        if (!isPickerMode) {
+            return '';
+        }
+        return '?picker=1&view=tile';
+    }
+
+    function notifyPickerParent(type, payload) {
+        if (!isPickerMode || !window.parent || window.parent === window) {
+            return;
+        }
+        try {
+            window.parent.postMessage(Object.assign({ type }, payload || {}), window.location.origin);
+        } catch (_) {}
+    }
+
+    function updatePickerSelectionStatus() {
+        if (!isPickerMode) {
+            return;
+        }
+        const useBtn = document.getElementById('btn-picker-use-selected');
+        const embedBtn = document.getElementById('btn-picker-embed-selected');
+        const hint = document.getElementById('picker-selection-hint');
+        if (!useBtn || !embedBtn || !hint) {
+            return;
+        }
+        const count = pickerSelectedEntries.size;
+        useBtn.disabled = count === 0;
+        embedBtn.disabled = count === 0;
+        useBtn.textContent = count > 0 ? `Use selected (${count})` : 'Use selected';
+        embedBtn.textContent = count > 0 ? `Embed selected (${count})` : 'Embed selected';
+        hint.textContent = count > 0
+            ? `${count} file${count === 1 ? '' : 's'} selected`
+            : 'Select one or more files to continue';
+    }
+
+    function setPickerSelection(path, shouldSelect) {
+        setPickerEntrySelection(path, false, shouldSelect);
+    }
+
+    function setPickerEntrySelection(path, isDirectory, shouldSelect) {
+        if (!path) {
+            return;
+        }
+        const key = `${isDirectory ? 'dir' : 'file'}:${path}`;
+        if (shouldSelect) {
+            pickerSelectedEntries.set(key, { path, isDirectory: !!isDirectory });
+        } else {
+            pickerSelectedEntries.delete(key);
+        }
+        updatePickerSelectionStatus();
+    }
+
+    function togglePickerSelection(path) {
+        togglePickerEntrySelection(path, false);
+    }
+
+    function togglePickerEntrySelection(path, isDirectory) {
+        if (!path) {
+            return;
+        }
+        const key = `${isDirectory ? 'dir' : 'file'}:${path}`;
+        setPickerEntrySelection(path, isDirectory, !pickerSelectedEntries.has(key));
+    }
+
+    function bindPickerSelectionHandlers(container) {
+        if (!isPickerMode) {
+            return;
+        }
+
+        container.querySelectorAll('[data-picker-toggle-file]').forEach(elem => {
+            elem.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                let filePath = elem.dataset.pickerToggleFile || '';
+                togglePickerSelection(filePath);
+                let isSelected = pickerSelectedEntries.has(`file:${filePath}`);
+                elem.classList.toggle('picker-selected', isSelected);
+                elem.setAttribute('aria-pressed', String(isSelected));
+            });
+        });
+
+        container.querySelectorAll('[data-picker-toggle-dir]').forEach(elem => {
+            elem.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                let dirPath = elem.dataset.pickerToggleDir || '';
+                togglePickerEntrySelection(dirPath, true);
+                let isSelected = pickerSelectedEntries.has(`dir:${dirPath}`);
+                elem.classList.toggle('picker-selected', isSelected);
+                elem.setAttribute('aria-pressed', String(isSelected));
+            });
+        });
+
+        container.querySelectorAll('[data-picker-file-anchor]').forEach(anchor => {
+            anchor.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                let filePath = anchor.dataset.pickerFileAnchor || '';
+                togglePickerSelection(filePath);
+                let row = anchor.closest('[data-picker-toggle-file]');
+                if (row) {
+                    let isSelected = pickerSelectedEntries.has(`file:${filePath}`);
+                    row.classList.toggle('picker-selected', isSelected);
+                    row.setAttribute('aria-pressed', String(isSelected));
+                }
+            });
+        });
+
+        container.querySelectorAll('[data-picker-dir-anchor]').forEach(anchor => {
+            anchor.addEventListener('click', (e) => {
+                // Directory anchors keep native navigation in picker mode.
+                e.stopPropagation();
+            });
+        });
+
+        container.querySelectorAll('[data-picker-select-dir-btn]').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                let dirPath = btn.dataset.pickerSelectDirBtn || '';
+                togglePickerEntrySelection(dirPath, true);
+                let row = btn.closest('[data-picker-toggle-dir]');
+                if (row) {
+                    let isSelected = pickerSelectedEntries.has(`dir:${dirPath}`);
+                    row.classList.toggle('picker-selected', isSelected);
+                    row.setAttribute('aria-pressed', String(isSelected));
+                }
+            });
+        });
+    }
+
     // ── Path helpers ───────────────────────────────────────────────────
 
     /**
@@ -72,8 +251,8 @@
 
     /** Build href for navigating to a fs directory. */
     function dirHref(dir) {
-        if (dir === '/') return '/fs/';
-        return '/fs' + encodeURIPath(dir.endsWith('/') ? dir : dir + '/');
+        if (dir === '/') return '/fs/' + pickerQuerySuffix();
+        return '/fs' + encodeURIPath(dir.endsWith('/') ? dir : dir + '/') + pickerQuerySuffix();
     }
 
     /** Build href for a fs file. */
@@ -103,7 +282,7 @@
     function renderBreadcrumbs(dir) {
         const el = document.getElementById('breadcrumbs');
         const parts = dir === '/' ? [] : dir.replace(/\/$/, '').split('/').filter(Boolean);
-        let html = '<a href="/fs/">/ (root)</a>';
+        let html = `<a href="${esc(dirHref('/'))}">/ (root)</a>`;
         let accumulated = '/';
         for (let i = 0; i < parts.length; i++) {
             accumulated += parts[i] + '/';
@@ -178,12 +357,82 @@
         } catch (_) { return null; }
     }
 
+    function tilePreviewHtml(filePath, fileName) {
+        const href = esc(fileHref(filePath));
+        const kind = getFileKind(fileName);
+        if (kind === 'image') {
+            if (isPickerMode) {
+                return `<div class="tile-preview"><img src="${href}" alt="${esc(fileName)}"></div>`;
+            }
+            return `<a class="tile-preview" href="${href}" target="_blank" rel="noopener noreferrer"><img src="${href}" alt="${esc(fileName)}"></a>`;
+        }
+        if (kind === 'video') {
+            return `<div class="tile-preview"><video src="${href}" controls preload="metadata"></video></div>`;
+        }
+        if (kind === 'audio') {
+            return `<div class="tile-preview"><audio src="${href}" controls preload="metadata"></audio></div>`;
+        }
+        return '<div class="tile-preview">&#128196;</div>';
+    }
+
+    function bindDeleteHandlers(container, dir) {
+        container.querySelectorAll('[data-delete]').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const path = btn.dataset.delete;
+                if (!confirm(`Delete "${path}"?`)) return;
+                try {
+                    const r = await fetch('/api/extra/fs/delete', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ operations: [{ path }] }),
+                    });
+                    const data = await r.json();
+                    if (data.success) {
+                        showToast(`Deleted ${path}`, false);
+                        renderListing(dir);
+                    } else {
+                        showToast(`Delete failed: ${data.error || 'unknown error'}`, true);
+                    }
+                } catch (e) {
+                    showToast(`Delete error: ${e}`, true);
+                }
+            });
+        });
+
+        container.querySelectorAll('[data-delete-dir]').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const path = btn.dataset.deleteDir;
+                if (!confirm(`Delete folder "${path}" and all contents?`)) return;
+                try {
+                    const r = await fetch('/api/extra/fs/rmdir', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ operations: [{ path }] }),
+                    });
+                    const data = await r.json();
+                    if (data.success) {
+                        showToast(`Deleted folder ${path}`, false);
+                        renderListing(dir);
+                    } else {
+                        showToast(`Folder delete failed: ${data.error || 'unknown error'}`, true);
+                    }
+                } catch (e) {
+                    showToast(`Folder delete error: ${e}`, true);
+                }
+            });
+        });
+    }
+
     async function renderListing(dir) {
         const tbody = document.getElementById('listing-body');
+        const tileGrid = document.getElementById('tile-grid');
         const emptyNotice = document.getElementById('empty-notice');
         const listContainer = document.getElementById('listing-container');
 
         tbody.innerHTML = '<tr id="loading-row"><td colspan="4">Loading\u2026</td></tr>';
+        tileGrid.innerHTML = '';
+        tileGrid.hidden = true;
+        listContainer.classList.remove('tile-mode');
 
         // Fetch all files/directories
         let allPaths = [];
@@ -221,9 +470,74 @@
         listContainer.hidden = false;
         emptyNotice.hidden = true;
 
+        // Files metadata for either rendering mode
+        const fileMetaPromises = files.map(f => {
+            const filePath = dir === '/' ? '/' + f : dir.replace(/\/$/, '') + '/' + f;
+            return fetchMetadata(filePath).then(meta => ({ f, filePath, meta }));
+        });
+        const fileMetas = await Promise.all(fileMetaPromises);
+
+        if (currentViewMode === 'tile') {
+            const tiles = [];
+
+            if (parent !== null) {
+                tiles.push(`<article class="tile-card entry-parent">
+                    <a class="tile-name" href="${esc(dirHref(parent))}">&#128194; ..</a>
+                </article>`);
+            }
+
+            for (const d of dirs) {
+                const childDir = dir === '/' ? '/' + d + '/' : dir + d + '/';
+                const isDirSelected = isPickerMode && pickerSelectedEntries.has(`dir:${childDir}`);
+                const dirTileClass = `tile-card entry-dir${isDirSelected ? ' picker-selected' : ''}`;
+                const dirTileAttrs = isPickerMode ? ` data-picker-toggle-dir="${esc(childDir)}" aria-pressed="${isDirSelected ? 'true' : 'false'}"` : '';
+                const dirActions = isPickerMode
+                    ? `<div class="tile-actions"><button class="btn btn-secondary" data-picker-select-dir-btn="${esc(childDir)}" title="Select folder">Select folder</button></div>`
+                    : `<div class="tile-actions"><button class="btn btn-danger" data-delete-dir="${esc(childDir)}" title="Delete Folder">&#128465;</button></div>`;
+                tiles.push(`<article class="${dirTileClass}"${dirTileAttrs}>
+                    <div class="tile-preview">&#128193;</div>
+                    <div class="tile-meta">
+                        <a class="tile-name" href="${esc(dirHref(childDir))}" data-picker-dir-anchor="${esc(childDir)}">${esc(d)}/</a>
+                        <div class="tile-sub">Folder</div>
+                    </div>
+                    ${dirActions}
+                </article>`);
+            }
+
+            for (const { f, filePath, meta } of fileMetas) {
+                const size = meta ? formatBytes(meta.size_bytes != null ? meta.size_bytes : meta.size) : '—';
+                const mod = meta ? formatDate(meta.last_modified != null ? meta.last_modified : meta.modified) : '—';
+                const isSelected = isPickerMode && pickerSelectedEntries.has(`file:${filePath}`);
+                const tileClasses = `tile-card entry-file${isSelected ? ' picker-selected' : ''}`;
+                const tileAttributes = isPickerMode ? ` data-picker-toggle-file="${esc(filePath)}" aria-pressed="${isSelected ? 'true' : 'false'}"` : '';
+                const nameAnchor = isPickerMode
+                    ? `<a class="tile-name" href="#" data-picker-file-anchor="${esc(filePath)}">${esc(f)}</a>`
+                    : `<a class="tile-name" href="${esc(fileHref(filePath))}" target="_blank" rel="noopener noreferrer">${esc(f)}</a>`;
+                tiles.push(`<article class="${tileClasses}"${tileAttributes}>
+                    ${tilePreviewHtml(filePath, f)}
+                    <div class="tile-meta">
+                        ${nameAnchor}
+                        <div class="tile-sub">${esc(size)} | ${esc(mod)}</div>
+                    </div>
+                    ${isPickerMode ? '<div class="tile-actions"><span class="picker-chip">Tap to select</span></div>' : `<div class="tile-actions"><button class="btn btn-danger" data-delete="${esc(filePath)}" title="Delete">&#128465;</button></div>`}
+                </article>`);
+            }
+
+            tbody.innerHTML = '';
+            tileGrid.innerHTML = tiles.join('');
+            tileGrid.hidden = false;
+            listContainer.classList.add('tile-mode');
+            if (isPickerMode) {
+                bindPickerSelectionHandlers(tileGrid);
+                updatePickerSelectionStatus();
+            } else {
+                bindDeleteHandlers(tileGrid, dir);
+            }
+            return;
+        }
+
         const rows = [];
 
-        // Parent link
         if (parent !== null) {
             rows.push(`<tr class="entry-parent">
                 <td class="col-name"><a href="${esc(dirHref(parent))}">&#128194; ..</a></td>
@@ -233,84 +547,46 @@
             </tr>`);
         }
 
-        // Directories (no metadata needed)
         for (const d of dirs) {
             const childDir = dir === '/' ? '/' + d + '/' : dir + d + '/';
-            rows.push(`<tr class="entry-dir">
-                <td class="col-name">&#128193; <a href="${esc(dirHref(childDir))}">${esc(d)}/</a></td>
+            const isDirSelected = isPickerMode && pickerSelectedEntries.has(`dir:${childDir}`);
+            const dirRowClass = `entry-dir${isDirSelected ? ' picker-selected' : ''}`;
+            const dirRowAttrs = isPickerMode ? ` data-picker-toggle-dir="${esc(childDir)}" aria-pressed="${isDirSelected ? 'true' : 'false'}"` : '';
+            const dirActions = isPickerMode
+                ? `<button class="btn btn-secondary" data-picker-select-dir-btn="${esc(childDir)}" title="Select folder">Select folder</button>`
+                : `<button class="btn btn-danger" data-delete-dir="${esc(childDir)}" title="Delete Folder">&#128465;</button>`;
+            rows.push(`<tr class="${dirRowClass}"${dirRowAttrs}>
+                <td class="col-name">&#128193; <a href="${esc(dirHref(childDir))}" data-picker-dir-anchor="${esc(childDir)}">${esc(d)}/</a></td>
                 <td class="col-size">—</td>
                 <td class="col-modified">—</td>
-                <td class="col-actions"><button class="btn btn-danger" data-delete-dir="${esc(childDir)}" title="Delete Folder">&#128465;</button></td>
+                <td class="col-actions">${dirActions}</td>
             </tr>`);
         }
 
-        // Files — fetch metadata in parallel for size/date
-        const fileMetaPromises = files.map(f => {
-            const filePath = dir === '/' ? '/' + f : dir.replace(/\/$/, '') + '/' + f;
-            return fetchMetadata(filePath).then(meta => ({ f, filePath, meta }));
-        });
-        const fileMetas = await Promise.all(fileMetaPromises);
-
         for (const { f, filePath, meta } of fileMetas) {
             const size = meta ? formatBytes(meta.size_bytes != null ? meta.size_bytes : meta.size) : '—';
-            const mod  = meta ? formatDate(meta.last_modified != null ? meta.last_modified : meta.modified) : '—';
-            rows.push(`<tr class="entry-file">
-                <td class="col-name">&#128196; <a href="${esc(fileHref(filePath))}" target="_blank" rel="noopener noreferrer">${esc(f)}</a></td>
+            const mod = meta ? formatDate(meta.last_modified != null ? meta.last_modified : meta.modified) : '—';
+            const isSelected = isPickerMode && pickerSelectedEntries.has(`file:${filePath}`);
+            const rowClasses = `entry-file${isSelected ? ' picker-selected' : ''}`;
+            const rowAttributes = isPickerMode ? ` data-picker-toggle-file="${esc(filePath)}" aria-pressed="${isSelected ? 'true' : 'false'}"` : '';
+            const nameAnchor = isPickerMode
+                ? `<a href="#" data-picker-file-anchor="${esc(filePath)}">${esc(f)}</a>`
+                : `<a href="${esc(fileHref(filePath))}" target="_blank" rel="noopener noreferrer">${esc(f)}</a>`;
+            rows.push(`<tr class="${rowClasses}"${rowAttributes}>
+                <td class="col-name">&#128196; ${nameAnchor}</td>
                 <td class="col-size">${esc(size)}</td>
                 <td class="col-modified">${esc(mod)}</td>
-                <td class="col-actions"><button class="btn btn-danger" data-delete="${esc(filePath)}" title="Delete">&#128465;</button></td>
+                <td class="col-actions">${isPickerMode ? '<span class="picker-chip">Select</span>' : `<button class="btn btn-danger" data-delete="${esc(filePath)}" title="Delete">&#128465;</button>`}</td>
             </tr>`);
         }
 
         tbody.innerHTML = rows.join('');
-
-        // Delete handlers
-        tbody.querySelectorAll('[data-delete]').forEach(btn => {
-            btn.addEventListener('click', async () => {
-                const path = btn.dataset.delete;
-                if (!confirm(`Delete "${path}"?`)) return;
-                try {
-                    const r = await fetch('/api/extra/fs/delete', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ operations: [{ path }] }),
-                    });
-                    const data = await r.json();
-                    if (data.success) {
-                        showToast(`Deleted ${path}`, false);
-                        renderListing(dir);
-                    } else {
-                        showToast(`Delete failed: ${data.error || 'unknown error'}`, true);
-                    }
-                } catch (e) {
-                    showToast(`Delete error: ${e}`, true);
-                }
-            });
-        });
-
-        // Folder delete handlers
-        tbody.querySelectorAll('[data-delete-dir]').forEach(btn => {
-            btn.addEventListener('click', async () => {
-                const path = btn.dataset.deleteDir;
-                if (!confirm(`Delete folder "${path}" and all contents?`)) return;
-                try {
-                    const r = await fetch('/api/extra/fs/rmdir', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ operations: [{ path }] }),
-                    });
-                    const data = await r.json();
-                    if (data.success) {
-                        showToast(`Deleted folder ${path}`, false);
-                        renderListing(dir);
-                    } else {
-                        showToast(`Folder delete failed: ${data.error || 'unknown error'}`, true);
-                    }
-                } catch (e) {
-                    showToast(`Folder delete error: ${e}`, true);
-                }
-            });
-        });
+        if (isPickerMode) {
+            bindPickerSelectionHandlers(tbody);
+            updatePickerSelectionStatus();
+        } else {
+            bindDeleteHandlers(tbody, dir);
+        }
     }
 
     // ── Upload ─────────────────────────────────────────────────────────
@@ -447,6 +723,11 @@
 
     function init() {
         const dir = currentFsDir();
+        setViewMode(shouldForceTileView ? 'tile' : loadViewMode());
+
+        if (isPickerMode) {
+            document.body.classList.add('fs-picker-mode');
+        }
 
         renderBreadcrumbs(dir);
         renderListing(dir);
@@ -459,21 +740,92 @@
             zipBtn.href = '/fs.zip?dir=' + encodeURIComponent(dir.replace(/\/$/, ''));
         }
 
+        if (isPickerMode) {
+            let uploadLabel = document.getElementById('upload-label');
+            let createFolderBtn = document.getElementById('btn-create-folder');
+            let headerRight = document.getElementById('header-right');
+            let dropzone = document.getElementById('dropzone');
+
+            if (zipBtn) {
+                zipBtn.hidden = true;
+            }
+            if (uploadLabel) {
+                uploadLabel.hidden = true;
+            }
+            if (createFolderBtn) {
+                createFolderBtn.hidden = true;
+            }
+            if (dropzone) {
+                dropzone.hidden = true;
+            }
+
+            let hint = document.createElement('span');
+            hint.id = 'picker-selection-hint';
+            hint.className = 'picker-selection-hint';
+            hint.textContent = 'Select one or more files to continue';
+
+            let cancelBtn = document.createElement('button');
+            cancelBtn.type = 'button';
+            cancelBtn.className = 'btn btn-secondary';
+            cancelBtn.textContent = 'Cancel';
+            cancelBtn.addEventListener('click', () => {
+                notifyPickerParent('kcpp-fs-picker-cancel', {});
+            });
+
+            let useSelectedBtn = document.createElement('button');
+            useSelectedBtn.type = 'button';
+            useSelectedBtn.id = 'btn-picker-use-selected';
+            useSelectedBtn.className = 'btn btn-primary';
+            useSelectedBtn.textContent = 'Use selected';
+            useSelectedBtn.disabled = true;
+            useSelectedBtn.addEventListener('click', () => {
+                notifyPickerParent('kcpp-fs-picker-use-as-text', { files: Array.from(pickerSelectedEntries.values()) });
+            });
+
+            let embedSelectedBtn = document.createElement('button');
+            embedSelectedBtn.type = 'button';
+            embedSelectedBtn.id = 'btn-picker-embed-selected';
+            embedSelectedBtn.className = 'btn btn-primary';
+            embedSelectedBtn.textContent = 'Embed selected';
+            embedSelectedBtn.disabled = true;
+            embedSelectedBtn.addEventListener('click', () => {
+                notifyPickerParent('kcpp-fs-picker-select', { files: Array.from(pickerSelectedEntries.values()) });
+            });
+
+            headerRight.appendChild(hint);
+            headerRight.appendChild(cancelBtn);
+            headerRight.appendChild(useSelectedBtn);
+            headerRight.appendChild(embedSelectedBtn);
+            updatePickerSelectionStatus();
+        }
+
         // File input button
         const fileInput = document.getElementById('file-input');
-        fileInput.addEventListener('change', () => {
-            if (fileInput.files.length > 0) {
-                uploadFiles(fileInput.files, dir);
-                fileInput.value = ''; // reset so same file can be re-selected
-            }
-        });
+        if (fileInput) {
+            fileInput.addEventListener('change', () => {
+                if (fileInput.files.length > 0) {
+                    uploadFiles(fileInput.files, dir);
+                    fileInput.value = ''; // reset so same file can be re-selected
+                }
+            });
+        }
 
         const createFolderBtn = document.getElementById('btn-create-folder');
-        createFolderBtn.addEventListener('click', () => {
-            createFolder(currentFsDir());
+        if (createFolderBtn) {
+            createFolderBtn.addEventListener('click', () => {
+                createFolder(currentFsDir());
+            });
+        }
+
+        const viewModeBtn = document.getElementById('btn-view-mode');
+        viewModeBtn.addEventListener('click', () => {
+            setViewMode(currentViewMode === 'tile' ? 'list' : 'tile');
+            renderListing(currentFsDir());
         });
 
-        initDragDrop(dir);
+        if (!isPickerMode) {
+            initDragDrop(dir);
+        }
     }
 
     if (document.readyState === 'loading') {
