@@ -676,7 +676,7 @@ let getFinalAgentPrompt = (agentRunState, commands, objectiveForCurrentAction) =
             `- Prefer generateTextFromAI for simple prose output.`,
             `- Prefer triggerAgentResponse only when an actual agent loop/action workflow is needed.`
         ].join("\n")
-        prompt.push(`When using content from the file system in web pages, access is hosted on "./<path>". For example, to access the file at /test.png you would use src="./test.png". All paths used to access the file system hosted APIs should be relative. To save a file, include the file path and content in the command input, for example {"path": "/test.txt", "content": "This is a test"}.`)
+        prompt.push(`When using content from the file system in web pages, links or media within a created HTML page should be accessed using relative links. For example, an image "test.png" in the same directory is accessed via src="./test.png". Absolute links should be resolved by using the "{host}/fs/test.png" and only used when providing the user links to the page directly.`)
         prompt.push(embeddedFunctionGuidance)
     }
 
