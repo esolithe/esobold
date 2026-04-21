@@ -4380,32 +4380,81 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
 
         autoswapEnabled = global_memory["autoswapmode"] is not None and global_memory["autoswapmode"]
         model_switch_pass = False
-        if is_post and (is_completions_path or is_chat_completions_path or (not autoswapEnabled and is_wake_request)):
-            model_name = ""
-            if body:
-                try:
-                    request_json = json.loads(body.decode("utf-8"))
-                    model_name = request_json.get("model")
-                except Exception:
-                    pass
 
-            was_auto_unloaded = (global_memory["triggered_sleeping"] and global_memory["current_model"]=="unload_model")
+        with proxy_reload_lock:
+            if is_post and (is_completions_path or is_chat_completions_path or (not autoswapEnabled and is_wake_request)):
+                model_name = ""
+                if body:
+                    try:
+                        request_json = json.loads(body.decode("utf-8"))
+                        model_name = request_json.get("model")
+                    except Exception:
+                        pass
 
-            is_different_model = False
-            # we only need to check if the currently loaded model is different from the requested model. everything else is handled downstream in the stack
-            if model_name and model_name != global_memory["current_model"]:
-                is_different_model = True
+                was_auto_unloaded = (global_memory["triggered_sleeping"] and global_memory["current_model"]=="unload_model")
 
-            if is_different_model or was_auto_unloaded:
-                model_switch_pass = True
-                with proxy_reload_lock:
-                    whitelist = get_current_admindir_list() # see if its an allowed swap
-                    if was_auto_unloaded and not model_name:
-                        model_name = "initial_model"
-                    if is_different_model and (model_name in whitelist):
-                        global_memory["last_active_timestamp"] = datetime.now()
-                        global_memory["triggered_sleeping"] = False
-                        reqbody = json.dumps({"filename":model_name})
+                is_different_model = False
+                # we only need to check if the currently loaded model is different from the requested model. everything else is handled downstream in the stack
+                if model_name and model_name != global_memory["current_model"]:
+                    is_different_model = True
+
+                if is_different_model or was_auto_unloaded:
+                    model_switch_pass = True
+                    with proxy_reload_lock:
+                        whitelist = get_current_admindir_list() # see if its an allowed swap
+                        if was_auto_unloaded and not model_name:
+                            model_name = "initial_model"
+                        if is_different_model and (model_name in whitelist):
+                            global_memory["last_active_timestamp"] = datetime.now()
+                            global_memory["triggered_sleeping"] = False
+                            reqbody = json.dumps({"filename":model_name})
+                            reqheaders = {
+                                'Content-Type': 'application/json',
+                                'Content-Length': str(len(reqbody)),
+                            }
+                            if args.adminpassword:
+                                reqheaders["Authorization"] = f"Bearer {args.adminpassword}"
+                            conn = http.client.HTTPConnection('localhost', upstream_port, timeout=600)
+                            conn.request("POST", "/api/admin/reload_config", body=reqbody, headers=reqheaders)
+                            resp = conn.getresponse()
+                            time.sleep(3)
+                            global_memory["last_active_timestamp"] = datetime.now()
+                            global_memory["triggered_sleeping"] = False
+                            if not self.wait_for_upstream_ready(upstream_port,120,0.5):
+                                self.send_error(504, "KoboldCpp model swap reload timed out")
+                                return
+                            time.sleep(0.1)
+            if autoswapEnabled and not model_switch_pass:
+                textReqs = ["/api/extra/generate/stream","/api/extra/tokencount","/api/v1/generate","/sdapi/v1/interrogate","/v1/completions","/v1/chat/completions","/v1/responses","/completions","/chat/completions","/responses"]
+                sttReqs = ["/api/extra/transcribe","/v1/audio/transcriptions"]
+                ttsReqs = ["/api/extra/tts", "/v1/audio/speech"]
+                embedReqs = ["/api/extra/embeddings", "/v1/embeddings"]
+                musicReqs = ["/api/extra/music/prepare","/api/extra/music/generate"]
+                imageReqs = ["/sdapi/v1/txt2img", "/sdapi/v1/img2img", "/sdapi/v1/upscale"] # "/sdapi/v1/sd-models", "/sdapi/v1/options", "/sdapi/v1/samplers"
+
+                swapModeChanged = False
+                if any(self.path.endswith(e) for e in textReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "text"):
+                    global_memory["swapReqType"] = "text"
+                    swapModeChanged = True
+                elif any(self.path.endswith(e) for e in sttReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "stt"):
+                    global_memory["swapReqType"] = "stt"
+                    swapModeChanged = True
+                elif any(self.path.endswith(e) for e in ttsReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "tts"):
+                    global_memory["swapReqType"] = "tts"
+                    swapModeChanged = True
+                elif any(self.path.endswith(e) for e in embedReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "embed"):
+                    global_memory["swapReqType"] = "embed"
+                    swapModeChanged = True
+                elif any(self.path.endswith(e) for e in musicReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "music"):
+                    global_memory["swapReqType"] = "music"
+                    swapModeChanged = True
+                elif any(self.path.endswith(e) for e in imageReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "image"):
+                    global_memory["swapReqType"] = "image"
+                    swapModeChanged = True
+
+                if (global_memory["swapReqType"] is not None and swapModeChanged):
+                    with proxy_reload_lock:
+                        reqbody = json.dumps({"filename":global_memory["current_model"], "baseconfig": global_memory["base_config"]})
                         reqheaders = {
                             'Content-Type': 'application/json',
                             'Content-Length': str(len(reqbody)),
@@ -4417,57 +4466,10 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                         resp = conn.getresponse()
                         time.sleep(3)
                         global_memory["last_active_timestamp"] = datetime.now()
-                        global_memory["triggered_sleeping"] = False
                         if not self.wait_for_upstream_ready(upstream_port,120,0.5):
                             self.send_error(504, "KoboldCpp model swap reload timed out")
                             return
                         time.sleep(0.1)
-        if autoswapEnabled and not model_switch_pass:
-            textReqs = ["/api/extra/generate/stream","/api/extra/tokencount","/api/v1/generate","/sdapi/v1/interrogate","/v1/completions","/v1/chat/completions","/v1/responses","/completions","/chat/completions","/responses"]
-            sttReqs = ["/api/extra/transcribe","/v1/audio/transcriptions"]
-            ttsReqs = ["/api/extra/tts", "/v1/audio/speech"]
-            embedReqs = ["/api/extra/embeddings", "/v1/embeddings"]
-            musicReqs = ["/api/extra/music/prepare","/api/extra/music/generate"]
-            imageReqs = ["/sdapi/v1/txt2img", "/sdapi/v1/img2img", "/sdapi/v1/upscale"] # "/sdapi/v1/sd-models", "/sdapi/v1/options", "/sdapi/v1/samplers"
-
-            swapModeChanged = False
-            if any(self.path.endswith(e) for e in textReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "text"):
-                global_memory["swapReqType"] = "text"
-                swapModeChanged = True
-            elif any(self.path.endswith(e) for e in sttReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "stt"):
-                global_memory["swapReqType"] = "stt"
-                swapModeChanged = True
-            elif any(self.path.endswith(e) for e in ttsReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "tts"):
-                global_memory["swapReqType"] = "tts"
-                swapModeChanged = True
-            elif any(self.path.endswith(e) for e in embedReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "embed"):
-                global_memory["swapReqType"] = "embed"
-                swapModeChanged = True
-            elif any(self.path.endswith(e) for e in musicReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "music"):
-                global_memory["swapReqType"] = "music"
-                swapModeChanged = True
-            elif any(self.path.endswith(e) for e in imageReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "image"):
-                global_memory["swapReqType"] = "image"
-                swapModeChanged = True
-
-            if (global_memory["swapReqType"] is not None and swapModeChanged):
-                with proxy_reload_lock:
-                    reqbody = json.dumps({"filename":global_memory["current_model"], "baseconfig": global_memory["base_config"]})
-                    reqheaders = {
-                        'Content-Type': 'application/json',
-                        'Content-Length': str(len(reqbody)),
-                    }
-                    if args.adminpassword:
-                        reqheaders["Authorization"] = f"Bearer {args.adminpassword}"
-                    conn = http.client.HTTPConnection('localhost', upstream_port, timeout=600)
-                    conn.request("POST", "/api/admin/reload_config", body=reqbody, headers=reqheaders)
-                    resp = conn.getresponse()
-                    time.sleep(3)
-                    global_memory["last_active_timestamp"] = datetime.now()
-                    if not self.wait_for_upstream_ready(upstream_port,120,0.5):
-                        self.send_error(504, "KoboldCpp model swap reload timed out")
-                        return
-                    time.sleep(0.1)
 
         try:  # connect upstream
             conn = http.client.HTTPConnection('localhost', upstream_port, timeout=600)
@@ -4518,26 +4520,26 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(html_502.encode("utf-8"))
             return
 
-        with proxy_reload_lock:
-            self.send_response(resp.status, resp.reason) # forward response headers
-            for k, v in resp.getheaders():
-                lk = k.lower()
-                if lk in self.HOP_BY_HOP:
-                    continue
-                self.send_header(k, v)
-            self.end_headers()
-            self.close_connection = True
 
-            try:  # stream response
-                while True:
-                    chunk = resp.read(self.STREAM_CHUNK)
-                    if not chunk:
-                        break
-                    self.wfile.write(chunk)
-                    self.wfile.flush()
-            except (BrokenPipeError, ConnectionResetError):
-                pass
-            finally:
+        self.send_response(resp.status, resp.reason) # forward response headers
+        for k, v in resp.getheaders():
+            lk = k.lower()
+            if lk in self.HOP_BY_HOP:
+                continue
+            self.send_header(k, v)
+        self.end_headers()
+        self.close_connection = True
+
+        try:  # stream response
+            while True:
+                chunk = resp.read(self.STREAM_CHUNK)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
                 conn.close()
 
     # proxy all HTTP methods
