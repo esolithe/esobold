@@ -636,7 +636,7 @@ let getFinalAgentPrompt = (agentRunState, commands, objectiveForCurrentAction) =
     if (is_using_kcpp_with_fs()) {
         prompt.push(`KCPP with file system access is enabled.`)
         let embeddedFunctionGuidance = [
-            `Embedded content can call three helper functions. Use the right one for the task:`,
+            `Embedded content can call four helper functions. Use the right one for the task:`,
             `1) triggerAgentResponse(prompt, macro?)`,
             `- Purpose: Start a full agent cycle that can use planning, tools, and macros.`,
             `- Use when: The embedded UI needs the agent to take actions or continue a workflow.`,
@@ -657,7 +657,17 @@ let getFinalAgentPrompt = (agentRunState, commands, objectiveForCurrentAction) =
             `let summary = await (window?.opener || window?.parent).generateTextFromAI("Write a one-paragraph summary of this page.")`,
             `if (summary) document.querySelector("#summary").textContent = summary`,
             "```",
-            `3) generateObjectFromAI(prompt, objectStructure?)`,
+            `3) generateImageFromAI(prompt, imageToStartFrom?)`,
+            `- Purpose: Generate an image and get a data URL that can be used directly in image src attributes.`,
+            `- Use when: Embedded content needs to render a newly generated image in-page without file writes.`,
+            `- Inputs: prompt is required text. imageToStartFrom is optional (img2img seed) and can be a base64 data URL.`,
+            `- Behavior: Returns a string like "data:image/png;base64,..." suitable for <img src="...">.`,
+            `- Example:`,
+            "```js",
+            `let imageSrc = await (window?.opener || window?.parent).generateImageFromAI("A cinematic sunrise over mountains")`,
+            `if (imageSrc) document.querySelector("#preview").src = imageSrc`,
+            "```",
+            `4) generateObjectFromAI(prompt, objectStructure?)`,
             `- Purpose: Get structured JSON that matches a target shape.`,
             `- Use when: Embedded content needs machine-readable output for UI logic.`,
             `- Inputs: prompt is required text. objectStructure is an optional example schema shape.`,
@@ -673,6 +683,7 @@ let getFinalAgentPrompt = (agentRunState, commands, objectiveForCurrentAction) =
             "```",
             `Rules:`,
             `- Prefer generateObjectFromAI for data that will be parsed or rendered as structured fields.`,
+            `- Prefer generateImageFromAI when you need an in-memory image source for immediate rendering.`,
             `- Prefer generateTextFromAI for simple prose output.`,
             `- Prefer triggerAgentResponse only when an actual agent loop/action workflow is needed.`
         ].join("\n")
