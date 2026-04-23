@@ -53,6 +53,10 @@ html, body {
     padding: 12px 0 10px;
     border-bottom: 1px solid var(--border);
     margin-bottom: 14px;
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    background: var(--bg);
 }
 
 #header-left {
