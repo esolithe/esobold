@@ -6393,6 +6393,10 @@ def initialize_fs_from_args():
         fs_set_state(fs)
 
 proxy_reload_lock = threading.Lock()
+proxy_running_requests = 0
+proxy_running_requests_lock = threading.Lock()
+response_streaming_lock = threading.Lock()
+response_wait_timeout = 60 * 5  # seconds to wait for upstream responses before timing out
 ###########################################################
 ###   A simple reverse proxy used in Kcpp Router mode   ###
 ###########################################################
@@ -6432,6 +6436,15 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                     pass
             time.sleep(interval)
         return False  # timeout
+
+    def wait_for_running_requests_to_finish(self, timeout, interval=0.05):
+        start = time.time()
+        while time.time() - start < timeout:
+            with proxy_running_requests_lock:
+                if proxy_running_requests <= 0:
+                    return True
+            time.sleep(interval)
+        return False
 
     def _is_OpenLumara_path(self, raw_path):
         try:
@@ -6579,6 +6592,9 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                         if was_auto_unloaded and not model_name:
                             model_name = "initial_model"
                         if is_different_model and (model_name in whitelist):
+                            if not self.wait_for_running_requests_to_finish(response_wait_timeout):
+                                self.send_error(504, "KoboldCpp model swap reload timed out waiting for active proxy requests")
+                                return
                             global_memory["last_active_timestamp"] = datetime.now()
                             global_memory["triggered_sleeping"] = False
                             reqbody = json.dumps({"filename":model_name})
@@ -6629,6 +6645,9 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
 
                 if (global_memory["swapReqType"] is not None and swapModeChanged):
                     with proxy_reload_lock:
+                        if not self.wait_for_running_requests_to_finish(response_wait_timeout):
+                            self.send_error(504, "KoboldCpp model swap reload timed out waiting for active proxy requests")
+                            return
                         reqbody = json.dumps({"filename":global_memory["current_model"], "baseconfig": global_memory["base_config"], "modelName": global_memory["current_model_override"]})
                         reqheaders = {
                             'Content-Type': 'application/json',
@@ -6695,11 +6714,14 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(html_502.encode("utf-8"))
             return
 
-        if is_OpenLumara_request:
+        global proxy_running_requests
+        with proxy_running_requests_lock:
+            proxy_running_requests += 1
+        try:
             self._sendResponseToClient(resp, is_OpenLumara_request, conn)
-        else:
-            with proxy_reload_lock:
-                self._sendResponseToClient(resp, is_OpenLumara_request, conn)
+        finally:
+            with proxy_running_requests_lock:
+                proxy_running_requests = max(0, proxy_running_requests - 1)
 
 
     def _sendResponseToClient(self, resp, is_OpenLumara_request, conn):
