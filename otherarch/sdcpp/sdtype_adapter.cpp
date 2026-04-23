@@ -15,14 +15,20 @@
 #include <filesystem>
 
 #include "model_adapter.h"
-#include "vocab/vocab.h"
+#include "tokenizers/vocab/vocab.h"
 #include "flux.hpp"
 #include "sample-cache.cpp"
 #include "util.cpp"
 #include "name_conversion.cpp"
 #include "upscaler.cpp"
 #include "model.cpp"
-#include "tokenize_util.cpp"
+#include "tokenizers/bpe_tokenizer.cpp"
+#include "tokenizers/clip_tokenizer.cpp"
+#include "tokenizers/mistral_tokenizer.cpp"
+#include "tokenizers/qwen2_tokenizer.cpp"
+#include "tokenizers/t5_unigram_tokenizer.cpp"
+#include "tokenizers/tokenizer.cpp"
+#include "tokenizers/tokenize_util.cpp"
 #include "zip.c"
 
 #include "otherarch/utils.h"
@@ -500,8 +506,7 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
     sd_ctx = new_sd_ctx(&params);
 
     if (sd_ctx == NULL) {
-        printf("\nError: KCPP SD Failed to create context!\nIf using Flux/SD3.5, make sure you have ALL files required (e.g. VAE, T5, Clip...) or baked in!\n");
-        printf("Otherwise, if you are using GGUF format, you can try the original .safetensors instead (Comfy GGUF not supported)\n");
+        printf("\nError: Image generation failed to setup!\nMake sure you have ALL files required (e.g. VAE, T5, Clip...) or baked into the model!\n");
         return false;
     }
 
@@ -706,48 +711,9 @@ static enum sample_method_t sampler_from_name(const std::string& sampler)
 {
     // all lowercase
     enum sample_method_t result = str_to_sample_method(sampler.c_str());
-    if (result != sample_method_t::SAMPLE_METHOD_COUNT)
-    {
+    if (result != sample_method_t::SAMPLE_METHOD_COUNT) {
         return result;
-    }
-    else if(sampler=="euler a"||sampler=="k_euler_a")
-    {
-        return sample_method_t::EULER_A_SAMPLE_METHOD;
-    }
-    else if(sampler=="k_euler")
-    {
-        return sample_method_t::EULER_SAMPLE_METHOD;
-    }
-    else if(sampler=="k_heun")
-    {
-        return sample_method_t::HEUN_SAMPLE_METHOD;
-    }
-    else if(sampler=="k_dpm_2")
-    {
-        return sample_method_t::DPM2_SAMPLE_METHOD;
-    }
-    else if(sampler=="k_lcm")
-    {
-        return sample_method_t::LCM_SAMPLE_METHOD;
-    }
-    else if(sampler=="ddim")
-    {
-        return sample_method_t::DDIM_TRAILING_SAMPLE_METHOD;
-    }
-    else if(sampler=="dpm++ 2m karras" || sampler=="dpm++ 2m" || sampler=="k_dpmpp_2m")
-    {
-        return sample_method_t::DPMPP2M_SAMPLE_METHOD;
-    }
-    else if(sampler=="res multistep" || sampler=="k_res_multistep")
-    {
-        return sample_method_t::RES_MULTISTEP_SAMPLE_METHOD;
-    }
-    else if(sampler=="res 2s" || sampler=="k_res_2s")
-    {
-        return sample_method_t::RES_2S_SAMPLE_METHOD;
-    }
-    else
-    {
+    } else {
         return sample_method_t::SAMPLE_METHOD_COUNT;
     }
 }
@@ -1058,7 +1024,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
         }
     }
 
-    if(loadedsdver == SDVersion::VERSION_SDXS)
+    if(loadedsdver == SDVersion::VERSION_SDXS_512_DS || loadedsdver == SDVersion::VERSION_SDXS_09)
     {
         if(sd_params->cfg_scale > 1.0f || sd_params->sample_steps > 1)
         {

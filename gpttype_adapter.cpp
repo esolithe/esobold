@@ -2623,15 +2623,17 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
             bool dospam = (debugmode==1 && !is_quiet);
             ggml_log_callback currlogger;
             void * curruserdat;
+            auto oldverbosity = common_log_get_verbosity_thold();
             if(!dospam)
             {
                 llama_log_get(&currlogger, &curruserdat);
                 llama_log_set(log_callback_off, nullptr);
+                common_log_set_verbosity_thold(GGML_LOG_LEVEL_NONE);
             }
             fit_params_target[0] = taxmb*1024*1024;
-            bool success = (llama_params_fit(kcpp_data->model_filename.c_str(), &model_params, &llama_ctx_params,
+            bool success = (common_fit_params(kcpp_data->model_filename.c_str(), &model_params, &llama_ctx_params,
             tensor_split_temp, tenos.data(), fit_params_target.data(), kcpp_data->n_ctx,
-            GGML_LOG_LEVEL_NONE)==0);
+            dospam?GGML_LOG_LEVEL_DEBUG:GGML_LOG_LEVEL_NONE)==0);
             if(!dospam)
             {
                 llama_log_set(currlogger, curruserdat);
@@ -2642,6 +2644,7 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
             {
                 //revert to previous
                 model_params.n_gpu_layers = inputs.gpulayers;
+                common_log_set_verbosity_thold(oldverbosity);
             }
         }
 
@@ -3391,6 +3394,29 @@ static void PrepareMediaEmbds(const int nctx, const std::vector<int> & media_int
         int outrosize = media_outro.size();
         last_media_mem.clear();
 
+        bool clip_is_mrope = false;
+        if(file_format == FileFormat::GGUF_GENERIC)
+        {
+            //added after https://github.com/ggml-org/llama.cpp/pull/22161, replacing clip_is_mrope function
+            auto decoder_rope_type = llama_model_rope_type(llama_get_model(llama_ctx_v4));
+            switch (decoder_rope_type) {
+                case LLAMA_ROPE_TYPE_NONE:
+                case LLAMA_ROPE_TYPE_NORM:
+                case LLAMA_ROPE_TYPE_NEOX:
+                    {
+                        clip_is_mrope = false;
+                    } break;
+                case LLAMA_ROPE_TYPE_MROPE:
+                case LLAMA_ROPE_TYPE_IMROPE:
+                    {
+                        clip_is_mrope = true;
+                    }
+                    break;
+                default:
+                    printf("\nWARNING: clip unsupported decoder rope type: %d\n", decoder_rope_type);
+            }
+        }
+
         for(int i=0;i<media_objects.size();++i)
         {
             std::string media_obj = media_objects[i].b64data;
@@ -3410,7 +3436,7 @@ static void PrepareMediaEmbds(const int nctx, const std::vector<int> & media_int
                         printf("\nCreating clip image embed...");
                     }
                     media_chunk chunk;
-                    if (!llava_image_embed_make_with_clip_img(clp_ctx_v, kcpp_data->n_threads, clp_img_data, &chunk.clp_img_embd, &chunk.clp_image_tokens, &chunk.nx, &chunk.ny)) {
+                    if (!llava_image_embed_make_with_clip_img(clp_ctx_v, kcpp_data->n_threads, clp_img_data, &chunk.clp_img_embd, &chunk.clp_image_tokens, &chunk.nx, &chunk.ny, clip_is_mrope)) {
                         printf("\nError: Clip image %d failed to create embd!",i);
                     }
                     if(debugmode==1 && !is_quiet)
@@ -4556,10 +4582,13 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
         // predict
         unsigned int embdsize = embd.size();
         //print progress
-        if (!startedsampling && allow_regular_prints)
+        if (!startedsampling)
         {
             real_n_processed = embd_inp.size();
-            printf("\rProcessing Prompt%s (%d / %zu tokens)", (blasmode ? " [BATCH]" : ""), input_consumed, embd_inp.size());
+            if(allow_regular_prints)
+            {
+                printf("\rProcessing Prompt%s (%d / %zu tokens)", (blasmode ? " [BATCH]" : ""), input_consumed, embd_inp.size());
+            }
         }
         fflush(stdout);
 
@@ -5359,7 +5388,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
     {
         printf("\n(Draft Results - Success:%d, Failure:%d)",draft_successes,draft_failures);
     }
-    if(check_slowness && generated_tps<2.0f)
+    if(check_slowness && generated_tps<2.0f && real_n_generated>1)
     {
         check_slowness = false;
         if(!is_quiet)

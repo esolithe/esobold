@@ -82,7 +82,7 @@ dry_seq_break_max = 128
 extra_images_max = 4 # for kontext/qwen img
 
 # global vars
-KcppVersion = "1.112"
+KcppVersion = "1.112.1"
 showdebug = True
 kcpp_instance = None #global running instance
 global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "currentBaseConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "base_config":"", "swapReqType": None, "autoswapmode": False, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}, "restart_override_base_config": "", "current_model_override": "", "OpenLumara": False}
@@ -149,6 +149,7 @@ has_vision_support = False
 has_whisper = False
 cached_chat_template = None
 cached_sd_info = {}
+cached_jinja_kwargs = None
 savedata_obj = None
 mcp_connections = [] #every element is linked to one mcp source, contains obj {"client":obj, "tools":[]}
 mcp_lock = threading.Lock()
@@ -1932,8 +1933,15 @@ def load_model(model_filename):
     inputs.mmproj_filename = args.mmproj.encode("UTF-8") if args.mmproj else "".encode("UTF-8")
     inputs.mmproj_cpu = (True if args.mmprojcpu else False)
     inputs.visionmaxres = (512 if args.visionmaxres < 512 else (2048 if args.visionmaxres > 2048 else args.visionmaxres))
-    inputs.visionmintokens = args.visionmintokens
-    inputs.visionmaxtokens = args.visionmaxtokens
+    vmintk = args.visionmintokens
+    vmaxtk = args.visionmaxtokens
+    vmintk = -1 if vmintk<-1 else vmintk
+    vmaxtk = -1 if vmaxtk<-1 else vmaxtk
+    if(vmintk!=-1 or vmaxtk!=-1) and (vmintk==-1 or vmaxtk==-1): #if exactly one of the args is -1
+        vmintk = max(vmintk,vmaxtk)
+        vmaxtk = max(vmintk,vmaxtk)
+    inputs.visionmintokens = vmintk
+    inputs.visionmaxtokens = vmaxtk
     inputs.use_smartcontext = args.smartcontext
     inputs.use_contextshift = (0 if args.noshift else 1)
     inputs.use_fastforward = (0 if args.nofastforward else 1)
@@ -2444,19 +2452,45 @@ def sd_comfyui_tranform_params(genparams):
 
 # json with top-level dict
 def parse_json_object(value, field):
+    if not value:
+        return None
     broken = False
     if isinstance(value, str):
+        retry = False
         try: # Try parsing as-is
             value = json.loads(value)
+            retry = False
         except json.JSONDecodeError:
-            # Try wrapping in braces for loose key/value strings
+            retry = True
+
+        if retry and ":" in value: # Try wrapping in braces for loose key/value strings
             try:
                 value = json.loads(f"{{{value}}}")
+                retry = False
             except json.JSONDecodeError:
-                broken = True
+                retry = True
+
+        if retry and '\\"' in value:  #try handle double escape
+            try:
+                tmp = json.loads(f"\"{value}\"")
+                value = json.loads(tmp)
+                retry = False
+            except json.JSONDecodeError:
+                retry = True
+
+        if retry:
+            broken = True
     if isinstance(value, dict):
         return value
     elif broken:
+        if value:
+            try:
+                import ast
+                value = ast.literal_eval(value)
+                if value and isinstance(value, dict):
+                    return value
+            except Exception:
+                pass
         print(f"Warning: couldn't parse {field} field.")
     else:
         print(f"Warning: {field} field - not a JSON object.")
@@ -4433,7 +4467,7 @@ def sweep_media_from_messages(messages_array):
 
 
 def transform_genparams(genparams, api_format, use_jinja):
-    global chatcompl_adapter, maxctx, thinkformats
+    global chatcompl_adapter, maxctx, thinkformats, cached_jinja_kwargs
 
     if api_format < 0: #not text gen, do nothing
         return
@@ -4556,16 +4590,8 @@ ws ::= | " " | "\n" [ \t]{0,20}
             attachedaudid = 0
             jinja_output = None
             jinjatools = genparams.get('tools', [])
-            jinjakwargs = None
-            try:
-                jinjakwargsstr = args.jinja_kwargs if args.jinja_kwargs else None
-                if jinjakwargsstr and isinstance(jinjakwargsstr, str):
-                    jinjakwargs = json.loads(jinjakwargsstr)
-            except Exception:
-                print("Jinja Kwargs not valid JSON dict!")
-                pass
             if use_jinja and cached_chat_template:
-                jinja_output = format_jinja(messages_array,jinjatools,jinjakwargs)
+                jinja_output = format_jinja(messages_array,jinjatools,cached_jinja_kwargs)
             if jinja_output:
                 messages_string = jinja_output
                 for pair in thinkformats:
@@ -6683,21 +6709,26 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
         rewrite_body = is_OpenLumara_request and self._should_rewrite_OpenLumara_body(content_type, content_encoding)
 
         if rewrite_body:
-            body_data = self._rewrite_OpenLumara_body_bytes(resp.read())
-            self.send_response(resp.status, resp.reason)
-            for k, v in response_headers:
-                lk = k.lower()
-                if lk in self.HOP_BY_HOP or lk == "content-length":
-                    continue
-                if lk == "location":
-                    v = self._rewrite_OpenLumara_location(v)
-                self.send_header(k, v)
-            self.send_header("Content-Length", str(len(body_data)))
-            self.end_headers()
-            self.close_connection = True
-            if self.command.upper() != "HEAD" and body_data:
-                self.wfile.write(body_data)
-                self.wfile.flush()
+            try:
+                body_data = self._rewrite_OpenLumara_body_bytes(resp.read())
+                self.send_response(resp.status, resp.reason)
+                for k, v in response_headers:
+                    lk = k.lower()
+                    if lk in self.HOP_BY_HOP or lk == "content-length":
+                        continue
+                    if lk == "location":
+                        v = self._rewrite_OpenLumara_location(v)
+                    self.send_header(k, v)
+                self.send_header("Content-Length", str(len(body_data)))
+                self.end_headers()
+                self.close_connection = True
+                if self.command.upper() != "HEAD" and body_data:
+                    self.wfile.write(body_data)
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            finally:
+                conn.close()
         else:
             self.send_response(resp.status, resp.reason) # forward response headers
             for k, v in response_headers:
@@ -6721,8 +6752,6 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                 pass
             finally:
                 conn.close()
-        conn.close()
-
     # proxy all HTTP methods
     do_GET = _handle
     do_POST = _handle
@@ -7778,7 +7807,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             print("Token streaming was interrupted or aborted!")
             print(ex)
             handle.abort_generate()
-            time.sleep(0.2) #short delay
+            await asyncio.sleep(0.2) #short delay
 
         # flush buffers, sleep a bit to make sure all data sent, and then force close the connection
         self.wfile.flush()
@@ -7786,17 +7815,45 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         self.close_connection = True
         await asyncio.sleep(0.05)
 
+    async def monitor_connection(self): #Poll the socket to detect client disconnection during prompt processing
+        import select
+        loop = asyncio.get_event_loop()
+        def check_connection_closed():
+            try:
+                sock = self.connection
+                readable, _, exceptional = select.select([sock], [], [sock], 0)
+                if exceptional:
+                    return True
+                if readable:
+                    data = sock.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT)
+                    if len(data) == 0:
+                        return True
+                return False
+            except (OSError, Exception):
+                return True  # Treat any error as disconnected
+        while True:
+            try:
+                await asyncio.sleep(0.5)
+                disconnected = await loop.run_in_executor(None, check_connection_closed)
+                if disconnected:
+                    if args.debugmode:
+                        print("\nClient disconnected unexpectedly, aborting...")
+                    handle.abort_generate()
+                    return
+            except Exception:
+                return
 
     async def handle_request(self, genparams, api_format, stream_flag):
         tasks = []
         genparams["oai_uniqueid"] = random.randint(100000, 999999)
+        monitor_task = None
         try:
             if stream_flag:
                 tasks.append(self.handle_sse_stream(genparams, api_format))
-
             generate_task = asyncio.create_task(self.generate_text(genparams, api_format, stream_flag))
             tasks.append(generate_task)
-
+            if stream_flag:
+                monitor_task = asyncio.create_task(self.monitor_connection())
             await asyncio.gather(*tasks)
             generate_result = generate_task.result()
             return generate_result
@@ -7804,9 +7861,16 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             print("An ongoing connection was aborted or interrupted!")
             print(cae)
             handle.abort_generate()
-            time.sleep(0.2) #short delay
+            await asyncio.sleep(0.2) #short delay
         except Exception as e:
             print(e)
+        finally:
+            if monitor_task and not monitor_task.done():
+                monitor_task.cancel()
+                try:
+                    await monitor_task
+                except asyncio.CancelledError:
+                    pass
 
     def get_multiplayer_idle_state(self,userid):
         if modelbusy.locked():
@@ -11996,6 +12060,7 @@ def show_gui():
         args.usevulkan = None
         args.usecuda = None
         args.noavx2 = False
+        args.failsafe = False
         if gpu_choice_var.get()!="All":
             gpuchoiceidx = int(gpu_choice_var.get())-1
         if runopts_var.get() == "Use CUDA" or runopts_var.get() == "Use hipBLAS (ROCm)":
@@ -12019,10 +12084,9 @@ def show_gui():
             elif runopts_var.get() == "Use Vulkan (Older CPU)":
                 args.noavx2 = True
                 args.failsafe = True
-        if gpulayers_var.get():
-            args.gpulayers = (0 if gpulayers_var.get()=="" else int(gpulayers_var.get()))
-        if autofit_padding_var.get():
-            args.autofitpadding = (default_autofit_padding if autofit_padding_var.get()=="" else int(autofit_padding_var.get()))
+
+        args.gpulayers = (-1 if gpulayers_var.get()=="" else int(gpulayers_var.get()))
+        args.autofitpadding = (default_autofit_padding if autofit_padding_var.get()=="" else int(autofit_padding_var.get()))
         if runopts_var.get()=="Use CPU":
             args.usecpu = True
         if runopts_var.get()=="Use CPU (Old CPU)":
@@ -12033,12 +12097,14 @@ def show_gui():
             args.usecpu = True
             args.usemmap = False
             args.failsafe = True
+        args.tensor_split = None
         if tensor_split_str_vars.get()!="":
             tssv = tensor_split_str_vars.get()
             if "," in tssv:
                 args.tensor_split = [float(x) for x in tssv.split(",")]
             else:
                 args.tensor_split = [float(x) for x in tssv.split(" ")]
+        args.draftgpusplit = None
         if draftgpusplit_str_vars.get()!="":
             tssv = draftgpusplit_str_vars.get()
             if "," in tssv:
@@ -12069,10 +12135,8 @@ def show_gui():
         args.nobostoken = (nobostoken_var.get()==1)
         args.jinja = (jinja_var.get()==1)
         args.jinja_tools = (jinja_tools_var.get()==1)
-        if jinja_kwargs_var.get() != "":
-            args.jinja_kwargs = jinja_kwargs_var.get()
-        if jinjatemplate_var.get() != "":
-            args.jinjatemplate = jinjatemplate_var.get()
+        args.jinja_kwargs = jinja_kwargs_var.get()  if jinja_kwargs_var.get() != "" else ""
+        args.jinjatemplate = jinjatemplate_var.get() if jinjatemplate_var.get() != "" else ""
         args.enableguidance = (enableguidance_var.get()==1)
         args.overridekv = None if override_kv_var.get() == "" else override_kv_var.get()
         args.overridetensors = None if override_tensors_var.get() == "" else override_tensors_var.get()
@@ -12135,17 +12199,11 @@ def show_gui():
                 args.hordekey = horde_apikey_var.get()
                 args.hordeworkername = horde_workername_var.get()
 
-        if sd_model_var.get() != "":
-            args.sdmodel = sd_model_var.get()
-
-        if sd_flash_attention_var.get()==1:
-            args.sdflashattention = True
-        if sd_offload_cpu_var.get()==1:
-            args.sdoffloadcpu = True
-        if sd_vae_cpu_var.get()==1:
-            args.sdvaecpu = True
-        if sd_clip_gpu_var.get()==1:
-            args.sdclipgpu = True
+        args.sdmodel = sd_model_var.get() if sd_model_var.get() != "" else ""
+        args.sdflashattention = True if sd_flash_attention_var.get()==1 else False
+        args.sdoffloadcpu = True if sd_offload_cpu_var.get()==1 else False
+        args.sdvaecpu = True if sd_vae_cpu_var.get()==1 else False
+        args.sdclipgpu = True if sd_clip_gpu_var.get()==1 else False
         args.sdthreads = (0 if sd_threads_var.get()=="" else int(sd_threads_var.get()))
         args.sdclamped = (0 if int(sd_clamped_var.get())<=0 else int(sd_clamped_var.get()))
         args.sdclampedsoft = (0 if int(sd_clamped_soft_var.get())<=0 else int(sd_clamped_soft_var.get()))
@@ -12159,43 +12217,34 @@ def show_gui():
             if sd_vae_var.get() != "":
                 args.sdvae = sd_vae_var.get()
         args.sdconvdirect = sd_convdirect_option(sd_convdirect_var.get())
-        if sd_t5xxl_var.get() != "":
-            args.sdt5xxl = sd_t5xxl_var.get()
-        if sd_clip1_var.get() != "":
-            args.sdclip1 = sd_clip1_var.get()
-        if sd_clip2_var.get() != "":
-            args.sdclip2 = sd_clip2_var.get()
-        if sd_photomaker_var.get() != "":
-            args.sdphotomaker = sd_photomaker_var.get()
-        if sd_upscaler_var.get() != "":
-            args.sdupscaler = sd_upscaler_var.get()
+        args.sdt5xxl = sd_t5xxl_var.get() if sd_t5xxl_var.get() != "" else ""
+        args.sdclip1 = sd_clip1_var.get() if sd_clip1_var.get() != "" else ""
+        args.sdclip2 = sd_clip2_var.get() if sd_clip2_var.get() != "" else ""
+        args.sdphotomaker = sd_photomaker_var.get() if sd_photomaker_var.get() != "" else ""
+        args.sdupscaler = sd_upscaler_var.get()  if sd_upscaler_var.get() != "" else ""
         args.sdquant = sd_quant_option(sd_quant_var.get())
         args.sdlora = [item.strip() for item in sd_lora_var.get().split("|") if item]
         # XXX the user may have used '|' since it's used for the LoRAs
         args.sdloramult = sanitize_lora_multipliers(re.split(r"[ |]+", sd_loramult_var.get()))
         args.sdmaingpu = (-1 if sd_main_gpu_var.get()=="" else int(sd_main_gpu_var.get()))
-
-        if gen_defaults_var.get() != "":
-            args.gendefaults = gen_defaults_var.get()
+        args.gendefaults = gen_defaults_var.get()  if gen_defaults_var.get() != "" else ""
         args.gendefaultsoverwrite = (gen_defaults_overwrite_var.get()==1)
-
-        if whisper_model_var.get() != "":
-            args.whispermodel = whisper_model_var.get()
-
-        if embeddings_model_var.get() != "":
-            args.embeddingsmodel = embeddings_model_var.get()
-
-        if embeddings_ctx_var.get() != "":
-            args.embeddingsmaxctx = (0 if embeddings_ctx_var.get()=="" else int(embeddings_ctx_var.get()))
+        args.whispermodel = whisper_model_var.get() if whisper_model_var.get() != "" else ""
+        args.embeddingsmodel = embeddings_model_var.get()  if embeddings_model_var.get() != "" else ""
+        args.embeddingsmaxctx = (0 if embeddings_ctx_var.get()=="" else int(embeddings_ctx_var.get()))
         args.embeddingsgpu = (embeddings_gpu_var.get()==1)
 
+        args.ttsthreads = (0 if tts_threads_var.get()=="" else int(tts_threads_var.get()))
+        args.ttsmaxlen = (default_ttsmaxlen if ttsmaxlen_var.get()=="" else int(ttsmaxlen_var.get()))
+        args.ttsgpu = (ttsgpu_var.get()==1)
         if tts_model_var.get() != "":
-            args.ttsthreads = (0 if tts_threads_var.get()=="" else int(tts_threads_var.get()))
             args.ttsmodel = tts_model_var.get()
             args.ttswavtokenizer = wavtokenizer_var.get()
-            args.ttsgpu = (ttsgpu_var.get()==1)
-            args.ttsmaxlen = (default_ttsmaxlen if ttsmaxlen_var.get()=="" else int(ttsmaxlen_var.get()))
             args.ttsdir = tts_dir_var.get()
+        else:
+            args.ttsmodel = ""
+            args.ttswavtokenizer = ""
+            args.ttsdir = ""
 
         args.musicllm = musicllm_var.get()
         args.musicembeddings = musicembeddings_var.get()
@@ -12985,7 +13034,7 @@ def convert_invalid_args(args):
         dict["sdloramult"] = sanitize_lora_multipliers(dict["sdloramult"])
     return args
 
-def setuptunnel(global_memory, has_sd):
+def setuptunnel(global_memory, has_sd, has_music):
     # This script will help setup a cloudflared tunnel for accessing KoboldCpp over the internet
     # It should work out of the box on both linux and windows
     try:
@@ -13042,6 +13091,8 @@ def setuptunnel(global_memory, has_sd):
                             print(f"Your remote llama.cpp secondary WebUI at {tunneloutput}/lcpp/")
                             if has_sd:
                                 print(f"StableUI is available at {tunneloutput}/sdui/")
+                            if has_music:
+                                print(f"MusicUI is available at {tunneloutput}/musicui/")
                             print("======\n")
                             print(f"Your remote tunnel is ready, please connect to {tunneloutput}", flush=True)
                         if global_memory:
@@ -13763,7 +13814,7 @@ def main(launch_args, default_args):
             res = launch_OpenLumara(args)
             global_memory["OpenLumara"] = res is not None
         if args.remotetunnel and not args.prompt and not args.benchmark and not args.cli:
-            setuptunnel(global_memory, True if args.sdmodel else False)
+            setuptunnel(global_memory, True if args.sdmodel else False, True if (args.musicdiffusion or args.musicllm or args.ttsmodel) else False)
         kcpp_main_process(args,global_memory,using_gui_launcher)
         if global_memory["input_to_exit"]:
             print("===")
@@ -13777,7 +13828,7 @@ def main(launch_args, default_args):
                 res = launch_OpenLumara(args)
                 global_memory["OpenLumara"] = res is not None
             if args.remotetunnel and not args.prompt and not args.benchmark and not args.cli:
-                setuptunnel(global_memory, True if args.sdmodel else False)
+                setuptunnel(global_memory, True if args.sdmodel else False, True if (args.musicdiffusion or args.musicllm or args.ttsmodel) else False)
 
             # Sets the current configuration
             global_memory["currentConfig"] = args.config[0] if "config" in args and args.config is not None and len(args.config) > 0 else None
@@ -14050,7 +14101,7 @@ def disableSwappedFieldsInConfig(args, swapReqType):
 
 def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
     global embedded_kailite, embedded_kcpp_docs, embedded_kcpp_sdui, embedded_kailite_gz, embedded_kcpp_docs_gz, embedded_kcpp_sdui_gz, embedded_lcpp_ui_gz, embedded_musicui, embedded_musicui_gz, start_time, exitcounter, global_memory, using_gui_launcher
-    global libname, args, friendlymodelname, friendlysdmodelname, fullsdmodelpath, password, fullwhispermodelpath, ttsmodelpath, embeddingsmodelpath, musicdiffusionmodelpath, musicllmmodelpath, friendlyembeddingsmodelname, has_audio_support, has_vision_support, cached_chat_template, cached_sd_info, preloaded_custom_jinja
+    global libname, args, friendlymodelname, friendlysdmodelname, fullsdmodelpath, password, fullwhispermodelpath, ttsmodelpath, embeddingsmodelpath, musicdiffusionmodelpath, musicllmmodelpath, friendlyembeddingsmodelname, has_audio_support, has_vision_support, cached_chat_template, cached_jinja_kwargs, cached_sd_info, preloaded_custom_jinja
 
     start_server = True
 
@@ -14551,6 +14602,16 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
                         print(f"Chat completion heuristic: {entry['name']}")
                         chatcompl_adapter = entry['adapter']
                         break
+            cached_jinja_kwargs = None
+            try:
+                jinjakwargsstr = args.jinja_kwargs if args.jinja_kwargs else None
+                if jinjakwargsstr and isinstance(jinjakwargsstr, str):
+                    cached_jinja_kwargs = parse_json_object(jinjakwargsstr,"jinja_kwargs")
+                    cached_jinja_kwargs = cached_jinja_kwargs if cached_jinja_kwargs else None
+            except Exception:
+                print("Jinja Kwargs not valid JSON dict!")
+                pass
+
             if chatcompl_adapter is None:
                 print("Chat template heuristics failed to identify chat completions format. Alpaca will be used.")
 
