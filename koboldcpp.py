@@ -13568,7 +13568,29 @@ def prepare_OpenLumara_config(launch_args):
     configfile = (launch_args.OpenLumara_configfile or "").strip()
     return configfile
 
+class _LumaraPrefixedStream:
+    def __init__(self, wrapped, prefix="[Lumara]: "):
+        self._wrapped = wrapped
+        self._prefix = prefix
+        self._lumara_thread_id = None
+
+    def write(self, text):
+        if threading.current_thread().ident == self._lumara_thread_id and text and text != '\n':
+            self._wrapped.write(self._prefix + text)
+        else:
+            self._wrapped.write(text)
+
+    def flush(self):
+        self._wrapped.flush()
+
+    def __getattr__(self, attr):
+        return getattr(self._wrapped, attr)
+
 OpenLumara_launch_lock = threading.Lock()
+_lumara_prefixed_stdout = _LumaraPrefixedStream(sys.stdout)
+_lumara_prefixed_stderr = _LumaraPrefixedStream(sys.stderr)
+sys.stdout = _lumara_prefixed_stdout
+sys.stderr = _lumara_prefixed_stderr
 
 def execAndWrapError(errorPrefix, func, *args, **kwargs):
     import traceback
@@ -13595,6 +13617,9 @@ def _run_OpenLumara(*args):
         if not os.path.exists(OpenLumara_main):
             print(f"Warning: OpenLumara main.py not found at '{OpenLumara_main}'. Is the submodule checked out?")
             return None
+
+        _lumara_prefixed_stdout._lumara_thread_id = threading.current_thread().ident
+        _lumara_prefixed_stderr._lumara_thread_id = threading.current_thread().ident
 
         spec = importlib.util.spec_from_file_location("OpenLumaraMain", OpenLumara_main)
         OpenLumaraMain = importlib.util.module_from_spec(spec)
@@ -13676,7 +13701,7 @@ def launch_OpenLumara(launch_args):
         
         for arg in args_to_add:
             print(f"OpenLumara launch argument: {arg}")
-        
+
         # Create a thread for the method
         thread = threading.Thread(target=run_OpenLumara, args=tuple(args_to_add), daemon=True)
         # Start the thread
