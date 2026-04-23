@@ -54,12 +54,12 @@ export const buildPlanningInputCommands = (ctx) => {
 					return true
 				}
 
+				if (typeof agentRunState.agentVisualiser === "function") {
+					await agentRunState.agentVisualiser(objRefAssign({}, agentRunState, {agentRunState}))
+				}
 				if (!!agentRunState?.printToConsole && agentRunState?.logger !== undefined)
 				{
 					agentRunState.logger.printPendingLogs()
-				}
-				if (typeof agentRunState.agentVisualiser === "function") {
-					await agentRunState.agentVisualiser(objRefAssign({}, agentRunState, {agentRunState}))
 				}
 				
 				let response = await window.requestAgentUserInput({
