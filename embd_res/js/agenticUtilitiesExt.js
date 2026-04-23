@@ -88,6 +88,89 @@ window.generateImageFromAI = async (prompt, imageToStartFrom = undefined) => {
 	return `data:image/png;base64,${normalizedOutput}`
 }
 
+let normalizeBase64Data = (input = "") => {
+	let value = `${input || ""}`.trim()
+	if (value.startsWith("data:")) {
+		return value.split(",")[1] || ""
+	}
+	return value
+}
+
+let arrayBufferToDataUrl = (arrayBuffer, mimeType = "application/octet-stream") => {
+	let bytes = new Uint8Array(arrayBuffer || new ArrayBuffer(0))
+	let binary = ""
+	for (let index = 0; index < bytes.length; index++) {
+		binary += String.fromCharCode(bytes[index])
+	}
+	let base64 = btoa(binary)
+	return `data:${mimeType};base64,${base64}`
+}
+
+window.prepareMusicFromAI = async (caption) => {
+	let normalizedCaption = `${caption || ""}`.trim()
+	if (normalizedCaption === "") {
+		throw new Error("caption is required")
+	}
+	let response = await postKcppJson("/api/extra/music/prepare", { caption: normalizedCaption })
+	return await response.json()
+}
+
+window.generateMusicFromAI = async (options = {}) => {
+	let payload = {
+		caption: `${options?.caption || ""}`,
+		lyrics: `${options?.lyrics || ""}`,
+		bpm: parseInt(options?.bpm ?? 120),
+		duration: parseFloat(options?.duration ?? 64),
+		keyscale: `${options?.keyscale || "G minor"}`,
+		timesignature: `${options?.timesignature || "2"}`,
+		vocal_language: `${options?.vocal_language || "en"}`,
+		inference_steps: parseInt(options?.inference_steps ?? 8),
+	}
+	let referenceAudioData = normalizeBase64Data(options?.reference_audio_data || options?.music_reference_audio_data || "")
+	if (referenceAudioData !== "") {
+		payload.music_reference_audio_data = referenceAudioData
+	}
+	let response = await postKcppJson("/api/extra/music/generate", payload)
+	let audioBuffer = await response.arrayBuffer()
+	let mimeType = `${response.headers.get("content-type") || "audio/wav"}`.split(";")[0] || "audio/wav"
+	return arrayBufferToDataUrl(audioBuffer, mimeType)
+}
+
+window.generateTTSFromAI = async (textToSay, voice = undefined) => {
+	let normalizedText = `${textToSay || ""}`.trim()
+	if (normalizedText === "") {
+		throw new Error("textToSay is required")
+	}
+	let payload = { input: normalizedText, voice: `${voice || ""}`.trim() || `${localsettings.kcpp_tts_voice || "kobo"}` }
+	if (typeof resolveKcppVoiceForPayload === "function") {
+		let voiceConfig = await resolveKcppVoiceForPayload(voice)
+		payload.voice = voiceConfig.voice
+		if (!!voiceConfig.speaker_json) {
+			payload.speaker_json = voiceConfig.speaker_json
+		}
+	}
+	let response = await postKcppJson(koboldcpp_tts_endpoint, payload)
+	let audioBuffer = await response.arrayBuffer()
+	let mimeType = `${response.headers.get("content-type") || "audio/wav"}`.split(";")[0] || "audio/wav"
+	return arrayBufferToDataUrl(audioBuffer, mimeType)
+}
+
+window.getAvailableVoicesFromAI = async () => {
+	let response = await fetch(apply_proxy_url(custom_kobold_endpoint + koboldcpp_voices_endpoint), {
+		method: "GET",
+		headers: get_kobold_header(),
+	})
+	if (!response.ok) {
+		let bodyText = await response.text().catch(() => "")
+		throw new Error(`voice list fetch failed (${response.status}) ${bodyText}`.trim())
+	}
+	let data = await response.json()
+	let voices = Array.isArray(data)
+		? data.map(voiceName => `${voiceName || ""}`.trim()).filter(voiceName => voiceName.length > 0)
+		: []
+	return voices
+}
+
 window.generateObjectFromAI = async (prompt, objectStructure = {text: ""}) => {
 	let grammar = await getObjectGNBF(objectStructure)
     let formattedPrompt = createInstructPrompt(prompt)
