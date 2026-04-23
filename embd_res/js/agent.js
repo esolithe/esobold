@@ -347,7 +347,7 @@ let buildOAIBaseMessages = (agentRunState, contextState, persistedMessages = [],
     let history = getLastActions(localsettings.agentMaxActionsInHistory, excludeFromHistory)
     history.forEach(turn => {
         let role = turn.myturn ? "user" : "assistant"
-        if (turn.source === "system") role = "system"
+        if (turn.source === "system") role = "tool" // role = "system"
         messages.push({ role, content: turn.msg })
     })
 
