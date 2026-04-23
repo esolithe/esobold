@@ -13648,6 +13648,9 @@ def launch_OpenLumara(launch_args):
                 "--core.data_folder", f"{launch_args.OpenLumara_datadir if launch_args.OpenLumara_datadir is not None else 'data'}",
                 "--modules.settings.sandboxed_files", f"{launch_args.OpenLumara_sandboxfolder if launch_args.OpenLumara_sandboxfolder is not None else 'sandbox'}"
                 ]
+
+        if (launch_args.debugmode is not None and launch_args.debugmode >= 1):
+            args_to_add.append("--debug")
         
         for arg in args_to_add:
             print(f"OpenLumara launch argument: {arg}")
