@@ -1766,6 +1766,11 @@ let runAgentCycle = async (agentRunState = {}) => {
     }
     try
     {
+        // Handle visualiser one last time to show any final thoughts or suggestions after completion
+        if (typeof agentRunState?.agentVisualiser === "function") {
+            await agentRunState.agentVisualiser(objRefAssign({}, agentRunState, {agentRunState}))
+        }
+
         // Handle finaliser
         if (typeof agentRunState?.agentFinaliser === "function") {
             await agentRunState.agentFinaliser(agentRunState)
