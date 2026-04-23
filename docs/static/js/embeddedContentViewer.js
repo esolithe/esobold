@@ -21,10 +21,6 @@ let ensureEmbeddedContentViewerButtons = () => {
         return;
     }
 
-    if (typeof localsettings === 'undefined' || !localsettings.agentBehaviour) {
-        return;
-    }
-
     embeddedContentViewerInitialized = true;
 
     // Add button next to btn_toggleAgent (main interface)
@@ -143,23 +139,20 @@ let setupAgentModeMonitor = () => {
         return; // Already set up
     }
 
-    let lastAgentState = !!localsettings.agentBehaviour;
     let lastFsState = is_using_kcpp_with_fs();
     let buttonExists = !!document.getElementById('btn_viewEmbeddedContent');
 
     agentModeMonitorInterval = setInterval(() => {
-        let currentAgentState = !!localsettings.agentBehaviour;
+        // let currentAgentState = !!localsettings.agentBehaviour;
         let currentFsState = is_using_kcpp_with_fs();
         
         // Check if state changed enough to require reinitialization
-        if ((currentAgentState !== lastAgentState || currentFsState !== lastFsState) && 
-            currentAgentState && currentFsState) {
+        if ((currentFsState !== lastFsState) && currentFsState) {
             
             // Reset initialized flag to allow button creation
             embeddedContentViewerInitialized = false;
             ensureEmbeddedContentViewerButtons();
             
-            lastAgentState = currentAgentState;
             lastFsState = currentFsState;
         }
     }, 500);

@@ -402,6 +402,10 @@ export const buildMacroCommands = (ctx) => {
 				if (typeof agentRunState.agentVisualiser === "function") {
 					await agentRunState.agentVisualiser(objRefAssign({}, agentRunState, {agentRunState}))
 				}
+				if (!!agentRunState?.printToConsole && agentRunState?.logger !== undefined)
+				{
+					agentRunState.logger.printPendingLogs()
+				}
 				await window.execAgentCycle(subAgentRunState)
 				addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "sub-agent loop complete."))
 				return false
@@ -561,11 +565,19 @@ export const buildMacroCommands = (ctx) => {
 					if (typeof agentRunState.agentVisualiser === "function") {
 						await agentRunState.agentVisualiser(objRefAssign({}, agentRunState, {agentRunState}))
 					}
+					if (!!agentRunState?.printToConsole && agentRunState?.logger !== undefined)
+					{
+						agentRunState.logger.printPendingLogs()
+					}
 				}
 				for (let { path, subAgentRunState } of subAgentRunStates) {
 					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, `executing sub-agent loop for path: ${path}`))
 					if (typeof agentRunState.agentVisualiser === "function") {
 						await agentRunState.agentVisualiser(objRefAssign({}, agentRunState, {agentRunState}))
+					}
+					if (!!agentRunState?.printToConsole && agentRunState?.logger !== undefined)
+					{
+						agentRunState.logger.printPendingLogs()
 					}
 					await window.execAgentCycle(subAgentRunState)
 					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, `sub-agent loop complete for path: ${path}`))
