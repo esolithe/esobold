@@ -8607,17 +8607,11 @@ def show_gui():
                 args.hordekey = horde_apikey_var.get()
                 args.hordeworkername = horde_workername_var.get()
 
-        if sd_model_var.get() != "":
-            args.sdmodel = sd_model_var.get()
-
-        if sd_flash_attention_var.get()==1:
-            args.sdflashattention = True
-        if sd_offload_cpu_var.get()==1:
-            args.sdoffloadcpu = True
-        if sd_vae_cpu_var.get()==1:
-            args.sdvaecpu = True
-        if sd_clip_gpu_var.get()==1:
-            args.sdclipgpu = True
+        args.sdmodel = sd_model_var.get()  if sd_model_var.get() != "" else ""
+        args.sdflashattention = True if sd_flash_attention_var.get()==1 else False
+        args.sdoffloadcpu = True if sd_offload_cpu_var.get()==1 else False
+        args.sdvaecpu = True if sd_vae_cpu_var.get()==1 else False
+        args.sdclipgpu = True if sd_clip_gpu_var.get()==1 else False
         args.sdthreads = (0 if sd_threads_var.get()=="" else int(sd_threads_var.get()))
         args.sdclamped = (0 if int(sd_clamped_var.get())<=0 else int(sd_clamped_var.get()))
         args.sdclampedsoft = (0 if int(sd_clamped_soft_var.get())<=0 else int(sd_clamped_soft_var.get()))
@@ -8631,43 +8625,34 @@ def show_gui():
             if sd_vae_var.get() != "":
                 args.sdvae = sd_vae_var.get()
         args.sdconvdirect = sd_convdirect_option(sd_convdirect_var.get())
-        if sd_t5xxl_var.get() != "":
-            args.sdt5xxl = sd_t5xxl_var.get()
-        if sd_clip1_var.get() != "":
-            args.sdclip1 = sd_clip1_var.get()
-        if sd_clip2_var.get() != "":
-            args.sdclip2 = sd_clip2_var.get()
-        if sd_photomaker_var.get() != "":
-            args.sdphotomaker = sd_photomaker_var.get()
-        if sd_upscaler_var.get() != "":
-            args.sdupscaler = sd_upscaler_var.get()
+        args.sdt5xxl = sd_t5xxl_var.get() if sd_t5xxl_var.get() != "" else ""
+        args.sdclip1 = sd_clip1_var.get() if sd_clip1_var.get() != "" else ""
+        args.sdclip2 = sd_clip2_var.get() if sd_clip2_var.get() != "" else ""
+        args.sdphotomaker = sd_photomaker_var.get() if sd_photomaker_var.get() != "" else ""
+        args.sdupscaler = sd_upscaler_var.get()  if sd_upscaler_var.get() != "" else ""
         args.sdquant = sd_quant_option(sd_quant_var.get())
         args.sdlora = [item.strip() for item in sd_lora_var.get().split("|") if item]
         # XXX the user may have used '|' since it's used for the LoRAs
         args.sdloramult = sanitize_lora_multipliers(re.split(r"[ |]+", sd_loramult_var.get()))
         args.sdmaingpu = (-1 if sd_main_gpu_var.get()=="" else int(sd_main_gpu_var.get()))
-
-        if gen_defaults_var.get() != "":
-            args.gendefaults = gen_defaults_var.get()
+        args.gendefaults = gen_defaults_var.get()  if gen_defaults_var.get() != "" else ""
         args.gendefaultsoverwrite = (gen_defaults_overwrite_var.get()==1)
-
-        if whisper_model_var.get() != "":
-            args.whispermodel = whisper_model_var.get()
-
-        if embeddings_model_var.get() != "":
-            args.embeddingsmodel = embeddings_model_var.get()
-
-        if embeddings_ctx_var.get() != "":
-            args.embeddingsmaxctx = (0 if embeddings_ctx_var.get()=="" else int(embeddings_ctx_var.get()))
+        args.whispermodel = whisper_model_var.get() if whisper_model_var.get() != "" else ""
+        args.embeddingsmodel = embeddings_model_var.get()  if embeddings_model_var.get() != "" else ""
+        args.embeddingsmaxctx = (0 if embeddings_ctx_var.get()=="" else int(embeddings_ctx_var.get()))
         args.embeddingsgpu = (embeddings_gpu_var.get()==1)
 
+        args.ttsthreads = (0 if tts_threads_var.get()=="" else int(tts_threads_var.get()))
+        args.ttsmaxlen = (default_ttsmaxlen if ttsmaxlen_var.get()=="" else int(ttsmaxlen_var.get()))
+        args.ttsgpu = (ttsgpu_var.get()==1)
         if tts_model_var.get() != "":
-            args.ttsthreads = (0 if tts_threads_var.get()=="" else int(tts_threads_var.get()))
             args.ttsmodel = tts_model_var.get()
             args.ttswavtokenizer = wavtokenizer_var.get()
-            args.ttsgpu = (ttsgpu_var.get()==1)
-            args.ttsmaxlen = (default_ttsmaxlen if ttsmaxlen_var.get()=="" else int(ttsmaxlen_var.get()))
             args.ttsdir = tts_dir_var.get()
+        else:
+            args.ttsmodel = ""
+            args.ttswavtokenizer = ""
+            args.ttsdir = ""
 
         args.musicllm = musicllm_var.get()
         args.musicembeddings = musicembeddings_var.get()
