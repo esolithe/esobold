@@ -429,7 +429,7 @@ let split = (input, ...delimiters) => {
 let listOfExclusions = ["Action taken:", "Action taken (words =", "History search performed:", "Semantic search performed:", "Chain of thought complete",
     "Web search results:", "Text has been added to history", "Formula evaluation result:", "Formula evaluation could not be completed as no formula was provided",
     "Text has been added to history", "Text was empty - nothing added to history", "Search string was empty, no search performed", "Word count is", "Image analysed:",
-    "FS_TOOL:", "Lumara response: ",
+    "FS_TOOL:", "Lumara response: ", "Response cut off due to length. Ending chain of thought.",
     "Image generated", "No prompt provided, image not generated", "Text has been spoken", "No text provided, nothing has been said", "Setting overview has been overwritten",
     "No setting overview provided, nothing has been overwritten", "Current state has been overwritten", "No state provided, nothing has been overwritten", "Error - Empty response instead of action. Ensure all responses are valid JSON.",
     "Current state format has been overwritten", "No valid state format provided, nothing has been overwritten", 
@@ -1484,9 +1484,14 @@ let runAgentCycle = async (agentRunState = {}) => {
                 if (!execResult) break
 
                 if (execResult.content && (!execResult.tool_calls || execResult.tool_calls.length === 0)) {
-                    // Model responded with content, not a tool call - treat as send_message
-                    addThought(currentChainOfThought, createAIPrompt, execResult.content)
-                    oaiPersistedMessages.push({ role: "assistant", content: execResult.content })
+                    if (execResult.finish_reason === "length") {
+                        addThought(currentChainOfThought, createSysPrompt, "Response cut off due to length. Ending chain of thought.", true)
+                    }
+                    else {
+                        // Model responded with content, not a tool call - treat as send_message
+                        addThought(currentChainOfThought, createAIPrompt, execResult.content)
+                        oaiPersistedMessages.push({ role: "assistant", content: execResult.content })
+                    }
                     if (typeof agentRunState?.agentVisualiser === "function") {
                         await agentRunState.agentVisualiser(objRefAssign({ agentRunState }, agentRunState))
                     }
