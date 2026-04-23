@@ -774,7 +774,14 @@ let managerUploadHandler = function (result) {
         }
         else {
             let wiToAdd = data, has_tav_wi_check = has_tavern_wi_check(wiToAdd), wiName = fileName;
-            if (!data.scenarioVersion && (!!data?.name && ((!!data?.description || !!data?.personality) || (data.spec == "chara_card_v2" || data.spec == "chara_card_v3")))) {
+            let checkForIfCharData = (node) => !node.scenarioVersion && (!!node?.name && ((!!node?.description || !!node?.personality) || (node.spec == "chara_card_v2" || node.spec == "chara_card_v3")))
+            if (!!data?.data) {
+                let nestedData = data.data
+                if (checkForIfCharData(nestedData)) {
+                    data = nestedData
+                }
+            }
+            if (checkForIfCharData(data)) {
                 saveCharacterDataToIndexDB(undefined, data, fileName)
             }
             else {
