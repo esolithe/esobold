@@ -3300,6 +3300,11 @@ let renderSuggestions = () => {
         let { container } = getAgentInputUiTargets()
         if (container) {
             container.appendChild(choiceContainer)
+            if (hasPendingAgentInput && !!localsettings?.autoscroll) {
+                requestAnimationFrame(() => {
+                    container.scrollTop = container.scrollHeight
+                })
+            }
         }
     }
 }
