@@ -11149,7 +11149,18 @@ def show_gui():
             initialDir = os.path.dirname(var.get())
             initialDir = initialDir if os.path.isdir(initialDir) else None
             fnam = None
-            if dialog_type==2:
+            if dialog_type==3: # Handler for save as file generically
+                if multiple:
+                    fnam = zentk_asksaveasfilename(title=text, filetypes=filetypes, defaultextension=filetypes, initialdir=initialDir)
+                    fnam = "|".join(fnam)
+                else:
+                    fnam = zentk_asksaveasfilename(title=text, filetypes=filetypes, defaultextension=filetypes, initialdir=initialDir)
+
+                if not fnam:
+                    fnam = ""
+                else:
+                    fnam = str(fnam).strip()
+            elif dialog_type==2:
                 fnam = zentk_askdirectory(title=text, mustexist=True, initialdir=initialDir)
             elif dialog_type==1:
                 fnam = zentk_asksaveasfilename(title=text, filetypes=filetypes, defaultextension=filetypes, initialdir=initialDir)
@@ -11998,7 +12009,7 @@ def show_gui():
     makelabel(OpenLumara_tab, "OpenLumara AI Agent", 0, 0, tooltiptxt="OpenLumara is a modular, token-efficient AI agent framework that runs alongside KoboldCpp.")
     makecheckbox(OpenLumara_tab, "Enable OpenLumara", OpenLumara_var, 1, tooltiptxt="Launch the OpenLumara AI agent automatically when KoboldCpp starts.")
     # makefileentry(OpenLumara_tab, "Config File (required):", "Select OpenLumara config file", OpenLumara_configfile_var, 3, width=220, dialog_type=0, tooltiptxt="Path to the OpenLumara config YAML file. A default config will be generated at this path if the file is absent.")
-    makefileentry(OpenLumara_tab, "Config File (required):", "Select OpenLumara config file", OpenLumara_configfile_var,3,width=280,filetypes=[("Lumara Config", "*.yaml"), ("Lumara Config", "*.yml")],dialog_type=1,tooltiptxt="Path to the OpenLumara config YAML file.")
+    makefileentry(OpenLumara_tab, "Config File (required):", "Select OpenLumara config file", OpenLumara_configfile_var,3,width=280,filetypes=[("Lumara Config", "*.yaml"), ("Lumara Config", "*.yml")],dialog_type=3,tooltiptxt="Path to the OpenLumara config YAML file.")
     makefileentry(OpenLumara_tab, "Data Directory (required):", "Select OpenLumara data directory", OpenLumara_datadir_var, 5, width=220, dialog_type=2, tooltiptxt="Path to the data directory used by OpenLumara to store configurations and conversation history.")
     makefileentry(OpenLumara_tab, "Sandbox Folder (required):", "Select OpenLumara sandbox folder", OpenLumara_sandboxfolder_var, 7, width=220, dialog_type=2, tooltiptxt="Path to the sandbox directory used by OpenLumara for agent file access.")
     makelabelentry(OpenLumara_tab, "OAI API URL (optional):", OpenLumara_apiurl_var, 9, 220, tooltip=f"Overrides the API URL in the OpenLumara config.\nLeave blank to use the value already in the config.\nExample: https://localhost:{defaultport}/v1")
@@ -13531,19 +13542,9 @@ def get_OpenLumara_dir():
     return lumaraPath
     
 def prepare_OpenLumara_config(launch_args):
-    OpenLumara_dir = get_OpenLumara_dir()
-    config_dir = os.path.join(OpenLumara_dir, "config")
-
     # Determine config file path
     configfile = (launch_args.OpenLumara_configfile or "").strip()
-    if configfile and os.path.isabs(configfile):
-        config_path = configfile
-    elif configfile:
-        config_path = os.path.abspath(configfile)
-    else:
-        config_path = os.path.join(config_dir, "config.yml")
-
-    return config_path
+    return configfile
 
 OpenLumara_launch_lock = threading.Lock()
 
