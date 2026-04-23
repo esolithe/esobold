@@ -259,8 +259,12 @@ let getCommands = (agentRunState) => {
 	let requestUserSelectedImageForAgent = async (runState, chainOfThought, promptText) => {
 		addThought(chainOfThought, createSysPrompt, promptText, true)
 		let { agentVisualiser } = runState
-		if (typeof agentVisualiser === "function") {
-			await agentVisualiser(objRefAssign({}, runState, { runState }))
+		if (!!runState?.printToConsole && runState?.logger !== undefined)
+		{
+			runState.logger.printPendingLogs()
+		}
+		if (typeof runState.agentVisualiser === "function") {
+			await runState.agentVisualiser(objRefAssign({}, runState, { runState }))
 		}
 		return await waitForUserImageSelection(agentRunState)
 	}

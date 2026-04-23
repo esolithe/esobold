@@ -1300,8 +1300,12 @@ let runAgentCycle = async (agentRunState = {}) => {
         if (agentInitialiser !== undefined) {
             await agentInitialiser(agentRunState)
         }
-        if (typeof agentVisualiser === "function") {
-            await agentVisualiser(objRefAssign({}, agentRunState, {agentRunState}))
+        if (!!agentRunState?.printToConsole && agentRunState?.logger !== undefined)
+        {
+            agentRunState.logger.printPendingLogs()
+        }
+        if (typeof agentRunState?.agentVisualiser === "function") {
+            await agentRunState.agentVisualiser(objRefAssign({}, agentRunState, {agentRunState}))
         }
 
         if (!!agentRunState?.planToUse && typeof agentRunState.planToUse === "object") {
@@ -1337,8 +1341,12 @@ let runAgentCycle = async (agentRunState = {}) => {
                         agentRunState.errors.push(e)
                     }
                 }
-                if (typeof agentVisualiser === "function") {
-                    await agentVisualiser(objRefAssign({ agentRunState }, agentRunState))
+                if (!!agentRunState?.printToConsole && agentRunState?.logger !== undefined)
+                {
+                    agentRunState.logger.printPendingLogs()
+                }
+                if (typeof agentRunState?.agentVisualiser === "function") {
+                    await agentRunState.agentVisualiser(objRefAssign({ agentRunState }, agentRunState))
                 }
                 return toolResultText
             }
@@ -1399,8 +1407,12 @@ let runAgentCycle = async (agentRunState = {}) => {
 
                     let planSummaryAction = { name: "plan_actions", args: planArgs }
                     addThought(currentChainOfThought, createAIPrompt, getActionSummaryText(planSummaryAction, null, false))
-                    if (typeof agentVisualiser === "function") {
-                        await agentVisualiser(objRefAssign({ agentRunState }, agentRunState))
+                    if (!!agentRunState?.printToConsole && agentRunState?.logger !== undefined)
+                    {
+                        agentRunState.logger.printPendingLogs()
+                    }
+                    if (typeof agentRunState?.agentVisualiser === "function") {
+                        await agentRunState.agentVisualiser(objRefAssign({ agentRunState }, agentRunState))
                     }
 
                     oaiPersistedMessages.push({ role: "assistant", content: planResult.content || null, tool_calls: planResult.tool_calls })
@@ -1475,8 +1487,12 @@ let runAgentCycle = async (agentRunState = {}) => {
                     // Model responded with content, not a tool call - treat as send_message
                     addThought(currentChainOfThought, createAIPrompt, execResult.content)
                     oaiPersistedMessages.push({ role: "assistant", content: execResult.content })
-                    if (typeof agentVisualiser === "function") {
-                        await agentVisualiser(objRefAssign({ agentRunState }, agentRunState))
+                    if (!!agentRunState?.printToConsole && agentRunState?.logger !== undefined)
+                    {
+                        agentRunState.logger.printPendingLogs()
+                    }
+                    if (typeof agentRunState?.agentVisualiser === "function") {
+                        await agentRunState.agentVisualiser(objRefAssign({ agentRunState }, agentRunState))
                     }
                     isCompleted = true
                     break
@@ -1503,13 +1519,20 @@ let runAgentCycle = async (agentRunState = {}) => {
                 oaiPersistedMessages.push({ role: "assistant", content: execResult.content || null, tool_calls: execResult.tool_calls })
                 oaiPersistedMessages.push({ role: "tool", content: toolResult, tool_call_id: tc.id || "tool_call" })
 
-                if (printToConsole) logger.printPendingLogs()
+                if (!!agentRunState?.printToConsole && agentRunState?.logger !== undefined)
+                {
+                    agentRunState.logger.printPendingLogs()
+                }
             }
 
             if (!isCompleted) {
                 addThought(currentChainOfThought, createSysPrompt, "Chain of thought complete", true)
-                if (typeof agentVisualiser === "function") {
-                    await agentVisualiser(objRefAssign({ agentRunState }, agentRunState))
+                if (!!agentRunState?.printToConsole && agentRunState?.logger !== undefined)
+                {
+                    agentRunState.logger.printPendingLogs()
+                }
+                if (typeof agentRunState?.agentVisualiser === "function") {
+                    await agentRunState.agentVisualiser(objRefAssign({ agentRunState }, agentRunState))
                 }
             }
         } else {
@@ -1684,14 +1707,18 @@ let runAgentCycle = async (agentRunState = {}) => {
                             objRefOverride(agentRunState, { currentOrderOfActionsOverall, currentOrderOfActionDescriptionsOverall })
                         }
 
-                        if (typeof agentVisualiser === "function") {
+                        if (!!agentRunState?.printToConsole && agentRunState?.logger !== undefined)
+                        {
+                            agentRunState.logger.printPendingLogs()
+                        }
+                        if (typeof agentRunState?.agentVisualiser === "function") {
                             // Render any suggestions generated in the agent logic
                             let visualiserParams = objRefAssign({
                                 command,
                                 action,
                                 agentRunState
                             }, agentRunState)
-                            await agentVisualiser(visualiserParams)
+                            await agentRunState.agentVisualiser(visualiserParams)
                         }
                         if (res === true) {
                             isCompleted = true
@@ -1766,7 +1793,7 @@ let runAgentCycle = async (agentRunState = {}) => {
     }
     try
     {
-        // Handle visualiser one last time to show any final thoughts or suggestions after completion
+        // Handle visualiser one last time to show any final thoughts or suggestions after completion        
         if (typeof agentRunState?.agentVisualiser === "function") {
             await agentRunState.agentVisualiser(objRefAssign({}, agentRunState, {agentRunState}))
         }

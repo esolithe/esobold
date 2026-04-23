@@ -399,6 +399,10 @@ export const buildMacroCommands = (ctx) => {
 				}
 
 				addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "executing as sub-agent loop."))
+				if (!!agentRunState?.printToConsole && agentRunState?.logger !== undefined)
+				{
+					agentRunState.logger.printPendingLogs()
+				}
 				if (typeof agentRunState.agentVisualiser === "function") {
 					await agentRunState.agentVisualiser(objRefAssign({}, agentRunState, {agentRunState}))
 				}
@@ -558,12 +562,20 @@ export const buildMacroCommands = (ctx) => {
 					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, `running on ${distinctPaths.length} file(s).`))
 				}
 				finally {
+					if (!!agentRunState?.printToConsole && agentRunState?.logger !== undefined)
+					{
+						agentRunState.logger.printPendingLogs()
+					}
 					if (typeof agentRunState.agentVisualiser === "function") {
 						await agentRunState.agentVisualiser(objRefAssign({}, agentRunState, {agentRunState}))
 					}
 				}
 				for (let { path, subAgentRunState } of subAgentRunStates) {
 					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, `executing sub-agent loop for path: ${path}`))
+					if (!!agentRunState?.printToConsole && agentRunState?.logger !== undefined)
+					{
+						agentRunState.logger.printPendingLogs()
+					}
 					if (typeof agentRunState.agentVisualiser === "function") {
 						await agentRunState.agentVisualiser(objRefAssign({}, agentRunState, {agentRunState}))
 					}
