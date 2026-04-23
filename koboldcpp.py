@@ -8468,6 +8468,7 @@ def show_gui():
         args.usevulkan = None
         args.usecuda = None
         args.noavx2 = False
+        args.failsafe = False
         if gpu_choice_var.get()!="All":
             gpuchoiceidx = int(gpu_choice_var.get())-1
         if runopts_var.get() == "Use CUDA" or runopts_var.get() == "Use hipBLAS (ROCm)":
@@ -8491,10 +8492,9 @@ def show_gui():
             elif runopts_var.get() == "Use Vulkan (Older CPU)":
                 args.noavx2 = True
                 args.failsafe = True
-        if gpulayers_var.get():
-            args.gpulayers = (0 if gpulayers_var.get()=="" else int(gpulayers_var.get()))
-        if autofit_padding_var.get():
-            args.autofitpadding = (default_autofit_padding if autofit_padding_var.get()=="" else int(autofit_padding_var.get()))
+
+        args.gpulayers = (-1 if gpulayers_var.get()=="" else int(gpulayers_var.get()))
+        args.autofitpadding = (default_autofit_padding if autofit_padding_var.get()=="" else int(autofit_padding_var.get()))
         if runopts_var.get()=="Use CPU":
             args.usecpu = True
         if runopts_var.get()=="Use CPU (Old CPU)":
@@ -8505,12 +8505,14 @@ def show_gui():
             args.usecpu = True
             args.usemmap = False
             args.failsafe = True
+        args.tensor_split = None
         if tensor_split_str_vars.get()!="":
             tssv = tensor_split_str_vars.get()
             if "," in tssv:
                 args.tensor_split = [float(x) for x in tssv.split(",")]
             else:
                 args.tensor_split = [float(x) for x in tssv.split(" ")]
+        args.draftgpusplit = None
         if draftgpusplit_str_vars.get()!="":
             tssv = draftgpusplit_str_vars.get()
             if "," in tssv:
@@ -8541,10 +8543,8 @@ def show_gui():
         args.nobostoken = (nobostoken_var.get()==1)
         args.jinja = (jinja_var.get()==1)
         args.jinja_tools = (jinja_tools_var.get()==1)
-        if jinja_kwargs_var.get() != "":
-            args.jinja_kwargs = jinja_kwargs_var.get()
-        if jinjatemplate_var.get() != "":
-            args.jinjatemplate = jinjatemplate_var.get()
+        args.jinja_kwargs = jinja_kwargs_var.get()  if jinja_kwargs_var.get() != "" else ""
+        args.jinjatemplate = jinjatemplate_var.get() if jinjatemplate_var.get() != "" else ""
         args.enableguidance = (enableguidance_var.get()==1)
         args.overridekv = None if override_kv_var.get() == "" else override_kv_var.get()
         args.overridetensors = None if override_tensors_var.get() == "" else override_tensors_var.get()
@@ -8607,7 +8607,7 @@ def show_gui():
                 args.hordekey = horde_apikey_var.get()
                 args.hordeworkername = horde_workername_var.get()
 
-        args.sdmodel = sd_model_var.get()  if sd_model_var.get() != "" else ""
+        args.sdmodel = sd_model_var.get() if sd_model_var.get() != "" else ""
         args.sdflashattention = True if sd_flash_attention_var.get()==1 else False
         args.sdoffloadcpu = True if sd_offload_cpu_var.get()==1 else False
         args.sdvaecpu = True if sd_vae_cpu_var.get()==1 else False
