@@ -11096,6 +11096,7 @@ def show_gui():
     OpenLumara_datadir_var = ctk.StringVar(value="")
     OpenLumara_sandboxfolder_var = ctk.StringVar(value="")
     OpenLumara_apiurl_var = ctk.StringVar(value="")
+    OpenLumara_TemporaryMode_var = ctk.IntVar(value=0)
 
     nozenity_var = ctk.IntVar(value=0)
 
@@ -12060,6 +12061,7 @@ def show_gui():
     makefileentry(OpenLumara_tab, "Data Directory (required):", "Select OpenLumara data directory", OpenLumara_datadir_var, 5, width=220, dialog_type=2, tooltiptxt="Path to the data directory used by OpenLumara to store configurations and conversation history.")
     makefileentry(OpenLumara_tab, "Sandbox Folder (required):", "Select OpenLumara sandbox folder", OpenLumara_sandboxfolder_var, 7, width=220, dialog_type=2, tooltiptxt="Path to the sandbox directory used by OpenLumara for agent file access.")
     makelabelentry(OpenLumara_tab, "OAI API URL (optional):", OpenLumara_apiurl_var, 9, 220, tooltip=f"Overrides the API URL in the OpenLumara config.\nLeave blank to use the value already in the config.\nExample: https://localhost:{defaultport}/v1")
+    makecheckbox(OpenLumara_tab, "Temporary Mode", OpenLumara_TemporaryMode_var, 11, tooltiptxt="Enable temporary mode for OpenLumara. Prevents writing through most tools to disk. Does not apply to shell commands.")
 
     # refresh
     runopts_var.trace_add("write", changerunmode)
@@ -12339,6 +12341,7 @@ def show_gui():
         args.OpenLumara_datadir = OpenLumara_datadir_var.get()
         args.OpenLumara_sandboxfolder = OpenLumara_sandboxfolder_var.get()
         args.OpenLumara_apiurl = OpenLumara_apiurl_var.get()
+        args.OpenLumara_TemporaryMode = (OpenLumara_TemporaryMode_var.get()==1)
 
     def import_vars(mydict):
         global importvars_in_progress
@@ -12642,6 +12645,7 @@ def show_gui():
         OpenLumara_datadir_var.set(mydict["OpenLumara_datadir"] if ("OpenLumara_datadir" in mydict and mydict["OpenLumara_datadir"]) else "")
         OpenLumara_sandboxfolder_var.set(mydict["OpenLumara_sandboxfolder"] if ("OpenLumara_sandboxfolder" in mydict and mydict["OpenLumara_sandboxfolder"]) else "")
         OpenLumara_apiurl_var.set(mydict["OpenLumara_apiurl"] if ("OpenLumara_apiurl" in mydict and mydict["OpenLumara_apiurl"]) else "")
+        OpenLumara_TemporaryMode_var.set(1 if "OpenLumara_TemporaryMode" in mydict and mydict["OpenLumara_TemporaryMode"] else 0)
 
         importvars_in_progress = False
         gui_changed_modelfile()
@@ -13735,6 +13739,9 @@ def launch_OpenLumara(launch_args):
 
         if (launch_args.debugmode is not None and launch_args.debugmode >= 1):
             args_to_add.append("--debug")
+        
+        if (launch_args.OpenLumara_TemporaryMode is not None and launch_args.OpenLumara_TemporaryMode):
+            args_to_add.append("--tmp")
         
         for arg in args_to_add:
             print(f"OpenLumara launch argument: {arg}")
@@ -15402,6 +15409,7 @@ if __name__ == '__main__':
 
     OpenLumaragroup = parser.add_argument_group('OpenLumara Commands')
     OpenLumaragroup.add_argument("--OpenLumara", help="Enable and launch the OpenLumara AI agent alongside KoboldCpp.", action='store_true')
+    OpenLumaragroup.add_argument("--OpenLumara_TemporaryMode", help="Enable temporary mode for OpenLumara AI agent. This prevents writing through most of the tools to disk. This does not include shell commands.", action='store_true')
     OpenLumaragroup.add_argument("--OpenLumara_configfile", metavar=('[filename]'), help="Path to the OpenLumara config YAML file. Generated with defaults if the file is absent.", default="", type=str)
     OpenLumaragroup.add_argument("--OpenLumara_datadir", metavar=('[directory]'), help="Overrides the data_dir field in the OpenLumara config.", default="", type=str)
     OpenLumaragroup.add_argument("--OpenLumara_sandboxfolder", metavar=('[directory]'), help="Overrides the sandbox_folder field in the OpenLumara config.", default="", type=str)
