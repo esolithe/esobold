@@ -30,9 +30,14 @@ window.triggerAgentResponse = (prompt, macro = undefined) => {
 	})
 }
 
-window.generateTextFromAI = async (prompt) => {
+window.generateTextFromAI = async (prompt, keepThinkingTags = false) => {
     let formattedPrompt = createInstructPrompt(prompt)
-	return await generateAndGetTextFromPrompt(formattedPrompt)
+	let text = await generateAndGetTextFromPrompt(formattedPrompt) || ""
+	if (!keepThinkingTags) {
+		// Remove any thinking tags from the response, as those are meant for the agent's internal processing and not for display
+		text = text.replace(new RegExp(`${localsettings.start_thinking_tag}.*?${localsettings.stop_thinking_tag}`, "is"), "").trim()
+	}
+	return text
 }
 
 window.generateImageFromAI = async (prompt, imageToStartFrom = undefined) => {
