@@ -6411,7 +6411,8 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
     server_version = "KoboldCppServer"
     protocol_version = "HTTP/1.1"
     HOP_BY_HOP = { "connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailers", "transfer-encoding", "upgrade" }
-    STREAM_CHUNK = 512
+    STREAM_CHUNK = 512        # small chunks for SSE token streaming
+    BULK_CHUNK = 65536        # large chunks for non-streaming responses
 
     def log_message(self, fmt, *args):
         global showdebug
@@ -6749,6 +6750,7 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                 conn.close()
         else:
             self.send_response(resp.status, resp.reason) # forward response headers
+            is_sse = "text/event-stream" in content_type.lower()
             for k, v in response_headers:
                 lk = k.lower()
                 if lk in self.HOP_BY_HOP:
@@ -6759,13 +6761,19 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.close_connection = True
 
+            # Use small chunks + per-chunk flush for SSE (low-latency token streaming).
+            # Use large chunks without per-chunk flush for everything else —
+            # flushing after every 512 bytes creates thousands of syscalls for
+            # static assets and is horrendously slow on Windows.
+            chunk_size = self.STREAM_CHUNK if is_sse else self.BULK_CHUNK
             try:  # stream response
                 while True:
-                    chunk = resp.read(self.STREAM_CHUNK)
+                    chunk = resp.read(chunk_size)
                     if not chunk:
                         break
                     self.wfile.write(chunk)
-                    self.wfile.flush()
+                    if is_sse:
+                        self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError):
                 pass
             finally:
@@ -6783,6 +6791,10 @@ class KcppProxyHttpServer(http.server.HTTPServer):
     def __init__(self, server_address, RequestHandlerClass, upstream_port):
         self.upstream_port = upstream_port
         super().__init__(server_address, RequestHandlerClass)
+        # Disable Nagle's algorithm so small SSE chunks are delivered immediately
+        # without waiting for the buffer to fill. Matters most on Windows.
+        import socket as _socket
+        self.socket.setsockopt(_socket.IPPROTO_TCP, _socket.TCP_NODELAY, 1)
     def process_request(self, request, client_address):
         thread = threading.Thread(target=self._worker,args=(request, client_address),daemon=True)
         thread.start()
@@ -7232,13 +7244,16 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
 
         if method.upper() != "HEAD":
+            is_sse = "text/event-stream" in content_type.lower()
+            chunk_size = 512 if is_sse else 65536
             try:
                 while True:
-                    chunk = resp.read(512)
+                    chunk = resp.read(chunk_size)
                     if not chunk:
                         break
                     self.wfile.write(chunk)
-                    self.wfile.flush()
+                    if is_sse:
+                        self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError):
                 pass
             finally:
