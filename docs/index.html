@@ -303,6 +303,10 @@ Current version indicated by LITEVER below.
 		}
 	}
 
+	#chat_msg_body {
+		padding-bottom: 1.5rem;
+	}
+
 
 	/* Viewports */
 	#maineditbody
@@ -4179,6 +4183,7 @@ Current version indicated by LITEVER below.
 		adaptivep_target: -1.0,
 		adaptivep_decay: 0.9,
 		sampler_order: [6, 0, 1, 3, 4, 2, 5],
+		custom_sampler_fields: {},
 	};
 
 	/**
@@ -12828,6 +12833,30 @@ Current version indicated by LITEVER below.
 		document.getElementById("secondepsamplecontainer").classList.remove("hidden");
 	}
 
+	var pendingcustomfieldssampler = {};
+	function show_customfields_sampler()
+	{
+		inputBoxOkCancel("Insert JSON object containing custom fields to send. These values will be added to every generation payload.","Extra Custom Fields",JSON.stringify(pendingcustomfieldssampler),"Paste JSON Here",()=>{
+		let userinput = getInputBoxValue().trim();
+		try
+		{
+			pendingcustomfieldssampler = {};
+			if(userinput!="")
+			{
+				pendingcustomfieldssampler = JSON.parse(userinput);
+			}
+			document.getElementById("custom_field_overview").innerText = (pendingcustomfieldssampler && Object.keys(pendingcustomfieldssampler).length>0)?(`${Object.keys(pendingcustomfieldssampler).length} items`):"OFF";
+			sampler_setting_tweaked();
+		} catch (e) {
+			console.log("Custom fields incorrectly formatted: "+e);
+		}
+
+		},
+		()=>{
+			//do nothing on cancel
+		},false,true);
+	}
+
 	function explain_horde()
 	{
 		msgbox("The AI Horde generates text using crowdsourced GPUs by volunteer workers. By default your inputs are not logged, but as Horde workers are open source, they can be modified to do so. <br><br>In all cases, the sender will *always be anonymous*, however you are still advised to avoid sending privacy sensitive information.<br>","Disclaimer",true);
@@ -15960,6 +15989,7 @@ Current version indicated by LITEVER below.
 		document.getElementById("nsigma").value = localsettings.nsigma;
 		document.getElementById("dynatemp_overview").innerText = (localsettings.dynatemp_range!=0?"ON":"OFF");
 		document.getElementById("second_ep_overview").innerText = (localsettings.second_ep_qty>0 && localsettings.second_ep_url?"ON":"OFF");
+		document.getElementById("custom_field_overview").innerText = (localsettings.custom_sampler_fields && Object.keys(localsettings.custom_sampler_fields).length>0)?(`${Object.keys(localsettings.custom_sampler_fields).length} items`):"OFF";
 		document.getElementById("presence_penalty").value = localsettings.presence_penalty;
 		document.getElementById("sampler_seed").value = localsettings.sampler_seed;
 		document.getElementById("top_k").value =  document.getElementById("top_k_slide").value = localsettings.top_k;
@@ -16097,6 +16127,7 @@ Current version indicated by LITEVER below.
 		document.getElementById("imagestyleinput").value = localsettings.image_styles;
 		document.getElementById("negpromptinput").value = localsettings.image_negprompt;
 		pendinggrammar = localsettings.grammar;
+		pendingcustomfieldssampler = JSON.parse(JSON.stringify(localsettings.custom_sampler_fields));
 
 		//prepare the input for sampler order
 		let samplerstr = localsettings.sampler_order.toString();
@@ -16301,6 +16332,7 @@ Current version indicated by LITEVER below.
 			document.getElementById("miro_tau").value = found.miro_tau == null? defaultsettings.miro_tau : found.miro_tau;
 			document.getElementById("miro_eta").value = found.miro_eta == null? defaultsettings.miro_eta : found.miro_eta;
 			pendinggrammar = found.grammar == null? defaultsettings.grammar : found.grammar;
+			pendingcustomfieldssampler = found.custom_sampler_fields == null? defaultsettings.custom_sampler_fields : found.custom_sampler_fields;
 			document.getElementById("dynatemp_range").value = found.dynatemp_range;
 			document.getElementById("dynatemp_exponent").value = found.dynatemp_exponent;
 			document.getElementById("dynatemp_overview").innerText = (document.getElementById("dynatemp_range").value!=0?"ON":"OFF");
@@ -16308,6 +16340,7 @@ Current version indicated by LITEVER below.
 			document.getElementById("second_ep_model").value = found.second_ep_model == null? defaultsettings.second_ep_model : found.second_ep_model;
 			document.getElementById("second_ep_url").value = found.second_ep_url == null? defaultsettings.second_ep_url : found.second_ep_url;
 			document.getElementById("second_ep_overview").innerText = (document.getElementById("second_ep_qty").value>0 && document.getElementById("second_ep_url").value!=""?"ON":"OFF");
+			document.getElementById("custom_field_overview").innerText = (pendingcustomfieldssampler && Object.keys(pendingcustomfieldssampler).length>0)?(`${Object.keys(pendingcustomfieldssampler).length} items`):"OFF";
 		} else {
 			document.getElementById("presetsdesc").innerText = "";
 		}
@@ -16444,6 +16477,7 @@ Current version indicated by LITEVER below.
 			miro_tau: parseFloat(document.getElementById("miro_tau").value),
 			miro_eta: parseFloat(document.getElementById("miro_eta").value),
 			grammar: pendinggrammar,
+			custom_sampler_fields: pendingcustomfieldssampler,
 			dynatemp_range: parseFloat(document.getElementById("dynatemp_range").value),
 			dynatemp_exponent: parseFloat(document.getElementById("dynatemp_exponent").value),
 			second_ep_qty: document.getElementById("second_ep_qty").value,
@@ -16590,6 +16624,7 @@ Current version indicated by LITEVER below.
 			document.getElementById("adaptivep_decay").value != (found.adaptivep_decay != null ? found.adaptivep_decay : defaultsettings.adaptivep_decay) ||
 			document.getElementById("nsigma").value != found.nsigma ||
 			pendinggrammar != (found.grammar ? found.grammar : defaultsettings.grammar) ||
+			JSON.stringify(pendingcustomfieldssampler) != (found.custom_sampler_fields ? JSON.stringify(found.custom_sampler_fields) : JSON.stringify(defaultsettings.custom_sampler_fields)) ||
 			document.getElementById("dynatemp_range").value != found.dynatemp_range ||
 			document.getElementById("dynatemp_exponent").value != found.dynatemp_exponent ||
 			document.getElementById("second_ep_qty").value != (found.second_ep_qty != null ? found.second_ep_qty : defaultsettings.second_ep_qty) ||
@@ -17016,6 +17051,7 @@ Current version indicated by LITEVER below.
 		localsettings.image_styles = document.getElementById("imagestyleinput").value;
 		localsettings.image_negprompt = document.getElementById("negpromptinput").value;
 		localsettings.grammar = pendinggrammar;
+		localsettings.custom_sampler_fields = pendingcustomfieldssampler;
 		localsettings.tokenstreammode = document.getElementById("tokenstreammode").value;
 		localsettings.img_autogen_type = document.getElementById("img_autogen_type").value;
 		localsettings.img_crop = (document.getElementById("img_crop").checked ? true : false);
@@ -17622,6 +17658,8 @@ Current version indicated by LITEVER below.
 				"models": selected_models.map((m) => { return m.name }),
 			};
 
+			Object.assign(submit_payload.params, localsettings.custom_sampler_fields);
+
 			if (localsettings.sampler_seed >= 1) {
 				submit_payload.params.sampler_seed = localsettings.sampler_seed;
 			}
@@ -17697,6 +17735,8 @@ Current version indicated by LITEVER below.
 			},
 			"models": selected_models.map((m) => { return m.name }),
 		};
+
+		Object.assign(submit_payload.params, localsettings.custom_sampler_fields);
 
 		if(localsettings.sampler_seed>=1)
 		{
@@ -20805,6 +20845,8 @@ Current version indicated by LITEVER below.
 				"models": selected_models.map((m) => { return m.name }),
 			};
 
+			Object.assign(submit_payload.params, localsettings.custom_sampler_fields);
+
 			if(is_using_kcpp_with_added_memory())
 			{
 				submit_payload.params.memory = truncated_memory;
@@ -21298,6 +21340,16 @@ Current version indicated by LITEVER below.
 					"temperature": submit_payload.params.temperature,
 					"top_p": submit_payload.params.top_p
 				}
+				if(document.getElementById("useoainonstandard").checked)
+				{
+					//send ALL non standard params
+					if(submit_payload.params.sampler_seed>=1)
+					{
+						oai_payload.seed = submit_payload.params.sampler_seed;
+					}
+					Object.assign(oai_payload, submit_payload.params);
+				}
+				Object.assign(oai_payload, localsettings.custom_sampler_fields);
 				if(localsettings.request_logprobs && !targetep.toLowerCase().includes("api.x.ai") && !targetep.toLowerCase().includes("api.mistral.ai"))
 				{
 					if(document.getElementById("useoaichatcompl").checked || targetep.toLowerCase().includes("api.x.ai"))
@@ -21324,18 +21376,10 @@ Current version indicated by LITEVER below.
 				if(!targetep.toLowerCase().includes("pollinations.ai") && !targetep.toLowerCase().includes("api.mistral.ai") && !targetep.toLowerCase().includes("api.x.ai"))
 				{
 					//mistral api does not support presence pen
-					oai_payload.presence_penalty = scaled_rep_pen;
-				}
-				if(document.getElementById("useoainonstandard").checked)
-				{
-					//featherless api supports additional fields, include them
-					oai_payload.top_k = (submit_payload.params.top_k<1?300:submit_payload.params.top_k);
-					oai_payload.min_p = localsettings.min_p;
-					if(submit_payload.params.sampler_seed>=1)
+					if(scaled_rep_pen>0)
 					{
-						oai_payload.seed = submit_payload.params.sampler_seed;
+						oai_payload.presence_penalty = scaled_rep_pen;
 					}
-					oai_payload.top_a = localsettings.top_a;
 				}
 				if(submit_payload.params.logit_bias && JSON.stringify(submit_payload.params.logit_bias) != '{}')
 				{
@@ -21602,6 +21646,7 @@ Current version indicated by LITEVER below.
 					"max_tokens": submit_payload.params.max_length,
 					"temperature": submit_payload.params.temperature,
 				};
+				Object.assign(claude_payload, localsettings.custom_sampler_fields);
 				claude_payload.messages.push({"role": "user", "content": submit_payload.prompt})
 				if(sysprompt)
 				{
@@ -21818,6 +21863,8 @@ Current version indicated by LITEVER below.
 				}
 				};
 
+				Object.assign(payload, localsettings.custom_sampler_fields);
+
 				if(document.getElementById("usegeminiweb").checked)
 				{
 					payload["tools"] = [{"google_search": {}}];
@@ -22000,6 +22047,8 @@ Current version indicated by LITEVER below.
 				submit_payload.params.smoothing_factor = localsettings.smoothing_factor;
 				// submit_payload.params.smoothing_curve = localsettings.smoothing_curve; //no idea if horde supports this, dont care to check
 				// submit_payload.params.nsigma = localsettings.nsigma;
+
+				Object.assign(submit_payload.params, localsettings.custom_sampler_fields);
 			}
 
 			last_request_str = JSON.stringify(submit_payload);
@@ -30833,6 +30882,15 @@ Current version indicated by LITEVER below.
 									</div>
 								</div>
 							</div>
+							<div style="display:flex;width:100%;">
+								<div class="settinglabel settingcell">
+									<div class="justifyleft" style="width:100%">Extra Custom Fields <span class="helpicon">?<span class="helptext">
+										Define custom parameters to send along with all generation payloads. Advanced users only.</span></span></div>
+									<div class="justifyleft" style="width:100%;">
+										<button title="Extra Custom Fields" type="button" class="btn btn-primary" style="padding:2px 4px;font-size:12px;" onclick="show_customfields_sampler()"><span id="custom_field_overview">OFF</span></button>
+									</div>
+								</div>
+							</div>
 						</div>
 					</div>
 				</div>
@@ -32139,7 +32197,7 @@ Current version indicated by LITEVER below.
 					<div><input type="checkbox" id="useoaichatcompl" title="Use ChatCompletions API" onchange="toggleoaichatcompl()">
 					<div class="box-label">Chat-Completions API</div></div>
 					<div><input type="checkbox" id="useoainonstandard" title="Send Non-Standard Fields">
-					<div class="box-label">Non-Standard Fields <span class="helpicon">?<span class="helptext">Send extra non-standard samplers like Min-P, Top-K and Top-A.</span></span></div></div>
+					<div class="box-label">Non-Standard Fields <span class="helpicon">?<span class="helptext">Send all extra non-standard samplers (e.g Min-P, Top-K, Top-A, TFS). May be rejected by many endpoints.</span></span></div></div>
 				</div>
 				<div id="useoaichatcomplbox" class="hidden" onload="toggleoaichatcompl();">
 					<div style="display: inline-block;">
