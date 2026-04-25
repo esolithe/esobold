@@ -6644,7 +6644,7 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                     swapModeChanged = True
 
                 if (global_memory["swapReqType"] is not None and swapModeChanged):
-                    reqbody = json.dumps({"filename":global_memory["current_model"], "baseconfig": global_memory["base_config"]})
+                    reqbody = json.dumps({"filename":global_memory["current_model"], "baseconfig": global_memory["base_config"], "modelName": global_memory["current_model_override"]})
                     reqheaders = {
                         'Content-Type': 'application/json',
                         'Content-Length': str(len(reqbody)),
