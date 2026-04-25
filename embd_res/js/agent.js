@@ -3078,6 +3078,22 @@ let askUserToRetryIncompleteTask = async (agentRunState) => {
     if (!!agentRunState?.skipTaskCompletionCheck || agentRunState.endCurrent) {
         return
     }
+    if (agentRunState?.replanDueToError && localsettings?.agentReplanOnError) {
+        agentRunState.replanDueToError = false
+        window.execAgentCycle(objRefAssign({}, {
+            initialPrompt: "",
+            printToConsole: !!agentRunState?.printToConsole,
+            agentName: agentRunState?.agentName,
+            systemPrompt: agentRunState?.systemPrompt,
+            agentPrompt: agentRunState?.agentPrompt,
+            configOverrides: agentRunState?.configOverrides,
+            isUsingWhitelist: agentRunState?.isUsingWhitelist,
+            agentStopOnRequestForInput: agentRunState?.agentStopOnRequestForInput,
+            surpressMessagesToUser: agentRunState?.surpressMessagesToUser,
+            excludeSpecificMessagePrefixes: agentRunState?.excludeSpecificMessagePrefixes
+        }))
+        return
+    }
     let autoContinueMode = `${localsettings?.agentAutoContinueMode || ""}`
     if (autoContinueMode !== "auto" && autoContinueMode !== "prompt" && autoContinueMode !== "disabled") {
         autoContinueMode = typeof localsettings?.agentAutoContinue === "boolean" && localsettings.agentAutoContinue ? "auto" : "prompt"

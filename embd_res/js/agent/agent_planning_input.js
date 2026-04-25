@@ -36,6 +36,7 @@ export const buildPlanningInputCommands = (ctx) => {
 				let prompt = (action?.args?.prompt || "").toString().trim()
 				if (!prompt) {
 					addThought(currentChainOfThought, createSysPrompt, "Request for user input failed - no prompt provided")
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; }
 					return true
 				}
 
