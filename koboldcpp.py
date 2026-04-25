@@ -172,6 +172,7 @@ zenity_recent_dir = os.getcwd()
 zenity_permitted = True
 thinkformats = [{"start":"<|channel|>analysis<|message|>","end":"<|start|>assistant<|channel|>final<|message|>"},
                 {"start":"<think>","end":"</think>"},
+                {"start":"<seed:think>","end":"</seed:think>"},
                 {"start":"<|channel>thought","end":"<channel|>"}]
 tool_call_pairs = [ #third element is whether its stream-handleable
     ("<tool_call>", "</tool_call>", True),
@@ -5655,7 +5656,7 @@ Change Mode<br>
                 response_body = make_url_request(f'{epurl}/api/extra/tts', {"input": prompt})
             pass
 
-        elif clean_path.endswith('/speakers_list'): #xtts compatible
+        elif clean_path.endswith('/speakers_list') or clean_path.endswith('/api/extra/speakers_list'): #xtts compatible
             response_body = (json.dumps(voicelist).encode()) #some random voices for them to enjoy
         elif clean_path.endswith('/speakers'): #xtts compatible
             tmplist = []
