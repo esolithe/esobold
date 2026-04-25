@@ -6564,7 +6564,7 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
         is_wake_request = self.path in wake_requests
 
         autoswapEnabled = global_memory["autoswapmode"] is not None and global_memory["autoswapmode"]
-        hasReloaded = False
+        model_switch_pass = False
         if not is_OpenLumara_request:
             if is_post and (is_completions_path or is_chat_completions_path):
                 model_name = ""
@@ -6581,10 +6581,10 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                 if model_name and model_name != global_memory["current_model"]:
                     is_different_model = True
 
-                if is_different_model or was_auto_unloaded:
+                if is_different_model or model_switch_pass:
                     model_switch_pass = True
                     whitelist = get_current_admindir_list() # see if its an allowed swap
-                    if was_auto_unloaded and not model_name:
+                    if model_switch_pass and not model_name:
                         model_name = "initial_model"
                     if is_different_model and (model_name in whitelist):
                         global_memory["last_active_timestamp"] = datetime.now()
@@ -13651,8 +13651,8 @@ def _run_OpenLumara(*args):
         spec = importlib.util.spec_from_file_location("OpenLumaraMain", OpenLumara_main)
         OpenLumaraMain = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(OpenLumaraMain)
-        if hasattr(OpenLumaraMain, "run_from_argv"):
-            OpenLumaraMain.run_from_argv(list(args))
+        if hasattr(OpenLumaraMain, "run_from_args"):
+            OpenLumaraMain.run_from_args(list(args))
         else:
             print("Warning: OpenLumara main.py does not have a run_from_argv() function.")
 
@@ -13720,14 +13720,14 @@ def launch_OpenLumara(launch_args):
                 "--channels.settings.webui.port", f"{OpenLumara_default_webui_port}",
                 # "--model.name", f"MODEL_HERE",
                 "--core.data_folder", f"{launch_args.OpenLumara_datadir if launch_args.OpenLumara_datadir is not None else 'data'}",
-                "--modules.settings.sandboxed_files", f"{launch_args.OpenLumara_sandboxfolder if launch_args.OpenLumara_sandboxfolder is not None else 'sandbox'}"
+                "--modules.settings.sandboxed_files.sandbox_folder", f"{launch_args.OpenLumara_sandboxfolder if launch_args.OpenLumara_sandboxfolder is not None else 'sandbox'}"
                 ]
 
         if (launch_args.debugmode is not None and launch_args.debugmode >= 1):
             args_to_add.append("--debug")
         
-        if (launch_args.OpenLumara_TemporaryMode is not None and launch_args.OpenLumara_TemporaryMode):
-            args_to_add.append("--tmp")
+        # if (launch_args.OpenLumara_TemporaryMode is not None and launch_args.OpenLumara_TemporaryMode):
+            # args_to_add.append("--tmp")
         
         for arg in args_to_add:
             print(f"OpenLumara launch argument: {arg}")
