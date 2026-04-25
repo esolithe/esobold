@@ -57,6 +57,7 @@ let generateAndGetTextFromPrompt = async (prompt, grammar = "", images = [], ban
 
 let generateResponseToInstruction = async (prompt) => {
     let formattedPrompt = createInstructPrompt(prompt)
+	formattedPrompt += instructendplaceholder;
     return await generateAndGetTextFromPrompt(formattedPrompt)
 }
 

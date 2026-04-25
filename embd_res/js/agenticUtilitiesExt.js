@@ -32,6 +32,7 @@ window.triggerAgentResponse = (prompt, macro = undefined) => {
 
 window.generateTextFromAI = async (prompt, keepThinkingTags = false) => {
     let formattedPrompt = createInstructPrompt(prompt)
+	formattedPrompt += instructendplaceholder;
 	let text = await generateAndGetTextFromPrompt(formattedPrompt) || ""
 	if (!keepThinkingTags) {
 		// Remove any thinking tags from the response, as those are meant for the agent's internal processing and not for display
@@ -41,8 +42,7 @@ window.generateTextFromAI = async (prompt, keepThinkingTags = false) => {
 }
 
 window.generateImageFromAI = async (prompt, imageToStartFrom = undefined) => {
-    let formattedPrompt = createInstructPrompt(prompt)
-	let styledPrompt = `${preparePromptForImageGen(formattedPrompt) || ""}`
+	let styledPrompt = `${preparePromptForImageGen(prompt) || ""}`
 	if (!!localsettings.image_styles && localsettings.image_styles !== "") {
 		styledPrompt = `${localsettings.image_styles} ${styledPrompt}`
 	}
