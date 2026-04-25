@@ -94,6 +94,7 @@ export const buildMediaCommands = (ctx) => {
 				}
 				else {
 					addThought(currentChainOfThought, createSysPrompt, `No prompt provided, image not generated`)
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 				}
 			}
 		},
@@ -109,6 +110,7 @@ export const buildMediaCommands = (ctx) => {
 					let caption = `${action?.args?.caption || ""}`.trim()
 					if (caption === "") {
 						addThought(currentChainOfThought, createSysPrompt, `Music prepare failed - caption is required`)
+						if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 						return
 					}
 					let response = await postKcppJson("/api/extra/music/prepare", { caption })
@@ -118,6 +120,7 @@ export const buildMediaCommands = (ctx) => {
 				}
 				catch (e) {
 					addThought(currentChainOfThought, createSysPrompt, `Music prepare failed - ${e?.message || e}`)
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 				}
 			}
 		},
@@ -143,6 +146,7 @@ export const buildMediaCommands = (ctx) => {
 				}
 				else {
 					addThought(currentChainOfThought, createSysPrompt, `No text provided, nothing has been said`)
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 				}
 			}
 		},

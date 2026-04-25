@@ -1,5 +1,6 @@
 export const buildSearchWebCommands = (ctx) => {
 	let {
+		agentRunState,
 		currentChainOfThought,
 		addThought,
 		createSysPrompt,
@@ -48,6 +49,7 @@ export const buildSearchWebCommands = (ctx) => {
 				}
 				else {
 					addThought(currentChainOfThought, createSysPrompt, `Search string was empty, no search performed`)
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 				}
 			}
 		},

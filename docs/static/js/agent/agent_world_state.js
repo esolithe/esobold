@@ -1,5 +1,6 @@
 export const buildWorldStateCommands = (ctx) => {
 	let {
+		agentRunState,
 		currentChainOfThought,
 		addThought,
 		createSysPrompt,
@@ -29,6 +30,7 @@ export const buildWorldStateCommands = (ctx) => {
 				}
 				else {
 					addThought(currentChainOfThought, createSysPrompt, `Text was empty - nothing added to history`)
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 				}
 			}
 		},
@@ -58,6 +60,7 @@ export const buildWorldStateCommands = (ctx) => {
 				}
 				else {
 					addThought(currentChainOfThought, createSysPrompt, `Text was empty - nothing added to world info`)
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 				}
 			}
 		},
@@ -75,6 +78,7 @@ export const buildWorldStateCommands = (ctx) => {
 					let wiSnippets = current_wi.filter(wi => wi?.comment === uniqueIdentifier)
 					if (wiSnippets.length === 0) {
 						addThought(currentChainOfThought, createSysPrompt, `Unique identifer does not exist in world information`)
+						if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 					}
 					else {
 						let wiContent = "World information search performed:";
@@ -88,6 +92,7 @@ export const buildWorldStateCommands = (ctx) => {
 				}
 				else {
 					addThought(currentChainOfThought, createSysPrompt, `Unique identifier was empty - no world information found`)
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 				}
 			}
 		},
@@ -106,6 +111,7 @@ export const buildWorldStateCommands = (ctx) => {
 				}
 				else {
 					addThought(currentChainOfThought, createSysPrompt, `No setting overview provided, nothing has been overwritten`)
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 				}
 			}
 		},
@@ -130,6 +136,7 @@ export const buildWorldStateCommands = (ctx) => {
 				}
 				else {
 					addThought(currentChainOfThought, createSysPrompt, `No state provided, nothing has been overwritten`)
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 				}
 			}
 		},
@@ -150,10 +157,12 @@ export const buildWorldStateCommands = (ctx) => {
 					}
 					else {
 						addThought(currentChainOfThought, createSysPrompt, `No valid state format provided, nothing has been overwritten`)
+						if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 					}
 				}
 				catch (e) {
 					addThought(currentChainOfThought, createSysPrompt, `No valid state format provided, nothing has been overwritten`)
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 				}
 			}
 		},

@@ -197,6 +197,7 @@ export const buildOpenlumaraCommands = (ctx) => {
 				let message = `${action?.args?.message || ""}`.trim()
 				if (!message) {
 					addThought(currentChainOfThought, createSysPrompt, formatLumaraMessage(`send: no message provided, nothing sent.`))
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 					return
 				}
 
@@ -228,6 +229,7 @@ export const buildOpenlumaraCommands = (ctx) => {
 					} catch (err) {
 						addThought(currentChainOfThought, createSysPrompt, formatLumaraMessage(`sendMessage failed ${err?.message || err}`))
 						console.error("Error in lumara_send executor:", err)
+						if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 					} finally {
 						return Promise.resolve()
 					}
@@ -312,6 +314,7 @@ export const buildOpenlumaraCommands = (ctx) => {
 				let chatId = `${action?.args?.chat_id || ""}`.trim()
 				if (!chatId) {
 					addThought(currentChainOfThought, createSysPrompt, formatLumaraMessage(`load chat: no chat_id provided.`))
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 					return
 				}
 				let result = await runAndReport("loadChat", () => ol.loadChat(chatId))
@@ -319,6 +322,7 @@ export const buildOpenlumaraCommands = (ctx) => {
 				if (!result.success) {
 					addThought(currentChainOfThought, createSysPrompt,
 						formatLumaraMessage(`load chat failed: ${result.error || "unknown error"}.`))
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 					return
 				}
 				let chat = result.chat || {}
@@ -354,6 +358,7 @@ export const buildOpenlumaraCommands = (ctx) => {
 				let title = `${action?.args?.title || ""}`.trim()
 				if (!title) {
 					addThought(currentChainOfThought, createSysPrompt, formatLumaraMessage(`rename chat: no title provided.`))
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 					return
 				}
 				let result = await runAndReport("renameChat", () => ol.renameChat(title))
@@ -361,6 +366,7 @@ export const buildOpenlumaraCommands = (ctx) => {
 				if (!result.success) {
 					addThought(currentChainOfThought, createSysPrompt,
 						formatLumaraMessage(`rename chat failed: ${result.error || "unknown error"}.`))
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 					return
 				}
 				addThought(currentChainOfThought, createSysPrompt,

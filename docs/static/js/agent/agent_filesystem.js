@@ -462,6 +462,7 @@ export const buildFilesystemCommands = (ctx) => {
 					let outputPath = `${args.fs_output_path || ""}`.trim()
 					if (outputPath === "") {
 						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: generate_music failed - fs_output_path is required`)
+						if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 						return
 					}
 					let approved = await confirmFsMutation("fs_generate_music", { fs_output_path: outputPath })
@@ -498,6 +499,7 @@ export const buildFilesystemCommands = (ctx) => {
 				}
 				catch (e) {
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: generate_music failed - ${e?.message || e}`)
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 				}
 			}
 		},
@@ -519,6 +521,7 @@ export const buildFilesystemCommands = (ctx) => {
 					let fsPath = `${action?.args?.path || ""}`.trim()
 					if (!fsPath.toLowerCase().endsWith(".wav")) {
 						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: transcribe failed - only .wav files are supported`)
+						if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 						return
 					}
 					let dataUrl = await readFsPathAsDataUrl(fsPath)
@@ -533,6 +536,7 @@ export const buildFilesystemCommands = (ctx) => {
 				}
 				catch (e) {
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: transcribe failed - ${e?.message || e}`)
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 				}
 			}
 		},
@@ -562,6 +566,7 @@ export const buildFilesystemCommands = (ctx) => {
 					let outputPath = `${args.fs_output_path || ""}`.trim()
 					if (prompt === "" || outputPath === "") {
 						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: generate_image failed - prompt and fs_output_path are required`)
+						if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 						return
 					}
 					let approved = await confirmFsMutation("fs_generate_image", { fs_output_path: outputPath })
@@ -583,6 +588,7 @@ export const buildFilesystemCommands = (ctx) => {
 				}
 				catch (e) {
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: generate_image failed - ${e?.message || e}`)
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 				}
 			}
 		},
@@ -599,6 +605,7 @@ export const buildFilesystemCommands = (ctx) => {
 					let fsPath = `${action?.args?.path || ""}`.trim()
 					if (fsPath === "") {
 						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: describe_fs_image failed - path is required`)
+						if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 						return
 					}
 					let analysisPrompt = "Describe the image in detail. Transcribe and include any text from the image in the description."
@@ -611,6 +618,7 @@ export const buildFilesystemCommands = (ctx) => {
 				}
 				catch (e) {
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: describe_fs_image failed - ${e?.message || e}`)
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 				}
 			}
 		},
@@ -674,6 +682,7 @@ export const buildFilesystemCommands = (ctx) => {
 				}
 				catch (e) {
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: list failed - ${e?.message || e}`)
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 				}
 			}
 		},
@@ -706,6 +715,7 @@ export const buildFilesystemCommands = (ctx) => {
 				}
 				catch (e) {
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: search failed - ${e?.message || e}`)
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 				}
 			}
 		},
@@ -737,6 +747,7 @@ export const buildFilesystemCommands = (ctx) => {
 					let result = await window.fsClient.semantic_search(action?.args?.path, action?.args?.search_query, action?.args?.max_results)
 					if (!Array.isArray(result) || result.length === 0) {
 						addThought(currentChainOfThought, createSysPrompt, `Semantic search performed: Nothing found`)
+						if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 					}
 					else {
 						let ltmContent = "Semantic search performed:"
@@ -748,6 +759,7 @@ export const buildFilesystemCommands = (ctx) => {
 				}
 				catch (e) {
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: semantic search failed - ${e?.message || e}`)
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 				}
 			}
 		},
@@ -781,6 +793,7 @@ export const buildFilesystemCommands = (ctx) => {
 				}
 				catch (e) {
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: metadata failed - ${e?.message || e}`)
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 				}
 			}
 		},
@@ -814,6 +827,7 @@ export const buildFilesystemCommands = (ctx) => {
 				}
 				catch (e) {
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: url failed - ${e?.message || e}`)
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 				}
 			}
 		},
@@ -850,6 +864,7 @@ export const buildFilesystemCommands = (ctx) => {
 				}
 				catch (e) {
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: content failed - ${e?.message || e}`)
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 				}
 			}
 		},
@@ -870,6 +885,7 @@ export const buildFilesystemCommands = (ctx) => {
 				}
 				catch (e) {
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: download_info failed - ${e?.message || e}`)
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 				}
 			}
 		},
@@ -909,6 +925,7 @@ export const buildFilesystemCommands = (ctx) => {
 				}
 				catch (e) {
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: write_text failed - ${e?.message || e}`)
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 				}
 			}
 		},
@@ -953,6 +970,7 @@ export const buildFilesystemCommands = (ctx) => {
 				}
 				catch (e) {
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: write_lines failed - ${e?.message || e}`)
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 				}
 			}
 		},
@@ -991,6 +1009,7 @@ export const buildFilesystemCommands = (ctx) => {
 				}
 				catch (e) {
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: delete failed - ${e?.message || e}`)
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 				}
 			}
 		},
@@ -1030,6 +1049,7 @@ export const buildFilesystemCommands = (ctx) => {
 				}
 				catch (e) {
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: move failed - ${e?.message || e}`)
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 				}
 			}
 		},
@@ -1069,6 +1089,7 @@ export const buildFilesystemCommands = (ctx) => {
 				}
 				catch (e) {
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: copy failed - ${e?.message || e}`)
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 				}
 			}
 		},
@@ -1089,6 +1110,7 @@ export const buildFilesystemCommands = (ctx) => {
 					let targetDir = `${action?.args?.target_dir || "/"}`.trim() || "/"
 					if (zipPath === "") {
 						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: extract_zip failed - zip_path is required`)
+						if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 						return
 					}
 					let approved = await confirmFsMutation("fs_extract_zip", { zip_path: zipPath, target_dir: targetDir })
@@ -1107,6 +1129,7 @@ export const buildFilesystemCommands = (ctx) => {
 				}
 				catch (e) {
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: extract_zip failed - ${e?.message || e}`)
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 				}
 			}
 		},
@@ -1145,6 +1168,7 @@ export const buildFilesystemCommands = (ctx) => {
 				}
 				catch (e) {
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: create_folder failed - ${e?.message || e}`)
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 				}
 			}
 		},
@@ -1183,6 +1207,7 @@ export const buildFilesystemCommands = (ctx) => {
 				}
 				catch (e) {
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: delete_folder failed - ${e?.message || e}`)
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 				}
 			}
 		},
@@ -1223,6 +1248,7 @@ export const buildFilesystemCommands = (ctx) => {
 				}
 				catch (e) {
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: replace_regex failed - ${e?.message || e}`)
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 				}
 			}
 		},
@@ -1257,6 +1283,7 @@ export const buildFilesystemCommands = (ctx) => {
 				}
 				catch (e) {
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: open_embed failed - ${e?.message || e}`)
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 				}
 			}
 		},
@@ -1274,6 +1301,7 @@ export const buildFilesystemCommands = (ctx) => {
 				}
 				catch (e) {
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: close_embed failed - ${e?.message || e}`)
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 				}
 			}
 		},
@@ -1296,6 +1324,7 @@ export const buildFilesystemCommands = (ctx) => {
 					let outputPath = `${action?.args?.fs_output_path || ""}`.trim()
 					if (textToSay === "" || outputPath === "") {
 						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: generate_tts failed - textToSay and fs_output_path are required`)
+						if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 						return
 					}
 					let approved = await confirmFsMutation("fs_generate_tts", { fs_output_path: outputPath })
@@ -1318,6 +1347,7 @@ export const buildFilesystemCommands = (ctx) => {
 				}
 				catch (e) {
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: generate_tts failed - ${e?.message || e}`)
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 				}
 			}
 		},
