@@ -20192,6 +20192,9 @@ Current version indicated by LITEVER below.
 				}
 			}
 
+			if (!current_temp_memory) {
+				current_temp_memory = "";
+			}
 			let truncated_context = `${current_temp_memory}${concat_gametext(true, "","","",false,true)}`; //no need to truncate if memory is empty
 			truncated_context = truncated_context.replace(/\xA0/g,' '); //replace non breaking space nbsp
 
