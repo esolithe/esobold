@@ -214,6 +214,7 @@ display_settings = () => {
     document.getElementById("agentBehaviour").checked = localsettings.agentBehaviour;
     document.getElementById("agentHideCOT").checked = localsettings.agentHideCOT;
     document.getElementById("agentStopOnRequestForInput").checked = localsettings.agentStopOnRequestForInput;
+    document.getElementById("agentReplanOnError").checked = localsettings.agentReplanOnError;
     document.getElementById("agentCOTMax").value = localsettings.agentCOTMax;
     document.getElementById("agentCOTMaxnumeric").value = localsettings.agentCOTMax;
     document.getElementById("agentAutoContinue").value = getAgentAutoContinueMode();
@@ -257,6 +258,7 @@ confirm_settings = () => {
     localsettings.agentBehaviour = (document.getElementById("agentBehaviour").checked ? true : false);
     localsettings.agentHideCOT = (document.getElementById("agentHideCOT").checked ? true : false);
     localsettings.agentStopOnRequestForInput = (document.getElementById("agentStopOnRequestForInput").checked ? true : false);
+    localsettings.agentReplanOnError = (document.getElementById("agentReplanOnError").checked ? true : false);
     localsettings.agentCOTMax = document.getElementById("agentCOTMax").value;
     localsettings.agentAutoContinueMode = `${document.getElementById("agentAutoContinue").value || "auto"}`;
     localsettings.agentAutoContinue = localsettings.agentAutoContinueMode === "auto";
@@ -317,6 +319,9 @@ window.addEventListener('load', () => {
     }
     if (localsettings?.agentStopOnRequestForInput == undefined) {
         localsettings.agentStopOnRequestForInput = true
+    }
+    if (localsettings?.agentReplanOnError == undefined) {
+        localsettings.agentReplanOnError = true
     }
     if (localsettings?.agentCOTMax == undefined) {
         localsettings.agentCOTMax = 5
@@ -633,6 +638,9 @@ window.addEventListener('load', () => {
     agentElems.push(settingLabelElem)
 
     settingLabelElem = createSettingElemBool("agentStopOnRequestForInput", "Can agent ask for input?", "Determines if the agent can ask the user for input while executing the plan")
+    agentElems.push(settingLabelElem)
+
+    settingLabelElem = createSettingElemBool("agentReplanOnError", "Replan on command error", "When enabled, if an agent command fails due to invalid or missing input, the thinking loop automatically restarts instead of continuing with a failed step.")
     agentElems.push(settingLabelElem)
 
     settingLabelElem = createSettingElementTextArea("agentSavedMacros", "Macros which can be used to trigger the agent with custom logic.", "Macros which can be used to trigger the agent with custom logic. Macros can be invoked by 'macroName::prompt'.")

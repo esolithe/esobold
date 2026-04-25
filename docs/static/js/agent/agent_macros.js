@@ -268,6 +268,7 @@ export const buildMacroCommands = (ctx) => {
 				let validationResult = validateAgentMacroDefinition(macroName, macroDefinition, agentRunState)
 				if (!validationResult.valid) {
 					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, `create failed: ${validationResult.error}`))
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 					return false
 				}
 
@@ -292,6 +293,7 @@ export const buildMacroCommands = (ctx) => {
 				let saveMacroResult = saveAgentMacroDefinition(macroName, macroDefinition, overwrite)
 				if (!saveMacroResult.success) {
 					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, `create failed: ${saveMacroResult.error}`))
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 					return false
 				}
 
@@ -321,16 +323,19 @@ export const buildMacroCommands = (ctx) => {
 				let macroDefinition = availableMacros[macroName]
 				if (!isPlainObject(macroDefinition)) {
 					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "run failed: macro was not found."))
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 					return false
 				}
 				if (macroExecutionPrompt === null || macroExecutionPrompt.length === 0) {
 					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "run failed: no prompt provided for this execution."))
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 					return false
 				}
 
 				let validationResult = validateAgentMacroDefinition(macroName, macroDefinition, agentRunState)
 				if (!validationResult.valid) {
 					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, `run failed: ${validationResult.error}`))
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 					return false
 				}
 
@@ -340,6 +345,7 @@ export const buildMacroCommands = (ctx) => {
 				agentRunState._executedMacroNames[macroName] = (agentRunState._executedMacroNames[macroName] || 0) + 1
 				if (agentRunState._executedMacroNames[macroName] > 3) {
 					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "run failed: exceeded recursion limit."))
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 					return false
 				}
 
@@ -443,12 +449,14 @@ export const buildMacroCommands = (ctx) => {
 					let macroDefinition = availableMacros[macroName]
 					if (!isPlainObject(macroDefinition)) {
 						addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "run failed: macro was not found."))
+						if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 						return false
 					}
 
 					let validationResult = validateAgentMacroDefinition(macroName, macroDefinition, agentRunState)
 					if (!validationResult.valid) {
 						addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, `run failed: ${validationResult.error}`))
+						if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 						return false
 					}
 
@@ -458,6 +466,7 @@ export const buildMacroCommands = (ctx) => {
 					agentRunState._executedMacroNames[macroName] = (agentRunState._executedMacroNames[macroName] || 0) + 1
 					if (agentRunState._executedMacroNames[macroName] > 3) {
 						addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "run failed: exceeded recursion limit."))
+						if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 						return false
 					}
 
@@ -494,6 +503,7 @@ export const buildMacroCommands = (ctx) => {
 
 					if (distinctPaths.length === 0) {
 						addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "run failed: no paths to process."))
+						if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 						return false
 					}
 
@@ -609,12 +619,14 @@ export const buildMacroCommands = (ctx) => {
 				let macroDefinition = availableMacros[macroName]
 				if (!isPlainObject(macroDefinition)) {
 					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, "info failed: macro was not found."))
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 					return false
 				}
 
 				let validationResult = validateAgentMacroDefinition(macroName, macroDefinition, agentRunState)
 				if (!validationResult.valid) {
 					addThought(currentChainOfThought, createSysPrompt, formatMacroMessage(macroName, `info failed: ${validationResult.error}`))
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 					return false
 				}
 

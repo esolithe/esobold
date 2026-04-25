@@ -57,6 +57,7 @@ let generateAndGetTextFromPrompt = async (prompt, grammar = "", images = [], ban
 
 let generateResponseToInstruction = async (prompt) => {
     let formattedPrompt = createInstructPrompt(prompt)
+	formattedPrompt += instructendplaceholder;
     return await generateAndGetTextFromPrompt(formattedPrompt)
 }
 
@@ -3076,6 +3077,22 @@ let checkIfTaskCompleteOAI = async (agentRunState) => {
 
 let askUserToRetryIncompleteTask = async (agentRunState) => {
     if (!!agentRunState?.skipTaskCompletionCheck || agentRunState.endCurrent) {
+        return
+    }
+    if (agentRunState?.replanDueToError && localsettings?.agentReplanOnError) {
+        agentRunState.replanDueToError = false
+        window.execAgentCycle(objRefAssign({}, {
+            initialPrompt: "",
+            printToConsole: !!agentRunState?.printToConsole,
+            agentName: agentRunState?.agentName,
+            systemPrompt: agentRunState?.systemPrompt,
+            agentPrompt: agentRunState?.agentPrompt,
+            configOverrides: agentRunState?.configOverrides,
+            isUsingWhitelist: agentRunState?.isUsingWhitelist,
+            agentStopOnRequestForInput: agentRunState?.agentStopOnRequestForInput,
+            surpressMessagesToUser: agentRunState?.surpressMessagesToUser,
+            excludeSpecificMessagePrefixes: agentRunState?.excludeSpecificMessagePrefixes
+        }))
         return
     }
     let autoContinueMode = `${localsettings?.agentAutoContinueMode || ""}`

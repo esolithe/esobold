@@ -34,6 +34,7 @@ export const buildUtilityCommands = (ctx) => {
 				}
 				else {
 					addThought(currentChainOfThought, createSysPrompt, `Could not roll dice as the format was incorrect`)
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 				}
 			}
 		},
@@ -66,6 +67,7 @@ export const buildUtilityCommands = (ctx) => {
 				}
 				else {
 					addThought(currentChainOfThought, createSysPrompt, `Could not get terms as the format was incorrect`)
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 				}
 			}
 		},
@@ -83,6 +85,7 @@ export const buildUtilityCommands = (ctx) => {
 				}
 				else {
 					addThought(currentChainOfThought, createSysPrompt, `Formula evaluation could not be completed as no formula was provided`)
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 				}
 			}
 		},
