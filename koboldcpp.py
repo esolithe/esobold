@@ -82,7 +82,7 @@ dry_seq_break_max = 128
 extra_images_max = 4 # for kontext/qwen img
 
 # global vars
-KcppVersion = "1.112.1"
+KcppVersion = "1.112.2"
 showdebug = True
 kcpp_instance = None #global running instance
 global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "currentBaseConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "base_config":"", "swapReqType": None, "autoswapmode": False, "autoswapSettings": {}, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}, "restart_override_base_config": "", "current_model_override": "", "OpenLumara": False}
@@ -186,6 +186,7 @@ zenity_recent_dir = os.getcwd()
 zenity_permitted = True
 thinkformats = [{"start":"<|channel|>analysis<|message|>","end":"<|start|>assistant<|channel|>final<|message|>"},
                 {"start":"<think>","end":"</think>"},
+                {"start":"<seed:think>","end":"</seed:think>"},
                 {"start":"<|channel>thought","end":"<channel|>"}]
 tool_call_pairs = [ #third element is whether its stream-handleable
     ("<tool_call>", "</tool_call>", True),
@@ -405,6 +406,7 @@ class sd_generation_inputs(ctypes.Structure):
                 ("seed", ctypes.c_int),
                 ("sample_method", ctypes.c_char_p),
                 ("scheduler", ctypes.c_char_p),
+                ("eta", ctypes.c_float),
                 ("clip_skip", ctypes.c_int),
                 ("vid_req_frames", ctypes.c_int),
                 ("video_output_type", ctypes.c_int),
@@ -2683,6 +2685,7 @@ def sd_generate(genparams):
     sample_method = (genparams.get("sampler_name") or "default")
     scheduler = (genparams.get("scheduler") or "default").lower()
     clip_skip = tryparseint(genparams.get("clip_skip", -1),-1)
+    eta = tryparsefloat(genparams.get("eta", None), None)
     vid_req_frames = tryparseint(genparams.get("frames", 1),1)
     vid_req_frames = 1 if (not vid_req_frames or vid_req_frames < 1) else vid_req_frames
     video_output_type = genparams.get("video_output_type", 0)
@@ -2735,6 +2738,7 @@ def sd_generate(genparams):
     inputs.seed = ((seed + 2**31) % 2**32) - 2**31
     inputs.sample_method = sd_sampler_canonical_name(sample_method).encode("UTF-8")
     inputs.scheduler = scheduler.encode("UTF-8")
+    inputs.eta = -1.0 if eta is None else eta
     inputs.clip_skip = clip_skip
     inputs.vid_req_frames = vid_req_frames
     inputs.video_output_type = video_output_type
@@ -3952,10 +3956,11 @@ def toolcall_to_normalized_json(text,start_tag,end_tag): #convert weird formats 
     def parse_gemma4(text: str) -> str:
         if text.startswith("call:"):
             text = text[len("call:"):]
-        text = text.replace('<|"|>', '!$$REAL_QUOTE$$!')
-        text = text.replace('\\', '\\\\')
-        text = text.replace('"', '\\"')
-        text = text.replace('!$$REAL_QUOTE$$!','"')
+        if '<|"|>' in text:
+            text = text.replace('<|"|>', '!$$REAL_QUOTE$$!')
+            text = text.replace('\\', '\\\\')
+            text = text.replace('"', '\\"')
+            text = text.replace('!$$REAL_QUOTE$$!','"')
         fn_match = re.match(r'^([a-zA-Z_][a-zA-Z0-9_]*)\{(.*)\}$', text.strip(), re.DOTALL) # extract fn name
         if not fn_match:
             return text
@@ -6568,15 +6573,6 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                     try:
                         request_json = json.loads(body.decode("utf-8"))
                         model_name = request_json.get("model")
-                        if model_name and model_name!="":
-                            if model_name=="unload_model" or model_name=="initial_model": #special request to simply unload model or swap back top intial model
-                                isValidModelRequest = True
-                            else:
-                                dirpath = os.path.abspath(args.admindir)
-                                targetfilepath = os.path.join(dirpath, targetfile)
-                                opts = [f for f in os.listdir(dirpath) if (f.lower().endswith(".kcpps") or f.lower().endswith(".kcppt") or f.lower().endswith(".gguf")) and os.path.isfile(os.path.join(dirpath, f))]
-                                if targetfile in opts and os.path.exists(targetfilepath):
-                                    isValidModelRequest = True
                     except Exception:
                         pass
 
@@ -6585,39 +6581,33 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                 if model_name and model_name != global_memory["current_model"]:
                     is_different_model = True
 
-                was_auto_unloaded = (global_memory["triggered_sleeping"] and global_memory["current_model"]=="unload_model")
-                if (is_different_model and isValidModelRequest) or (was_auto_unloaded and not autoswapEnabled):
-                    hasReloaded = True
-                    with proxy_reload_lock:
-                        whitelist = get_current_admindir_list() # see if its an allowed swap
-                        if was_auto_unloaded and not model_name:
-                            model_name = "initial_model"
-                        if is_different_model and (model_name in whitelist):
-                            if not self.wait_for_running_requests_to_finish(response_wait_timeout):
-                                self.send_error(504, "KoboldCpp model swap reload timed out waiting for active proxy requests")
-                                return
-                            global_memory["last_active_timestamp"] = datetime.now()
-                            global_memory["triggered_sleeping"] = False
-                            reqbody = json.dumps({"filename":model_name})
-                            reqheaders = {
-                                'Content-Type': 'application/json',
-                                'Content-Length': str(len(reqbody)),
-                            }
-                            if args.adminpassword:
-                                reqheaders["Authorization"] = f"Bearer {args.adminpassword}"
-                            conn = http.client.HTTPConnection('localhost', upstream_port, timeout=600)
-                            conn.request("POST", "/api/admin/reload_config", body=reqbody, headers=reqheaders)
-                            resp = conn.getresponse()
-                            time.sleep(3)
-                            global_memory["last_active_timestamp"] = datetime.now()
-                            global_memory["triggered_sleeping"] = False
-                            if not self.wait_for_upstream_ready(upstream_port,120,0.5):
-                                self.send_error(504, "KoboldCpp model swap reload timed out")
-                                return
-                            time.sleep(0.1)
-            
-            if autoswapEnabled and not hasReloaded:
-                textReqs = ["/api/extra/generate/stream","/api/extra/tokencount","/api/v1/generate","/sdapi/v1/interrogate","/v1/completions","/v1/chat/completions"]
+                if is_different_model or was_auto_unloaded:
+                    model_switch_pass = True
+                    whitelist = get_current_admindir_list() # see if its an allowed swap
+                    if was_auto_unloaded and not model_name:
+                        model_name = "initial_model"
+                    if is_different_model and (model_name in whitelist):
+                        global_memory["last_active_timestamp"] = datetime.now()
+                        global_memory["triggered_sleeping"] = False
+                        reqbody = json.dumps({"filename":model_name})
+                        reqheaders = {
+                            'Content-Type': 'application/json',
+                            'Content-Length': str(len(reqbody)),
+                        }
+                        if args.adminpassword:
+                            reqheaders["Authorization"] = f"Bearer {args.adminpassword}"
+                        conn = http.client.HTTPConnection('localhost', upstream_port, timeout=600)
+                        conn.request("POST", "/api/admin/reload_config", body=reqbody, headers=reqheaders)
+                        resp = conn.getresponse()
+                        time.sleep(3)
+                        global_memory["last_active_timestamp"] = datetime.now()
+                        global_memory["triggered_sleeping"] = False
+                        if not self.wait_for_upstream_ready(upstream_port,120,0.5):
+                            self.send_error(504, "KoboldCpp model swap reload timed out")
+                            return
+                        time.sleep(0.1)
+            if autoswapEnabled and not model_switch_pass:
+                textReqs = ["/api/extra/generate/stream","/api/extra/tokencount","/api/v1/generate","/sdapi/v1/interrogate","/v1/completions","/v1/chat/completions","/v1/responses","/completions","/chat/completions","/responses"]
                 sttReqs = ["/api/extra/transcribe","/v1/audio/transcriptions"]
                 ttsReqs = ["/api/extra/tts", "/v1/audio/speech"]
                 embedReqs = ["/api/extra/embeddings", "/v1/embeddings", "/api/extra/fs/semantic_search", "/api/extra/fs/search_all_documents"]
@@ -6654,26 +6644,22 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                     swapModeChanged = True
 
                 if (global_memory["swapReqType"] is not None and swapModeChanged):
-                    with proxy_reload_lock:
-                        if not self.wait_for_running_requests_to_finish(response_wait_timeout):
-                            self.send_error(504, "KoboldCpp model swap reload timed out waiting for active proxy requests")
-                            return
-                        reqbody = json.dumps({"filename":global_memory["current_model"], "baseconfig": global_memory["base_config"], "modelName": global_memory["current_model_override"]})
-                        reqheaders = {
-                            'Content-Type': 'application/json',
-                            'Content-Length': str(len(reqbody)),
-                        }
-                        if args.adminpassword:
-                            reqheaders["Authorization"] = f"Bearer {args.adminpassword}"
-                        conn = http.client.HTTPConnection('localhost', upstream_port, timeout=600)
-                        conn.request("POST", "/api/admin/reload_config", body=reqbody, headers=reqheaders)
-                        resp = conn.getresponse()
-                        time.sleep(3)
-                        global_memory["last_active_timestamp"] = datetime.now()
-                        if not self.wait_for_upstream_ready(upstream_port,120,0.5):
-                            self.send_error(504, "KoboldCpp model swap reload timed out")
-                            return
-                        time.sleep(0.1)
+                    reqbody = json.dumps({"filename":global_memory["current_model"], "baseconfig": global_memory["base_config"]})
+                    reqheaders = {
+                        'Content-Type': 'application/json',
+                        'Content-Length': str(len(reqbody)),
+                    }
+                    if args.adminpassword:
+                        reqheaders["Authorization"] = f"Bearer {args.adminpassword}"
+                    conn = http.client.HTTPConnection('localhost', upstream_port, timeout=600)
+                    conn.request("POST", "/api/admin/reload_config", body=reqbody, headers=reqheaders)
+                    resp = conn.getresponse()
+                    time.sleep(3)
+                    global_memory["last_active_timestamp"] = datetime.now()
+                    if not self.wait_for_upstream_ready(upstream_port,120,0.5):
+                        self.send_error(504, "KoboldCpp model swap reload timed out")
+                        return
+                    time.sleep(0.1)
 
         try:  # connect upstream
             conn = http.client.HTTPConnection('localhost', target_port, timeout=600)
@@ -8643,7 +8629,7 @@ Change Mode<br>
                 response_body = make_url_request(f'{epurl}/api/extra/tts', {"input": prompt})
             pass
 
-        elif clean_path.endswith('/speakers_list'): #xtts compatible
+        elif clean_path.endswith('/speakers_list') or clean_path.endswith('/api/extra/speakers_list'): #xtts compatible
             response_body = (json.dumps(voicelist).encode()) #some random voices for them to enjoy
         elif clean_path.endswith('/speakers'): #xtts compatible
             tmplist = []
