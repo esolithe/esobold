@@ -11965,7 +11965,7 @@ def show_gui():
     makecheckbox(admin_tab, "SingleInstance Mode", singleinstance_var, 19, 0,tooltiptxt="Allows this server to be shut down by another KoboldCpp instance with singleinstance starting on the same port.")
     makecheckbox(admin_tab, "Developer Mode", developer_mode_var, 21, 0,tooltiptxt="Enables developer utilities such as hot reloading of Kobold Lite from disk.")
     router_mode_box = makecheckbox(admin_tab, "Router Mode", router_mode_var, 23, 0, command=togglerouter, tooltiptxt="Router mode uses a reverse proxy router, allowing you to easily hotswap models and configs within a single request. Requires admin mode.")
-    autoswap_mode_box = makecheckbox(admin_tab, "Autoswap Mode", autoswap_mode_var, 25, 0,tooltiptxt="Autoswap mode builds on router mode to allow switching of model types within the same config automatically. Requires admin mode and router mode. All models desired must be defined within the same config.")
+    autoswap_mode_box = makecheckbox(admin_tab, "Autoswap Mode", autoswap_mode_var, 23, 0,padx=(160),tooltiptxt="Autoswap mode builds on router mode to allow switching of model types within the same config automatically. Requires admin mode and router mode. All models desired must be defined within the same config.")
 
     autoswap_tab = tabcontent["Autoswap"]
     makelabel(autoswap_tab, "Autoswap Skip-Unload Options", 1, 0, "These options prevent specific model types from being unloaded during an autoswap. Useful when you want to keep certain models resident in memory across swaps. Requires Autoswap Mode to be enabled.")
