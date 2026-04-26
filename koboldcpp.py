@@ -6918,7 +6918,8 @@ def RunServerMultiThreaded(addr, port, server_handler):
         ipv4_sock.bind((addr, port))
         ipv4_sock.listen(numThreads)
     except Exception:
-         print("IPv4 Socket Failed to Bind.")
+        ipv4_sock = None
+        print("IPv4 Socket Failed to Bind.")
 
     if ipv6_sock:
         try:
@@ -6940,10 +6941,15 @@ def RunServerMultiThreaded(addr, port, server_handler):
             handler = server_handler(addr, port)
             with http.server.HTTPServer((addr, port), handler, False) as self.httpd:
                 try:
-                    if ipv6_sock:
+                    if ipv4_sock and ipv6_sock:
                         self.httpd.socket = ipv4_sock if self.i < 16 else ipv6_sock
-                    else:
+                    elif ipv6_sock:
+                        self.httpd.socket = ipv6_sock
+                    elif ipv4_sock:
                         self.httpd.socket = ipv4_sock
+                    else:
+                        print("ERROR: Both IPv4 and IPv6 cannot bind. Server features will not work.")
+                        return
 
                     self.httpd.server_bind = self.server_close = lambda self: None
                     self.httpd.serve_forever()
