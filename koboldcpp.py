@@ -13736,7 +13736,6 @@ def launch_OpenLumara(launch_args):
                 "--api.max_context", f"{launch_args.contextsize if launch_args.contextsize is not None else 8192}",
                 "--channels.settings.webui.host", "0.0.0.0",
                 "--channels.settings.webui.port", f"{OpenLumara_default_webui_port}",
-                # "--model.name", f"MODEL_HERE",
                 "--core.data_folder", f"{launch_args.OpenLumara_datadir if launch_args.OpenLumara_datadir is not None else 'data'}",
                 "--modules.settings.sandboxed_files.sandbox_folder", f"{launch_args.OpenLumara_sandboxfolder if launch_args.OpenLumara_sandboxfolder is not None else 'sandbox'}"
                 ]
