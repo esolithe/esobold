@@ -264,7 +264,7 @@ let getCommands = (agentRunState) => {
 			runState.logger.printPendingLogs()
 		}
 		if (typeof runState.agentVisualiser === "function") {
-			await runState.agentVisualiser(objRefAssign({}, runState, { runState }))
+			await runState.agentVisualiser(objRefAssign({}, runState, { agentRunState: runState }))
 		}
 		return await waitForUserImageSelection(agentRunState)
 	}
