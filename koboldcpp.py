@@ -6403,6 +6403,7 @@ proxy_running_requests = 0
 proxy_running_requests_lock = threading.Lock()
 response_streaming_lock = threading.Lock()
 response_wait_timeout = 60 * 5  # seconds to wait for upstream responses before timing out
+
 ###########################################################
 ###   A simple reverse proxy used in Kcpp Router mode   ###
 ###########################################################
@@ -6663,7 +6664,8 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                     time.sleep(0.1)
 
         try:  # connect upstream
-            conn = http.client.HTTPConnection('localhost', target_port, timeout=600)
+            target_host = '127.0.0.1' if is_OpenLumara_request else 'localhost'
+            conn = http.client.HTTPConnection(target_host, target_port, timeout=600)
             conn.request( self.command, forward_path, body=body, headers=headers)
             resp = conn.getresponse()
         except OSError as e:
@@ -7199,7 +7201,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         headers["Connection"] = "close"
 
         try:
-            conn = http.client.HTTPConnection("localhost", OpenLumara_default_webui_port, timeout=600)
+            conn = http.client.HTTPConnection("127.0.0.1", OpenLumara_default_webui_port, timeout=600)
             conn.request(method, self._OpenLumara_upstream_path(self.path), body=body, headers=headers)
             resp = conn.getresponse()
         except Exception as e:
@@ -13732,6 +13734,7 @@ def launch_OpenLumara(launch_args):
                 "--api.url", f"{api_url}",
                 "--insecure_tls",
                 "--api.max_context", f"{launch_args.contextsize if launch_args.contextsize is not None else 8192}",
+                "--channels.settings.webui.host", "0.0.0.0",
                 "--channels.settings.webui.port", f"{OpenLumara_default_webui_port}",
                 # "--model.name", f"MODEL_HERE",
                 "--core.data_folder", f"{launch_args.OpenLumara_datadir if launch_args.OpenLumara_datadir is not None else 'data'}",
