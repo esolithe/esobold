@@ -749,15 +749,6 @@
             if (zipBtn) {
                 zipBtn.hidden = true;
             }
-            if (uploadLabel) {
-                uploadLabel.hidden = true;
-            }
-            if (createFolderBtn) {
-                createFolderBtn.hidden = true;
-            }
-            if (dropzone) {
-                dropzone.hidden = true;
-            }
 
             let hint = document.createElement('span');
             hint.id = 'picker-selection-hint';
@@ -823,9 +814,7 @@
             renderListing(currentFsDir());
         });
 
-        if (!isPickerMode) {
-            initDragDrop(dir);
-        }
+        initDragDrop(dir);
     }
 
     if (document.readyState === 'loading') {
