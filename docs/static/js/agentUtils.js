@@ -193,8 +193,9 @@ let AGENT_COMMAND_GROUPS = {
 		{ key: "macros", label: "Macros", commands: ["create_macro", "run_macro", "run_macro_on_files", "get_macro_info"] },
 		{ key: "world_state", label: "World and State", commands: ["add_to_history", "overwrite_world_information", "read_world_information", "overwrite_setting_overview", "overwrite_current_state", "overwrite_current_state_response"] },
 		{ key: "filesystem", label: "Filesystem", commands: ["fs_generate_music", "fs_transcribe", "fs_generate_image", "describe_fs_image", "fs_list", "fs_search", "fs_semantic_search", "fs_metadata", "fs_url", "fs_content", "fs_download_info", "fs_write_text", "fs_write_lines", "fs_delete", "fs_move", "fs_copy", "fs_extract_zip", "fs_create_folder", "fs_delete_folder", "fs_open_embed", "fs_close_embed", "fs_generate_tts"] },
-		{ key: "media", label: "Media", commands: ["describe_clicked_image", "generate_image", "music_prepare", "generate_tts"] },
-		{ key: "utilities", label: "Utilities", commands: ["roll_dice", "get_random_terms_from_table", "evaluate_formula", "wordcount"] },
+		{ key: "media", label: "Media", commands: ["describe_clicked_image", "generate_image", "music_prepare", "generate_tts", "set_background_image_from_filesystem"] },
+		{ key: "library_utils", label: "Library Utils", commands: ["listLibraryData", "getLibraryData", "createCharacter", "unifiedLoad"] },
+		{ key: "utilities", label: "Utilities", commands: ["roll_dice", "get_random_terms_from_table", "evaluate_formula", "wordcount", "get_command_description"] },
 		{ key: "openlumara", label: "OpenLumara", commands: ["lumara_status", "lumara_send", "lumara_get_messages", "lumara_list_chats", "lumara_new_chat", "lumara_load_chat", "lumara_clear_chat", "lumara_rename_chat"] },
 		{ key: "mcp", label: "MCP Tools", commands: [] },
 		{ key: "misc", label: "Misc", commands: [] },
@@ -428,6 +429,9 @@ let getCommandsSchema = (commands = getEnabledCommands()) => {
 	let commandsSchema = commands.map(command => {
 		let elem = toJsonSchema(baseCommandStructure)
 		let args = elem.properties.command.properties.args;
+		elem.additionalProperties = false
+		elem.properties.command.additionalProperties = false
+		args.additionalProperties = false
 		if (command.args !== null)
 		{
 			elem.properties.command.properties.name["pattern"] = `^${command.name}$`
@@ -570,7 +574,7 @@ let commandsToOAITools = (commands) => {
 			}
 		}
 
-		let params = { type: 'object', properties }
+		let params = { type: 'object', properties, additionalProperties: false }
 		if (required.length > 0) params.required = required
 
 		return {
