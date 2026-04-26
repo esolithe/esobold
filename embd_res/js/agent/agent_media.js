@@ -15,6 +15,61 @@ let mergeMusicPrepareIntoState = (prepareResult) => {
 	replaceDocumentFromTextDB("State", mergedState)
 }
 
+let applyPersistentBackgroundImage = async (imageDataUri) => {
+	let selectedImg = `url('${imageDataUri}')`
+	document.body.style.backgroundImage = selectedImg
+	document.getElementById("gamescreen")?.classList.add("translucentbg")
+	document.getElementById("enhancedchatinterface")?.classList.add("transparentbg")
+	document.getElementById("enhancedchatinterface_inner")?.classList.add("transparentbg")
+	await indexeddb_save("bgimg", imageDataUri)
+}
+
+let setBackgroundImageFromFilesystemPath = async (fsImagePath) => {
+	if (!window?.fsClient) {
+		throw new Error("Filesystem APIs are not available.")
+	}
+
+	let normalizedPath = `${fsImagePath || ""}`.trim()
+	if (normalizedPath === "") {
+		throw new Error("fs_image_path is required")
+	}
+
+	await window.fsClient.metadata([{ path: normalizedPath }])
+	let rawResp = await window.fsClient.fetch_raw(normalizedPath)
+	let imageBlob = await rawResp.blob()
+	let mimeType = `${imageBlob?.type || ""}`.toLowerCase()
+	let hasImageMime = mimeType.startsWith("image/")
+	let normalizedLowerPath = normalizedPath.toLowerCase()
+	let hasImageExt = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".avif", ".ico"].some((ext) => normalizedLowerPath.endsWith(ext))
+	if (!hasImageMime && !hasImageExt) {
+		throw new Error("fs_image_path must reference an image file")
+	}
+
+	let objectUrl = URL.createObjectURL(imageBlob)
+	try {
+		let maxRes = !!localsettings?.img_allowhd ? 8000 : 1024
+		let quality = !!localsettings?.img_allowhd ? 0.95 : 0.5
+		let compressedImageUri = await new Promise((resolve, reject) => {
+			compressImage(objectUrl, (result) => {
+				if (!!result) {
+					resolve(result)
+				}
+				else {
+					reject(new Error("Image compression failed"))
+				}
+			}, false, maxRes, quality)
+		})
+		await applyPersistentBackgroundImage(compressedImageUri)
+		return {
+			path: normalizedPath,
+			compressed_image_length: `${compressedImageUri || ""}`.length,
+		}
+	}
+	finally {
+		URL.revokeObjectURL(objectUrl)
+	}
+}
+
 export const buildMediaCommands = (ctx) => {
 	let {
 		agentRunState,
@@ -94,6 +149,31 @@ export const buildMediaCommands = (ctx) => {
 				}
 				else {
 					addThought(currentChainOfThought, createSysPrompt, `No prompt provided, image not generated`)
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
+				}
+			}
+		},
+		{
+			"name": "set_background_image_from_filesystem",
+			"description": "Set the UI decorative background image from a filesystem image path and persist it in the same local background setting used by Lite.",
+			"args": {
+				"fs_image_path": "<absolute filesystem path to an image file>",
+			},
+			"enabled": typeof is_using_kcpp_with_fs === "function" ? is_using_kcpp_with_fs() : !!window?.fsClient,
+			"outputVisibleToUser": true,
+			"executor": async (action) => {
+				try {
+					let fsImagePath = `${action?.args?.fs_image_path || ""}`.trim()
+					if (fsImagePath === "") {
+						addThought(currentChainOfThought, createSysPrompt, `Background image update failed - fs_image_path is required`)
+						if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
+						return
+					}
+					let result = await setBackgroundImageFromFilesystemPath(fsImagePath)
+					addThought(currentChainOfThought, createSysPrompt, `Background image updated from filesystem path\n${objToText(result)}`)
+				}
+				catch (e) {
+					addThought(currentChainOfThought, createSysPrompt, `Background image update failed - ${e?.message || e}`)
 					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 				}
 			}

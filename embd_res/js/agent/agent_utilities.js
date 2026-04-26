@@ -121,28 +121,33 @@ export const buildUtilityCommands = (ctx) => {
 				let requestedCommandNames = action?.args?.commandNames
 
 				if (Array.isArray(requestedCommandNames) && requestedCommandNames.length > 0 && requestedCommandNames.every(c => typeof c === "string")) {
-					let descriptions = []
+					let descriptionsText = ""
 					let missingCommands = []
-					let commandMap = new Map(utilityCommands.map(c => [c.name, c.description]))
+					let availableCommands = getCommands(agentRunState)
+					let commandMap = new Map(availableCommands.map(command => [`${command?.name || ""}`.trim(), command]))
+					let commandsToDescribe = []
 
 					for (let commandName of requestedCommandNames) {
 						let normalizedCommandName = `${commandName}`.trim()
 						if (normalizedCommandName.length === 0) {
 							continue
 						}
-
-						let description = commandMap.get(normalizedCommandName)
-						if (!!description) {
-							descriptions.push(`${normalizedCommandName}: ${description}`)
+						let commandToDescribe = commandMap.get(normalizedCommandName)
+						if (!!commandToDescribe) {
+							commandsToDescribe.push(commandToDescribe)
 						}
 						else {
 							missingCommands.push(normalizedCommandName)
 						}
 					}
 
+					if (commandsToDescribe.length > 0) {
+						descriptionsText = `${getCommandsAsText(commandsToDescribe) || ""}`.trim()
+					}
+
 					let resultParts = []
-					if (descriptions.length > 0) {
-						resultParts.push(`Command descriptions:\n${descriptions.join("\n")}`)
+					if (descriptionsText.length > 0) {
+						resultParts.push(`Command descriptions:\n${descriptionsText}`)
 					}
 					if (missingCommands.length > 0) {
 						resultParts.push(`Unknown commands: ${missingCommands.join(", ")}`)
