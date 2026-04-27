@@ -61,8 +61,8 @@ Finally, obtain and load a GGUF model. See [here](#Obtaining-a-GGUF-model)
 - KoboldCpp can now be used on RunPod cloud GPUs! This is an easy way to get started without installing anything in a minute or two, and is very scalable, capable of running 70B+ models at afforable cost. [Try our RunPod image here!](https://koboldai.org/runpodcpp). Alternatively, you can also try [SimplePod](https://koboldai.org/simplepod) for smaller models
 
 ## Docker
-- Caution: The KoboldCpp docker is intended for experts only! If you're not an experienced user, you're recommended to use the [precompiled binaries directly instead](https://github.com/LostRuins/koboldcpp/releases/latest)
-- The docker uses a x86-64 Ubuntu Linux based environment interally, and expects a Nvidia or AMD GPU. It may perform suboptimally on some Windows and MacOS devices, and may outright fail for ARM. AVX/AVX2 feature detection may not work on some systems, resulting in the failsafe binaries being loaded (will become very slow).
+- Caution: The KoboldCpp docker is intended for experts only, and primarily intended for cloud GPU rental users! If you're NOT an experienced user, you're recommended to use the [precompiled binaries directly instead](https://github.com/LostRuins/koboldcpp/releases/latest)
+- The docker uses a x86-64 Ubuntu Linux based environment interally, and expects a Nvidia or AMD GPU. It may perform suboptimally on some Windows and MacOS devices, and may outright fail for ARM. It applies crude AVX/AVX2 feature detection which may not work correctly on all systems, resulting in the failsafe binaries being loaded (speed will become extremely slow).
 - If you still want to proceed, the official docker can be found at https://hub.docker.com/r/koboldai/koboldcpp
 
 ## Obtaining a GGUF model
