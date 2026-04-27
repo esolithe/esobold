@@ -82,7 +82,7 @@ dry_seq_break_max = 128
 extra_images_max = 4 # for kontext/qwen img
 
 # global vars
-KcppVersion = "1.112.2"
+KcppVersion = "1.113"
 showdebug = True
 kcpp_instance = None #global running instance
 global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "currentBaseConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "base_config":"", "swapReqType": None, "autoswapmode": False, "autoswapSettings": {}, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}, "restart_override_base_config": "", "current_model_override": "", "OpenLumara": False}
@@ -10497,7 +10497,8 @@ def RunServerMultiThreaded(addr, port, server_handler):
         ipv4_sock.bind((addr, port))
         ipv4_sock.listen(numThreads)
     except Exception:
-         print("IPv4 Socket Failed to Bind.")
+        ipv4_sock = None
+        print("IPv4 Socket Failed to Bind.")
 
     if ipv6_sock:
         try:
@@ -10519,10 +10520,15 @@ def RunServerMultiThreaded(addr, port, server_handler):
             handler = server_handler(addr, port)
             with http.server.HTTPServer((addr, port), handler, False) as self.httpd:
                 try:
-                    if ipv6_sock:
+                    if ipv4_sock and ipv6_sock:
                         self.httpd.socket = ipv4_sock if self.i < 16 else ipv6_sock
-                    else:
+                    elif ipv6_sock:
+                        self.httpd.socket = ipv6_sock
+                    elif ipv4_sock:
                         self.httpd.socket = ipv4_sock
+                    else:
+                        print("ERROR: Both IPv4 and IPv6 cannot bind. Server features will not work.")
+                        return
 
                     self.httpd.server_bind = self.server_close = lambda self: None
                     self.httpd.serve_forever()
