@@ -11,7 +11,7 @@ let createAIPrompt = (prompt) => {
 }
 
 let addThought = (currentChainOfThought, wrapperHandler, prompt, onlyDisplay = false, onlyAdd = false) => {
-	currentChainOfThought.push({ wrappedPrompt: wrapperHandler(prompt), prompt, onlyDisplay, onlyAdd})
+	currentChainOfThought.push({ id: window.crypto.randomUUID(), wrappedPrompt: wrapperHandler(prompt), prompt, onlyDisplay, onlyAdd})
 }
 
 let waitingFori2iSelection = false, i2i64 = undefined, originalClickImage = click_image;
