@@ -939,19 +939,19 @@ let genericAgentInitialiser = async (agentRunState) => {
 
 let genericAgentVisualiser = async (visualiserParams) => {
     logAgentFunctionCall("visualiser", visualiserParams)
-    let { currentChainOfThought, interactionId, cotProcessedUntil, printToConsole, agentRunState } = visualiserParams
-    let cotIndex = cotProcessedUntil || agentRunState?.cotProcessedUntil || 0
+    let { currentChainOfThought, interactionId, cotProcessedIds, printToConsole, agentRunState } = visualiserParams
+    let cotProcessedIdsOverall = cotProcessedIds || agentRunState?.cotProcessedIds || []
     let currCOT = currentChainOfThought || agentRunState?.currentChainOfThought || []
 
     if (!!agentRunState && currCOT.length > 0) {
-        currentChainOfThought.slice(cotIndex).forEach(elem => {
+        currentChainOfThought.filter(cot => !cotProcessedIdsOverall.includes(cot.id)).forEach(elem => {
             let { wrappedPrompt, onlyAdd } = elem;
             if (!onlyAdd) {
                 gametext_arr.push(wrappedPrompt.replace(/\\\\/g, ""))
                 render_gametext()
             }
         })
-        agentRunState.cotProcessedUntil = currentChainOfThought.length
+        agentRunState.cotProcessedIds.push(...new Set(currentChainOfThought.map(cot => cot.id)))
     }
 }
 
@@ -965,7 +965,7 @@ let genericAgentFinaliser = async (agentRunState) => {
 let voidAgentVisualiser = async (visualiserParams) => {
     logAgentFunctionCall("visualiser", visualiserParams)
     let { currentChainOfThought, agentRunState } = visualiserParams
-    agentRunState.cotProcessedUntil = currentChainOfThought.length
+    agentRunState.cotProcessedIds.push(...new Set(currentChainOfThought.map(cot => cot.id)))
     clearSuggestions();
 }
 
@@ -1205,7 +1205,7 @@ let runAgentCycle = async (agentRunState = {}) => {
             surpressMessagesToUser: false
         }, agentRunState, {
             logger: new AgentLogger(),
-            cotProcessedUntil: 0,
+            cotProcessedIds: [],
             errors: []
         })
         updateCycleRef(agentRunState.interactionId, agentRunState)
@@ -1250,6 +1250,8 @@ let runAgentCycle = async (agentRunState = {}) => {
                     break;
             }
         })
+        let cotProcessedIds = []
+        cotProcessedIds.push(...new Set(currentChainOfThought.map(cot => cot.id)))
 
         if (!agentRunState?.initialUser && localsettings.inject_chatnames_instruct) {
             agentRunState.initialUser = localsettings.chatname
@@ -1275,7 +1277,7 @@ let runAgentCycle = async (agentRunState = {}) => {
             }
         }
 
-        objRefOverride(agentRunState, { initialPrompt })
+        objRefOverride(agentRunState, { initialPrompt, cotProcessedIds })
         let textDBSearchString = null
         if (!!initialPrompt) {
             textDBSearchString = initialPrompt.trim()
