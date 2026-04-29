@@ -73,6 +73,7 @@ default_autofit_padding = 1024
 lora_filenames_max = 4
 multiuser_concurrent_limit = 10
 swa_padding_default = 0
+default_reqtimeout = 600 # 10 min default
 
 # abuse prevention
 stop_token_max = 256
@@ -661,9 +662,9 @@ class MCPStdioClient:
         if not await_response:
             return None
         try:
-            response = response_q.get(timeout=120)
+            response = response_q.get(timeout=180)
         except queue.Empty:
-            raise RuntimeError("MCP server timed out (no response in 120s)")
+            raise RuntimeError("MCP server timed out (no response in 180s)")
         finally:
             with self._pending_lock:
                 self._pending.pop(msg_id, None)
@@ -683,7 +684,7 @@ class MCPStdioClient:
         self.process.terminate()
 
 class MCPHTTPClient:
-    def __init__(self, url, headers=None, timeout=60.0):
+    def __init__(self, url, headers=None, timeout=180.0):
         global nocertify
         self.url = url
         self.headers = {"Content-Type": "application/json","Accept": "application/json, text/event-stream"}
@@ -3619,13 +3620,13 @@ def websearch(query):
                 os.environ['SSL_CERT_DIR'] = '/etc/ssl/certs'
 
             req = urllib.request.Request(encoded_url, headers={'User-Agent': uagent})
-            with urllib.request.urlopen(req, timeout=15) as response:
+            with urllib.request.urlopen(req, timeout=30) as response:
                 html_content = response.read().decode('utf-8', errors='ignore')
                 return html_content
         except urllib.error.HTTPError: #we got blocked? try 1 more time with a different user agent
             try:
                 req = urllib.request.Request(encoded_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36'})
-                with urllib.request.urlopen(req, timeout=15) as response:
+                with urllib.request.urlopen(req, timeout=30) as response:
                     html_content = response.read().decode('utf-8', errors='ignore')
                     return html_content
             except Exception as e:
@@ -6598,7 +6599,7 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                         }
                         if args.adminpassword:
                             reqheaders["Authorization"] = f"Bearer {args.adminpassword}"
-                        conn = http.client.HTTPConnection('localhost', upstream_port, timeout=600)
+                        conn = http.client.HTTPConnection('localhost', upstream_port, timeout=args.reqtimeout)
                         conn.request("POST", "/api/admin/reload_config", body=reqbody, headers=reqheaders)
                         resp = conn.getresponse()
                         time.sleep(3)
@@ -6653,7 +6654,7 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                     }
                     if args.adminpassword:
                         reqheaders["Authorization"] = f"Bearer {args.adminpassword}"
-                    conn = http.client.HTTPConnection('localhost', upstream_port, timeout=600)
+                    conn = http.client.HTTPConnection('localhost', upstream_port, timeout=args.reqtimeout)
                     conn.request("POST", "/api/admin/reload_config", body=reqbody, headers=reqheaders)
                     resp = conn.getresponse()
                     time.sleep(3)
@@ -6665,7 +6666,7 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
 
         try:  # connect upstream
             target_host = '127.0.0.1' if is_OpenLumara_request else 'localhost'
-            conn = http.client.HTTPConnection(target_host, target_port, timeout=600)
+            conn = http.client.HTTPConnection(target_host, target_port, timeout=args.reqtimeout)
             conn.request( self.command, forward_path, body=body, headers=headers)
             resp = conn.getresponse()
         except OSError as e:
@@ -11032,6 +11033,7 @@ def show_gui():
     password_var = ctk.StringVar()
     maxrequestsize_var = ctk.StringVar(value=str(32))
     ratelimit_var = ctk.StringVar(value=str(0))
+    reqtimeout_var = ctk.StringVar(value=str(default_reqtimeout))
 
     sd_model_var = ctk.StringVar()
     sd_lora_var = ctk.StringVar()
@@ -11850,6 +11852,7 @@ def show_gui():
 
     makelabelentry(network_tab, "Max Req. Size (MB):", maxrequestsize_var, row=20, width=50, tooltip="Specify a max request payload size. Any requests to the server larger than this size will be dropped. Do not change if unsure.")
     makelabelentry(network_tab, "IP Rate Limiter (s):", ratelimit_var, row=22, width=50, tooltip="Rate limits each IP to allow a new request once per X seconds. Do not change if unsure.")
+    makelabelentry(network_tab, "Request Timeout (s):", reqtimeout_var, row=24, width=50, tooltip="Timeout in seconds for HTTP requests")
 
 
     # Horde Tab
@@ -12259,6 +12262,7 @@ def show_gui():
         args.websearch = (websearch_var.get()==1)
         args.maxrequestsize = int(maxrequestsize_var.get()) if maxrequestsize_var.get()!="" else 32
         args.ratelimit = int(ratelimit_var.get()) if ratelimit_var.get()!="" else 0
+        args.reqtimeout = int(reqtimeout_var.get()) if reqtimeout_var.get()!="" else 0
 
         if usehorde_var.get() != 0:
             args.hordemodelname = horde_name_var.get()
@@ -12569,10 +12573,9 @@ def show_gui():
         horde_apikey_var.set(mydict["hordekey"] if ("hordekey" in mydict and mydict["hordekey"]) else "")
         horde_workername_var.set(mydict["hordeworkername"] if ("hordeworkername" in mydict and mydict["hordeworkername"]) else "")
         usehorde_var.set(1 if ("hordekey" in mydict and mydict["hordekey"]) else 0)
-        if "maxrequestsize" in mydict and mydict["maxrequestsize"]:
-            maxrequestsize_var.set(mydict["maxrequestsize"])
-        if "ratelimit" in mydict and mydict["ratelimit"]:
-            ratelimit_var.set(mydict["ratelimit"])
+        maxrequestsize_var.set(mydict["maxrequestsize"] if ("maxrequestsize" in mydict and mydict["maxrequestsize"]) else 32)
+        ratelimit_var.set(mydict["ratelimit"] if ("ratelimit" in mydict and mydict["ratelimit"]) else 0)
+        reqtimeout_var.set(mydict["reqtimeout"] if ("reqtimeout" in mydict and mydict["reqtimeout"]) else 0)
 
         sd_model_var.set(mydict["sdmodel"] if ("sdmodel" in mydict and mydict["sdmodel"]) else "")
         sd_clamped_var.set(int(mydict["sdclamped"]) if ("sdclamped" in mydict and mydict["sdclamped"]) else 0)
@@ -15405,6 +15408,7 @@ if __name__ == '__main__':
     admingroup.add_argument("--admindocsdir", metavar=('[directory]'), help="Specify a directory containing text or PDF documents. When set, the directory is accessible read-only at /INTERNAL_READ_ONLY/Documents via filesystem API endpoints.", default="")
     admingroup.add_argument("--adminallowhf", help="Enables downloading of HuggingFace models through the Lite UI.", action='store_true')
     admingroup.add_argument("--routermode", help="Router mode uses a reverse proxy router, allowing you to easily hotswap models and configs within a single request. Requires admin mode.", action='store_true')
+    admingroup.add_argument("--reqtimeout", metavar=('[seconds]'), help="Timeout in seconds for HTTP requests.", type=int, default=default_reqtimeout)
     admingroup.add_argument("--autoswapmode", help="Autoswap mode builds on router mode to allow switching of model types within the same config automatically. Requires admin mode and router mode. All models desired must be defined within the same config.", action='store_true')
     admingroup.add_argument("--baseconfig", help="Specify a base .kcpps config to apply, if no custom base config is selected during a model swap", default="")
 
