@@ -1834,16 +1834,16 @@ Current version indicated by LITEVER below.
 		max-width: 75%;
 	}
 
-	.chat_received_withd_msg p {
+	.chat_received_withd_msg .chat_para {
 		font-size: var(--theme_font_size_medium);
 		margin: 0;
-		padding: 5px 10px 5px 12px;
 		width: 100%;
 		white-space: pre-wrap;
 	}
 
 	.chat_received_withd_msg {
 		width: 100%;
+		padding: 5px 10px 5px 12px;
 		background: var(--theme_color_ai_msg_bg) none repeat scroll 0 0;
 		border-radius: 0 15px 15px 15px;
 		color: var(--theme_color_ai_msg_fg);
@@ -1856,11 +1856,10 @@ Current version indicated by LITEVER below.
 	.chat_mesgs_inner{
 		padding: 2px 12px 2px 12px;
 	}
-	.chat_sent_msg p {
+	.chat_sent_msg .chat_para {
 		font-size: var(--theme_font_size_medium);
 		margin: 0;
 		color: var(--theme_color_user_msg_fg);
-		padding: 5px 10px 5px 12px;
 		width: 100%;
 		white-space: pre-wrap;
 	}
@@ -1870,6 +1869,7 @@ Current version indicated by LITEVER below.
 		overflow:auto;
 		background: var(--theme_color_user_msg_bg);
 		border-radius: 12px 15px 0px 15px;
+		padding: 5px 10px 5px 12px;
 	}
 	.chat_outgoing_msg {
 		overflow: hidden;
@@ -4148,8 +4148,8 @@ Current version indicated by LITEVER below.
 		websearch_template: "",
 		wordsearch_enabled: false,
 
-		max_context_length: (localflag?8192:3800),
-		max_length: (localflag?1024:500),
+		max_context_length: (localflag?8192:4096),
+		max_length: (localflag?1024:512),
 		last_maxctx: 0,
 		auto_ctxlen: true,
 		auto_genamt: true,
@@ -5479,7 +5479,7 @@ Current version indicated by LITEVER below.
 		let instag = localsettings.instruct_systag;
 		if(instag=="{{[SYSTEM]}}" && !(custom_kobold_endpoint != "" && is_using_kcpp_with_autotags()))
 		{
-			instag = ""; //backend not compatible with auto
+			instag = "\n### System:\n"; //backend not compatible with auto
 		}
 		if(doTrim){
 			return replaceAll(instag, "\\n", "\n").trim();
@@ -7034,7 +7034,7 @@ Current version indicated by LITEVER below.
 		.then((data) => {
 			console.log("sync finished response: " + JSON.stringify(data));
 			last_response_obj = JSON.parse(JSON.stringify(data));
-			if ((custom_oai_key != "" || determine_if_mcp_active()) && data.choices != null && data.choices.length > 0) {
+			if ((custom_oai_key != "" || is_using_kcpp_with_jinja() || determine_if_mcp_active()) && data.choices != null && data.choices.length > 0) {
 				let dch = data.choices[0];
 				if (dch.text) {
 					synchro_polled_response = dch.text;
@@ -21278,7 +21278,7 @@ Current version indicated by LITEVER below.
 					}
 					for(let i=0;i<mhistory.length;++i)
 					{
-						let cturn = { "role": (mhistory[i].myturn?"user":"assistant"), "content": mhistory[i].msg };
+						let cturn = { "role": (mhistory[i].myturn?"user":(mhistory[i].issystem?"system":"assistant")), "content": mhistory[i].msg };
 						if(!mhistory[i].myturn && mhistory[i].tool_calls)
 						{
 							cturn.content = null;
@@ -21465,7 +21465,7 @@ Current version indicated by LITEVER below.
 						}
 
 						//many backends REFUSE to allow the assistant to go first. If the first turn belongs to assistant, we turn it into user
-						if(mhistory.length>0 && !mhistory[0].myturn)
+						if(mhistory.length>0 && !mhistory[0].myturn && !mhistory[0].issystem)
 						{
 							mhistory[0].myturn = true;
 						}
@@ -21495,7 +21495,7 @@ Current version indicated by LITEVER below.
 
 						for(let i=0;i<mhistory.length;++i)
 						{
-							let cturn = { "role": (mhistory[i].myturn?"user":"assistant"), "content": mhistory[i].msg };
+							let cturn = { "role": (mhistory[i].myturn?"user":(mhistory[i].issystem?"system":"assistant")), "content": mhistory[i].msg };
 							if(!mhistory[i].myturn && mhistory[i].tool_calls)
 							{
 								cturn.content = null;
@@ -21561,6 +21561,13 @@ Current version indicated by LITEVER below.
 					if(localsettings.opmode==1)
 					{
 						oai_payload.messages.unshift({ "role": "system", "content": "Please continue this text directly from where it stopped. Just respond with a direct partial continuation of the text immediately from the latest word." });
+					}
+
+					if(oai_payload.messages.length>1 && oai_payload.messages[0].role=="system" && oai_payload.messages[1].role=="system" )
+					{
+						//first 2 turns are system, merge them
+						oai_payload.messages[0].content += "\n" + oai_payload.messages[1].content;
+						oai_payload.messages.splice(1, 1);
 					}
 				}
 				else
@@ -25466,6 +25473,10 @@ Current version indicated by LITEVER below.
 			//do nothing on cancel
 		},true,true);
 	}
+	function classic_retry_turn(idx)
+	{
+		corpo_retry_chunk(idx);
+	}
 
 	function classic_click_turn(button,idx,toggleopen = true)
 	{
@@ -25482,6 +25493,7 @@ Current version indicated by LITEVER below.
 
 		let popcontent = `<button type="button" onclick="classic_edit_turn(${idx})">Edit Turn</button>`;
 		popcontent += `<button type="button" onclick="classic_delete_turn(${idx})">Delete Turn</button>`;
+		popcontent += `<button type="button" onclick="classic_retry_turn(${idx})">Retry Turn</button>`;
 		popcontent += `<button type="button" onclick="">Cancel</button>`;
 		popupMenu.innerHTML = popcontent;
 
@@ -25849,9 +25861,10 @@ Current version indicated by LITEVER below.
 			</div>`;
 	}
 
-	function repack_instruct_turns(input,usertag,aitag,allow_blank)
+	function repack_instruct_turns(input,usertag,aitag,systag,allow_blank)
 	{
 		let myturnchat = false; //who is currently speaking?
+		let issystem = false; //is this a system turn?
 		let chatunits = []; //parse chat body into nice chat chunks
 
 		let combined_chunks = [];
@@ -25869,27 +25882,44 @@ Current version indicated by LITEVER below.
 				}
 				continue;
 			}
-			let turnchunks2 = chnk.split(aitag);
-			for(let j=0;j<turnchunks2.length;++j)
+
+			// NEW: split system first
+			let syschunks = chnk.split(systag);
+			for(let s=0;s<syschunks.length;++s)
 			{
-				if(j==0)
+				let syschnk = syschunks[s];
+
+				// inject system placeholder except first
+				if(s>0)
 				{
-					if(startoppo)
+					combined_chunks.push("%SystemPlaceholder%");
+				}
+
+				let turnchunks2 = syschnk.split(aitag);
+				for(let j=0;j<turnchunks2.length;++j)
+				{
+					if(j==0)
 					{
-						startoppo = false;
-						combined_chunks.push("%AIPlaceholder%");
+						if(s==0) // only apply original logic on first system split
+						{
+							if(startoppo)
+							{
+								startoppo = false;
+								combined_chunks.push("%AIPlaceholder%");
+							}
+							else
+							{
+								combined_chunks.push("%HumanPlaceholder%");
+							}
+						}
+
+						combined_chunks.push(turnchunks2[j]);
 					}
 					else
 					{
-						combined_chunks.push("%HumanPlaceholder%");
+						combined_chunks.push("%AIPlaceholder%");
+						combined_chunks.push(turnchunks2[j]);
 					}
-
-					combined_chunks.push(turnchunks2[j]);
-				}
-				else
-				{
-					combined_chunks.push("%AIPlaceholder%");
-					combined_chunks.push(turnchunks2[j]);
 				}
 			}
 		}
@@ -25900,19 +25930,29 @@ Current version indicated by LITEVER below.
 			if(curr=="%HumanPlaceholder%")
 			{
 				myturnchat = true;
+				issystem = false;
 			}
 			else if(curr=="%AIPlaceholder%")
 			{
 				myturnchat = false;
+				issystem = false;
+			}
+			else if(curr=="%SystemPlaceholder%")
+			{
+				myturnchat = false;
+				issystem = true;
 			}
 			else
 			{
 				if(allow_blank || curr.trim()!="")
 				{
 					chatunits.push({
-					msg:curr,
-					myturn:myturnchat,
-					unlabelled:unlabelled_turns});
+						msg:curr,
+						myturn:myturnchat,
+						issystem:issystem,
+						unlabelled_name:unlabelled_turns,
+						unlabelled_img:unlabelled_turns
+					});
 				}
 				unlabelled_turns = false;
 			}
@@ -25921,7 +25961,7 @@ Current version indicated by LITEVER below.
 		//post process the chatunits to handle tool calls
 		for(let i=0;i<chatunits.length;++i)
 		{
-			if(!chatunits[i].myturnchat && (chatunits[i].msg.includes("tool_call_id") || chatunits[i].msg.includes("tool_calls")))
+			if(!chatunits[i].myturn && !chatunits[i].issystem && (chatunits[i].msg.includes("tool_call_id") || chatunits[i].msg.includes("tool_calls")))
 			{
 				try {
 					let unsc = unescape_html(chatunits[i].msg);
@@ -26088,10 +26128,12 @@ Current version indicated by LITEVER below.
 
 		let st = get_instruct_starttag(false);
 		let et = get_instruct_endtag(false);
-		let sys = get_instruct_systag(false);
+		let syst = get_instruct_systag(false);
 
 		let ste = get_instruct_starttag_end(false);
 		let ete = get_instruct_endtag_end(false);
+		let syste = get_instruct_systag_end(false);
+
 		let foundpreset = find_matching_instruct_preset(st,et);
 		if(foundpreset && !ete && foundpreset.assistant_end && !ste && foundpreset.user_end)
 		{
@@ -26109,7 +26151,7 @@ Current version indicated by LITEVER below.
 			}
 		}
 
-		let turns = repack_instruct_turns(input,st,et,sys,allow_blank);
+		let turns = repack_instruct_turns(input,st,et,syst,allow_blank);
 		return turns;
 	}
 
@@ -26827,7 +26869,7 @@ Current version indicated by LITEVER below.
 				{
 					namepart = "";
 				}
-				newbodystr += `<div class="chat_outgoing_msg"><div class="chat_sent_msg"><p>`+namepart+curr.msg+`</p></div></div>`;
+				newbodystr += `<div class="chat_outgoing_msg"><div class="chat_sent_msg"><span class="chat_para">`+namepart+curr.msg+`</span></div></div>`;
 			}else{
 				let oname = (curr.name?escape_html(curr.name):"");
 				let onametrim = oname.trim();
@@ -26841,13 +26883,13 @@ Current version indicated by LITEVER below.
 				{
 					namepart = "";
 				}
-				newbodystr += `<div class="incoming_msg"><div class="chat_received_msg"><div class="chat_received_withd_msg"><p>`+namepart+curr.msg+`</p></div></div></div>`;
+				newbodystr += `<div class="incoming_msg"><div class="chat_received_msg"><div class="chat_received_withd_msg"><span class="chat_para">`+namepart+curr.msg+`</span></div></div></div>`;
 			}
 
 		}
 		if(synchro_pending_stream!="")
 		{
-			newbodystr += `<div class="incoming_msg"><div class="chat_received_msg"><div class="chat_received_withd_msg"><p><span class="color_pendingtext pending_text">` + escape_html(pending_context_preinjection) + format_streaming_text(escape_html(synchro_pending_stream)) + `</span></p></div></div></div>`;
+			newbodystr += `<div class="incoming_msg"><div class="chat_received_msg"><div class="chat_received_withd_msg"><span class="chat_para"><span class="color_pendingtext pending_text">` + escape_html(pending_context_preinjection) + format_streaming_text(escape_html(synchro_pending_stream)) + `</span></span></div></div></div>`;
 		}
 
 		return newbodystr;
