@@ -33040,6 +33040,7 @@ Current version indicated by LITEVER below.
 <script src="static/js/ext/pickr.js"></script>
 <script src="static/js/ext/zip-fs.min.js"></script>
 <script src="static/js/ext/colourToCSSFilters.js"></script>
+<script src="static/js/ext/web-tree-sitter.js" type="module"></script>
 <!-- Third party libs end -->
 <!-- EsoLite modifications -->
 <script src="static/js/fs.js"></script>
@@ -33086,5 +33087,6 @@ Current version indicated by LITEVER below.
 <script src="static/js/agent/agent_openlumarapolling.js"></script>
 <script src="static/js/agenticUtilitiesExt.js"></script>
 <script src="static/js/embeddedContentViewer.js"></script>
+<script src="static/js/treeSitterGrammarLoader.js" type="module"></script>
 <!-- EsoLite modifications end -->
 </html>
