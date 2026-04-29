@@ -13738,6 +13738,10 @@ def launch_OpenLumara(launch_args):
         else:
             python_exe = sys.executable
 
+        userModulesPath = launch_args.OpenLumara_sandboxfolder if launch_args.OpenLumara_sandboxfolder is not None else 'sandbox'
+        userModulesPath = os.path.abspath(userModulesPath)
+        userModulesPath = os.path.join(userModulesPath, "user_modules")
+        os.makedirs(userModulesPath, exist_ok=True)
         args_to_add = ["--config", configPath,
                 "--api.key", f"{launch_args.password if launch_args.password is not None else 'KEY_HERE'}",
                 "--api.url", f"{api_url}",
@@ -13746,7 +13750,10 @@ def launch_OpenLumara(launch_args):
                 "--channels.settings.webui.host", "0.0.0.0",
                 "--channels.settings.webui.port", f"{OpenLumara_default_webui_port}",
                 "--core.data_folder", f"{launch_args.OpenLumara_datadir if launch_args.OpenLumara_datadir is not None else 'data'}",
-                "--modules.settings.sandboxed_files.sandbox_folder", f"{launch_args.OpenLumara_sandboxfolder if launch_args.OpenLumara_sandboxfolder is not None else 'sandbox'}"
+                "--modules.settings.sandboxed_files.sandbox_folder", f"{launch_args.OpenLumara_sandboxfolder if launch_args.OpenLumara_sandboxfolder is not None else 'sandbox'}",
+                "--modules.settings.coder.sandbox_folder", f"{launch_args.OpenLumara_sandboxfolder if launch_args.OpenLumara_sandboxfolder is not None else 'sandbox'}",
+                "--modules.settings.sandboxed_shell.sandbox_path", f"{launch_args.OpenLumara_sandboxfolder if launch_args.OpenLumara_sandboxfolder is not None else 'sandbox'}",
+                "--user_modules.path", f"{userModulesPath}"
                 ]
 
         if (launch_args.debugmode is not None and launch_args.debugmode >= 1):
