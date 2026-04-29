@@ -13,6 +13,18 @@ pdfplumber>=0.11.6
 PyMuPdf>=1.26.0
 tqdm>=4.67.1
 chardet>=7.4.0
+tree-sitter
+tree-sitter-python
+tree-sitter-javascript
+tree-sitter-typescript
+tree-sitter-html
+tree-sitter-css
+tree-sitter-cpp
+tree-sitter-c-sharp
+tree-sitter-rust
+tree-sitter-ruby
+tree-sitter-go
+tree-sitter-java
 # Opti dependancies
 openai>=2.31.0
 tiktoken>=0.12.0
