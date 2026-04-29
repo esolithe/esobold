@@ -232,13 +232,13 @@ export async function detectWarnings(languageName, sourceCode) {
     return collectWarnings(tree.rootNode);
 }
 
-window.loadGrammar = loadGrammar;
-window.prepParserForLanguage = prepParserForLanguage;
+// window.loadGrammar = loadGrammar;
+// window.prepParserForLanguage = prepParserForLanguage;
+window.fileExtensionToLanguageName = fileExtensionToLanguageName;
 window.getSymbols = getSymbols;
 window.editSymbol = editSymbol;
 window.detectErrors = detectErrors;
 window.detectWarnings = detectWarnings;
-window.fileExtensionToLanguageName = fileExtensionToLanguageName;
 
 /**
  * Test code to verify the loader and basic parsing functionality.
