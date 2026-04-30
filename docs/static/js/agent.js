@@ -136,7 +136,7 @@ let callOAIChatCompletions = async (messages, tools, toolChoice) => {
     }
     if (globalabortcontroller) reqOpt.signal = globalabortcontroller.signal
 
-    let resp = await fetch(apply_proxy_url(custom_kobold_endpoint + "/v1/chat/completions"), reqOpt)
+    let resp = await fetch(apply_proxy_url((custom_oai_endpoint || custom_kobold_endpoint) + "/v1/chat/completions"), reqOpt)
         .then(r => r.json())
 
     if (!resp?.choices || !resp.choices.length) return null
@@ -171,7 +171,7 @@ let callOAIChatCompletionsStream = async (messages, tools, toolChoice, onToken) 
     let finish_reason = null
 
     await new Promise((resolve, reject) => {
-        fetch(apply_proxy_url(custom_kobold_endpoint + "/v1/chat/completions"), reqOpt)
+        fetch(apply_proxy_url((custom_oai_endpoint || custom_kobold_endpoint) + "/v1/chat/completions"), reqOpt)
             .then(resp => {
                 if (!resp.ok) return resp.text().then(t => { throw new Error("OAI stream failed: " + t) })
                 return resp
