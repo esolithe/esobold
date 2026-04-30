@@ -1,3 +1,26 @@
+import { getSymbols, editSymbol, detectErrors, detectWarnings, fileExtensionToLanguageName } from '../treeSitterGrammarLoader.js'
+
+const MAX_SYMBOLS_RETURNED = 300
+
+// Validate that `content` (a string) contains no tree-sitter syntax errors.
+// Only runs when the file extension is supported and content length <= 100000.
+// Returns null on success, or an error message string on failure.
+let validateCodeContent = async (fsPath, content) => {
+	if (typeof content !== 'string' || content.length > 100000) {
+		return null
+	}
+	let ext = `${fsPath || ""}`.split('.').pop() || ""
+	let langName = fileExtensionToLanguageName(ext)
+	if (!langName) {
+		return null
+	}
+	let errors = await detectErrors(langName, content)
+	if (errors.length > 0) {
+		return `syntax errors detected in ${fsPath}:\n${JSON.stringify(errors, null, 2)}`
+	}
+	return null
+}
+
 let normalizeBase64ImageData = (input = "") => {
 	let value = `${input || ""}`
 	let parts = value.split(",")
@@ -915,6 +938,14 @@ export const buildFilesystemCommands = (ctx) => {
 					if (!Array.isArray(operations) || operations.length === 0) {
 						throw new Error("operations must be a non-empty array of {path, content} objects.")
 					}
+					for (let op of operations) {
+						let validationError = await validateCodeContent(op.path, op.content)
+						if (validationError) {
+							addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: write_text failed - ${validationError}`)
+							if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
+							return
+						}
+					}
 					let approved = await confirmFsMutation("fs_write_text", { operations })
 					if (!approved) {
 						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: write_text cancelled by confirmation dialog`)
@@ -959,6 +990,17 @@ export const buildFilesystemCommands = (ctx) => {
 					let operations = action?.args?.operations
 					if (!Array.isArray(operations) || operations.length === 0) {
 						throw new Error("operations must be a non-empty array of {path, lines, start_line, append} objects.")
+					}
+					for (let op of operations) {
+						let lineContent = Array.isArray(op.lines) ? op.lines.join('\n') : null
+						if (lineContent !== null) {
+							let validationError = await validateCodeContent(op.path, lineContent)
+							if (validationError) {
+								addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: write_lines failed - ${validationError}`)
+								if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
+								return
+							}
+						}
 					}
 					let approved = await confirmFsMutation("fs_write_lines", { operations })
 					if (!approved) {
@@ -1347,6 +1389,164 @@ export const buildFilesystemCommands = (ctx) => {
 				}
 				catch (e) {
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: generate_tts failed - ${e?.message || e}`)
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
+				}
+			}
+		},
+		{
+			"name": "fs_code_get_symbols",
+			"description": "Parse a source code file from the filesystem and return all top-level symbols (functions, classes, variables, etc.) it contains. Results are limited to the top 100 symbols in the file.",
+			"args": {
+				"path": "<absolute filesystem path to the source file>"
+			},
+			"enabled": is_using_kcpp_with_fs(),
+			"executor": async (action) => {
+				try {
+					let fsPath = `${action?.args?.path || ""}`.trim()
+					if (fsPath === "") {
+						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: code_get_symbols failed - path is required`)
+						if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
+						return
+					}
+					let ext = fsPath.split('.').pop() || ""
+					let langName = fileExtensionToLanguageName(ext)
+					if (!langName) {
+						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: code_get_symbols failed - unsupported file extension ".${ext}"`)
+						if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
+						return
+					}
+					let contentResult = await window.fsClient.content([{ path: fsPath }])
+					let sourceCode = contentResult?.lines?.map(c => c.content).join("\n") || ""
+					let symbols = await getSymbols(langName, sourceCode)
+					let formattedSymbols = symbols?.filter(c => c?.type !== "lexical_declaration")?.sort((a, b) => {
+    						return a.text.length > b.text.length ? -1 : 1
+						}).slice(0, MAX_SYMBOLS_RETURNED).map(c => {
+							return {type: c.type, name: c.name, startLine: c?.startPosition?.row, endLine: c?.endPosition?.row}
+						})?.reduce((c, a) => {
+							c[a.name] = c[a.name] || {}
+							c[a.name][a.type] = c[a.name][a.type] || []
+							c[a.name][a.type].push({startLine: a.startLine, endLine: a.endLine})
+							return c
+						}, {})
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: code_get_symbols result\n${objToText(formattedSymbols)}`)
+				}
+				catch (e) {
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: code_get_symbols failed - ${e?.message || e}`)
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
+				}
+			}
+		},
+		{
+			"name": "fs_code_edit_symbol",
+			"description": "Replace the body of a named symbol (function, class, etc.) in a source code file on the filesystem. The new text is syntax-validated before the file is written; the edit is rejected if the replacement introduces parse errors. The new text only replaces the first body of the symbol, not its declaration or signature.",
+			"args": {
+				"path": "<absolute filesystem path to the source file>",
+				"symbol_name": "<name of the symbol to replace>",
+				"new_text": "<replacement source text for the symbol>"
+			},
+			"enabled": is_using_kcpp_with_fs(),
+			"executor": async (action) => {
+				try {
+					let args = action?.args || {}
+					let fsPath = `${args.path || ""}`.trim()
+					let symbolName = `${args.symbol_name || ""}`.trim()
+					let newText = `${args.new_text || ""}`.trim()
+					if (fsPath === "" || symbolName === "" || newText === "") {
+						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: code_edit_symbol failed - path, symbol_name and new_text are required`)
+						if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
+						return
+					}
+					let ext = fsPath.split('.').pop() || ""
+					let langName = fileExtensionToLanguageName(ext)
+					if (!langName) {
+						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: code_edit_symbol failed - unsupported file extension ".${ext}"`)
+						if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
+						return
+					}
+					let approved = await confirmFsMutation("fs_code_edit_symbol", { path: fsPath, symbol_name: symbolName })
+					if (!approved) {
+						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: code_edit_symbol cancelled by confirmation dialog`)
+						return
+					}
+					let contentResult = await window.fsClient.content([{ path: fsPath }])
+					let sourceCode = contentResult?.lines?.map(c => c.content).join("\n") || ""
+					let editResult = await editSymbol(langName, sourceCode, symbolName, newText)
+					if (!editResult.ok) {
+						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: code_edit_symbol failed - syntax validation rejected the edit\n${objToText(editResult.errors)}`)
+						if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
+						return
+					}
+					let writeResult = await window.fsClient.write([{ path: fsPath, content: editResult.result }])
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: code_edit_symbol result\n${objToText(writeResult)}`)
+				}
+				catch (e) {
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: code_edit_symbol failed - ${e?.message || e}`)
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
+				}
+			}
+		},
+		{
+			"name": "fs_code_detect_errors",
+			"description": "Parse a source code file from the filesystem and return any syntax errors detected by the tree-sitter grammar.",
+			"args": {
+				"path": "<absolute filesystem path to the source file>"
+			},
+			"enabled": is_using_kcpp_with_fs(),
+			"executor": async (action) => {
+				try {
+					let fsPath = `${action?.args?.path || ""}`.trim()
+					if (fsPath === "") {
+						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: code_detect_errors failed - path is required`)
+						if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
+						return
+					}
+					let ext = fsPath.split('.').pop() || ""
+					let langName = fileExtensionToLanguageName(ext)
+					if (!langName) {
+						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: code_detect_errors failed - unsupported file extension ".${ext}"`)
+						if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
+						return
+					}
+					let contentResult = await window.fsClient.content([{ path: fsPath }])
+					let sourceCode = contentResult?.lines?.map(c => c.content).join("\n") || ""
+					let errors = await detectErrors(langName, sourceCode)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: code_detect_errors result (${errors.length} error(s))\n${objToText(errors)}`)
+				}
+				catch (e) {
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: code_detect_errors failed - ${e?.message || e}`)
+					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
+				}
+			}
+		},
+		{
+			"name": "fs_code_detect_warnings",
+			"description": "Parse a source code file from the filesystem and return any syntax warnings (missing or unexpected tokens) detected by the tree-sitter grammar.",
+			"args": {
+				"path": "<absolute filesystem path to the source file>"
+			},
+			"enabled": is_using_kcpp_with_fs(),
+			"executor": async (action) => {
+				try {
+					let fsPath = `${action?.args?.path || ""}`.trim()
+					if (fsPath === "") {
+						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: code_detect_warnings failed - path is required`)
+						if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
+						return
+					}
+					let ext = fsPath.split('.').pop() || ""
+					let langName = fileExtensionToLanguageName(ext)
+					if (!langName) {
+						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: code_detect_warnings failed - unsupported file extension ".${ext}"`)
+						if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
+						return
+					}
+					let contentResult = await window.fsClient.content([{ path: fsPath }])
+					let sourceCode = contentResult?.lines?.map(c => c.content).join("\n") || ""
+					let warnings = await detectWarnings(langName, sourceCode)
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: code_detect_warnings result (${warnings.length} warning(s))\n${objToText(warnings)}`)
+				}
+				catch (e) {
+					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: code_detect_warnings failed - ${e?.message || e}`)
 					if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 				}
 			}
