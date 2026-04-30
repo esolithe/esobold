@@ -7722,10 +7722,10 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                 genparams['sync_toolcall_extra_reasoning_content'] = erc
                                 if not sync_potential_toolcall_splitmatch:
                                     if not args.jinja_stream_toolcall: # if stream_toolcall, fall through and let the delta be sent as content
-                                        if not streamDone:
+                                        if not streamDone: # still generating: skip this chunk and wait for next
                                             await asyncio.sleep(async_sleep_short)
                                             continue
-                                        await asyncio.sleep(async_sleep_short)
+                                        await asyncio.sleep(async_sleep_short) # generation finished: end stream handler
                                         return
 
                             if need_split_final_msg: #we need to send one message without the finish reason, then send a finish reason with no msg to follow standards
