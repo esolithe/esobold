@@ -1,6 +1,6 @@
 import { getSymbols, editSymbol, detectErrors, detectWarnings, fileExtensionToLanguageName } from '../treeSitterGrammarLoader.js'
 
-const MAX_SYMBOLS_RETURNED = 300
+const MAX_SYMBOLS_RETURNED = 100
 
 // Validate that `content` (a string) contains no tree-sitter syntax errors.
 // Only runs when the file extension is supported and content length <= 100000.
@@ -1395,7 +1395,7 @@ export const buildFilesystemCommands = (ctx) => {
 		},
 		{
 			"name": "fs_code_get_symbols",
-			"description": "Parse a source code file from the filesystem and return all top-level symbols (functions, classes, variables, etc.) it contains. Results are limited to the top 100 symbols in the file.",
+			"description": `Parse a source code file from the filesystem and return all top-level symbols (functions, classes, variables, etc.) it contains. Results are limited to the top ${MAX_SYMBOLS_RETURNED} symbols in the file.`,
 			"args": {
 				"path": "<absolute filesystem path to the source file>"
 			},
