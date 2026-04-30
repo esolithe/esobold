@@ -7775,7 +7775,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                         # True OAI-spec streaming: emit tool_calls delta chunks in real time
                                         tc_inner_buf = ec[len(tool_segment_tag):]
                                         # Outer loop allows up to one state transition per chunk (buffering→streaming or streaming→next-call-buffering)
-                                        for _tc_pass in range(20):
+                                        for _tc_transition_attempt in range(20):
                                             tc_stream_state = genparams.get("tc_stream_state", "buffering_name")
                                             tc_search_offset = genparams.get("tc_stream_inner_cursor", 0)
                                             if tc_stream_state == "buffering_name":
