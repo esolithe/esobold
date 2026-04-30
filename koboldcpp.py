@@ -3841,7 +3841,7 @@ def compress_tools_array(tools_array):
             tool_props[prop_name] = prop_type
         tools_array_filtered.append({
             "name": tool_data['name'],
-            "description": tool_data['description'],
+            "description": tool_data.get("description", ""),
             "properties": tool_props
         })
 
