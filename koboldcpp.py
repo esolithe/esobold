@@ -4206,6 +4206,56 @@ def extract_json_from_string(input_string, check_strict=False):
         pass
     return []
 
+def find_json_value_end(buf, start):
+    """
+    Find the exclusive end index of a complete JSON value starting at buf[start].
+    Handles objects {}, arrays [], quoted strings, and scalar values.
+    Returns -1 if the value is not yet complete or if start is out of range.
+    """
+    n = len(buf)
+    i = start
+    while i < n and buf[i] in ' \t\r\n':
+        i += 1
+    if i >= n:
+        return -1
+    c = buf[i]
+    if c in '{[':
+        depth = 0
+        in_str = False
+        while i < n:
+            ch = buf[i]
+            if in_str:
+                if ch == '\\':
+                    i += 1  # skip escaped character
+                elif ch == '"':
+                    in_str = False
+            else:
+                if ch == '"':
+                    in_str = True
+                elif ch in '{[':
+                    depth += 1
+                elif ch in '}]':
+                    depth -= 1
+                    if depth == 0:
+                        return i + 1
+            i += 1
+        return -1
+    elif c == '"':
+        i += 1
+        while i < n:
+            ch = buf[i]
+            if ch == '\\':
+                i += 1
+            elif ch == '"':
+                return i + 1
+            i += 1
+        return -1
+    else:
+        # number, boolean (true/false/null) - ends at any JSON structural char or whitespace
+        while i < n and buf[i] not in ' \t\r\n,}]':
+            i += 1
+        return i if i > start else -1
+
 def parse_last_logprobs(lastlogprobs):
     if not lastlogprobs:
         return None
@@ -7721,7 +7771,117 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                 genparams['sync_toolcall_extra_content'] = ec
                                 genparams['sync_toolcall_extra_reasoning_content'] = erc
                                 if not sync_potential_toolcall_splitmatch:
-                                    if not args.jinja_stream_toolcall: # if stream_toolcall, fall through and let the delta be sent as content
+                                    if args.jinja_stream_toolcall:
+                                        # True OAI-spec streaming: emit tool_calls delta chunks in real time
+                                        tc_inner_buf = ec[len(tool_segment_tag):]
+                                        # Outer loop allows up to one state transition per chunk (buffering→streaming or streaming→next-call-buffering)
+                                        for _tc_pass in range(20):
+                                            tc_stream_state = genparams.get("tc_stream_state", "buffering_name")
+                                            tc_search_offset = genparams.get("tc_stream_inner_cursor", 0)
+                                            if tc_stream_state == "buffering_name":
+                                                name_match = re.search(r'"name"\s*:\s*"([^"]+)"', tc_inner_buf[tc_search_offset:])
+                                                args_key_match = re.search(r'"(?:arguments|parameters)"\s*:\s*', tc_inner_buf[tc_search_offset:])
+                                                if name_match and args_key_match and (tc_search_offset + args_key_match.end()) < len(tc_inner_buf):
+                                                    tc_name = name_match.group(1)
+                                                    tc_preamble_end = tc_search_offset + args_key_match.end()
+                                                    tc_call_id = f"call_{random.randint(10000, 99999)}"
+                                                    tc_call_index = genparams.get("tc_stream_call_index", 0)
+                                                    tc_end_tag_val = ""
+                                                    for s_tag, e_tag, _ in tool_call_pairs:
+                                                        if s_tag == tool_segment_tag:
+                                                            tc_end_tag_val = e_tag
+                                                            break
+                                                    genparams.update({
+                                                        "tc_stream_state": "streaming_args",
+                                                        "tc_stream_name": tc_name,
+                                                        "tc_stream_call_id": tc_call_id,
+                                                        "tc_stream_call_index": tc_call_index,
+                                                        "tc_stream_preamble_end": tc_preamble_end,
+                                                        "tc_stream_args_cursor": tc_preamble_end,
+                                                        "tc_stream_end_tag": tc_end_tag_val,
+                                                    })
+                                                    tc_meta_delta = {"tool_calls": [{"index": tc_call_index, "id": tc_call_id, "type": "function", "function": {"name": tc_name, "arguments": ""}}]}
+                                                    if not genparams.get("sync_toolcall_first_role_sent", False):
+                                                        tc_meta_delta["role"] = "assistant"
+                                                        genparams["sync_toolcall_first_role_sent"] = True
+                                                    genparams["tc_any_streamed"] = True
+                                                    await self.send_oai_sse_event(json.dumps({"id": chatcmpl_id, "object": "chat.completion.chunk", "created": int(time.time()), "model": modelNameToReturn, "choices": [{"index": 0, "finish_reason": None, "delta": tc_meta_delta}]}))
+                                                    tc_stream_state = "streaming_args"
+                                                    # fall through to streaming_args below
+                                                else:
+                                                    break  # not enough content yet, wait for next token
+                                            if tc_stream_state == "streaming_args":
+                                                tc_preamble_end = genparams["tc_stream_preamble_end"]
+                                                tc_args_cursor = genparams["tc_stream_args_cursor"]
+                                                tc_call_index = genparams["tc_stream_call_index"]
+                                                tc_end_tag_val = genparams.get("tc_stream_end_tag", "")
+                                                args_val_end = find_json_value_end(tc_inner_buf, tc_preamble_end)
+                                                if args_val_end == -1:
+                                                    safe_end = max(tc_preamble_end, len(tc_inner_buf) - 2)  # keep 2-char reserve while value is incomplete
+                                                else:
+                                                    safe_end = args_val_end
+                                                new_args = tc_inner_buf[tc_args_cursor:safe_end]
+                                                if new_args:
+                                                    await self.send_oai_sse_event(json.dumps({"id": chatcmpl_id, "object": "chat.completion.chunk", "created": int(time.time()), "model": modelNameToReturn, "choices": [{"index": 0, "finish_reason": None, "delta": {"tool_calls": [{"index": tc_call_index, "function": {"arguments": new_args}}]}}]}))
+                                                    genparams["tc_stream_args_cursor"] = safe_end
+                                                # If this call's args are complete, look for the next tool call
+                                                if args_val_end != -1 and tc_end_tag_val:
+                                                    et_pos = tc_inner_buf.find(tc_end_tag_val, args_val_end)
+                                                    if et_pos != -1:
+                                                        next_start = tc_inner_buf.find(tool_segment_tag, et_pos + len(tc_end_tag_val))
+                                                        if next_start != -1:
+                                                            genparams.update({
+                                                                "tc_stream_state": "buffering_name",
+                                                                "tc_stream_inner_cursor": next_start + len(tool_segment_tag),
+                                                                "tc_stream_call_index": tc_call_index + 1,
+                                                            })
+                                                            tc_stream_state = "buffering_name"
+                                                            continue  # try to pick up next call's name in this same chunk
+                                                if streamDone:
+                                                    # Flush exact remaining args using precise boundary detection
+                                                    tc_args_cursor = genparams["tc_stream_args_cursor"]
+                                                    if args_val_end == -1:
+                                                        args_val_end = find_json_value_end(tc_inner_buf, tc_preamble_end)
+                                                    if args_val_end == -1:
+                                                        # fallback: strip end_tag + outer closing char
+                                                        if tc_end_tag_val and tc_end_tag_val in tc_inner_buf:
+                                                            et_pos = tc_inner_buf.find(tc_end_tag_val)
+                                                            tail = tc_inner_buf[tc_preamble_end:et_pos].rstrip()
+                                                            if tail and tail[-1] in '}]':
+                                                                tail = tail[:-1].rstrip()
+                                                            args_val_end = tc_preamble_end + len(tail)
+                                                        else:
+                                                            args_val_end = len(tc_inner_buf)
+                                                    final_args = tc_inner_buf[tc_args_cursor:args_val_end]
+                                                    if final_args:
+                                                        await self.send_oai_sse_event(json.dumps({"id": chatcmpl_id, "object": "chat.completion.chunk", "created": int(time.time()), "model": modelNameToReturn, "choices": [{"index": 0, "finish_reason": None, "delta": {"tool_calls": [{"index": tc_call_index, "function": {"arguments": final_args}}]}}]}))
+                                                    strop = genparams.get("stream_options", None)
+                                                    if strop and strop.get("include_usage", False):
+                                                        usage_obj = {"prompt_tokens": prompttokens, "completion_tokens": current_token, "total_tokens": (prompttokens + current_token)}
+                                                        await self.send_oai_sse_event(json.dumps({"id": chatcmpl_id, "object": "chat.completion.chunk", "created": int(time.time()), "model": modelNameToReturn, "choices": [], "usage": usage_obj}))
+                                                    await self.send_oai_sse_event(json.dumps({"id": chatcmpl_id, "object": "chat.completion.chunk", "created": int(time.time()), "model": modelNameToReturn, "choices": [{"index": 0, "finish_reason": "tool_calls", "delta": {}}]}))
+                                                    await self.send_oai_sse_event('[DONE]')
+                                                    self.wfile.flush()
+                                                    genparams["tc_true_streamed"] = True
+                                                    return
+                                                break  # still generating, nothing more to do this chunk
+                                            break  # safety: avoid infinite loop
+                                        # Fallback for streamDone when a meta chunk was sent but we're still in buffering_name
+                                        if streamDone and genparams.get("tc_any_streamed", False):
+                                            strop = genparams.get("stream_options", None)
+                                            if strop and strop.get("include_usage", False):
+                                                usage_obj = {"prompt_tokens": prompttokens, "completion_tokens": current_token, "total_tokens": (prompttokens + current_token)}
+                                                await self.send_oai_sse_event(json.dumps({"id": chatcmpl_id, "object": "chat.completion.chunk", "created": int(time.time()), "model": modelNameToReturn, "choices": [], "usage": usage_obj}))
+                                            await self.send_oai_sse_event(json.dumps({"id": chatcmpl_id, "object": "chat.completion.chunk", "created": int(time.time()), "model": modelNameToReturn, "choices": [{"index": 0, "finish_reason": "tool_calls", "delta": {}}]}))
+                                            await self.send_oai_sse_event('[DONE]')
+                                            self.wfile.flush()
+                                            genparams["tc_true_streamed"] = True
+                                            return
+                                        if not streamDone:
+                                            await asyncio.sleep(async_sleep_short)
+                                            continue
+                                        return  # streamDone but no meta sent; let post-gen handle
+                                    else:
                                         if not streamDone: # still generating: skip this chunk and wait for next
                                             await asyncio.sleep(async_sleep_short)
                                             continue
@@ -10126,147 +10286,151 @@ Change Mode<br>
                             self.end_headers(content_type='application/json')
                             self.wfile.write(genresp)
                         elif api_format == 4 and genparams.get('using_openai_tools', False): #special case, fake streaming for openai tool calls
-                            # we only send content_text and reasoning_text if tools aren't used. they contain the balance of the output after sync_toolcall_potential_triggered was triggered
-                            content_text = genparams.get('sync_toolcall_extra_content', "") #populated by the sse call, we don't use gendat['choices'][0]['message'].get('content', None)
-                            reasoning_text = genparams.get('sync_toolcall_extra_reasoning_content', "")
-                            toolsdata_res = []
-                            try:
-                                toolsdata_res = gendat['choices'][0]['message']['tool_calls']
-                                if toolsdata_res and len(toolsdata_res)>0:
-                                    toolsdata_res[0]["index"] = 0 # need to add an index for OWUI
-                            except Exception:
+                            if genparams.get('tc_true_streamed', False):
+                                # True streaming already sent all chunks (meta, args, finish_reason, [DONE]) in handle_sse_stream
+                                self.close_connection = True
+                            else:
+                                # we only send content_text and reasoning_text if tools aren't used. they contain the balance of the output after sync_toolcall_potential_triggered was triggered
+                                content_text = genparams.get('sync_toolcall_extra_content', "") #populated by the sse call, we don't use gendat['choices'][0]['message'].get('content', None)
+                                reasoning_text = genparams.get('sync_toolcall_extra_reasoning_content', "")
                                 toolsdata_res = []
+                                try:
+                                    toolsdata_res = gendat['choices'][0]['message']['tool_calls']
+                                    if toolsdata_res and len(toolsdata_res)>0:
+                                        toolsdata_res[0]["index"] = 0 # need to add an index for OWUI
+                                except Exception:
+                                    toolsdata_res = []
 
-                           # Send role chunk first, if needed
-                            if genparams.get('sync_toolcall_first_role_sent', False):
-                                genparams['sync_toolcall_first_role_sent'] = True
-                                chunk_role = json.dumps({
+                               # Send role chunk first, if needed
+                                if genparams.get('sync_toolcall_first_role_sent', False):
+                                    genparams['sync_toolcall_first_role_sent'] = True
+                                    chunk_role = json.dumps({
+                                        "id": "koboldcpp",
+                                        "object": "chat.completion.chunk",
+                                        "created": int(time.time()),
+                                        "model": modelNameToReturn,
+                                        "choices": [{"index": 0, "finish_reason": None, "delta": {"role": "assistant"}}]
+                                    })
+                                    self.wfile.write(f"data: {chunk_role}\n\n".encode())
+                                    self.wfile.flush()
+
+                                # if no valid tool splitter, we have to do 100% synchronous
+                                if not content_text and not reasoning_text and genparams.get('sync_toolcall_stream_ineligible', False):
+                                    temp_content = ""
+                                    temp_reasoning = ""
+                                    try:
+                                        temp_content = gendat['choices'][0]['message'].get('content', None)
+                                    except Exception:
+                                        temp_content = None
+                                    try:
+                                        temp_reasoning = gendat['choices'][0]['message'].get('reasoning_content', None)
+                                    except Exception:
+                                        temp_reasoning = None
+                                    if temp_content and not temp_reasoning: #fix incorrect reasoning sent as content
+                                        thinkstrips = [item["start"] for item in thinkformats] #start thinking tags
+                                        thinksplitters = [item["end"] for item in thinkformats] #end thinking tags
+                                        for tsp in thinksplitters:
+                                            if tsp in temp_content:
+                                                parts = temp_content.split(tsp, 1)
+                                                temp_reasoning = parts[0]
+                                                temp_content = parts[1]
+                                                for ts in thinkstrips:
+                                                    temp_reasoning = temp_reasoning.replace(ts, "")
+
+                                    if temp_reasoning:
+                                        chunk_content = json.dumps({
+                                            "id": "koboldcpp",
+                                            "object": "chat.completion.chunk",
+                                            "created": int(time.time()),
+                                            "model": modelNameToReturn,
+                                            "choices": [{"index": 0, "finish_reason": None, "delta": {"reasoning_content": temp_reasoning}}]
+                                        })
+                                        self.wfile.write(f"data: {chunk_content}\n\n".encode())
+                                        self.wfile.flush()
+                                    if temp_content:
+                                        chunk_content = json.dumps({
+                                            "id": "koboldcpp",
+                                            "object": "chat.completion.chunk",
+                                            "created": int(time.time()),
+                                            "model": modelNameToReturn,
+                                            "choices": [{"index": 0, "finish_reason": None, "delta": {"content": temp_content}}]
+                                        })
+                                        self.wfile.write(f"data: {chunk_content}\n\n".encode())
+                                        self.wfile.flush()
+
+                                # Send tool calls incrementally in OpenAI format
+                                if toolsdata_res and len(toolsdata_res) > 0:
+                                    for idx, tool_call in enumerate(toolsdata_res):
+                                        tc_meta = {
+                                            "index": idx,
+                                            "id": tool_call.get("id", f"call_{idx}"),
+                                            "type": "function",
+                                            "function": {
+                                                "name": tool_call.get("function", {}).get("name", ""),
+                                                "arguments": ""
+                                            }
+                                        }
+                                        chunk_meta = json.dumps({
+                                            "id": "koboldcpp",
+                                            "object": "chat.completion.chunk",
+                                            "created": int(time.time()),
+                                            "model": modelNameToReturn,
+                                            "choices": [{"index": 0, "finish_reason": None, "delta": {"tool_calls": [tc_meta]}}]
+                                        })
+                                        self.wfile.write(f"data: {chunk_meta}\n\n".encode())
+                                        self.wfile.flush()
+
+                                        args_str = tool_call.get("function", {}).get("arguments", "{}")
+                                        if isinstance(args_str, dict):
+                                            args_str = json.dumps(args_str)
+                                        tc_args = {
+                                            "index": idx,
+                                            "function": {"arguments": args_str}
+                                        }
+                                        chunk_args = json.dumps({
+                                            "id": "koboldcpp",
+                                            "object": "chat.completion.chunk",
+                                            "created": int(time.time()),
+                                            "model": modelNameToReturn,
+                                            "choices": [{"index": 0, "finish_reason": None, "delta": {"tool_calls": [tc_args]}}]
+                                        })
+                                        self.wfile.write(f"data: {chunk_args}\n\n".encode())
+                                        self.wfile.flush()
+                                else:
+                                    # Send remaining buffered content if no tool calls were made
+                                    if reasoning_text:
+                                        chunk_content = json.dumps({
+                                            "id": "koboldcpp",
+                                            "object": "chat.completion.chunk",
+                                            "created": int(time.time()),
+                                            "model": modelNameToReturn,
+                                            "choices": [{"index": 0, "finish_reason": None, "delta": {"reasoning_content": reasoning_text}}]
+                                        })
+                                        self.wfile.write(f"data: {chunk_content}\n\n".encode())
+                                        self.wfile.flush()
+                                    if content_text:
+                                        chunk_content = json.dumps({
+                                            "id": "koboldcpp",
+                                            "object": "chat.completion.chunk",
+                                            "created": int(time.time()),
+                                            "model": modelNameToReturn,
+                                            "choices": [{"index": 0, "finish_reason": None, "delta": {"content": content_text}}]
+                                        })
+                                        self.wfile.write(f"data: {chunk_content}\n\n".encode())
+                                        self.wfile.flush()
+
+                                # Final chunk
+                                chunk_final = json.dumps({
                                     "id": "koboldcpp",
                                     "object": "chat.completion.chunk",
                                     "created": int(time.time()),
                                     "model": modelNameToReturn,
-                                    "choices": [{"index": 0, "finish_reason": None, "delta": {"role": "assistant"}}]
+                                    "choices": [{"index": 0, "finish_reason": "tool_calls" if (len(toolsdata_res) > 0) else currfinishreason, "delta": {}}]
                                 })
-                                self.wfile.write(f"data: {chunk_role}\n\n".encode())
+                                self.wfile.write(f"data: {chunk_final}\n\n".encode())
+                                self.wfile.write("data: [DONE]\n\n".encode())
                                 self.wfile.flush()
-
-                            # if no valid tool splitter, we have to do 100% synchronous
-                            if not content_text and not reasoning_text and genparams.get('sync_toolcall_stream_ineligible', False):
-                                temp_content = ""
-                                temp_reasoning = ""
-                                try:
-                                    temp_content = gendat['choices'][0]['message'].get('content', None)
-                                except Exception:
-                                    temp_content = None
-                                try:
-                                    temp_reasoning = gendat['choices'][0]['message'].get('reasoning_content', None)
-                                except Exception:
-                                    temp_reasoning = None
-                                if temp_content and not temp_reasoning: #fix incorrect reasoning sent as content
-                                    thinkstrips = [item["start"] for item in thinkformats] #start thinking tags
-                                    thinksplitters = [item["end"] for item in thinkformats] #end thinking tags
-                                    for tsp in thinksplitters:
-                                        if tsp in temp_content:
-                                            parts = temp_content.split(tsp, 1)
-                                            temp_reasoning = parts[0]
-                                            temp_content = parts[1]
-                                            for ts in thinkstrips:
-                                                temp_reasoning = temp_reasoning.replace(ts, "")
-
-                                if temp_reasoning:
-                                    chunk_content = json.dumps({
-                                        "id": "koboldcpp",
-                                        "object": "chat.completion.chunk",
-                                        "created": int(time.time()),
-                                        "model": modelNameToReturn,
-                                        "choices": [{"index": 0, "finish_reason": None, "delta": {"reasoning_content": temp_reasoning}}]
-                                    })
-                                    self.wfile.write(f"data: {chunk_content}\n\n".encode())
-                                    self.wfile.flush()
-                                if temp_content:
-                                    chunk_content = json.dumps({
-                                        "id": "koboldcpp",
-                                        "object": "chat.completion.chunk",
-                                        "created": int(time.time()),
-                                        "model": modelNameToReturn,
-                                        "choices": [{"index": 0, "finish_reason": None, "delta": {"content": temp_content}}]
-                                    })
-                                    self.wfile.write(f"data: {chunk_content}\n\n".encode())
-                                    self.wfile.flush()
-
-                            # Send tool calls incrementally in OpenAI format
-                            if toolsdata_res and len(toolsdata_res) > 0:
-                                for idx, tool_call in enumerate(toolsdata_res):
-                                    tc_meta = {
-                                        "index": idx,
-                                        "id": tool_call.get("id", f"call_{idx}"),
-                                        "type": "function",
-                                        "function": {
-                                            "name": tool_call.get("function", {}).get("name", ""),
-                                            "arguments": ""
-                                        }
-                                    }
-                                    chunk_meta = json.dumps({
-                                        "id": "koboldcpp",
-                                        "object": "chat.completion.chunk",
-                                        "created": int(time.time()),
-                                        "model": modelNameToReturn,
-                                        "choices": [{"index": 0, "finish_reason": None, "delta": {"tool_calls": [tc_meta]}}]
-                                    })
-                                    self.wfile.write(f"data: {chunk_meta}\n\n".encode())
-                                    self.wfile.flush()
-
-                                    args_str = tool_call.get("function", {}).get("arguments", "{}")
-                                    if isinstance(args_str, dict):
-                                        args_str = json.dumps(args_str)
-                                    tc_args = {
-                                        "index": idx,
-                                        "function": {"arguments": args_str}
-                                    }
-                                    chunk_args = json.dumps({
-                                        "id": "koboldcpp",
-                                        "object": "chat.completion.chunk",
-                                        "created": int(time.time()),
-                                        "model": modelNameToReturn,
-                                        "choices": [{"index": 0, "finish_reason": None, "delta": {"tool_calls": [tc_args]}}]
-                                    })
-                                    self.wfile.write(f"data: {chunk_args}\n\n".encode())
-                                    self.wfile.flush()
-                            else:
-                                # Send remaining buffered content if no tool calls were made
-                                if reasoning_text:
-                                    chunk_content = json.dumps({
-                                        "id": "koboldcpp",
-                                        "object": "chat.completion.chunk",
-                                        "created": int(time.time()),
-                                        "model": modelNameToReturn,
-                                        "choices": [{"index": 0, "finish_reason": None, "delta": {"reasoning_content": reasoning_text}}]
-                                    })
-                                    self.wfile.write(f"data: {chunk_content}\n\n".encode())
-                                    self.wfile.flush()
-                                if content_text:
-                                    chunk_content = json.dumps({
-                                        "id": "koboldcpp",
-                                        "object": "chat.completion.chunk",
-                                        "created": int(time.time()),
-                                        "model": modelNameToReturn,
-                                        "choices": [{"index": 0, "finish_reason": None, "delta": {"content": content_text}}]
-                                    })
-                                    self.wfile.write(f"data: {chunk_content}\n\n".encode())
-                                    self.wfile.flush()
-
-                            # Final chunk
-                            chunk_final = json.dumps({
-                                "id": "koboldcpp",
-                                "object": "chat.completion.chunk",
-                                "created": int(time.time()),
-                                "model": modelNameToReturn,
-                                "choices": [{"index": 0, "finish_reason": "tool_calls" if (len(toolsdata_res) > 0) else currfinishreason, "delta": {}}]
-                            })
-                            self.wfile.write(f"data: {chunk_final}\n\n".encode())
-                            self.wfile.write("data: [DONE]\n\n".encode())
-                            self.wfile.flush()
-                            self.close_connection = True
+                                self.close_connection = True
                     except Exception as ex:
                         utfprint(ex,1)
                         print("Generate: The response could not be sent, maybe connection was terminated?")
