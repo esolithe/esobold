@@ -18165,6 +18165,30 @@ Current version indicated by LITEVER below.
 			indexeddb_save("savedusermod","");
 			indexeddb_save("usermodprops","");
 			indexeddb_save("savedcustomcss", "");
+			try {
+				let hasAutosaveCompleted = false, initialCheck = false;
+				let autosaveInterval = setInterval(() => {
+					if (pending_storyjson_autosave !== null && !initialCheck) {
+						initialCheck = true;
+					}
+					if (pending_storyjson_autosave === null && initialCheck && !hasAutosaveCompleted) {
+						hasAutosaveCompleted = true;
+						clearInterval(autosaveInterval);
+					}
+				}, 1);
+				autosave();
+				await (new Promise(resolve => {
+					let checkInterval = setInterval(() => {
+						if (hasAutosaveComplete) {
+							clearInterval(checkInterval);
+							resolve();
+						}
+					}, 200);
+				})); //wait for autosave to complete
+			}
+			catch (e) {
+				console.log("Error during autosave: " + e);
+			}
 			let styleElement = document.getElementById('custom_css');
 			styleElement.innerHTML = "";
 			location.reload();
