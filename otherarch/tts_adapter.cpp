@@ -733,7 +733,7 @@ static tts_generation_outputs ttstype_generate_ttscpp(const tts_generation_input
         printf("\nTTS Generated audio in %.2fs.\n",ttstime);
         std::vector<float> wavdat = std::vector(response_data.data, response_data.data + response_data.n_outputs);
         //audio_post_clean(wavdat);
-        last_generated_audio = save_ulaw_wav8_base64(wavdat, ttscpp_runner->sampling_rate);
+        last_generated_audio = save_wav16_base64(wavdat, ttscpp_runner->sampling_rate);
         output.data = last_generated_audio.c_str();
         output.status = 1;
         last_generation_settings_audio_seed = 0;
@@ -1146,7 +1146,7 @@ static tts_generation_outputs ttstype_generate_outetts(const tts_generation_inpu
             return output;
         }
 
-        last_generated_audio = save_ulaw_wav8_base64(audio, t_sr);
+        last_generated_audio = save_wav16_base64(audio, t_sr);
         ttstime = timer_check();
 
         printf("\nTTS Generated %d audio tokens in %.2fs.\n",(int) codes.size(),ttstime);
@@ -1254,7 +1254,7 @@ static tts_generation_outputs ttstype_generate_qwen3tts(const tts_generation_inp
 
         ttstime = timer_check();
         printf("\nTTS Generated audio in %.2fs.\n",ttstime);
-        last_generated_audio = save_ulaw_wav8_base64(result.audio, result.sample_rate);
+        last_generated_audio = save_wav16_base64(result.audio, result.sample_rate);
         output.data = last_generated_audio.c_str();
         output.status = 1;
         last_generation_settings_audio_seed = inputs.audio_seed;

@@ -198,6 +198,17 @@ tool_call_pairs = [ #third element is whether its stream-handleable
     ("<|tool_call>", "<tool_call|>", True),
     ("<|end|><|start|>assistant<|channel|>commentary to=", "", False),
 ]
+deprecated_keys = {
+    "hordeconfig",
+    "sdconfig",
+    "noblas",
+    "nommap",
+    "pipelineparallel",
+    "sdnotile",
+    "forceversion",
+    "sdgendefaults",
+    "flashattention",
+}
 
 saved_stdout = None
 saved_stderr = None
@@ -4486,7 +4497,7 @@ def compress_tools_array(tools_array):
             tool_props[prop_name] = prop_type
         tools_array_filtered.append({
             "name": tool_data['name'],
-            "description": tool_data['description'],
+            "description": tool_data.get("description", ""),
             "properties": tool_props
         })
 
@@ -12179,6 +12190,8 @@ def show_gui():
         export_vars()
         kcpp_exporting_template = False
         savdict = json.loads(json.dumps(args.__dict__,indent=2))
+        for key in deprecated_keys:
+            savdict.pop(key, None)  # avoids KeyError if missing
         file_type = [("KoboldCpp LaunchTemplate", "*.kcppt")]
         #remove blacklisted fields
         savdict = convert_args_to_template(savdict)
@@ -12841,6 +12854,8 @@ def show_gui():
         kcpp_exporting_template = False
         export_vars()
         savdict = json.loads(json.dumps(args.__dict__,indent=2))
+        for key in deprecated_keys:
+            savdict.pop(key, None)  # avoids KeyError if missing
         savdict["istemplate"] = False
         file_type = [("KoboldCpp Settings", "*.kcpps")]
         filename = zentk_asksaveasfilename(filetypes=file_type, defaultextension=".kcpps",title="Save kcpps settings config file")
@@ -13427,6 +13442,9 @@ def load_config_cli(filename):
             config["onready"] = "" #do not allow onready commands from config
         args.istemplate = False
         raw_args = (sys.argv[1:]) #a lousy hack to allow for overriding kcpps
+        # special: overriding model applies to model_param too
+        if "--model" in raw_args:
+            raw_args.append("--model_param")
         for key, value in config.items():
             if f"--{key}" in raw_args:
                 if key!="config":
