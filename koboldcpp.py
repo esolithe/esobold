@@ -13267,6 +13267,9 @@ def load_config_cli(filename):
             config["onready"] = "" #do not allow onready commands from config
         args.istemplate = False
         raw_args = (sys.argv[1:]) #a lousy hack to allow for overriding kcpps
+        # special: overriding model applies to model_param too
+        if "--model" in raw_args:
+            raw_args.append("--model_param")
         for key, value in config.items():
             if f"--{key}" in raw_args:
                 if key!="config":
