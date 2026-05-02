@@ -7592,6 +7592,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(f'data: {data}\n\n'.encode())
         self.wfile.flush()
 
+    
     async def handle_sse_stream(self, genparams, api_format):
         global friendlymodelname, currfinishreason, thinkformats, tool_call_pairs, cached_chat_template
         global autoswapmode, textName, sttName, ttsName, embedName, musicName, imageName, mmprojName
@@ -7629,6 +7630,8 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             encap_in_thinking = True
         encap_first_loop = True
         thinkpairs = json.loads(json.dumps(thinkformats))
+        self.inToolcallStream = False
+        inToolcallTagBuffer = ""
         responses_first_loop = True
         anthropic_first_loop = True
         rseq_num = 0
@@ -7705,7 +7708,8 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                 tokenStr = tokenReserve + tokenStr
                                 tokenReserve = ""
                                 splitter = tool_segment_tag
-                                if splitter in tokenStr:
+                                # FIND ME
+                                if splitter and splitter in tokenStr:
                                     if not genparams.get("sync_toolcall_potential_triggered",False):
                                         sync_potential_toolcall_splitmatch = splitter
                                         genparams['sync_toolcall_potential_triggered'] = True #if tool calls is triggered, rest will be sync fake streaming. we'll buffer it for later
@@ -7770,10 +7774,116 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                 delta['content'] = tokenStr
 
                             if genparams.get("sync_toolcall_potential_triggered",False) and delta: # if sync_toolcall_potential_triggered, buffer up the impending content chunk for tools in fakestreaming, in case toolcalls fail
+                                print(delta.get("content","") + " || " + delta.get("reasoning_content",""))
                                 ec = genparams.get("sync_toolcall_extra_content","")
                                 erc = genparams.get("sync_toolcall_extra_reasoning_content","")
                                 ec += delta.get("content","")
                                 erc += delta.get("reasoning_content","")
+
+                                if args.jinja_stream_toolcall:
+                                    if not self.inToolcallStream:
+                                        import re
+                                        from jinja2 import Environment
+
+                                        # Fetch the template already done at load time:
+                                        ctbytes = handle.get_chat_template()
+                                        template_src = ctypes.string_at(ctbytes).decode("UTF-8", "ignore")
+
+                                        # Option 1 — regex scan for tool_call / function patterns:
+                                        tool_patterns = re.findall(r'tool_call[^\s<>"\']*|function[^\s<>"\']*', template_src)
+                                        print(set(tool_patterns))
+
+                                        # Option 2 — render a dummy tool-call message and see the output:
+                                        try:
+                                            def strftime_now(format='%Y-%m-%d %H:%M:%S'):
+                                                return datetime.now().strftime(format)
+                                            def tojson(x, ensure_ascii=False, indent=None, separators=None, sort_keys=False):
+                                                return json.dumps(x, ensure_ascii=ensure_ascii, indent=indent, separators=separators, sort_keys=sort_keys)
+                                            def raise_exception(msg):
+                                                print(f"Warning: Jinja template raised an exception: {msg}")
+                                                return ""
+                                            from jinja2.sandbox import ImmutableSandboxedEnvironment
+                                            jinja_env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True)
+                                            jinja_env.globals['strftime_now'] = strftime_now
+                                            jinja_env.globals['raise_exception'] = raise_exception
+                                            jinja_env.filters["tojson"] = tojson
+                                            jinja_compiled_template = jinja_env.from_string(template_src)
+                                            rendered = jinja_compiled_template.render(
+                                                messages=[{"role": "user", "content": "test"}, {"role": "assistant", "tool_calls": [{"id": "0", "type": "function",
+                                                    "function": {"name": "super_unique_func", "arguments": {"x": 1}}}]}],
+                                                tools=[{"type": "function", "function": {"name": "super_unique_func",
+                                                    "description": "test", "parameters": {}}}],
+                                                add_generation_prompt=True,
+                                                bos_token="", eos_token=""
+                                            )
+                                            # print(rendered)
+                                            import re
+
+                                            pattern = r'((?P<open><|{)[^<{]*)super_unique_func([^>}]*(?P<closure>>|}))'
+
+                                            # For all matches in a string:
+                                            lastIndex = -1
+                                            replacementText = ""
+                                            for m in re.finditer(pattern, rendered):
+                                                matchSpan = m.span()
+                                                if matchSpan and len(matchSpan)==2 and matchSpan[1] > lastIndex:
+                                                    lastIndex = matchSpan[1]
+                                                    replacementText = re.escape(m.group(1)) + "(.*?)" + re.escape(m.group(3))
+                                            if lastIndex != -1:
+                                                # print(f"Last match ends at index {lastIndex}")
+                                                # print(f"Replacement text: {replacementText}")
+                                                m = re.search(replacementText, ec)
+                                                if m:
+                                                    funcName = m.group(1)
+                                                    funcEnd = m.span()[1]
+                                                    print(f"Found tool call pattern in output content: {funcName}, ending at index {funcEnd}")
+                                                    self.inToolcallStream = True
+                                                    genparams['sync_toolcall_end_tag'] = next((e for s, e, sh in tool_call_pairs if s == tool_segment_tag), "")
+                                                    tool_call_id = f"call_{req_id_suffix}"
+                                                    # 1. Initial: role + tool_calls with name, empty arguments
+                                                    event_str = json.dumps({"id":chatcmpl_id,"object":"chat.completion.chunk","created":int(time.time()),"model":modelNameToReturn,"choices":[{"index":0,"finish_reason":None,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":tool_call_id,"type":"function","function":{"name":funcName,"arguments":""}}]}}]})
+                                                    await self.send_oai_sse_event(event_str)
+                                                    # 2. Delta: stream the arguments fragment collected so far
+                                                    args_so_far = ec[funcEnd:]
+                                                    event_str = json.dumps({"id":chatcmpl_id,"object":"chat.completion.chunk","created":int(time.time()),"model":modelNameToReturn,"choices":[{"index":0,"finish_reason":None,"delta":{"tool_calls":[{"index":0,"function":{"arguments":args_so_far}}]}}]})
+                                                    await self.send_oai_sse_event(event_str)
+                                                    continue # skip the rest of the loop since we've already sent the content as a toolcall argument delta
+                                        except Exception as e:
+                                            print(f"Error rendering Jinja template for tool call detection: {e}")
+                                    else:
+                                        changes = delta.get("content","")
+                                        # Reasoning content is skipped as it is not part of the main toolcall streaming spec
+                                        if changes:
+                                            overallChanges = inToolcallTagBuffer + changes
+                                            endTag = genparams.get('sync_toolcall_end_tag','')
+                                            # Split to remove the tool call end tag if it happens to be in this chunk, so it doesn't get sent as part of the arguments and break the receiving end's parsing
+                                            if endTag and endTag in overallChanges:
+                                                parts = overallChanges.split(endTag,1)
+                                                overallChanges = parts[0]
+                                            # We should wait until the window of the max length of the end tag has passed to ensure that we don't send a partial one to the client
+                                            if (len(overallChanges) > (len(endTag) + 2)) or streamDone: # the +2 is just a small buffer to ensure we don't cut it too close and risk sending a partial tag
+                                                event_str = json.dumps({"id":chatcmpl_id,"object":"chat.completion.chunk","created":int(time.time()),"model":modelNameToReturn,"choices":[{"index":0,"finish_reason":None,"delta":{"tool_calls":[{"index":0,"function":{"arguments":overallChanges}}]}}]})
+                                                await self.send_oai_sse_event(event_str)
+                                                inToolcallTagBuffer = ""
+                                            else:
+                                                inToolcallTagBuffer += changes
+                                            genparams['sync_toolcall_extra_content'] = ec
+
+                                        if streamDone or (genparams.get('sync_toolcall_end_tag','') and genparams.get('sync_toolcall_end_tag','') in ec):
+                                            # 3. Complete: finish_reason="tool_calls", empty delta
+                                            event_str = json.dumps({"id":chatcmpl_id,"object":"chat.completion.chunk","created":int(time.time()),"model":modelNameToReturn,"choices":[{"index":0,"finish_reason":"tool_calls","delta":{}}]})
+                                            await self.send_oai_sse_event(event_str)
+                                            await self.send_oai_sse_event('[DONE]')
+                                            await asyncio.sleep(async_sleep_short)
+                                            # flush buffers, sleep a bit to make sure all data sent, and then force close the connection
+                                            self.wfile.flush()
+                                            await asyncio.sleep(0.1)
+                                            self.close_connection = True
+                                            await asyncio.sleep(0.05)
+                                            return # stream is complete after tool_calls finish reason + [DONE]
+                                        else:
+                                            continue # skip the rest of the loop since we've already sent the content as a toolcall argument delta
+
                                 if erc and sync_potential_toolcall_splitmatch and sync_potential_toolcall_splitmatch in erc:
                                     parts = erc.split(sync_potential_toolcall_splitmatch,1)
                                     erc = sync_potential_toolcall_splitmatch + parts[1]
@@ -7784,123 +7894,16 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                     delta["content"] = parts[0]
                                 genparams['sync_toolcall_extra_content'] = ec
                                 genparams['sync_toolcall_extra_reasoning_content'] = erc
-                                if not sync_potential_toolcall_splitmatch:
-                                    if args.jinja_stream_toolcall:
-                                        # True OAI-spec streaming: emit tool_calls delta chunks in real time
-                                        tc_inner_buf = ec[len(tool_segment_tag):]
-                                        # Outer loop allows up to one state transition per chunk (buffering→streaming or streaming→next-call-buffering)
-                                        for _tc_transition_attempt in range(20):
-                                            tc_stream_state = genparams.get("tc_stream_state", "buffering_name")
-                                            tc_search_offset = genparams.get("tc_stream_inner_cursor", 0)
-                                            if tc_stream_state == "buffering_name":
-                                                name_match = re.search(r'"name"\s*:\s*"([^"]+)"', tc_inner_buf[tc_search_offset:])
-                                                args_key_match = re.search(r'"(?:arguments|parameters)"\s*:\s*', tc_inner_buf[tc_search_offset:])
-                                                if name_match and args_key_match and (tc_search_offset + args_key_match.end()) < len(tc_inner_buf):
-                                                    tc_name = name_match.group(1)
-                                                    tc_preamble_end = tc_search_offset + args_key_match.end()
-                                                    tc_call_id = f"call_{random.randint(10000, 99999)}"
-                                                    tc_call_index = genparams.get("tc_stream_call_index", 0)
-                                                    tc_end_tag_val = ""
-                                                    for s_tag, e_tag, _ in tool_call_pairs:
-                                                        if s_tag == tool_segment_tag:
-                                                            tc_end_tag_val = e_tag
-                                                            break
-                                                    genparams.update({
-                                                        "tc_stream_state": "streaming_args",
-                                                        "tc_stream_name": tc_name,
-                                                        "tc_stream_call_id": tc_call_id,
-                                                        "tc_stream_call_index": tc_call_index,
-                                                        "tc_stream_preamble_end": tc_preamble_end,
-                                                        "tc_stream_args_cursor": tc_preamble_end,
-                                                        "tc_stream_end_tag": tc_end_tag_val,
-                                                    })
-                                                    tc_meta_delta = {"tool_calls": [{"index": tc_call_index, "id": tc_call_id, "type": "function", "function": {"name": tc_name, "arguments": ""}}]}
-                                                    if not genparams.get("sync_toolcall_first_role_sent", False):
-                                                        tc_meta_delta["role"] = "assistant"
-                                                        genparams["sync_toolcall_first_role_sent"] = True
-                                                    genparams["tc_any_streamed"] = True
-                                                    await self.send_oai_sse_event(json.dumps({"id": chatcmpl_id, "object": "chat.completion.chunk", "created": int(time.time()), "model": modelNameToReturn, "choices": [{"index": 0, "finish_reason": None, "delta": tc_meta_delta}]}))
-                                                    tc_stream_state = "streaming_args"
-                                                    # fall through to streaming_args below
-                                                else:
-                                                    break  # not enough content yet, wait for next token
-                                            if tc_stream_state == "streaming_args":
-                                                tc_preamble_end = genparams["tc_stream_preamble_end"]
-                                                tc_args_cursor = genparams["tc_stream_args_cursor"]
-                                                tc_call_index = genparams["tc_stream_call_index"]
-                                                tc_end_tag_val = genparams.get("tc_stream_end_tag", "")
-                                                args_val_end = find_json_value_end(tc_inner_buf, tc_preamble_end)
-                                                if args_val_end == -1:
-                                                    safe_end = max(tc_preamble_end, len(tc_inner_buf) - 2)  # keep 2-char reserve while value is incomplete
-                                                else:
-                                                    safe_end = args_val_end
-                                                new_args = tc_inner_buf[tc_args_cursor:safe_end]
-                                                if new_args:
-                                                    await self.send_oai_sse_event(json.dumps({"id": chatcmpl_id, "object": "chat.completion.chunk", "created": int(time.time()), "model": modelNameToReturn, "choices": [{"index": 0, "finish_reason": None, "delta": {"tool_calls": [{"index": tc_call_index, "function": {"arguments": new_args}}]}}]}))
-                                                    genparams["tc_stream_args_cursor"] = safe_end
-                                                # If this call's args are complete, look for the next tool call
-                                                if args_val_end != -1 and tc_end_tag_val:
-                                                    et_pos = tc_inner_buf.find(tc_end_tag_val, args_val_end)
-                                                    if et_pos != -1:
-                                                        next_start = tc_inner_buf.find(tool_segment_tag, et_pos + len(tc_end_tag_val))
-                                                        if next_start != -1:
-                                                            genparams.update({
-                                                                "tc_stream_state": "buffering_name",
-                                                                "tc_stream_inner_cursor": next_start + len(tool_segment_tag),
-                                                                "tc_stream_call_index": tc_call_index + 1,
-                                                            })
-                                                            tc_stream_state = "buffering_name"
-                                                            continue  # try to pick up next call's name in this same chunk
-                                                if streamDone:
-                                                    # Flush exact remaining args using precise boundary detection
-                                                    tc_args_cursor = genparams["tc_stream_args_cursor"]
-                                                    if args_val_end == -1:
-                                                        args_val_end = find_json_value_end(tc_inner_buf, tc_preamble_end)
-                                                    if args_val_end == -1:
-                                                        # fallback: strip end_tag + outer closing char
-                                                        if tc_end_tag_val and tc_end_tag_val in tc_inner_buf:
-                                                            et_pos = tc_inner_buf.find(tc_end_tag_val)
-                                                            tail = tc_inner_buf[tc_preamble_end:et_pos].rstrip()
-                                                            if tail and tail[-1] in '}]':
-                                                                tail = tail[:-1].rstrip()
-                                                            args_val_end = tc_preamble_end + len(tail)
-                                                        else:
-                                                            args_val_end = len(tc_inner_buf)
-                                                    final_args = tc_inner_buf[tc_args_cursor:args_val_end]
-                                                    if final_args:
-                                                        await self.send_oai_sse_event(json.dumps({"id": chatcmpl_id, "object": "chat.completion.chunk", "created": int(time.time()), "model": modelNameToReturn, "choices": [{"index": 0, "finish_reason": None, "delta": {"tool_calls": [{"index": tc_call_index, "function": {"arguments": final_args}}]}}]}))
-                                                    strop = genparams.get("stream_options", None)
-                                                    if strop and strop.get("include_usage", False):
-                                                        usage_obj = {"prompt_tokens": prompttokens, "completion_tokens": current_token, "total_tokens": (prompttokens + current_token)}
-                                                        await self.send_oai_sse_event(json.dumps({"id": chatcmpl_id, "object": "chat.completion.chunk", "created": int(time.time()), "model": modelNameToReturn, "choices": [], "usage": usage_obj}))
-                                                    await self.send_oai_sse_event(json.dumps({"id": chatcmpl_id, "object": "chat.completion.chunk", "created": int(time.time()), "model": modelNameToReturn, "choices": [{"index": 0, "finish_reason": "tool_calls", "delta": {}}]}))
-                                                    await self.send_oai_sse_event('[DONE]')
-                                                    self.wfile.flush()
-                                                    genparams["tc_true_streamed"] = True
-                                                    return
-                                                break  # still generating, nothing more to do this chunk
-                                            break  # safety: avoid infinite loop
-                                        # Fallback for streamDone when a meta chunk was sent but we're still in buffering_name
-                                        if streamDone and genparams.get("tc_any_streamed", False):
-                                            strop = genparams.get("stream_options", None)
-                                            if strop and strop.get("include_usage", False):
-                                                usage_obj = {"prompt_tokens": prompttokens, "completion_tokens": current_token, "total_tokens": (prompttokens + current_token)}
-                                                await self.send_oai_sse_event(json.dumps({"id": chatcmpl_id, "object": "chat.completion.chunk", "created": int(time.time()), "model": modelNameToReturn, "choices": [], "usage": usage_obj}))
-                                            await self.send_oai_sse_event(json.dumps({"id": chatcmpl_id, "object": "chat.completion.chunk", "created": int(time.time()), "model": modelNameToReturn, "choices": [{"index": 0, "finish_reason": "tool_calls", "delta": {}}]}))
-                                            await self.send_oai_sse_event('[DONE]')
-                                            self.wfile.flush()
-                                            genparams["tc_true_streamed"] = True
-                                            return
-                                        if not streamDone:
-                                            await asyncio.sleep(async_sleep_short)
-                                            continue
-                                        return  # streamDone but no meta sent; let post-gen handle
-                                    else:
-                                        if not streamDone: # still generating: skip this chunk and wait for next
-                                            await asyncio.sleep(async_sleep_short)
-                                            continue
-                                        await asyncio.sleep(async_sleep_short) # generation finished: end stream handler
-                                        return
+                                continue  # suppress normal send path while buffering tool call content
+                                # if not sync_potential_toolcall_splitmatch:
+                                #     if args.jinja_stream_toolcall:
+                                        
+                                #     else:
+                                #         # if not streamDone: # still generating: skip this chunk and wait for next
+                                #         #     await asyncio.sleep(async_sleep_short)
+                                #         #     continue
+                                #         # await asyncio.sleep(async_sleep_short) # generation finished: end stream handler
+                                #         # return
 
                             if need_split_final_msg: #we need to send one message without the finish reason, then send a finish reason with no msg to follow standards
                                 if api_format == 4:  # if oai chat, set format to expected openai streaming response
