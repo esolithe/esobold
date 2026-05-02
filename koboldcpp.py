@@ -7592,6 +7592,39 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(f'data: {data}\n\n'.encode())
         self.wfile.flush()
 
+    def getDummyJinjaParsedBody(self):
+        import re
+        from jinja2 import Environment
+
+        # Fetch the template already done at load time:
+        ctbytes = handle.get_chat_template()
+        template_src = ctypes.string_at(ctbytes).decode("UTF-8", "ignore")
+
+        # Option 1 — regex scan for tool_call / function patterns:
+        tool_patterns = re.findall(r'tool_call[^\s<>"\']*|function[^\s<>"\']*', template_src)
+
+        def strftime_now(format='%Y-%m-%d %H:%M:%S'):
+            return datetime.now().strftime(format)
+        def tojson(x, ensure_ascii=False, indent=None, separators=None, sort_keys=False):
+            return json.dumps(x, ensure_ascii=ensure_ascii, indent=indent, separators=separators, sort_keys=sort_keys)
+        def raise_exception(msg):
+            print(f"Warning: Jinja template raised an exception: {msg}")
+            return ""
+        from jinja2.sandbox import ImmutableSandboxedEnvironment
+        jinja_env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True)
+        jinja_env.globals['strftime_now'] = strftime_now
+        jinja_env.globals['raise_exception'] = raise_exception
+        jinja_env.filters["tojson"] = tojson
+        jinja_compiled_template = jinja_env.from_string(template_src)
+        rendered = jinja_compiled_template.render(
+            messages=[{"role": "user", "content": "test"}, {"role": "assistant", "tool_calls": [{"id": "0", "type": "function",
+                "function": {"name": "super_unique_func", "arguments": {}}}]}],
+            tools=[{"type": "function", "function": {"name": "super_unique_func",
+                "description": "test", "parameters": {}}}],
+            add_generation_prompt=True,
+            bos_token="", eos_token=""
+        )
+        return rendered
     
     async def handle_sse_stream(self, genparams, api_format):
         global friendlymodelname, currfinishreason, thinkformats, tool_call_pairs, cached_chat_template
@@ -7600,6 +7633,12 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         modelNameToReturn = friendlymodelname
         if autoswapmode and textName is not None:
             modelNameToReturn = textName
+
+        rendered = None
+        try:
+            rendered = self.getDummyJinjaParsedBody()
+        except Exception as e:
+            print(f"Error rendering Jinja template for tool call segmentation: {e}")
 
         using_openai_tools = genparams.get('using_openai_tools', False)
         req_id_suffix = genparams.get('oai_uniqueid',1)
@@ -7786,42 +7825,10 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                 ec += delta.get("content","")
                                 erc += delta.get("reasoning_content","")
 
-                                if args.jinja_stream_toolcall:
+                                if args.jinja_stream_toolcall and rendered is not None:
                                     if not self.inToolcallStream:
-                                        import re
-                                        from jinja2 import Environment
-
-                                        # Fetch the template already done at load time:
-                                        ctbytes = handle.get_chat_template()
-                                        template_src = ctypes.string_at(ctbytes).decode("UTF-8", "ignore")
-
-                                        # Option 1 — regex scan for tool_call / function patterns:
-                                        tool_patterns = re.findall(r'tool_call[^\s<>"\']*|function[^\s<>"\']*', template_src)
-                                        print(set(tool_patterns))
-
                                         # Option 2 — render a dummy tool-call message and see the output:
                                         try:
-                                            def strftime_now(format='%Y-%m-%d %H:%M:%S'):
-                                                return datetime.now().strftime(format)
-                                            def tojson(x, ensure_ascii=False, indent=None, separators=None, sort_keys=False):
-                                                return json.dumps(x, ensure_ascii=ensure_ascii, indent=indent, separators=separators, sort_keys=sort_keys)
-                                            def raise_exception(msg):
-                                                print(f"Warning: Jinja template raised an exception: {msg}")
-                                                return ""
-                                            from jinja2.sandbox import ImmutableSandboxedEnvironment
-                                            jinja_env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True)
-                                            jinja_env.globals['strftime_now'] = strftime_now
-                                            jinja_env.globals['raise_exception'] = raise_exception
-                                            jinja_env.filters["tojson"] = tojson
-                                            jinja_compiled_template = jinja_env.from_string(template_src)
-                                            rendered = jinja_compiled_template.render(
-                                                messages=[{"role": "user", "content": "test"}, {"role": "assistant", "tool_calls": [{"id": "0", "type": "function",
-                                                    "function": {"name": "super_unique_func", "arguments": {}}}]}],
-                                                tools=[{"type": "function", "function": {"name": "super_unique_func",
-                                                    "description": "test", "parameters": {}}}],
-                                                add_generation_prompt=True,
-                                                bos_token="", eos_token=""
-                                            )
                                             # print(rendered)
                                             import re
 
