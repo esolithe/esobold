@@ -7636,6 +7636,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         tcParamKey = ''
         tcParamBoundaryBuf = ''
         tcParamFirst = True
+        tcParamValueStarted = False
         responses_first_loop = True
         anthropic_first_loop = True
         rseq_num = 0
@@ -7916,16 +7917,24 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                                         await _emit_args(prefix)
                                                         tcParamState = 'value'
                                                         tcParamBoundaryBuf = ''
+                                                        tcParamValueStarted = False  # track whether leading whitespace has been skipped
                                                     else:
                                                         tcParamKey += ch
 
                                                 elif tcParamState == 'value':
+                                                    # Skip leading whitespace (e.g. the newline immediately after the open tag >)
+                                                    if not tcParamValueStarted:
+                                                        if ch in (' ', '\t', '\n', '\r'):
+                                                            continue
+                                                        tcParamValueStarted = True
                                                     tcParamBoundaryBuf += ch
                                                     # Check close tag FIRST (before trimming), then emit safe chars
                                                     if PARAM_CLOSE_TAG in tcParamBoundaryBuf:
                                                         parts = tcParamBoundaryBuf.split(PARAM_CLOSE_TAG, 1)
-                                                        if parts[0]:
-                                                            await _emit_args(_json_escape(parts[0]))
+                                                        # Strip trailing whitespace from the value before the close tag
+                                                        value_part = parts[0].rstrip()
+                                                        if value_part:
+                                                            await _emit_args(_json_escape(value_part))
                                                         await _emit_args('"')  # close JSON string value
                                                         remainder = parts[1]
                                                         if args.debugmode >= 2:
