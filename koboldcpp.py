@@ -7632,6 +7632,10 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         thinkpairs = json.loads(json.dumps(thinkformats))
         self.inToolcallStream = False
         inToolcallTagBuffer = ""
+        tcParamState = 'idle'  # 'idle','key','value','json'
+        tcParamKey = ''
+        tcParamBoundaryBuf = ''
+        tcParamFirst = True
         responses_first_loop = True
         anthropic_first_loop = True
         rseq_num = 0
@@ -7849,36 +7853,119 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                                     # 1. Initial: role + tool_calls with name, empty arguments
                                                     event_str = json.dumps({"id":chatcmpl_id,"object":"chat.completion.chunk","created":int(time.time()),"model":modelNameToReturn,"choices":[{"index":0,"finish_reason":None,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":tool_call_id,"type":"function","function":{"name":funcName,"arguments":""}}]}}]})
                                                     await self.send_oai_sse_event(event_str)
-                                                    # 2. Delta: stream the arguments fragment collected so far
-                                                    args_so_far = ec[funcEnd:]
-                                                    event_str = json.dumps({"id":chatcmpl_id,"object":"chat.completion.chunk","created":int(time.time()),"model":modelNameToReturn,"choices":[{"index":0,"finish_reason":None,"delta":{"tool_calls":[{"index":0,"function":{"arguments":args_so_far}}]}}]})
-                                                    await self.send_oai_sse_event(event_str)
+                                                    # 2. Store the args fragment seen so far; the else-branch state machine will process it next iteration
+                                                    genparams['sync_toolcall_pending_args'] = ec[funcEnd:]
                                                     continue # skip the rest of the loop since we've already sent the content as a toolcall argument delta
                                         except Exception as e:
                                             print(f"Error rendering Jinja template for tool call detection: {e}")
                                     else:
                                         changes = delta.get("content","")
+                                        # Prepend any fragment buffered when inToolcallStream was first set
+                                        pending = genparams.pop('sync_toolcall_pending_args', '')
+                                        if pending:
+                                            changes = pending + changes
                                         # Reasoning content is skipped as it is not part of the main toolcall streaming spec
                                         if changes:
-                                            overallChanges = inToolcallTagBuffer + changes
-                                            endTag = genparams.get('sync_toolcall_end_tag','')
-                                            mustWrite = False
-                                            # Split to remove the tool call end tag if it happens to be in this chunk, so it doesn't get sent as part of the arguments and break the receiving end's parsing
-                                            if endTag and endTag in overallChanges:
-                                                parts = overallChanges.split(endTag,1)
-                                                overallChanges = parts[0]
-                                                mustWrite = True
-                                                # if the end tag is in this chunk, we know for sure that the tool call content is complete, so we can send the finish reason immediately after sending the final part of the arguments
-                                            # We should wait until the window of the max length of the end tag has passed to ensure that we don't send a partial one to the client
-                                            if (len(overallChanges) > (len(endTag) + 2)) or streamDone or mustWrite: # the +2 is just a small buffer to ensure we don't cut it too close and risk sending a partial tag
-                                                event_str = json.dumps({"id":chatcmpl_id,"object":"chat.completion.chunk","created":int(time.time()),"model":modelNameToReturn,"choices":[{"index":0,"finish_reason":None,"delta":{"tool_calls":[{"index":0,"function":{"arguments":overallChanges}}]}}]})
-                                                await self.send_oai_sse_event(event_str)
-                                                inToolcallTagBuffer = ""
-                                            else:
-                                                inToolcallTagBuffer += changes
+                                            # XML→JSON streaming state machine
+                                            # Converts <parameter=name>value</parameter> sequences to JSON object string
+                                            # Values are streamed char-by-char; only the key tag is buffered
+                                            PARAM_OPEN_PREFIX = '<parameter='
+                                            PARAM_OPEN_PREFIX_LEN = len(PARAM_OPEN_PREFIX)
+                                            PARAM_CLOSE_TAG = '</parameter>'
+                                            PARAM_CLOSE_TAG_LEN = len(PARAM_CLOSE_TAG)
+                                            endTag = genparams.get('sync_toolcall_end_tag', '')
+
+                                            def _json_escape(s):
+                                                return s.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
+
+                                            async def _emit_args(frag):
+                                                if frag:
+                                                    ev = json.dumps({"id":chatcmpl_id,"object":"chat.completion.chunk","created":int(time.time()),"model":modelNameToReturn,"choices":[{"index":0,"finish_reason":None,"delta":{"tool_calls":[{"index":0,"function":{"arguments":frag}}]}}]})
+                                                    await self.send_oai_sse_event(ev)
+
+                                            for ch in changes:
+                                                if tcParamState == 'idle':
+                                                    inToolcallTagBuffer += ch
+                                                    stripped = inToolcallTagBuffer.lstrip()
+                                                    if stripped.startswith('{'):
+                                                        tcParamState = 'json'
+                                                        await _emit_args(inToolcallTagBuffer)
+                                                        inToolcallTagBuffer = ''
+                                                    elif stripped.startswith(PARAM_OPEN_PREFIX):
+                                                        # Extract any key chars already accumulated past '<parameter='
+                                                        tcParamState = 'key'
+                                                        tcParamKey = stripped[PARAM_OPEN_PREFIX_LEN:]
+                                                        inToolcallTagBuffer = ''
+                                                        if args.debugmode >= 2:
+                                                            print(f"[TC] idle→key, key_so_far={tcParamKey!r}")
+                                                    elif len(inToolcallTagBuffer) > PARAM_OPEN_PREFIX_LEN + 2:
+                                                        # unknown format — passthrough
+                                                        tcParamState = 'json'
+                                                        await _emit_args(inToolcallTagBuffer)
+                                                        inToolcallTagBuffer = ''
+
+                                                elif tcParamState == 'key':
+                                                    if ch == '>':
+                                                        if args.debugmode >= 2:
+                                                            print(f"[TC] key complete: {tcParamKey!r}, first={tcParamFirst}")
+                                                        if tcParamFirst:
+                                                            prefix = '{' + json.dumps(tcParamKey) + ': "'
+                                                            tcParamFirst = False
+                                                        else:
+                                                            prefix = ', ' + json.dumps(tcParamKey) + ': "'
+                                                        await _emit_args(prefix)
+                                                        tcParamState = 'value'
+                                                        tcParamBoundaryBuf = ''
+                                                    else:
+                                                        tcParamKey += ch
+
+                                                elif tcParamState == 'value':
+                                                    tcParamBoundaryBuf += ch
+                                                    # Check close tag FIRST (before trimming), then emit safe chars
+                                                    if PARAM_CLOSE_TAG in tcParamBoundaryBuf:
+                                                        parts = tcParamBoundaryBuf.split(PARAM_CLOSE_TAG, 1)
+                                                        if parts[0]:
+                                                            await _emit_args(_json_escape(parts[0]))
+                                                        await _emit_args('"')  # close JSON string value
+                                                        remainder = parts[1]
+                                                        if args.debugmode >= 2:
+                                                            print(f"[TC] param closed, remainder={remainder!r}")
+                                                        stripped_rem = remainder.lstrip()
+                                                        if stripped_rem.startswith(PARAM_OPEN_PREFIX):
+                                                            tcParamState = 'key'
+                                                            tcParamKey = stripped_rem[PARAM_OPEN_PREFIX_LEN:]
+                                                            tcParamBoundaryBuf = ''
+                                                        else:
+                                                            tcParamState = 'idle'
+                                                            inToolcallTagBuffer = remainder
+                                                            tcParamBoundaryBuf = ''
+                                                    else:
+                                                        # Emit safe prefix (cannot be beginning of close tag)
+                                                        safe_len = len(tcParamBoundaryBuf) - (PARAM_CLOSE_TAG_LEN - 1)
+                                                        if safe_len > 0:
+                                                            await _emit_args(_json_escape(tcParamBoundaryBuf[:safe_len]))
+                                                            tcParamBoundaryBuf = tcParamBoundaryBuf[safe_len:]
+
+                                                elif tcParamState == 'json':
+                                                    await _emit_args(ch)
+
                                             genparams['sync_toolcall_extra_content'] = ec
 
                                         if streamDone or (genparams.get('sync_toolcall_end_tag','') and genparams.get('sync_toolcall_end_tag','') in ec):
+                                            # Close XML JSON object if we were in XML param mode and haven't closed yet
+                                            if tcParamState in ('idle', 'value') and not tcParamFirst:
+                                                # tcParamFirst=False means we opened '{', so we need to close '}'
+                                                if tcParamState == 'value' and tcParamBoundaryBuf:
+                                                    # flush remaining boundary buffer as value content (minus any partial close tag)
+                                                    tail = tcParamBoundaryBuf.split('</parameter>',1)[0] if '</parameter>' in tcParamBoundaryBuf else tcParamBoundaryBuf
+                                                    if tail:
+                                                        escaped = tail.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
+                                                        event_str = json.dumps({"id":chatcmpl_id,"object":"chat.completion.chunk","created":int(time.time()),"model":modelNameToReturn,"choices":[{"index":0,"finish_reason":None,"delta":{"tool_calls":[{"index":0,"function":{"arguments":escaped}}]}}]})
+                                                        await self.send_oai_sse_event(event_str)
+                                                    event_str = json.dumps({"id":chatcmpl_id,"object":"chat.completion.chunk","created":int(time.time()),"model":modelNameToReturn,"choices":[{"index":0,"finish_reason":None,"delta":{"tool_calls":[{"index":0,"function":{"arguments":'"'}}]}}]})
+                                                    await self.send_oai_sse_event(event_str)
+                                                event_str = json.dumps({"id":chatcmpl_id,"object":"chat.completion.chunk","created":int(time.time()),"model":modelNameToReturn,"choices":[{"index":0,"finish_reason":None,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"}"}}]}}]})
+                                                await self.send_oai_sse_event(event_str)
                                             # 3. Complete: finish_reason="tool_calls", empty delta
                                             event_str = json.dumps({"id":chatcmpl_id,"object":"chat.completion.chunk","created":int(time.time()),"model":modelNameToReturn,"choices":[{"index":0,"finish_reason":"tool_calls","delta":{}}]})
                                             await self.send_oai_sse_event(event_str)
