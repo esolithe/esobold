@@ -7810,7 +7810,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                             jinja_compiled_template = jinja_env.from_string(template_src)
                                             rendered = jinja_compiled_template.render(
                                                 messages=[{"role": "user", "content": "test"}, {"role": "assistant", "tool_calls": [{"id": "0", "type": "function",
-                                                    "function": {"name": "super_unique_func", "arguments": {"x": 1}}}]}],
+                                                    "function": {"name": "super_unique_func", "arguments": {}}}]}],
                                                 tools=[{"type": "function", "function": {"name": "super_unique_func",
                                                     "description": "test", "parameters": {}}}],
                                                 add_generation_prompt=True,
@@ -7829,6 +7829,12 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                                 if matchSpan and len(matchSpan)==2 and matchSpan[1] > lastIndex:
                                                     lastIndex = matchSpan[1]
                                                     replacementText = re.escape(m.group(1)) + "(.*?)" + re.escape(m.group(3))
+                                            # With empty args, the first closing tag after the function open tag IS the args end tag
+                                            detected_args_end_tag = ""
+                                            if lastIndex != -1:
+                                                m_end = re.search(r'(</[^>]+>|\}+)', rendered[lastIndex:].lstrip())
+                                                if m_end:
+                                                    detected_args_end_tag = m_end.group(1)
                                             if lastIndex != -1:
                                                 # print(f"Last match ends at index {lastIndex}")
                                                 # print(f"Replacement text: {replacementText}")
@@ -7838,7 +7844,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                                     funcEnd = m.span()[1]
                                                     print(f"Found tool call pattern in output content: {funcName}, ending at index {funcEnd}")
                                                     self.inToolcallStream = True
-                                                    genparams['sync_toolcall_end_tag'] = next((e for s, e, sh in tool_call_pairs if s == tool_segment_tag), "")
+                                                    genparams['sync_toolcall_end_tag'] = detected_args_end_tag if detected_args_end_tag else next((e for s, e, sh in tool_call_pairs if s == tool_segment_tag), "")
                                                     tool_call_id = f"call_{req_id_suffix}"
                                                     # 1. Initial: role + tool_calls with name, empty arguments
                                                     event_str = json.dumps({"id":chatcmpl_id,"object":"chat.completion.chunk","created":int(time.time()),"model":modelNameToReturn,"choices":[{"index":0,"finish_reason":None,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":tool_call_id,"type":"function","function":{"name":funcName,"arguments":""}}]}}]})
@@ -7856,12 +7862,15 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                         if changes:
                                             overallChanges = inToolcallTagBuffer + changes
                                             endTag = genparams.get('sync_toolcall_end_tag','')
+                                            mustWrite = False
                                             # Split to remove the tool call end tag if it happens to be in this chunk, so it doesn't get sent as part of the arguments and break the receiving end's parsing
                                             if endTag and endTag in overallChanges:
                                                 parts = overallChanges.split(endTag,1)
                                                 overallChanges = parts[0]
+                                                mustWrite = True
+                                                # if the end tag is in this chunk, we know for sure that the tool call content is complete, so we can send the finish reason immediately after sending the final part of the arguments
                                             # We should wait until the window of the max length of the end tag has passed to ensure that we don't send a partial one to the client
-                                            if (len(overallChanges) > (len(endTag) + 2)) or streamDone: # the +2 is just a small buffer to ensure we don't cut it too close and risk sending a partial tag
+                                            if (len(overallChanges) > (len(endTag) + 2)) or streamDone or mustWrite: # the +2 is just a small buffer to ensure we don't cut it too close and risk sending a partial tag
                                                 event_str = json.dumps({"id":chatcmpl_id,"object":"chat.completion.chunk","created":int(time.time()),"model":modelNameToReturn,"choices":[{"index":0,"finish_reason":None,"delta":{"tool_calls":[{"index":0,"function":{"arguments":overallChanges}}]}}]})
                                                 await self.send_oai_sse_event(event_str)
                                                 inToolcallTagBuffer = ""
