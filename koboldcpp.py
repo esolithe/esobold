@@ -7637,6 +7637,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         tcParamBoundaryBuf = ''
         tcParamFirst = True
         tcParamValueStarted = False
+        tcParamIsString = None  # True=string value, False=raw JSON (array/object/number/bool/null)
         responses_first_loop = True
         anthropic_first_loop = True
         rseq_num = 0
@@ -7910,14 +7911,15 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                                         if args.debugmode >= 2:
                                                             print(f"[TC] key complete: {tcParamKey!r}, first={tcParamFirst}")
                                                         if tcParamFirst:
-                                                            prefix = '{' + json.dumps(tcParamKey) + ': "'
+                                                            prefix = '{' + json.dumps(tcParamKey) + ': '
                                                             tcParamFirst = False
                                                         else:
-                                                            prefix = ', ' + json.dumps(tcParamKey) + ': "'
+                                                            prefix = ', ' + json.dumps(tcParamKey) + ': '
                                                         await _emit_args(prefix)
                                                         tcParamState = 'value'
                                                         tcParamBoundaryBuf = ''
                                                         tcParamValueStarted = False  # track whether leading whitespace has been skipped
+                                                        tcParamIsString = None  # None = not yet determined
                                                     else:
                                                         tcParamKey += ch
 
@@ -7927,6 +7929,12 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                                         if ch in (' ', '\t', '\n', '\r'):
                                                             continue
                                                         tcParamValueStarted = True
+                                                        # Determine if value is a raw JSON type (array, object, number, bool, null) or a string
+                                                        if ch in ('[', '{') or ch.isdigit() or ch == '-' or ch in ('t', 'f', 'n'):
+                                                            tcParamIsString = False  # raw JSON passthrough
+                                                        else:
+                                                            tcParamIsString = True
+                                                            await _emit_args('"')  # open JSON string
                                                     tcParamBoundaryBuf += ch
                                                     # Check close tag FIRST (before trimming), then emit safe chars
                                                     if PARAM_CLOSE_TAG in tcParamBoundaryBuf:
@@ -7934,11 +7942,15 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                                         # Strip trailing whitespace from the value before the close tag
                                                         value_part = parts[0].rstrip()
                                                         if value_part:
-                                                            await _emit_args(_json_escape(value_part))
-                                                        await _emit_args('"')  # close JSON string value
+                                                            if tcParamIsString:
+                                                                await _emit_args(_json_escape(value_part))
+                                                            else:
+                                                                await _emit_args(value_part)
+                                                        if tcParamIsString:
+                                                            await _emit_args('"')  # close JSON string value
                                                         remainder = parts[1]
                                                         if args.debugmode >= 2:
-                                                            print(f"[TC] param closed, remainder={remainder!r}")
+                                                            print(f"[TC] param closed, isString={tcParamIsString}, remainder={remainder!r}")
                                                         stripped_rem = remainder.lstrip()
                                                         if stripped_rem.startswith(PARAM_OPEN_PREFIX):
                                                             tcParamState = 'key'
@@ -7952,7 +7964,11 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                                         # Emit safe prefix (cannot be beginning of close tag)
                                                         safe_len = len(tcParamBoundaryBuf) - (PARAM_CLOSE_TAG_LEN - 1)
                                                         if safe_len > 0:
-                                                            await _emit_args(_json_escape(tcParamBoundaryBuf[:safe_len]))
+                                                            safe_part = tcParamBoundaryBuf[:safe_len]
+                                                            if tcParamIsString:
+                                                                await _emit_args(_json_escape(safe_part))
+                                                            else:
+                                                                await _emit_args(safe_part)
                                                             tcParamBoundaryBuf = tcParamBoundaryBuf[safe_len:]
 
                                                 elif tcParamState == 'json':
@@ -7967,14 +7983,16 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                                 if tcParamState == 'value' and tcParamBoundaryBuf:
                                                     # flush remaining boundary buffer as value content (minus any partial close tag)
                                                     tail = tcParamBoundaryBuf.split('</parameter>',1)[0] if '</parameter>' in tcParamBoundaryBuf else tcParamBoundaryBuf
+                                                    tail = tail.rstrip()
                                                     if tail:
-                                                        escaped = tail.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
-                                                        event_str = json.dumps({"id":chatcmpl_id,"object":"chat.completion.chunk","created":int(time.time()),"model":modelNameToReturn,"choices":[{"index":0,"finish_reason":None,"delta":{"tool_calls":[{"index":0,"function":{"arguments":escaped}}]}}]})
-                                                        await self.send_oai_sse_event(event_str)
-                                                    event_str = json.dumps({"id":chatcmpl_id,"object":"chat.completion.chunk","created":int(time.time()),"model":modelNameToReturn,"choices":[{"index":0,"finish_reason":None,"delta":{"tool_calls":[{"index":0,"function":{"arguments":'"'}}]}}]})
-                                                    await self.send_oai_sse_event(event_str)
-                                                event_str = json.dumps({"id":chatcmpl_id,"object":"chat.completion.chunk","created":int(time.time()),"model":modelNameToReturn,"choices":[{"index":0,"finish_reason":None,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"}"}}]}}]})
-                                                await self.send_oai_sse_event(event_str)
+                                                        if tcParamIsString:
+                                                            await _emit_args(_json_escape(tail))
+                                                        else:
+                                                            await _emit_args(tail)
+                                                    if tcParamIsString:
+                                                        await _emit_args('"')
+                                                await _emit_args('}')
+
                                             # 3. Complete: finish_reason="tool_calls", empty delta
                                             event_str = json.dumps({"id":chatcmpl_id,"object":"chat.completion.chunk","created":int(time.time()),"model":modelNameToReturn,"choices":[{"index":0,"finish_reason":"tool_calls","delta":{}}]})
                                             await self.send_oai_sse_event(event_str)
