@@ -7462,7 +7462,7 @@ def show_gui():
 
     port_var = ctk.StringVar(value=defaultport)
     host_var = ctk.StringVar(value="")
-    multiuser_var = ctk.IntVar(value=1)
+    multiuser_var = ctk.StringVar(value=str(multiuser_concurrent_limit))
     multiplayer_var = ctk.IntVar(value=has_multiplayer)
     websearch_var = ctk.IntVar(value=0)
     horde_name_var = ctk.StringVar(value="koboldcpp")
@@ -8251,8 +8251,7 @@ def show_gui():
     makelabelentry(network_tab, "Port: ", port_var, 1, 150,tooltip=f"Select the port to host the KoboldCPP webserver.\n(Defaults to {defaultport})")
     makelabelentry(network_tab, "Host: ", host_var, 2, 150,tooltip="Select a specific host interface to bind to.\n(Defaults to all)")
 
-    makecheckbox(network_tab, "Multiuser Mode", multiuser_var, 3,tooltiptxt="Allows requests by multiple different clients to be queued and handled in sequence.")
-    makecheckbox(network_tab, "Remote Tunnel", remotetunnel_var, 3, 1,tooltiptxt="Creates a trycloudflare tunnel.\nAllows you to access koboldcpp from other devices over an internet URL.")
+    makecheckbox(network_tab, "Remote Tunnel", remotetunnel_var, 3,tooltiptxt="Creates a trycloudflare tunnel.\nAllows you to access koboldcpp from other devices over an internet URL.")
     makecheckbox(network_tab, "Quiet Mode", quietmode, 4,tooltiptxt="Prevents all generation related terminal output from being displayed.")
     makecheckbox(network_tab, "NoCertify Mode (Insecure)", nocertifymode, 4, 1,tooltiptxt="Allows insecure SSL connections. Use this if you have cert errors and need to bypass certificate restrictions.")
     makecheckbox(network_tab, "Shared Multiplayer", multiplayer_var, 5,tooltiptxt="Hosts a shared multiplayer session that others can join.")
@@ -8262,9 +8261,10 @@ def show_gui():
     makefileentry(network_tab, "SSL Key:", "Select SSL key.pem file", ssl_key_var, 9, width=200, filetypes=[("Unencrypted Key PEM", "*.pem")], singlerow=True, singlecol=False, tooltiptxt="Select your unencrypted .pem SSL key file for https.\nCan be generated with OpenSSL.")
     makelabelentry(network_tab, "Password: ", password_var, 10, 200,tooltip="Enter a password required to use this instance.\nThis key will be required for all text endpoints.\nImage endpoints are not secured.")
 
-    makelabelentry(network_tab, "Max Req. Size (MB):", maxrequestsize_var, row=20, width=50, tooltip="Specify a max request payload size. Any requests to the server larger than this size will be dropped. Do not change if unsure.")
-    makelabelentry(network_tab, "IP Rate Limiter (s):", ratelimit_var, row=22, width=50, tooltip="Rate limits each IP to allow a new request once per X seconds. Do not change if unsure.")
-    makelabelentry(network_tab, "Request Timeout (s):", reqtimeout_var, row=24, width=50, tooltip="Timeout in seconds for HTTP requests")
+    makelabelentry(network_tab, "Multiuser Queue:", multiuser_var, row=20, width=50, tooltip="Maximum queued incoming requests.")
+    makelabelentry(network_tab, "Max Req. Size (MB):", maxrequestsize_var, row=22, width=50, tooltip="Specify a max request payload size. Any requests to the server larger than this size will be dropped. Do not change if unsure.")
+    makelabelentry(network_tab, "IP Rate Limiter (s):", ratelimit_var, row=24, width=50, tooltip="Rate limits each IP to allow a new request once per X seconds. Do not change if unsure.")
+    makelabelentry(network_tab, "Request Timeout (s):", reqtimeout_var, row=26, width=50, tooltip="Timeout in seconds for HTTP requests")
 
 
     # Horde Tab
@@ -8652,7 +8652,7 @@ def show_gui():
         args.port_param = defaultport if port_var.get()=="" else int(port_var.get())
         args.port = args.port_param
         args.host = host_var.get()
-        args.multiuser = multiuser_var.get()
+        args.multiuser = int(multiuser_var.get()) if multiuser_var.get()!="" else multiuser_concurrent_limit
         args.multiplayer = (multiplayer_var.get()==1)
         args.websearch = (websearch_var.get()==1)
         args.maxrequestsize = int(maxrequestsize_var.get()) if maxrequestsize_var.get()!="" else 32
@@ -8937,7 +8937,7 @@ def show_gui():
         chatcompletionsadapter_var.set(mydict["chatcompletionsadapter"] if ("chatcompletionsadapter" in mydict and mydict["chatcompletionsadapter"]) else "")
         port_var.set(mydict["port_param"] if ("port_param" in mydict and mydict["port_param"]) else defaultport)
         host_var.set(mydict["host"] if ("host" in mydict and mydict["host"]) else "")
-        multiuser_var.set(mydict["multiuser"] if ("multiuser" in mydict) else 1)
+        multiuser_var.set(mydict["multiuser"] if ("multiuser" in mydict and mydict["multiuser"]>1) else multiuser_concurrent_limit)
         multiplayer_var.set(mydict["multiplayer"] if ("multiplayer" in mydict) else 0)
         websearch_var.set(mydict["websearch"] if ("websearch" in mydict) else 0)
         download_dir_var.set(mydict["downloaddir"] if ("downloaddir" in mydict and mydict["downloaddir"]) else "")
@@ -11395,7 +11395,7 @@ if __name__ == '__main__':
     advparser.add_argument("--prompt","-p", metavar=('[prompt]'), help="Passing a prompt string triggers a direct inference, loading the model, outputs the response to stdout and exits. Can be used alone or with benchmark.", type=str, default="")
     advparser.add_argument("--cli", help="Does not launch KoboldCpp HTTP server. Instead, enables KoboldCpp from the command line, accepting interactive console input and displaying responses to the terminal.", action='store_true')
     advparser.add_argument("--genlimit","--promptlimit", help="Sets the maximum number of generated tokens, it will restrict all generations to this or lower. Also usable with --prompt or --benchmark.",metavar=('[token limit]'), type=int, default=0)
-    advparser.add_argument("--multiuser", help="Runs in multiuser mode, which queues incoming requests instead of blocking them.", metavar=('limit'), nargs='?', const=1, type=int, default=1)
+    advparser.add_argument("--multiuser", help="Set maximum number of queued incoming requests allowed.", metavar=('limit'), type=int, default=multiuser_concurrent_limit)
     advparser.add_argument("--multiplayer", help="Hosts a shared multiplayer session that others can join.", action='store_true')
     advparser.add_argument("--websearch", help="Enable the local search engine proxy so Web Searches can be done.", action='store_true')
     advparser.add_argument("--remotetunnel", help="Uses Cloudflare to create a remote tunnel, allowing you to access koboldcpp remotely over the internet even behind a firewall.", action='store_true')
