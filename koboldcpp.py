@@ -7657,6 +7657,21 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             if streamhandled and cached_chat_template and start in cached_chat_template:
                 tool_segment_tag = start
                 break
+        # If not found in raw template, also check the rendered dummy output (more reliable for some models)
+        if not tool_segment_tag and rendered:
+            for start, end, streamhandled in tool_call_pairs:
+                if streamhandled and start in rendered:
+                    tool_segment_tag = start
+                    break
+        # If still not found but we have a rendered output, try to extract the outermost wrapping tag dynamically
+        if not tool_segment_tag and rendered:
+            import re as _re
+            # Look for any XML-style open tag that immediately precedes the function pattern
+            m_seg = _re.search(r'(<[a-zA-Z_:|][^<>]*>)\s*.*super_unique_func', rendered, _re.DOTALL)
+            if m_seg:
+                tool_segment_tag = m_seg.group(1)
+                if args.debugmode >= 2:
+                    print(f"[TC] Dynamically extracted tool_segment_tag from rendered output: {tool_segment_tag!r}")
         jinjatools = (args.jinja and args.jinja_tools)
         if api_format == 4 and using_openai_tools:
             if not jinjatools or not tool_segment_tag:
@@ -7677,6 +7692,8 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         tcParamFirst = True
         tcParamValueStarted = False
         tcParamIsString = None  # True=string value, False=raw JSON (array/object/number/bool/null)
+        tcJsonDepth = 0  # brace depth for JSON passthrough mode
+        tcJsonClosed = False  # True when JSON args object has been fully closed (depth back to 0)
         responses_first_loop = True
         anthropic_first_loop = True
         rseq_num = 0
@@ -7841,13 +7858,38 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                                 matchSpan = m.span()
                                                 if matchSpan and len(matchSpan)==2 and matchSpan[1] > lastIndex:
                                                     lastIndex = matchSpan[1]
-                                                    replacementText = re.escape(m.group(1)) + "(.*?)" + re.escape(m.group(3))
-                                            # With empty args, the first closing tag after the function open tag IS the args end tag
+                                                    # Build a pattern that matches up to and including the function name only.
+                                                    # For JSON: group(1) ends with the opening quote e.g. '{"name": "'
+                                                    #           so we need just a closing '"' after the captured name.
+                                                    # For XML: group(1) ends with '<func_tag ' or similar,
+                                                    #           closure is '>' so we use the full suffix.
+                                                    closure = m.group('closure')
+                                                    if closure == '}':
+                                                        # JSON format — suffix is just the closing quote of the name string
+                                                        replacementText = re.escape(m.group(1)) + r'([\w\-\.]+)' + r'"'
+                                                    else:
+                                                        # XML format — suffix up to closing '>'
+                                                        replacementText = re.escape(m.group(1)) + r'([\w\-\.]+)' + re.escape(m.group(3))
+                                            # Determine args end tag from rendered output.
+                                            # For JSON format (closure='}'), the end tag should be the outer tool wrapper
+                                            # (e.g. </tool_call>) NOT '}', because '}' appears inside nested JSON values.
+                                            # For XML format (closure='>'), find the first closing XML tag after the function open.
                                             detected_args_end_tag = ""
+                                            last_closure = None
+                                            for _m in re.finditer(pattern, rendered):
+                                                last_closure = _m.group('closure')
                                             if lastIndex != -1:
-                                                m_end = re.search(r'(</[^>]+>|\}+)', rendered[lastIndex:].lstrip())
-                                                if m_end:
-                                                    detected_args_end_tag = m_end.group(1)
+                                                if last_closure == '}':
+                                                    # JSON format: leave detected_args_end_tag empty so we fall back to
+                                                    # the tool_call_pairs end tag (e.g. </tool_call>). Depth counting
+                                                    # in the state machine is the primary termination mechanism.
+                                                    detected_args_end_tag = ""
+                                                else:
+                                                    # XML format: first closing XML tag after the function open tag
+                                                    rendered_tail = rendered[lastIndex:].lstrip()
+                                                    m_end = re.search(r'(</[^>]+>)', rendered_tail)
+                                                    if m_end:
+                                                        detected_args_end_tag = m_end.group(1)
                                             if lastIndex != -1:
                                                 # print(f"Last match ends at index {lastIndex}")
                                                 # print(f"Replacement text: {replacementText}")
@@ -7855,6 +7897,11 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                                 if m:
                                                     funcName = m.group(1)
                                                     funcEnd = m.span()[1]
+                                                    # For JSON format, funcEnd is right after the closing quote of the name.
+                                                    # Advance past ", "arguments": " (or similar) to reach the actual arguments value.
+                                                    args_key_match = re.search(r'[,\s]*"arguments"\s*:\s*', ec[funcEnd:])
+                                                    if args_key_match:
+                                                        funcEnd += args_key_match.end()
                                                     print(f"Found tool call pattern in output content: {funcName}, ending at index {funcEnd}")
                                                     self.inToolcallStream = True
                                                     genparams['sync_toolcall_end_tag'] = detected_args_end_tag if detected_args_end_tag else next((e for s, e, sh in tool_call_pairs if s == tool_segment_tag), "")
@@ -7874,6 +7921,15 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                         if pending:
                                             changes = pending + changes
                                         # Reasoning content is skipped as it is not part of the main toolcall streaming spec
+                                        # Helper definitions (available for both char-processing and end-condition close)
+                                        def _json_escape(s):
+                                            return s.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
+
+                                        async def _emit_args(frag):
+                                            if frag:
+                                                ev = json.dumps({"id":chatcmpl_id,"object":"chat.completion.chunk","created":int(time.time()),"model":modelNameToReturn,"choices":[{"index":0,"finish_reason":None,"delta":{"tool_calls":[{"index":0,"function":{"arguments":frag}}]}}]})
+                                                await self.send_oai_sse_event(ev)
+
                                         if changes:
                                             # XML→JSON streaming state machine
                                             # Converts <parameter=name>value</parameter> sequences to JSON object string
@@ -7891,13 +7947,13 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                                 if frag:
                                                     ev = json.dumps({"id":chatcmpl_id,"object":"chat.completion.chunk","created":int(time.time()),"model":modelNameToReturn,"choices":[{"index":0,"finish_reason":None,"delta":{"tool_calls":[{"index":0,"function":{"arguments":frag}}]}}]})
                                                     await self.send_oai_sse_event(ev)
-
                                             for ch in changes:
                                                 if tcParamState == 'idle':
                                                     inToolcallTagBuffer += ch
                                                     stripped = inToolcallTagBuffer.lstrip()
                                                     if stripped.startswith('{'):
                                                         tcParamState = 'json'
+                                                        tcJsonDepth = 1  # opening '{' already emitted; start depth at 1
                                                         await _emit_args(inToolcallTagBuffer)
                                                         inToolcallTagBuffer = ''
                                                     elif stripped.startswith(PARAM_OPEN_PREFIX):
@@ -7979,11 +8035,26 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                                             tcParamBoundaryBuf = tcParamBoundaryBuf[safe_len:]
 
                                                 elif tcParamState == 'json':
-                                                    await _emit_args(ch)
+                                                    # Track brace depth to detect end of the arguments object
+                                                    if ch == '{':
+                                                        tcJsonDepth += 1
+                                                        await _emit_args(ch)
+                                                    elif ch == '}':
+                                                        tcJsonDepth -= 1
+                                                        await _emit_args(ch)
+                                                        if tcJsonDepth == 0:
+                                                            # Arguments object fully closed — stop streaming
+                                                            tcJsonClosed = True
+                                                            if args.debugmode >= 2:
+                                                                print(f"[TC] JSON args object closed at depth 0")
+                                                            break  # exit the for-ch loop; event 3 will fire below
+                                                    else:
+                                                        await _emit_args(ch)
 
                                             genparams['sync_toolcall_extra_content'] = ec
 
-                                        if streamDone or (genparams.get('sync_toolcall_end_tag','') and genparams.get('sync_toolcall_end_tag','') in ec):
+                                        # End-condition check runs whether or not there were new chars this iteration
+                                        if streamDone or tcJsonClosed or (genparams.get('sync_toolcall_end_tag','') and genparams.get('sync_toolcall_end_tag','') in ec):
                                             # Close XML JSON object if we were in XML param mode and haven't closed yet
                                             if tcParamState in ('idle', 'value') and not tcParamFirst:
                                                 # tcParamFirst=False means we opened '{', so we need to close '}'
