@@ -33099,6 +33099,7 @@ Current version indicated by LITEVER below.
 <link rel="stylesheet" type="text/css" href="static/css/popupUtils.css" />
 <script src="static/js/tavernTool.js"></script>
 <script src="static/js/popupUtils.js"></script>
+<script src="static/js/openlumaraAuthUtils.js"></script>
 <script src="static/js/fileUtils.js"></script>
 <script src="static/js/characterManager.js"></script>
 <script src="static/js/fullScreenEditor.js"></script>
