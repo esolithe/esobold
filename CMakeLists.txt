@@ -507,6 +507,8 @@ add_library(common2
             src/unicode-data.cpp
             otherarch/utils.cpp
             otherarch/utils.h
+            otherarch/llmutils.cpp
+            otherarch/llmutils.h
             common/reasoning-budget.cpp
             common/reasoning-budget.h
             tools/mtmd/mtmd-audio.cpp
