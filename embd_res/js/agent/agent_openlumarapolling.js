@@ -1,11 +1,45 @@
 window.eso.currentlyProcessingFromLumara = Promise.resolve();
 window.eso.maxPolledMessagesFromLumara = 10;
+window.eso.nextLumaraPollingAuthPromptAt = 0;
+
+ensureLumaraPollingIdentity = async () => {
+    if (typeof window.promptForOpenLumaraIdentity !== "function") {
+        return true;
+    }
+
+    let now = Date.now();
+    if (now < (window.eso.nextLumaraPollingAuthPromptAt || 0)) {
+        return false;
+    }
+
+    let isAuthorized = false;
+    await window.promptForOpenLumaraIdentity(async () => {
+        isAuthorized = true;
+    }, {
+        baseUrl: openlumaraClient?.base_url,
+    });
+
+    if (!isAuthorized) {
+        // Delay re-prompting from background polling to avoid popup spam.
+        window.eso.nextLumaraPollingAuthPromptAt = Date.now() + 30000;
+        return false;
+    }
+
+    window.eso.nextLumaraPollingAuthPromptAt = 0;
+    return true;
+}
+
 pollForLatestMessagesFromLumara = async () => {
     let formatLumaraMessage = (message) => `Lumara response: ${`${message || ""}`.trim()}`
 
     let displayHandled = false;
     window.eso.currentlyProcessingFromLumara = window.eso.currentlyProcessingFromLumara.then(async () => {
         try {
+            let authorized = await ensureLumaraPollingIdentity();
+            if (!authorized) {
+                return;
+            }
+
             let lastMessageProcessedFromLumara = localsettings.lastMessageProcessedFromLumara
             let messageHistory = (await openlumaraClient.getMessagesSince(lastMessageProcessedFromLumara !== 0 ? lastMessageProcessedFromLumara + 1 : lastMessageProcessedFromLumara))?.messages;
             if (!!messageHistory) {
