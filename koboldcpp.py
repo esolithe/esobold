@@ -11509,6 +11509,7 @@ def show_gui():
     OpenLumara_sandboxfolder_var = ctk.StringVar(value="")
     OpenLumara_apiurl_var = ctk.StringVar(value="")
     OpenLumara_TemporaryMode_var = ctk.IntVar(value=0)
+    OpenLumara_requirelogin_var = ctk.IntVar(value=1)
 
     nozenity_var = ctk.IntVar(value=0)
 
@@ -12505,6 +12506,7 @@ def show_gui():
     makefileentry(OpenLumara_tab, "Sandbox Folder (required):", "Select OpenLumara sandbox folder", OpenLumara_sandboxfolder_var, 7, width=220, dialog_type=2, tooltiptxt="Path to the sandbox directory used by OpenLumara for agent file access.")
     makelabelentry(OpenLumara_tab, "OAI API URL (optional):", OpenLumara_apiurl_var, 9, 220, tooltip=f"Overrides the API URL in the OpenLumara config.\nLeave blank to use the value already in the config.\nExample: https://localhost:{defaultport}/v1")
     makecheckbox(OpenLumara_tab, "Temporary Mode", OpenLumara_TemporaryMode_var, 11, tooltiptxt="Enable temporary mode for OpenLumara. Prevents writing through most tools to disk. Does not apply to shell commands.")
+    makecheckbox(OpenLumara_tab, "Require Login", OpenLumara_requirelogin_var, 12, tooltiptxt="Require users to log in before accessing the OpenLumara WebUI. Enabled by default for security. Default credentials are admin:admin, change these in the OpenLumara webui or config file after the first launch.")
 
     # refresh
     runopts_var.trace_add("write", changerunmode)
@@ -12785,6 +12787,7 @@ def show_gui():
         args.OpenLumara_sandboxfolder = OpenLumara_sandboxfolder_var.get()
         args.OpenLumara_apiurl = OpenLumara_apiurl_var.get()
         args.OpenLumara_TemporaryMode = (OpenLumara_TemporaryMode_var.get()==1)
+        args.OpenLumara_requirelogin = (OpenLumara_requirelogin_var.get()==1)
 
     def import_vars(mydict):
         global importvars_in_progress
@@ -13095,6 +13098,7 @@ def show_gui():
         OpenLumara_sandboxfolder_var.set(mydict["OpenLumara_sandboxfolder"] if ("OpenLumara_sandboxfolder" in mydict and mydict["OpenLumara_sandboxfolder"]) else "")
         OpenLumara_apiurl_var.set(mydict["OpenLumara_apiurl"] if ("OpenLumara_apiurl" in mydict and mydict["OpenLumara_apiurl"]) else "")
         OpenLumara_TemporaryMode_var.set(1 if "OpenLumara_TemporaryMode" in mydict and mydict["OpenLumara_TemporaryMode"] else 0)
+        OpenLumara_requirelogin_var.set(0 if "OpenLumara_requirelogin" in mydict and not mydict["OpenLumara_requirelogin"] else 1)
 
         importvars_in_progress = False
         gui_changed_modelfile()
@@ -13664,7 +13668,7 @@ def reload_from_new_args(newargs):
         args.istemplate = False
         newargs = convert_invalid_args(newargs)
         for key, value in newargs.items(): #do not overwrite certain values
-            if key not in ["remotetunnel","showgui","port","host","port_param","admin","adminpassword","password","adminunloadtimeout","routermode","admindir","admintextmodelsdir","admindatadir","admindocsdir","adminallowhf","developerMode","fsmaxsize","fsdir","fsdirect","OpenLumara", "OpenLumara_configfile", "OpenLumara_datadir", "OpenLumara_sandboxfolder", "OpenLumara_apiurl","ssl","nocertify","benchmark","prompt","config","baseconfig","downloaddir"]:
+            if key not in ["remotetunnel","showgui","port","host","port_param","admin","adminpassword","password","adminunloadtimeout","routermode","admindir","admintextmodelsdir","admindatadir","admindocsdir","adminallowhf","developerMode","fsmaxsize","fsdir","fsdirect","OpenLumara", "OpenLumara_configfile", "OpenLumara_datadir", "OpenLumara_sandboxfolder", "OpenLumara_apiurl", "OpenLumara_requirelogin","ssl","nocertify","benchmark","prompt","config","baseconfig","downloaddir"]:
                 setattr(args, key, value)
         setattr(args,"showgui",False)
         setattr(args,"benchmark",False)
@@ -14200,6 +14204,7 @@ def launch_OpenLumara(launch_args):
                 "--api.max_context", f"{launch_args.contextsize if launch_args.contextsize is not None else 8192}",
                 "--channels.settings.webui.host", "0.0.0.0",
                 "--channels.settings.webui.port", f"{OpenLumara_default_webui_port}",
+                "--channels.settings.webui.require_login", "true" if (launch_args.OpenLumara_requirelogin is None or launch_args.OpenLumara_requirelogin) else "false",
                 "--core.data_folder", f"{launch_args.OpenLumara_datadir if launch_args.OpenLumara_datadir is not None else 'data'}",
                 "--modules.settings.sandboxed_files.sandbox_folder", f"{launch_args.OpenLumara_sandboxfolder if launch_args.OpenLumara_sandboxfolder is not None else 'sandbox'}",
                 "--modules.settings.coder.sandbox_folder", f"{launch_args.OpenLumara_sandboxfolder if launch_args.OpenLumara_sandboxfolder is not None else 'sandbox'}",
@@ -15884,6 +15889,7 @@ if __name__ == '__main__':
     OpenLumaragroup.add_argument("--OpenLumara_datadir", metavar=('[directory]'), help="Overrides the data_dir field in the OpenLumara config.", default="", type=str)
     OpenLumaragroup.add_argument("--OpenLumara_sandboxfolder", metavar=('[directory]'), help="Overrides the sandbox_folder field in the OpenLumara config.", default="", type=str)
     OpenLumaragroup.add_argument("--OpenLumara_apiurl", metavar=('[url]'), help="Overrides the API URL field in the OpenLumara config.", default="", type=str)
+    OpenLumaragroup.add_argument("--OpenLumara_requirelogin", help="Require login for the OpenLumara WebUI (default: true). Default credentials are admin:admin, change these in the OpenLumara webui or config file after the first launch.", action='store_true', default=True)
 
     deprecatedgroup = parser.add_argument_group('Deprecated Commands, DO NOT USE!')
     deprecatedgroup.add_argument("--hordeconfig", help=argparse.SUPPRESS, nargs='+')
