@@ -7662,7 +7662,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             m_seg = _re.search(r'(<[a-zA-Z_:|][^<>]*>)\s*.*super_unique_func', rendered, _re.DOTALL)
             if m_seg:
                 tool_segment_tag = m_seg.group(1)
-                if args.debugmode >= 2:
+                if args.developerMode and args.debugmode >= 2:
                     print(f"[TC] Dynamically extracted tool_segment_tag from rendered output: {tool_segment_tag!r}")
         jinjatools = (args.jinja and args.jinja_tools)
         if api_format == 4 and using_openai_tools:
@@ -7843,7 +7843,8 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                 delta['content'] = tokenStr
 
                             if genparams.get("sync_toolcall_potential_triggered",False) and delta: # if sync_toolcall_potential_triggered, buffer up the impending content chunk for tools in fakestreaming, in case toolcalls fail
-                                print(delta.get("content","") + " || " + delta.get("reasoning_content",""))
+                                if args.developerMode and args.debugmode >= 2:
+                                    print(delta.get("content","") + " || " + delta.get("reasoning_content",""))
                                 ec = genparams.get("sync_toolcall_extra_content","")
                                 erc = genparams.get("sync_toolcall_extra_reasoning_content","")
                                 ec += delta.get("content","")
@@ -7909,7 +7910,8 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                                     args_key_match = re.search(r'[,\s]*"arguments"\s*:\s*', ec[funcEnd:])
                                                     if args_key_match:
                                                         funcEnd += args_key_match.end()
-                                                    print(f"Found tool call pattern in output content: {funcName}, ending at index {funcEnd}")
+                                                    if args.developerMode and args.debugmode >= 2:
+                                                        print(f"Found tool call pattern in output content: {funcName}, ending at index {funcEnd}")
                                                     self.inToolcallStream = True
                                                     genparams['sync_toolcall_end_tag'] = detected_args_end_tag if detected_args_end_tag else next((e for s, e, sh in tool_call_pairs if s == tool_segment_tag), "")
                                                     tool_call_id = f"call_{req_id_suffix}"
@@ -7946,7 +7948,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                             PARAM_CLOSE_TAG = '</parameter>'
                                             PARAM_CLOSE_TAG_LEN = len(PARAM_CLOSE_TAG)
                                             endTag = genparams.get('sync_toolcall_end_tag', '')
-                                            if args.debugmode >= 2:
+                                            if args.developerMode and args.debugmode >= 2:
                                                 print(f"[TC] processing {len(changes)} chars, state={tcParamState!r}, depth={tcJsonDepth}, inString={tcJsonInString}, endTag={endTag!r}, changes_preview={changes[:80]!r}")
 
                                             def _json_escape(s):
@@ -7963,7 +7965,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                                     # End-tag check: stop as soon as the end tag is fully accumulated
                                                     if endTag and stripped.startswith(endTag):
                                                         tcJsonClosed = True
-                                                        if args.debugmode >= 2:
+                                                        if args.developerMode and args.debugmode >= 2:
                                                             print(f"[TC] end-tag {endTag!r} fully matched in idle state — stopping")
                                                         break
                                                     if stripped.startswith('{'):
@@ -7976,7 +7978,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                                         tcParamState = 'key'
                                                         tcParamKey = stripped[PARAM_OPEN_PREFIX_LEN:]
                                                         inToolcallTagBuffer = ''
-                                                        if args.debugmode >= 2:
+                                                        if args.developerMode and args.debugmode >= 2:
                                                             print(f"[TC] idle→key, key_so_far={tcParamKey!r}")
                                                     elif endTag and endTag.startswith(stripped):
                                                         # Buffer is a prefix of the end tag — keep accumulating;
@@ -7990,7 +7992,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
 
                                                 elif tcParamState == 'key':
                                                     if ch == '>':
-                                                        if args.debugmode >= 2:
+                                                        if args.developerMode and args.debugmode >= 2:
                                                             print(f"[TC] key complete: {tcParamKey!r}, first={tcParamFirst}")
                                                         if tcParamFirst:
                                                             prefix = '{' + json.dumps(tcParamKey) + ': '
@@ -8031,7 +8033,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                                         if tcParamIsString:
                                                             await _emit_args('"')  # close JSON string value
                                                         remainder = parts[1]
-                                                        if args.debugmode >= 2:
+                                                        if args.developerMode and args.debugmode >= 2:
                                                             print(f"[TC] param closed, isString={tcParamIsString}, remainder={remainder!r}")
                                                         stripped_rem = remainder.lstrip()
                                                         if stripped_rem.startswith(PARAM_OPEN_PREFIX):
@@ -8058,7 +8060,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                                     # This guards against runaway emission when depth counting is off.
                                                     if endTag and changes[_tc_i:_tc_i + len(endTag)] == endTag:
                                                         tcJsonClosed = True
-                                                        if args.debugmode >= 2:
+                                                        if args.developerMode and args.debugmode >= 2:
                                                             print(f"[TC] JSON end-tag {endTag!r} reached in stream at i={_tc_i}, depth={tcJsonDepth} — stopping")
                                                         break
                                                     # String-aware brace depth tracking.
@@ -8070,29 +8072,29 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                                             tcJsonEscaped = True
                                                         elif ch == '"':
                                                             tcJsonInString = False
-                                                            if args.debugmode >= 2:
+                                                            if args.developerMode and args.debugmode >= 2:
                                                                 print(f"[TC] JSON string closed, depth={tcJsonDepth}")
                                                         await _emit_args(ch)
                                                     else:
                                                         if ch == '"':
                                                             tcJsonInString = True
-                                                            if args.debugmode >= 2:
+                                                            if args.developerMode and args.debugmode >= 2:
                                                                 print(f"[TC] JSON string opened, depth={tcJsonDepth}")
                                                             await _emit_args(ch)
                                                         elif ch == '{':
                                                             tcJsonDepth += 1
-                                                            if args.debugmode >= 2:
+                                                            if args.developerMode and args.debugmode >= 2:
                                                                 print(f"[TC] JSON depth → {tcJsonDepth}")
                                                             await _emit_args(ch)
                                                         elif ch == '}':
                                                             tcJsonDepth -= 1
-                                                            if args.debugmode >= 2:
+                                                            if args.developerMode and args.debugmode >= 2:
                                                                 print(f"[TC] JSON depth → {tcJsonDepth}")
                                                             await _emit_args(ch)
                                                             if tcJsonDepth == 0:
                                                                 # Arguments object fully closed — stop streaming
                                                                 tcJsonClosed = True
-                                                                if args.debugmode >= 2:
+                                                                if args.developerMode and args.debugmode >= 2:
                                                                     print(f"[TC] JSON args object closed at depth 0")
                                                                 break  # exit the for-ch loop; event 3 will fire below
                                                         else:

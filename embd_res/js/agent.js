@@ -164,7 +164,7 @@ let getToolCallDebugSummary = (tc) => {
 }
 
 let callOAIChatCompletionsStream = async (messages, tools, toolChoice, onToken, logger = null) => {
-    let shouldDebug = true
+    let shouldDebug = !!(window.eso?.debugStreamingToolcalls)
     let debugLog = (...args) => {
         if (shouldDebug && logger && typeof logger.debug === "function") {
             logger.debug(...args)
