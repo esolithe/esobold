@@ -7759,89 +7759,93 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
 
                         sync_potential_toolcall_splitmatch = ""
                         if tokenStr!="" or streamDone:
-                            # Tool boundary detection for tool-capable chat completions.
-                            # if triggered, stop real streaming, and let the buffered fakestreaming take over
-                            if api_format == 4 and using_openai_tools:
-                                tokenStr = tokenReserve + tokenStr
-                                tokenReserve = ""
-                                # FIND ME
-                                if tool_segment_tag in tokenStr:
-                                    if not genparams.get("sync_toolcall_potential_triggered",False):
-                                        sync_potential_toolcall_splitmatch = tool_segment_tag
-                                        genparams['sync_toolcall_potential_triggered'] = True #if tool calls is triggered, rest will be sync fake streaming. we'll buffer it for later
-
-                            need_split_final_msg = True if (currfinishreason is not None and streamDone and tokenStr!="") else False
-
-                            # Hack for lcppui reasoning_content for thinking models
-                            delta = {'role': 'assistant'}
-                            if genparams.get('encapsulate_thinking', True):
-                                if encap_in_thinking:
-                                    foundend = False
-                                    for pair in thinkpairs:
-                                        if pair["end"] in tokenStr:
-                                            encap_in_thinking = False
-                                            foundend = True
-                                            out1, out2 = tokenStr.split(pair["end"], 1)
-                                            # Swallow any extraneous start tags that appear while already thinking
-                                            if pair["start"] in out1:
-                                                out1 = out1.replace(pair["start"], "")
-                                            if out1:
-                                                delta['reasoning_content'] = out1
-                                            # Swallow any extraneous end tags that appear after already ending
-                                            if pair["end"] in out2:
-                                                out2 = out2.replace(pair["end"], "")
-                                            if out2:
-                                                delta['content'] = out2
-                                            break
-                                    if not foundend:
-                                        # Still thinking - swallow extraneous start tags from THIS pair only
-                                        cleaned = tokenStr
-                                        if pair["start"] in cleaned:
-                                            cleaned = cleaned.replace(pair["start"], "")
-                                        delta['reasoning_content'] = cleaned
-                                else:
-                                    # Not thinking. Let's see if a start tag appears in this chunk.
-                                    matched_start = False
-                                    for pair in thinkpairs:
-                                        # Condition A: The prompt ended exactly with the start tag
-                                        if encap_first_loop and genparams.get("prompt", "").endswith(pair["start"]):
-                                            encap_in_thinking = True
-                                            thinkpairs = [pair] # lock in this pair
-                                            delta['reasoning_content'] = tokenStr
-                                            matched_start = True
-                                            break
-                                        # Condition B: The start tag is inside this chunk
-                                        elif pair["start"] in tokenStr:
-                                            encap_in_thinking = True
-                                            thinkpairs = [pair] # lock in this pair
-                                            out1, out2 = tokenStr.split(pair["start"], 1)
-                                            # Preserve text that came BEFORE the start tag
-                                            if out1:
-                                                delta['content'] = out1
-                                            if out2:
-                                                delta['reasoning_content'] = out2
-                                            # Edge Case: The end tag is ALSO in this exact same chunk (in out2)
-                                            if pair["end"] in out2:
-                                                encap_in_thinking = False
-                                                out2_think, out2_content = out2.split(pair["end"], 1)
-                                                # Overwrite reasoning with the exact thinking part
-                                                delta['reasoning_content'] = out2_think
-                                                # Append anything after the end tag to the content part
-                                                if out2_content:
-                                                    delta['content'] = delta.get('content', '') + out2_content
-                                            matched_start = True
-                                            break
-                                    # Condition C: No start tag found, just normal text
-                                    # Swallow any extraneous end tags that appear while not thinking
-                                    if not matched_start:
-                                        cleaned = tokenStr
-                                        # Only swallow stray end tags if we've already locked in a pair
-                                        if len(thinkpairs) == 1 and thinkpairs[0]["end"] in cleaned:
-                                            cleaned = cleaned.replace(thinkpairs[0]["end"], "")
-                                        delta['content'] = cleaned
-                                encap_first_loop = False
+                            if streamDone and tokenStr=="" and currfinishreason is not None:
+                                # Set boolean flag to trigger final message with just finish reason and no content, since some clients require a final message to know the finish reason
+                                break
                             else:
-                                delta['content'] = tokenStr
+                                # Tool boundary detection for tool-capable chat completions.
+                                # if triggered, stop real streaming, and let the buffered fakestreaming take over
+                                if api_format == 4 and using_openai_tools:
+                                    tokenStr = tokenReserve + tokenStr
+                                    tokenReserve = ""
+                                    # FIND ME
+                                    if tool_segment_tag in tokenStr:
+                                        if not genparams.get("sync_toolcall_potential_triggered",False):
+                                            sync_potential_toolcall_splitmatch = tool_segment_tag
+                                            genparams['sync_toolcall_potential_triggered'] = True #if tool calls is triggered, rest will be sync fake streaming. we'll buffer it for later
+
+                                need_split_final_msg = True if (currfinishreason is not None and streamDone and tokenStr!="") else False
+
+                                # Hack for lcppui reasoning_content for thinking models
+                                delta = {'role': 'assistant'}
+                                if genparams.get('encapsulate_thinking', True):
+                                    if encap_in_thinking:
+                                        foundend = False
+                                        for pair in thinkpairs:
+                                            if pair["end"] in tokenStr:
+                                                encap_in_thinking = False
+                                                foundend = True
+                                                out1, out2 = tokenStr.split(pair["end"], 1)
+                                                # Swallow any extraneous start tags that appear while already thinking
+                                                if pair["start"] in out1:
+                                                    out1 = out1.replace(pair["start"], "")
+                                                if out1:
+                                                    delta['reasoning_content'] = out1
+                                                # Swallow any extraneous end tags that appear after already ending
+                                                if pair["end"] in out2:
+                                                    out2 = out2.replace(pair["end"], "")
+                                                if out2:
+                                                    delta['content'] = out2
+                                                break
+                                        if not foundend:
+                                            # Still thinking - swallow extraneous start tags from THIS pair only
+                                            cleaned = tokenStr
+                                            if pair["start"] in cleaned:
+                                                cleaned = cleaned.replace(pair["start"], "")
+                                            delta['reasoning_content'] = cleaned
+                                    else:
+                                        # Not thinking. Let's see if a start tag appears in this chunk.
+                                        matched_start = False
+                                        for pair in thinkpairs:
+                                            # Condition A: The prompt ended exactly with the start tag
+                                            if encap_first_loop and genparams.get("prompt", "").endswith(pair["start"]):
+                                                encap_in_thinking = True
+                                                thinkpairs = [pair] # lock in this pair
+                                                delta['reasoning_content'] = tokenStr
+                                                matched_start = True
+                                                break
+                                            # Condition B: The start tag is inside this chunk
+                                            elif pair["start"] in tokenStr:
+                                                encap_in_thinking = True
+                                                thinkpairs = [pair] # lock in this pair
+                                                out1, out2 = tokenStr.split(pair["start"], 1)
+                                                # Preserve text that came BEFORE the start tag
+                                                if out1:
+                                                    delta['content'] = out1
+                                                if out2:
+                                                    delta['reasoning_content'] = out2
+                                                # Edge Case: The end tag is ALSO in this exact same chunk (in out2)
+                                                if pair["end"] in out2:
+                                                    encap_in_thinking = False
+                                                    out2_think, out2_content = out2.split(pair["end"], 1)
+                                                    # Overwrite reasoning with the exact thinking part
+                                                    delta['reasoning_content'] = out2_think
+                                                    # Append anything after the end tag to the content part
+                                                    if out2_content:
+                                                        delta['content'] = delta.get('content', '') + out2_content
+                                                matched_start = True
+                                                break
+                                        # Condition C: No start tag found, just normal text
+                                        # Swallow any extraneous end tags that appear while not thinking
+                                        if not matched_start:
+                                            cleaned = tokenStr
+                                            # Only swallow stray end tags if we've already locked in a pair
+                                            if len(thinkpairs) == 1 and thinkpairs[0]["end"] in cleaned:
+                                                cleaned = cleaned.replace(thinkpairs[0]["end"], "")
+                                            delta['content'] = cleaned
+                                    encap_first_loop = False
+                                else:
+                                    delta['content'] = tokenStr
 
                             if genparams.get("sync_toolcall_potential_triggered",False) and delta: # if sync_toolcall_potential_triggered, buffer up the impending content chunk for tools in fakestreaming, in case toolcalls fail
                                 if args.developerMode and args.debugmode >= 2:
