@@ -7686,6 +7686,8 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         tcParamIsString = None  # True=string value, False=raw JSON (array/object/number/bool/null)
         tcJsonDepth = 0  # brace depth for JSON passthrough mode
         tcJsonClosed = False  # True when JSON args object has been fully closed (depth back to 0)
+        tcJsonInString = False  # True when the depth counter is currently inside a JSON string value
+        tcJsonEscaped = False  # True when the previous char was a backslash (escape) inside a string
         responses_first_loop = True
         anthropic_first_loop = True
         rseq_num = 0
@@ -7944,6 +7946,8 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                             PARAM_CLOSE_TAG = '</parameter>'
                                             PARAM_CLOSE_TAG_LEN = len(PARAM_CLOSE_TAG)
                                             endTag = genparams.get('sync_toolcall_end_tag', '')
+                                            if args.debugmode >= 2:
+                                                print(f"[TC] processing {len(changes)} chars, state={tcParamState!r}, depth={tcJsonDepth}, inString={tcJsonInString}, endTag={endTag!r}, changes_preview={changes[:80]!r}")
 
                                             def _json_escape(s):
                                                 return s.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
@@ -7952,10 +7956,16 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                                 if frag:
                                                     ev = json.dumps({"id":chatcmpl_id,"object":"chat.completion.chunk","created":int(time.time()),"model":modelNameToReturn,"choices":[{"index":0,"finish_reason":None,"delta":{"tool_calls":[{"index":0,"function":{"arguments":frag}}]}}]})
                                                     await self.send_oai_sse_event(ev)
-                                            for ch in changes:
+                                            for _tc_i, ch in enumerate(changes):
                                                 if tcParamState == 'idle':
                                                     inToolcallTagBuffer += ch
                                                     stripped = inToolcallTagBuffer.lstrip()
+                                                    # End-tag check: stop as soon as the end tag is fully accumulated
+                                                    if endTag and stripped.startswith(endTag):
+                                                        tcJsonClosed = True
+                                                        if args.debugmode >= 2:
+                                                            print(f"[TC] end-tag {endTag!r} fully matched in idle state — stopping")
+                                                        break
                                                     if stripped.startswith('{'):
                                                         tcParamState = 'json'
                                                         tcJsonDepth = 1  # opening '{' already emitted; start depth at 1
@@ -7968,6 +7978,10 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                                         inToolcallTagBuffer = ''
                                                         if args.debugmode >= 2:
                                                             print(f"[TC] idle→key, key_so_far={tcParamKey!r}")
+                                                    elif endTag and endTag.startswith(stripped):
+                                                        # Buffer is a prefix of the end tag — keep accumulating;
+                                                        # do NOT fall through to the unknown-format passthrough
+                                                        pass
                                                     elif len(inToolcallTagBuffer) > PARAM_OPEN_PREFIX_LEN + 2:
                                                         # unknown format — passthrough
                                                         tcParamState = 'json'
@@ -8040,21 +8054,49 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                                             tcParamBoundaryBuf = tcParamBoundaryBuf[safe_len:]
 
                                                 elif tcParamState == 'json':
-                                                    # Track brace depth to detect end of the arguments object
-                                                    if ch == '{':
-                                                        tcJsonDepth += 1
-                                                        await _emit_args(ch)
-                                                    elif ch == '}':
-                                                        tcJsonDepth -= 1
-                                                        await _emit_args(ch)
-                                                        if tcJsonDepth == 0:
-                                                            # Arguments object fully closed — stop streaming
-                                                            tcJsonClosed = True
+                                                    # Before emitting, check if we are at the start of the end tag.
+                                                    # This guards against runaway emission when depth counting is off.
+                                                    if endTag and changes[_tc_i:_tc_i + len(endTag)] == endTag:
+                                                        tcJsonClosed = True
+                                                        if args.debugmode >= 2:
+                                                            print(f"[TC] JSON end-tag {endTag!r} reached in stream at i={_tc_i}, depth={tcJsonDepth} — stopping")
+                                                        break
+                                                    # String-aware brace depth tracking.
+                                                    # Braces inside string values must NOT change depth.
+                                                    if tcJsonInString:
+                                                        if tcJsonEscaped:
+                                                            tcJsonEscaped = False
+                                                        elif ch == '\\':
+                                                            tcJsonEscaped = True
+                                                        elif ch == '"':
+                                                            tcJsonInString = False
                                                             if args.debugmode >= 2:
-                                                                print(f"[TC] JSON args object closed at depth 0")
-                                                            break  # exit the for-ch loop; event 3 will fire below
-                                                    else:
+                                                                print(f"[TC] JSON string closed, depth={tcJsonDepth}")
                                                         await _emit_args(ch)
+                                                    else:
+                                                        if ch == '"':
+                                                            tcJsonInString = True
+                                                            if args.debugmode >= 2:
+                                                                print(f"[TC] JSON string opened, depth={tcJsonDepth}")
+                                                            await _emit_args(ch)
+                                                        elif ch == '{':
+                                                            tcJsonDepth += 1
+                                                            if args.debugmode >= 2:
+                                                                print(f"[TC] JSON depth → {tcJsonDepth}")
+                                                            await _emit_args(ch)
+                                                        elif ch == '}':
+                                                            tcJsonDepth -= 1
+                                                            if args.debugmode >= 2:
+                                                                print(f"[TC] JSON depth → {tcJsonDepth}")
+                                                            await _emit_args(ch)
+                                                            if tcJsonDepth == 0:
+                                                                # Arguments object fully closed — stop streaming
+                                                                tcJsonClosed = True
+                                                                if args.debugmode >= 2:
+                                                                    print(f"[TC] JSON args object closed at depth 0")
+                                                                break  # exit the for-ch loop; event 3 will fire below
+                                                        else:
+                                                            await _emit_args(ch)
 
                                             genparams['sync_toolcall_extra_content'] = ec
 
@@ -8086,6 +8128,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                             await asyncio.sleep(0.1)
                                             self.close_connection = True
                                             await asyncio.sleep(0.05)
+                                            genparams['tc_true_streamed'] = True  # prevent fake-stream path from re-sending tool call chunks
                                             return # stream is complete after tool_calls finish reason + [DONE]
                                         else:
                                             continue # skip the rest of the loop since we've already sent the content as a toolcall argument delta
