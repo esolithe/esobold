@@ -7688,6 +7688,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         tcJsonClosed = False  # True when JSON args object has been fully closed (depth back to 0)
         tcJsonInString = False  # True when the depth counter is currently inside a JSON string value
         tcJsonEscaped = False  # True when the previous char was a backslash (escape) inside a string
+        tcRawJsonTailBuf = ''  # deferred trailing whitespace for raw JSON passthrough; discarded when param closes
         responses_first_loop = True
         anthropic_first_loop = True
         rseq_num = 0
@@ -8035,6 +8036,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                                         remainder = parts[1]
                                                         if args.developerMode and args.debugmode >= 2:
                                                             print(f"[TC] param closed, isString={tcParamIsString}, remainder={remainder!r}")
+                                                        tcRawJsonTailBuf = ''  # discard any deferred trailing whitespace
                                                         stripped_rem = remainder.lstrip()
                                                         if stripped_rem.startswith(PARAM_OPEN_PREFIX):
                                                             tcParamState = 'key'
@@ -8052,7 +8054,16 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                                             if tcParamIsString:
                                                                 await _emit_args(_json_escape(safe_part))
                                                             else:
-                                                                await _emit_args(safe_part)
+                                                                # Defer trailing whitespace so it is discarded when
+                                                                # the parameter closes rather than leaking into the
+                                                                # outer JSON object and breaking JSON.parse.
+                                                                combined = tcRawJsonTailBuf + safe_part
+                                                                tcRawJsonTailBuf = ''
+                                                                stripped = combined.rstrip()
+                                                                if len(stripped) < len(combined):
+                                                                    tcRawJsonTailBuf = combined[len(stripped):]
+                                                                if stripped:
+                                                                    await _emit_args(stripped)
                                                             tcParamBoundaryBuf = tcParamBoundaryBuf[safe_len:]
 
                                                 elif tcParamState == 'json':
@@ -8111,6 +8122,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                                     # flush remaining boundary buffer as value content (minus any partial close tag)
                                                     tail = tcParamBoundaryBuf.split('</parameter>',1)[0] if '</parameter>' in tcParamBoundaryBuf else tcParamBoundaryBuf
                                                     tail = tail.rstrip()
+                                                    tcRawJsonTailBuf = ''  # discard deferred trailing whitespace
                                                     if tail:
                                                         if tcParamIsString:
                                                             await _emit_args(_json_escape(tail))
