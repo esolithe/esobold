@@ -3952,6 +3952,7 @@ Current version indicated by LITEVER below.
 	var koboldcpp_has_routermode = false;
 	var koboldcpp_can_search_docs = false;
 	var koboldcpp_has_open_lumara_enabled = false;
+	var koboldcpp_has_open_lumara_authenticated = false;
 	var no_escape_html = false;
 	var timetaken_timestamp = performance.now();
 	var bg_silence = null;
@@ -9539,6 +9540,9 @@ Current version indicated by LITEVER below.
 	function is_using_kcpp_with_open_lumara() {
 		return (custom_kobold_endpoint != "" && koboldcpp_version && koboldcpp_version != "" && compare_version_str(koboldcpp_version, "1.111") >= 0 && koboldcpp_has_open_lumara_enabled);
 	}
+	function is_using_kcpp_with_open_lumara_authenticated() {
+		return (custom_kobold_endpoint != "" && koboldcpp_version && koboldcpp_version != "" && compare_version_str(koboldcpp_version, "1.111") >= 0 && koboldcpp_has_open_lumara_enabled && koboldcpp_has_open_lumara_authenticated);
+	}
 	function is_using_kcpp_with_imagegen() {
 		return (custom_kobold_endpoint != "" && koboldcpp_version && koboldcpp_version != "" && compare_version_str(koboldcpp_version, "1.61") >= 0 && koboldcpp_has_txt2img);
 	}
@@ -14081,6 +14085,7 @@ Current version indicated by LITEVER below.
 									koboldcpp_has_routermode = (data.router ? true:false);
 									koboldcpp_can_search_docs = (data.canSearchDocuments ? true : false);
 									koboldcpp_has_open_lumara_enabled = (data.hasOpenLumaraEnabled ? true : false);
+									koboldcpp_has_open_lumara_authenticated = (data.hasOpenLumaraAuthenticated !== undefined ? (data.hasOpenLumaraAuthenticated ? true : false) : true);
 									koboldcpp_embedding_model = data?.embeddingModel
 									koboldcpp_has_admin_with_HF = (data.hasAdminWithHF ? true : false)
 									let has_password = (data.protected?true:false);

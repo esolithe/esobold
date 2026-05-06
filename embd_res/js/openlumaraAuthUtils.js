@@ -157,6 +157,13 @@
         let authState = ensureAuthState();
         let baseUrl = normalizeBaseUrl(opts?.baseUrl);
 
+        if (!window.is_using_kcpp_with_open_lumara_authenticated()) {
+            if (typeof callback === "function") {
+                await callback();
+            }
+            return true;
+        }
+
         if (authState.authInFlight) {
             return authState.authInFlight;
         }

@@ -723,6 +723,9 @@ let getFinalAgentPrompt = (agentRunState, commands, objectiveForCurrentAction) =
         let macroNames = Object.keys(availableAgentMacros).join(", ")
         prompt.push(`All available agent macros: ${macroNames}`)
     }
+    if (is_using_kcpp_with_open_lumara()) {
+        prompt.push(`OpenLumara is enabled. Authentication required: ${is_using_kcpp_with_open_lumara_authenticated() ? "yes" : "no"}.`)
+    }
     if (is_using_kcpp_with_fs()) {
         prompt.push(`KCPP with file system access is enabled.`)
         let embeddedFunctionGuidance = [
