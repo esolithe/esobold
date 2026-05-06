@@ -650,7 +650,7 @@ repack_instruct_turns = (input, usertag, aitag, systag, allow_blank, filterOutAc
         }).filter(elem => elem !== null)
     }
     else {
-        return originalRepackInstructTurns(input, usertag, aitag, allow_blank)
+        return originalRepackInstructTurns(input, usertag, aitag, systag, allow_blank)
     }
 };
 

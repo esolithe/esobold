@@ -25906,7 +25906,7 @@ Current version indicated by LITEVER below.
 
 			// split system first
 			let syschunks = [chnk];
-			if(systag && systag.trim()!="")
+			if(systag && (systag || "").trim()!="")
 			{
 				syschunks = chnk.split(systag);
 			}
