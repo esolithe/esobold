@@ -27,3 +27,8 @@ window.eso.allowHordeEvenWithLocalAccess = () => {
  * Set this to supress the router popup on initial page load.  It can still be manually set using the AI button.
  */
 window.eso.disableRouterPopupOnLoad = true;
+
+/**
+ * Set this to true to log all toolcalls to the console, which can be useful for debugging tools.  Note that this can cause a lot of logs if you have tools that are called frequently.
+ */
+window.eso.debugStreamingToolcalls = false;
