@@ -4651,7 +4651,10 @@ ws ::= | " " | "\n" [ \t]{0,20}
             jinja_output = None
             jinjatools = genparams.get('tools', [])
             if use_jinja and cached_chat_template:
-                jinja_output = format_jinja(messages_array,jinjatools,cached_jinja_kwargs)
+                copied_jinja_kwargs = dict(cached_jinja_kwargs or {})
+                if "reasoning_effort" in genparams and genparams["reasoning_effort"] is not None:
+                    copied_jinja_kwargs["reasoning_effort"] = genparams["reasoning_effort"]
+                jinja_output = format_jinja(messages_array,jinjatools,copied_jinja_kwargs)
             if jinja_output:
                 messages_string = jinja_output
                 for pair in thinkformats:
