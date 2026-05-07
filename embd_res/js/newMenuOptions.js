@@ -791,7 +791,7 @@ window.eso.afterKoboldCppVersionCheck = async () => {
     }
     
     if (is_using_kcpp_with_open_lumara()) {
-        localsettings.agentLumaraPollingRate = localsettings?.agentLumaraPollingRate || 60
+        localsettings.agentLumaraPollingRate = localsettings?.agentLumaraPollingRate || 0
         injectOpenLumaraButton();
     }
     else {
