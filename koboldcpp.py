@@ -7666,7 +7666,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             m_seg = _re.search(r'(<[a-zA-Z_:|][^<>]*>)\s*.*super_unique_func', rendered, _re.DOTALL)
             if m_seg:
                 tool_segment_tag = m_seg.group(1)
-                if args.developerMode and args.debugmode >= 2:
+                if args.developerMode and args.debugmode >= 1:
                     print(f"[TC] Dynamically extracted tool_segment_tag from rendered output: {tool_segment_tag!r}")
         jinjatools = (args.jinja and args.jinja_tools)
         if api_format == 4 and using_openai_tools:
@@ -7852,7 +7852,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                     delta['content'] = tokenStr
 
                             if genparams.get("sync_toolcall_potential_triggered",False) and delta: # if sync_toolcall_potential_triggered, buffer up the impending content chunk for tools in fakestreaming, in case toolcalls fail
-                                if args.developerMode and args.debugmode >= 2:
+                                if args.developerMode and args.debugmode >= 1:
                                     print(delta.get("content","") + " || " + delta.get("reasoning_content",""))
                                 ec = genparams.get("sync_toolcall_extra_content","")
                                 erc = genparams.get("sync_toolcall_extra_reasoning_content","")
@@ -7873,7 +7873,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                             _spec = detect_format(rendered, tool_segment_tag, _qm)
                                             genparams['tc_stream_parser'] = ToolCallStreamParser(_spec)
                                             genparams['tc_parser_ec_offset'] = 0
-                                            if args.developerMode and args.debugmode >= 2:
+                                            if args.developerMode and args.debugmode >= 1:
                                                 print(f"[TC] stream parser initialized: spec={_spec}, qm={_qm}")
                                         except Exception as _tc_init_err:
                                             print(f"[TC] stream parser init failed: {_tc_init_err}")
@@ -7886,7 +7886,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                         _new_content = ec[_offset:]
                                         genparams['tc_parser_ec_offset'] = len(ec)
                                         if _new_content:
-                                            if args.developerMode and args.debugmode >= 2:
+                                            if args.developerMode and args.debugmode >= 1:
                                                 print(f"[TC] feeding {len(_new_content)} chars to parser, preview={_new_content[:60]!r}")
                                             for _ev in _parser.feed(_new_content):
                                                 if _ev[0] == 'name':
@@ -7894,7 +7894,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                                     _tool_call_id = f"call_{req_id_suffix}"
                                                     _name_ev = json.dumps({"id": chatcmpl_id, "object": "chat.completion.chunk", "created": int(time.time()), "model": modelNameToReturn, "choices": [{"index": 0, "finish_reason": None, "delta": {"role": "assistant", "tool_calls": [{"index": 0, "id": _tool_call_id, "type": "function", "function": {"name": _ev[1], "arguments": ""}}]}}]})
                                                     await self.send_oai_sse_event(_name_ev)
-                                                    if args.developerMode and args.debugmode >= 2:
+                                                    if args.developerMode and args.debugmode >= 1:
                                                         print(f"[TC] name emitted: {_ev[1]!r}")
                                                 elif _ev[0] == 'args_chunk':
                                                     _args_ev = json.dumps({"id": chatcmpl_id, "object": "chat.completion.chunk", "created": int(time.time()), "model": modelNameToReturn, "choices": [{"index": 0, "finish_reason": None, "delta": {"tool_calls": [{"index": 0, "function": {"arguments": _ev[1]}}]}}]})
