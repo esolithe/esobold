@@ -1210,13 +1210,30 @@ class ToolCallStreamParser:
                 i += 1
 
             elif self._b_state == 'str':
-                self._emit_args(ch)
                 if self._b_str_esc:
+                    # Second char of an escape sequence — emit as-is.
+                    self._emit_args(ch)
                     self._b_str_esc = False
                 elif ch == '\\':
+                    self._emit_args(ch)
                     self._b_str_esc = True
                 elif ch == '"':
+                    self._emit_args(ch)
                     self._b_state = 'after_val'
+                elif ch == '\n':
+                    # Literal control characters must be escaped in JSON strings.
+                    # Gemma's format_argument macro wraps Python strings with
+                    # <|"|> delimiters without escaping, so the model can emit
+                    # raw newlines (and other control chars) inside string values.
+                    self._emit_args('\\n')
+                elif ch == '\r':
+                    self._emit_args('\\r')
+                elif ch == '\t':
+                    self._emit_args('\\t')
+                elif ord(ch) < 0x20:
+                    self._emit_args('\\u{:04x}'.format(ord(ch)))
+                else:
+                    self._emit_args(ch)
                 i += 1
 
             elif self._b_state == 'scalar':
@@ -2560,6 +2577,33 @@ def _run_tests() -> None:
     except Exception:
         pass
     tests.append(('edge: flush() closes incomplete brace', oke6, re6))
+
+    # ── Edge-6b: Gemma brace — literal control chars in string value ─────────
+    # Regression for Gemma-31B: the format_argument macro wraps string values
+    # with <|"|> without escaping, so the model can emit literal newlines (and
+    # other control chars) inside string arguments.  The brace-mode str state
+    # must JSON-escape them rather than emitting them verbatim (which produces
+    # invalid JSON consumed by the frontend).
+    QM_e6b = '<|"|>'
+    pe6b = ToolCallStreamParser.from_rendered(
+        '<|tool_call>call:super_unique_func{}<tool_call|>', '<|tool_call>', [QM_e6b])
+    # Feed the stream character-by-character to exercise _qm_tail, and include
+    # a literal newline and tab between the QM delimiters.
+    _literal_nl  = '\n'
+    _literal_tab = '\t'
+    _stream_e6b = (
+        f'<|tool_call>call:write{{content:{QM_e6b}line1{_literal_nl}'
+        f'  indented{_literal_tab}tabbed{_literal_nl}end{QM_e6b}}}<tool_call|>'
+    )
+    re6b = collect(pe6b, list(_stream_e6b))   # char-by-char exercises _qm_tail
+    oke6b = False
+    try:
+        a6b = json.loads(re6b['args'])
+        oke6b = (re6b['name'] == 'write' and
+                 a6b.get('content') == 'line1\n  indented\ttabbed\nend')
+    except Exception:
+        pass
+    tests.append(('edge: brace str literal control chars escaped', oke6b, re6b))
 
     # ── Edge-7: Empty args {} (standard JSON) ────────────────────────────────
     pe7 = ToolCallStreamParser.from_rendered(
