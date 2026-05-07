@@ -13520,7 +13520,7 @@ def reload_new_config(filename,defaultargs,overwrite_blank=False): #for changing
             for key, value in defaultargs.items():   # Fill missing defaults directly into config
                 if key not in config:
                     config[key] = value
-                elif overwrite_blank and key in config and not config[key]:
+                elif overwrite_blank and key in config and config[key] in (None, ""):
                     config[key] = value
             reload_from_new_args(config)
         except Exception as e:
