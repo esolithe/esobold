@@ -13520,7 +13520,7 @@ def reload_new_config(filename,defaultargs,overwrite_blank=False): #for changing
             for key, value in defaultargs.items():   # Fill missing defaults directly into config
                 if key not in config:
                     config[key] = value
-                elif overwrite_blank and key in config and config[key] in (None, ""):
+                elif overwrite_blank and key in config and not config[key]:
                     config[key] = value
             reload_from_new_args(config)
         except Exception as e:
@@ -14115,14 +14115,30 @@ def main(launch_args, default_args):
     cfgname = ""
     if args.config and len(args.config)==1: #handle initial config loading for launch
         cfgname = args.config[0] #store first so baseconfig wont overwrite it
+    
+    basecfgname = ""
+    if args.baseconfig: #handle initial base config loading for launch
+        basecfgname = args.baseconfig
 
+    if basecfgname and not cfgname: #handle initial base config loading for launch
+        if isinstance(basecfgname, str):
+            dlfile = download_model_from_url(basecfgname,[".kcpps",".kcppt"])
+            if dlfile:
+                basecfgname = dlfile
+        if isinstance(basecfgname, str) and os.path.exists(basecfgname):
+           load_config_cli(basecfgname)
     if cfgname: #handle initial config loading for launch
         if isinstance(cfgname, str):
             dlfile = download_model_from_url(cfgname,[".kcpps",".kcppt"])
             if dlfile:
                 cfgname = dlfile
         if isinstance(cfgname, str) and os.path.exists(cfgname):
-           load_config_cli(cfgname)
+            if basecfgname: # if base config was loaded, then merge the new config on top of it instead of replacing
+                load_config_cli(basecfgname) # load base config first to populate args with it
+                safeArgs = convert_invalid_args(args)
+                reload_new_config(cfgname,vars(safeArgs),True)
+            else:
+                load_config_cli(cfgname)
         elif args.ignoremissing:
             print("Ignoring missing kcpp config file...")
         else:
