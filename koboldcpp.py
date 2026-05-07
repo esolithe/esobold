@@ -7614,9 +7614,9 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         jinja_compiled_template = jinja_env.from_string(template_src)
         rendered = jinja_compiled_template.render(
             messages=[{"role": "user", "content": "test"}, {"role": "assistant", "tool_calls": [{"id": "0", "type": "function",
-                "function": {"name": "super_unique_func", "arguments": {}}}]}],
+                "function": {"name": "super_unique_func", "arguments": {"loc": "x"}}}]}],
             tools=[{"type": "function", "function": {"name": "super_unique_func",
-                "description": "test", "parameters": {}}}],
+                "description": "test", "parameters": {"type": "object", "properties": {"loc": {"type": "string"}}}}}],
             add_generation_prompt=True,
             bos_token="", eos_token=""
         )
@@ -7860,300 +7860,68 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                 erc += delta.get("reasoning_content","")
 
                                 if args.jinja_stream_toolcall and rendered is not None:
-                                    if not self.inToolcallStream:
-                                        # Option 2 — render a dummy tool-call message and see the output:
+                                    # Lazy-initialize the streaming parser once per request.
+                                    if 'tc_stream_parser' not in genparams:
                                         try:
-                                            # print(rendered)
-                                            import re
-
-                                            pattern = r'((?P<open><|{)[^<{]*)super_unique_func([^>}]*(?P<closure>>|}))'
-
-                                            # For all matches in a string:
-                                            lastIndex = -1
-                                            replacementText = ""
-                                            for m in re.finditer(pattern, rendered):
-                                                matchSpan = m.span()
-                                                if matchSpan and len(matchSpan)==2 and matchSpan[1] > lastIndex:
-                                                    lastIndex = matchSpan[1]
-                                                    # Build a pattern that matches up to and including the function name only.
-                                                    # For JSON: group(1) ends with the opening quote e.g. '{"name": "'
-                                                    #           so we need just a closing '"' after the captured name.
-                                                    # For XML: group(1) ends with '<func_tag ' or similar,
-                                                    #           closure is '>' so we use the full suffix.
-                                                    closure = m.group('closure')
-                                                    if closure == '}':
-                                                        # JSON format — suffix is just the closing quote of the name string
-                                                        replacementText = re.escape(m.group(1)) + r'([\w\-\.]+)' + r'"'
-                                                    else:
-                                                        # XML format — suffix up to closing '>'
-                                                        replacementText = re.escape(m.group(1)) + r'([\w\-\.]+)' + re.escape(m.group(3))
-                                            # Determine args end tag from rendered output.
-                                            # For JSON format (closure='}'), the end tag should be the outer tool wrapper
-                                            # (e.g. </tool_call>) NOT '}', because '}' appears inside nested JSON values.
-                                            # For XML format (closure='>'), find the first closing XML tag after the function open.
-                                            detected_args_end_tag = ""
-                                            last_closure = None
-                                            for _m in re.finditer(pattern, rendered):
-                                                last_closure = _m.group('closure')
-                                            if lastIndex != -1:
-                                                if last_closure == '}':
-                                                    # JSON format: leave detected_args_end_tag empty so we fall back to
-                                                    # the tool_call_pairs end tag (e.g. </tool_call>). Depth counting
-                                                    # in the state machine is the primary termination mechanism.
-                                                    detected_args_end_tag = ""
-                                                else:
-                                                    # XML format: first closing XML tag after the function open tag
-                                                    rendered_tail = rendered[lastIndex:].lstrip()
-                                                    m_end = re.search(r'(</[^>]+>)', rendered_tail)
-                                                    if m_end:
-                                                        detected_args_end_tag = m_end.group(1)
-                                            if lastIndex != -1:
-                                                # print(f"Last match ends at index {lastIndex}")
-                                                # print(f"Replacement text: {replacementText}")
-                                                m = re.search(replacementText, ec)
-                                                if m:
-                                                    funcName = m.group(1)
-                                                    funcEnd = m.span()[1]
-                                                    # For JSON format, funcEnd is right after the closing quote of the name.
-                                                    # Advance past ", "arguments": " (or similar) to reach the actual arguments value.
-                                                    args_key_match = re.search(r'[,\s]*"arguments"\s*:\s*', ec[funcEnd:])
-                                                    if args_key_match:
-                                                        funcEnd += args_key_match.end()
-                                                    if args.developerMode and args.debugmode >= 2:
-                                                        print(f"Found tool call pattern in output content: {funcName}, ending at index {funcEnd}")
-                                                    self.inToolcallStream = True
-                                                    genparams['sync_toolcall_end_tag'] = detected_args_end_tag if detected_args_end_tag else next((e for s, e, sh in tool_call_pairs if s == tool_segment_tag), "")
-                                                    tool_call_id = f"call_{req_id_suffix}"
-                                                    # 1. Initial: role + tool_calls with name, empty arguments
-                                                    event_str = json.dumps({"id":chatcmpl_id,"object":"chat.completion.chunk","created":int(time.time()),"model":modelNameToReturn,"choices":[{"index":0,"finish_reason":None,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":tool_call_id,"type":"function","function":{"name":funcName,"arguments":""}}]}}]})
-                                                    await self.send_oai_sse_event(event_str)
-                                                    # 2. Store the args fragment seen so far; the else-branch state machine will process it next iteration
-                                                    genparams['sync_toolcall_pending_args'] = ec[funcEnd:]
-                                                    continue # skip the rest of the loop since we've already sent the content as a toolcall argument delta
-                                        except Exception as e:
-                                            print(f"Error rendering Jinja template for tool call detection: {e}")
-                                    else:
-                                        changes = delta.get("content","")
-                                        # Prepend any fragment buffered when inToolcallStream was first set
-                                        pending = genparams.pop('sync_toolcall_pending_args', '')
-                                        if pending:
-                                            changes = pending + changes
-                                        # Reasoning content is skipped as it is not part of the main toolcall streaming spec
-                                        # Helper definitions (available for both char-processing and end-condition close)
-                                        def _json_escape(s):
-                                            return s.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
-
-                                        async def _emit_args(frag):
-                                            if frag:
-                                                ev = json.dumps({"id":chatcmpl_id,"object":"chat.completion.chunk","created":int(time.time()),"model":modelNameToReturn,"choices":[{"index":0,"finish_reason":None,"delta":{"tool_calls":[{"index":0,"function":{"arguments":frag}}]}}]})
-                                                await self.send_oai_sse_event(ev)
-
-                                        if changes:
-                                            # XML→JSON streaming state machine
-                                            # Converts <parameter=name>value</parameter> sequences to JSON object string
-                                            # Values are streamed char-by-char; only the key tag is buffered
-                                            PARAM_OPEN_PREFIX = '<parameter='
-                                            PARAM_OPEN_PREFIX_LEN = len(PARAM_OPEN_PREFIX)
-                                            PARAM_CLOSE_TAG = '</parameter>'
-                                            PARAM_CLOSE_TAG_LEN = len(PARAM_CLOSE_TAG)
-                                            endTag = genparams.get('sync_toolcall_end_tag', '')
+                                            import sys as _sys, os as _os
+                                            _mod_dir = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'esoExtras')
+                                            if _mod_dir not in _sys.path:
+                                                _sys.path.insert(0, _mod_dir)
+                                            from esoExtras.toolcall_stream_parser import (
+                                                detect_format, detect_quote_markers, ToolCallStreamParser)
+                                            _qm  = detect_quote_markers(rendered)
+                                            _spec = detect_format(rendered, tool_segment_tag, _qm)
+                                            genparams['tc_stream_parser'] = ToolCallStreamParser(_spec)
+                                            genparams['tc_parser_ec_offset'] = 0
                                             if args.developerMode and args.debugmode >= 2:
-                                                print(f"[TC] processing {len(changes)} chars, state={tcParamState!r}, depth={tcJsonDepth}, inString={tcJsonInString}, endTag={endTag!r}, changes_preview={changes[:80]!r}")
+                                                print(f"[TC] stream parser initialized: spec={_spec}, qm={_qm}")
+                                        except Exception as _tc_init_err:
+                                            print(f"[TC] stream parser init failed: {_tc_init_err}")
+                                            genparams['tc_stream_parser'] = None
 
-                                            def _json_escape(s):
-                                                return s.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r').replace('\t', '\\t')
+                                    _parser = genparams.get('tc_stream_parser')
+                                    if _parser is not None:
+                                        # Feed all content accumulated since the last iteration.
+                                        _offset = genparams.get('tc_parser_ec_offset', 0)
+                                        _new_content = ec[_offset:]
+                                        genparams['tc_parser_ec_offset'] = len(ec)
+                                        if _new_content:
+                                            if args.developerMode and args.debugmode >= 2:
+                                                print(f"[TC] feeding {len(_new_content)} chars to parser, preview={_new_content[:60]!r}")
+                                            for _ev in _parser.feed(_new_content):
+                                                if _ev[0] == 'name':
+                                                    self.inToolcallStream = True
+                                                    _tool_call_id = f"call_{req_id_suffix}"
+                                                    _name_ev = json.dumps({"id": chatcmpl_id, "object": "chat.completion.chunk", "created": int(time.time()), "model": modelNameToReturn, "choices": [{"index": 0, "finish_reason": None, "delta": {"role": "assistant", "tool_calls": [{"index": 0, "id": _tool_call_id, "type": "function", "function": {"name": _ev[1], "arguments": ""}}]}}]})
+                                                    await self.send_oai_sse_event(_name_ev)
+                                                    if args.developerMode and args.debugmode >= 2:
+                                                        print(f"[TC] name emitted: {_ev[1]!r}")
+                                                elif _ev[0] == 'args_chunk':
+                                                    _args_ev = json.dumps({"id": chatcmpl_id, "object": "chat.completion.chunk", "created": int(time.time()), "model": modelNameToReturn, "choices": [{"index": 0, "finish_reason": None, "delta": {"tool_calls": [{"index": 0, "function": {"arguments": _ev[1]}}]}}]})
+                                                    await self.send_oai_sse_event(_args_ev)
 
-                                            async def _emit_args(frag):
-                                                if frag:
-                                                    ev = json.dumps({"id":chatcmpl_id,"object":"chat.completion.chunk","created":int(time.time()),"model":modelNameToReturn,"choices":[{"index":0,"finish_reason":None,"delta":{"tool_calls":[{"index":0,"function":{"arguments":frag}}]}}]})
-                                                    await self.send_oai_sse_event(ev)
-                                            for _tc_i, ch in enumerate(changes):
-                                                if tcParamState == 'idle':
-                                                    inToolcallTagBuffer += ch
-                                                    stripped = inToolcallTagBuffer.lstrip()
-                                                    # End-tag check: stop as soon as the end tag is fully accumulated
-                                                    if endTag and stripped.startswith(endTag):
-                                                        tcJsonClosed = True
-                                                        if args.developerMode and args.debugmode >= 2:
-                                                            print(f"[TC] end-tag {endTag!r} fully matched in idle state — stopping")
-                                                        break
-                                                    if stripped.startswith('{'):
-                                                        tcParamState = 'json'
-                                                        tcJsonDepth = 1  # opening '{' already emitted; start depth at 1
-                                                        await _emit_args(inToolcallTagBuffer)
-                                                        inToolcallTagBuffer = ''
-                                                    elif stripped.startswith(PARAM_OPEN_PREFIX):
-                                                        # Extract any key chars already accumulated past '<parameter='
-                                                        tcParamState = 'key'
-                                                        tcParamKey = stripped[PARAM_OPEN_PREFIX_LEN:]
-                                                        inToolcallTagBuffer = ''
-                                                        if args.developerMode and args.debugmode >= 2:
-                                                            print(f"[TC] idle→key, key_so_far={tcParamKey!r}")
-                                                    elif endTag and endTag.startswith(stripped):
-                                                        # Buffer is a prefix of the end tag — keep accumulating;
-                                                        # do NOT fall through to the unknown-format passthrough
-                                                        pass
-                                                    elif len(inToolcallTagBuffer) > PARAM_OPEN_PREFIX_LEN + 2:
-                                                        # unknown format — passthrough
-                                                        tcParamState = 'json'
-                                                        await _emit_args(inToolcallTagBuffer)
-                                                        inToolcallTagBuffer = ''
+                                        # On stream end, flush any content still buffered inside the parser.
+                                        if streamDone and not _parser.is_done:
+                                            for _ev in _parser.flush():
+                                                if _ev[0] == 'args_chunk':
+                                                    _args_ev = json.dumps({"id": chatcmpl_id, "object": "chat.completion.chunk", "created": int(time.time()), "model": modelNameToReturn, "choices": [{"index": 0, "finish_reason": None, "delta": {"tool_calls": [{"index": 0, "function": {"arguments": _ev[1]}}]}}]})
+                                                    await self.send_oai_sse_event(_args_ev)
 
-                                                elif tcParamState == 'key':
-                                                    if ch == '>':
-                                                        if args.developerMode and args.debugmode >= 2:
-                                                            print(f"[TC] key complete: {tcParamKey!r}, first={tcParamFirst}")
-                                                        if tcParamFirst:
-                                                            prefix = '{' + json.dumps(tcParamKey) + ': '
-                                                            tcParamFirst = False
-                                                        else:
-                                                            prefix = ', ' + json.dumps(tcParamKey) + ': '
-                                                        await _emit_args(prefix)
-                                                        tcParamState = 'value'
-                                                        tcParamBoundaryBuf = ''
-                                                        tcParamValueStarted = False  # track whether leading whitespace has been skipped
-                                                        tcParamIsString = None  # None = not yet determined
-                                                    else:
-                                                        tcParamKey += ch
-
-                                                elif tcParamState == 'value':
-                                                    # Skip leading whitespace (e.g. the newline immediately after the open tag >)
-                                                    if not tcParamValueStarted:
-                                                        if ch in (' ', '\t', '\n', '\r'):
-                                                            continue
-                                                        tcParamValueStarted = True
-                                                        # Determine if value is a raw JSON type (array, object, number, bool, null) or a string
-                                                        if ch in ('[', '{') or ch.isdigit() or ch == '-' or ch in ('t', 'f', 'n'):
-                                                            tcParamIsString = False  # raw JSON passthrough
-                                                        else:
-                                                            tcParamIsString = True
-                                                            await _emit_args('"')  # open JSON string
-                                                    tcParamBoundaryBuf += ch
-                                                    # Check close tag FIRST (before trimming), then emit safe chars
-                                                    if PARAM_CLOSE_TAG in tcParamBoundaryBuf:
-                                                        parts = tcParamBoundaryBuf.split(PARAM_CLOSE_TAG, 1)
-                                                        # Strip trailing whitespace from the value before the close tag
-                                                        value_part = parts[0].rstrip()
-                                                        if value_part:
-                                                            if tcParamIsString:
-                                                                await _emit_args(_json_escape(value_part))
-                                                            else:
-                                                                await _emit_args(value_part)
-                                                        if tcParamIsString:
-                                                            await _emit_args('"')  # close JSON string value
-                                                        remainder = parts[1]
-                                                        if args.developerMode and args.debugmode >= 2:
-                                                            print(f"[TC] param closed, isString={tcParamIsString}, remainder={remainder!r}")
-                                                        tcRawJsonTailBuf = ''  # discard any deferred trailing whitespace
-                                                        stripped_rem = remainder.lstrip()
-                                                        if stripped_rem.startswith(PARAM_OPEN_PREFIX):
-                                                            tcParamState = 'key'
-                                                            tcParamKey = stripped_rem[PARAM_OPEN_PREFIX_LEN:]
-                                                            tcParamBoundaryBuf = ''
-                                                        else:
-                                                            tcParamState = 'idle'
-                                                            inToolcallTagBuffer = remainder
-                                                            tcParamBoundaryBuf = ''
-                                                    else:
-                                                        # Emit safe prefix (cannot be beginning of close tag)
-                                                        safe_len = len(tcParamBoundaryBuf) - (PARAM_CLOSE_TAG_LEN - 1)
-                                                        if safe_len > 0:
-                                                            safe_part = tcParamBoundaryBuf[:safe_len]
-                                                            if tcParamIsString:
-                                                                await _emit_args(_json_escape(safe_part))
-                                                            else:
-                                                                # Defer trailing whitespace so it is discarded when
-                                                                # the parameter closes rather than leaking into the
-                                                                # outer JSON object and breaking JSON.parse.
-                                                                combined = tcRawJsonTailBuf + safe_part
-                                                                tcRawJsonTailBuf = ''
-                                                                stripped = combined.rstrip()
-                                                                if len(stripped) < len(combined):
-                                                                    tcRawJsonTailBuf = combined[len(stripped):]
-                                                                if stripped:
-                                                                    await _emit_args(stripped)
-                                                            tcParamBoundaryBuf = tcParamBoundaryBuf[safe_len:]
-
-                                                elif tcParamState == 'json':
-                                                    # Before emitting, check if we are at the start of the end tag.
-                                                    # This guards against runaway emission when depth counting is off.
-                                                    if endTag and changes[_tc_i:_tc_i + len(endTag)] == endTag:
-                                                        tcJsonClosed = True
-                                                        if args.developerMode and args.debugmode >= 2:
-                                                            print(f"[TC] JSON end-tag {endTag!r} reached in stream at i={_tc_i}, depth={tcJsonDepth} — stopping")
-                                                        break
-                                                    # String-aware brace depth tracking.
-                                                    # Braces inside string values must NOT change depth.
-                                                    if tcJsonInString:
-                                                        if tcJsonEscaped:
-                                                            tcJsonEscaped = False
-                                                        elif ch == '\\':
-                                                            tcJsonEscaped = True
-                                                        elif ch == '"':
-                                                            tcJsonInString = False
-                                                            if args.developerMode and args.debugmode >= 2:
-                                                                print(f"[TC] JSON string closed, depth={tcJsonDepth}")
-                                                        await _emit_args(ch)
-                                                    else:
-                                                        if ch == '"':
-                                                            tcJsonInString = True
-                                                            if args.developerMode and args.debugmode >= 2:
-                                                                print(f"[TC] JSON string opened, depth={tcJsonDepth}")
-                                                            await _emit_args(ch)
-                                                        elif ch == '{':
-                                                            tcJsonDepth += 1
-                                                            if args.developerMode and args.debugmode >= 2:
-                                                                print(f"[TC] JSON depth → {tcJsonDepth}")
-                                                            await _emit_args(ch)
-                                                        elif ch == '}':
-                                                            tcJsonDepth -= 1
-                                                            if args.developerMode and args.debugmode >= 2:
-                                                                print(f"[TC] JSON depth → {tcJsonDepth}")
-                                                            await _emit_args(ch)
-                                                            if tcJsonDepth == 0:
-                                                                # Arguments object fully closed — stop streaming
-                                                                tcJsonClosed = True
-                                                                if args.developerMode and args.debugmode >= 2:
-                                                                    print(f"[TC] JSON args object closed at depth 0")
-                                                                break  # exit the for-ch loop; event 3 will fire below
-                                                        else:
-                                                            await _emit_args(ch)
-
-                                            genparams['sync_toolcall_extra_content'] = ec
-
-                                        # End-condition check runs whether or not there were new chars this iteration
-                                        if streamDone or tcJsonClosed or (genparams.get('sync_toolcall_end_tag','') and genparams.get('sync_toolcall_end_tag','') in ec):
-                                            # Close XML JSON object if we were in XML param mode and haven't closed yet
-                                            if tcParamState in ('idle', 'value') and not tcParamFirst:
-                                                # tcParamFirst=False means we opened '{', so we need to close '}'
-                                                if tcParamState == 'value' and tcParamBoundaryBuf:
-                                                    # flush remaining boundary buffer as value content (minus any partial close tag)
-                                                    tail = tcParamBoundaryBuf.split('</parameter>',1)[0] if '</parameter>' in tcParamBoundaryBuf else tcParamBoundaryBuf
-                                                    tail = tail.rstrip()
-                                                    tcRawJsonTailBuf = ''  # discard deferred trailing whitespace
-                                                    if tail:
-                                                        if tcParamIsString:
-                                                            await _emit_args(_json_escape(tail))
-                                                        else:
-                                                            await _emit_args(tail)
-                                                    if tcParamIsString:
-                                                        await _emit_args('"')
-                                                await _emit_args('}')
-
-                                            # 3. Complete: finish_reason="tool_calls", empty delta
-                                            event_str = json.dumps({"id":chatcmpl_id,"object":"chat.completion.chunk","created":int(time.time()),"model":modelNameToReturn,"choices":[{"index":0,"finish_reason":"tool_calls","delta":{}}]})
-                                            await self.send_oai_sse_event(event_str)
+                                        # Finish once the parser has a complete tool call or the stream ended.
+                                        if self.inToolcallStream and (_parser.is_done or streamDone):
+                                            _finish_ev = json.dumps({"id": chatcmpl_id, "object": "chat.completion.chunk", "created": int(time.time()), "model": modelNameToReturn, "choices": [{"index": 0, "finish_reason": "tool_calls", "delta": {}}]})
+                                            await self.send_oai_sse_event(_finish_ev)
                                             await self.send_oai_sse_event('[DONE]')
                                             await asyncio.sleep(async_sleep_short)
-                                            # flush buffers, sleep a bit to make sure all data sent, and then force close the connection
                                             self.wfile.flush()
                                             await asyncio.sleep(0.1)
                                             self.close_connection = True
                                             await asyncio.sleep(0.05)
-                                            genparams['tc_true_streamed'] = True  # prevent fake-stream path from re-sending tool call chunks
-                                            return # stream is complete after tool_calls finish reason + [DONE]
-                                        else:
-                                            continue # skip the rest of the loop since we've already sent the content as a toolcall argument delta
+                                            genparams['tc_true_streamed'] = True
+                                            return
+
+                                        genparams['sync_toolcall_extra_content'] = ec
+                                        continue  # suppress normal send path while parser is active
 
                                 if erc and sync_potential_toolcall_splitmatch and sync_potential_toolcall_splitmatch in erc:
                                     parts = erc.split(sync_potential_toolcall_splitmatch,1)
