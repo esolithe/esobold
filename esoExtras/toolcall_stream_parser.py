@@ -508,6 +508,15 @@ class ToolCallStreamParser:
         # Prepended to the next chunk before replacement runs.
         self._qm_tail: str = ''
 
+        # In brace mode the QM is replaced with a NUL sentinel ('\x00') instead
+        # of '"', so that literal '"' characters inside string values (e.g. HTML
+        # attribute quotes) are never mistaken for the closing delimiter.
+        # For all other modes QMs simply become '"'.
+        self._qm_sub: str = (
+            '\x00' if (spec.args_mode == 'brace' and spec.quote_markers)
+            else '"'
+        )
+
     # ── Factory ──────────────────────────────────────────────────────────────
 
     @classmethod
@@ -560,7 +569,7 @@ class ToolCallStreamParser:
                 chunk = self._qm_tail + chunk
                 self._qm_tail = ''
             for qm in self._spec.quote_markers:
-                chunk = chunk.replace(qm, '"')
+                chunk = chunk.replace(qm, self._qm_sub)
             # Hold back any tail that could be the start of a quote marker,
             # so that the next call can complete the replacement.
             # Iterate tail lengths from longest-possible down to 1.
@@ -587,10 +596,10 @@ class ToolCallStreamParser:
         """
         if self._state == self._DONE:
             return []
-        # Flush any held-back quote-marker tail into the buffer.
-        if self._qm_tail:
-            self._buf += self._qm_tail
-            self._qm_tail = ''
+        # Discard any held-back quote-marker tail — at stream end it is a partial
+        # closing delimiter that never completed; injecting it raw would corrupt
+        # the output.
+        self._qm_tail = ''
         self._events = []
         closing = self._close_open_args()
         if closing:
@@ -1191,7 +1200,7 @@ class ToolCallStreamParser:
                 if ch in (' ', '\t', '\n', '\r'):
                     i += 1
                     continue
-                if ch == '"':
+                if ch == '\x00':
                     self._emit_args('"')
                     self._b_state = 'str'
                     self._b_str_esc = False
@@ -1210,13 +1219,43 @@ class ToolCallStreamParser:
                 i += 1
 
             elif self._b_state == 'str':
-                self._emit_args(ch)
                 if self._b_str_esc:
+                    # Second char of an escape sequence.
                     self._b_str_esc = False
+                    if ch == '\x00':
+                        # Backslash immediately before the closing delimiter —
+                        # complete the '\\' JSON escape with a second backslash,
+                        # then close the string.  (The first '\' was already
+                        # emitted by the branch that set _b_str_esc=True.)
+                        self._emit_args('\\')
+                        self._emit_args('"')
+                        self._b_state = 'after_val'
+                    else:
+                        self._emit_args(ch)
+                elif ch == '\x00':
+                    # QM sentinel — close the JSON string.
+                    self._emit_args('"')
+                    self._b_state = 'after_val'
                 elif ch == '\\':
+                    self._emit_args(ch)
                     self._b_str_esc = True
                 elif ch == '"':
-                    self._b_state = 'after_val'
+                    # Literal quote in content (e.g. HTML attribute) — JSON-escape it.
+                    self._emit_args('\\"')
+                elif ch == '\n':
+                    # Literal control characters must be escaped in JSON strings.
+                    # Gemma's format_argument macro wraps Python strings with
+                    # <|"|> delimiters without escaping, so the model can emit
+                    # raw newlines (and other control chars) inside string values.
+                    self._emit_args('\\n')
+                elif ch == '\r':
+                    self._emit_args('\\r')
+                elif ch == '\t':
+                    self._emit_args('\\t')
+                elif ord(ch) < 0x20:
+                    self._emit_args('\\u{:04x}'.format(ord(ch)))
+                else:
+                    self._emit_args(ch)
                 i += 1
 
             elif self._b_state == 'scalar':
@@ -1241,7 +1280,7 @@ class ToolCallStreamParser:
                         self._finish()
                         return
                     self._b_state = 'after_val'
-                elif ch == '"':
+                elif ch == '\x00':
                     self._emit_args('"')
                     self._b_state = 'str'
                     self._b_str_esc = False
@@ -1322,9 +1361,10 @@ class ToolCallStreamParser:
         if mode == 'param_name' and not self._pn_first:
             return '}'
         if mode == 'brace' and self._b_stack:
-            # Close all open containers from innermost outward.
-            return ''.join('}' if f['kind'] == 'obj' else ']'
-                           for f in reversed(self._b_stack))
+            # Close any open string first, then all open containers from innermost outward.
+            prefix = '"' if self._b_state == 'str' else ''
+            return prefix + ''.join('}' if f['kind'] == 'obj' else ']'
+                                    for f in reversed(self._b_stack))
         return ''
 
 
@@ -2560,6 +2600,73 @@ def _run_tests() -> None:
     except Exception:
         pass
     tests.append(('edge: flush() closes incomplete brace', oke6, re6))
+
+    # ── Edge-6b: Gemma brace — literal control chars in string value ─────────
+    # Regression for Gemma-31B: the format_argument macro wraps string values
+    # with <|"|> without escaping, so the model can emit literal newlines (and
+    # other control chars) inside string arguments.  The brace-mode str state
+    # must JSON-escape them rather than emitting them verbatim (which produces
+    # invalid JSON consumed by the frontend).
+    QM_e6b = '<|"|>'
+    pe6b = ToolCallStreamParser.from_rendered(
+        '<|tool_call>call:super_unique_func{}<tool_call|>', '<|tool_call>', [QM_e6b])
+    # Feed the stream character-by-character to exercise _qm_tail, and include
+    # a literal newline and tab between the QM delimiters.
+    _literal_nl  = '\n'
+    _literal_tab = '\t'
+    _stream_e6b = (
+        f'<|tool_call>call:write{{content:{QM_e6b}line1{_literal_nl}'
+        f'  indented{_literal_tab}tabbed{_literal_nl}end{QM_e6b}}}<tool_call|>'
+    )
+    re6b = collect(pe6b, list(_stream_e6b))   # char-by-char exercises _qm_tail
+    oke6b = False
+    try:
+        a6b = json.loads(re6b['args'])
+        oke6b = (re6b['name'] == 'write' and
+                 a6b.get('content') == 'line1\n  indented\ttabbed\nend')
+    except Exception:
+        pass
+    tests.append(('edge: brace str literal control chars escaped', oke6b, re6b))
+
+    # ── Edge-6c: Gemma brace — literal '"' in string value (HTML content) ─────
+    # Core regression: Gemma wraps values with <|"|> without JSON-encoding the
+    # content, so the model can emit raw '"' characters (e.g. HTML attributes
+    # like <a href="url">).  Using a NUL sentinel for QM substitution means only
+    # the sentinel closes the string; literal '"' is escaped to '\"'.
+    QM_e6c = '<|"|>'
+    pe6c = ToolCallStreamParser.from_rendered(
+        '<|tool_call>call:super_unique_func{}<tool_call|>', '<|tool_call>', [QM_e6c])
+    _html_content = '<a href="https://example.com">click "here"</a>'
+    _stream_e6c = (
+        f'<|tool_call>call:render{{html:{QM_e6c}{_html_content}{QM_e6c}}}<tool_call|>'
+    )
+    re6c = collect(pe6c, list(_stream_e6c))   # char-by-char
+    oke6c = False
+    try:
+        a6c = json.loads(re6c['args'])
+        oke6c = (re6c['name'] == 'render' and
+                 a6c.get('html') == _html_content)
+    except Exception:
+        pass
+    tests.append(('edge: brace str literal quote escaped (HTML)', oke6c, re6c))
+
+    # ── Edge-6d: flush() closes brace stream with string still open ───────────
+    # When the model stream ends before the closing QM+'}', flush() must emit
+    # the closing '"' for the open string AND the closing '}' for the object.
+    QM_e6d = '<|"|>'
+    pe6d = ToolCallStreamParser.from_rendered(
+        '<|tool_call>call:super_unique_func{}<tool_call|>', '<|tool_call>', [QM_e6d])
+    # Stream ends mid-string — no closing <|"|>} or <tool_call|>.
+    _stream_e6d = f'<|tool_call>call:write{{content:{QM_e6d}partial text'
+    re6d = collect(pe6d, [_stream_e6d])
+    oke6d = False
+    try:
+        a6d = json.loads(re6d['args'])
+        oke6d = (re6d['name'] == 'write' and
+                 a6d.get('content') == 'partial text')
+    except Exception:
+        pass
+    tests.append(('edge: flush() closes open brace string', oke6d, re6d))
 
     # ── Edge-7: Empty args {} (standard JSON) ────────────────────────────────
     pe7 = ToolCallStreamParser.from_rendered(
