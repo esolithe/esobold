@@ -1612,6 +1612,10 @@ let runAgentCycle = async (agentRunState = {}) => {
                 nextAction = getReasoningCommand(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist)
             }
             else {
+                // If planning was expected but produced no steps, hard stop the loop
+                if (i === 1 && standardLoopStartIndex === 0 && currentOrderOfActionsOverall.length === 0) {
+                    break
+                }
                 // Ensure valid commands does not include stop thinking right away to ensure an action of some type is taken
                 nextAction = JSON.parse(JSON.stringify(currentOrderOfActionsOverall)).splice(i - 1).filter(acts => acts.split("|").find(act => validCommands.includes(act)))
                 nextAction = nextAction.length > 0 ? getCommands(agentRunState).filter(act => nextAction[0].split("|").includes(act.name)) : getEnabledCommands(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist).filter(command => validCommands.includes(command.name))
@@ -1886,7 +1890,10 @@ let runAgentCycle = async (agentRunState = {}) => {
         agentRunState.logger.printPendingLogs()
     }
     if (window?.backgroundAgentLoop !== true) {
-        Array(...document.getElementsByClassName("stopThinking")).forEach(elem => elem.classList.add("hidden"))
+        currentAgentCycle = currentAgentCycle.filter(c => c.id !== agentRunState.interactionId)
+        if (currentAgentCycle.length === 0) {
+            Array(...document.getElementsByClassName("stopThinking")).forEach(elem => elem.classList.add("hidden"))
+        }
     }
     return agentRunState
 }
