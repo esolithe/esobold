@@ -513,7 +513,7 @@ class ToolCallStreamParser:
         # attribute quotes) are never mistaken for the closing delimiter.
         # For all other modes QMs simply become '"'.
         self._qm_sub: str = (
-            '\x00' if (spec.args_mode == 'brace' and bool(spec.quote_markers))
+            '\x00' if (spec.args_mode == 'brace' and spec.quote_markers)
             else '"'
         )
 
@@ -1224,8 +1224,10 @@ class ToolCallStreamParser:
                     self._b_str_esc = False
                     if ch == '\x00':
                         # Backslash immediately before the closing delimiter —
-                        # emit the backslash as an escaped backslash, then close.
-                        self._emit_args('\\\\')
+                        # complete the '\\' JSON escape with a second backslash,
+                        # then close the string.  (The first '\' was already
+                        # emitted by the branch that set _b_str_esc=True.)
+                        self._emit_args('\\')
                         self._emit_args('"')
                         self._b_state = 'after_val'
                     else:
