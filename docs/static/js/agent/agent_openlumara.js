@@ -24,10 +24,30 @@ export const buildOpenlumaraCommands = (ctx) => {
 		updateAgentStreamingDisplay("")
 	}
 
+	let ensureLumaraIdentity = async () => {
+		if (typeof window.promptForOpenLumaraIdentity !== "function") {
+			return true
+		}
+
+		let isAuthorized = false
+		await window.promptForOpenLumaraIdentity(async () => {
+			isAuthorized = true
+		}, {
+			baseUrl: ol?.base_url,
+		})
+
+		return isAuthorized
+	}
+
 	/** Shared helper — run an async call, add result to CoT, return the data. */
 	let runAndReport = async (label, asyncCall) => {
 		let result
 		try {
+			let authorized = await ensureLumaraIdentity()
+			if (!authorized) {
+				addThought(currentChainOfThought, createSysPrompt, formatLumaraMessage(`${label}: authorization was not completed.`))
+				return null
+			}
 			result = await asyncCall()
 		} catch (err) {
 			addThought(currentChainOfThought, createSysPrompt, formatLumaraMessage(`${label} error: ${err?.message || err}`))

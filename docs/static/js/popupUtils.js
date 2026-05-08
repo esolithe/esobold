@@ -237,6 +237,19 @@ window.addEventListener("load", () => {
     }
 })
 
+if (window?.debounce === undefined) {
+    window.debounce = (func, delay) =>{
+		let timeout, functionName = func?.prototype?.constructor?.name, debounceVar = `debounce_pending_${functionName || "generic"}`;;
+		return function (...args) {
+			window[debounceVar] = true
+			clearTimeout(timeout);
+			timeout = setTimeout(() => {
+				window[debounceVar] = false
+				func.apply(this, args);
+			}, delay);
+		};
+	}
+}
 let autoSizeDe = debounce(() => popupUtils.autoSize(), 50);
 
 window.addEventListener("resize", () => {

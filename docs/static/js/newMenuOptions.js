@@ -634,7 +634,7 @@ window.addEventListener('load', () => {
     settingLabelElem = createSettingElemBool("agentHideCOT", "Hide agent COT", "Hides agent thinking steps (such as searches)")
     agentElems.push(settingLabelElem)
 
-    settingLabelElem = createSettingElemRange("agentCOTMax", "Maximum agent actions per plan", "Defines the maximum number of actions the agent can plan ahead", 1, 20, 1, 5)
+    settingLabelElem = createSettingElemRange("agentCOTMax", "Maximum agent actions per plan", "Defines the maximum number of actions the agent can plan ahead", 1, 20, 1, 10)
     agentElems.push(settingLabelElem)
 
     settingLabelElem = createSettingElemBool("agentStopOnRequestForInput", "Can agent ask for input?", "Determines if the agent can ask the user for input while executing the plan")
@@ -672,7 +672,7 @@ window.addEventListener('load', () => {
     settingLabelElem = createSettingElemRange("agentFsContentCharLimit", "FS content character limit", "Maximum file-content characters sent to agent context per file read via fs_content. If content is truncated, the response includes total file lines and characters.", 500, 100000, 100, 5000)
     agentElems.push(settingLabelElem)
 
-    settingLabelElem = createSettingElemRange("agentLumaraPollingRate", "Lumara polling rate", "Defines the rate at which the agent polls Lumara for new messages (in seconds). Zero means no polling.", 0, 1000, 1, is_using_kcpp_with_open_lumara() ? 60 : 0)
+    settingLabelElem = createSettingElemRange("agentLumaraPollingRate", "Lumara polling rate", "Defines the rate at which the agent polls Lumara for new messages (in seconds). Zero means no polling.", 0, 1000, 1, 0)
     agentElems.push(settingLabelElem)
 
     // Hidden as this is no longer is in use for now
@@ -791,7 +791,7 @@ window.eso.afterKoboldCppVersionCheck = async () => {
     }
     
     if (is_using_kcpp_with_open_lumara()) {
-        localsettings.agentLumaraPollingRate = localsettings?.agentLumaraPollingRate || 60
+        localsettings.agentLumaraPollingRate = localsettings?.agentLumaraPollingRate || 0
         injectOpenLumaraButton();
     }
     else {

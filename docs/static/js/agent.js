@@ -149,7 +149,28 @@ let callOAIChatCompletions = async (messages, tools, toolChoice) => {
     }
 }
 
-let callOAIChatCompletionsStream = async (messages, tools, toolChoice, onToken) => {
+let getToolCallDebugSummary = (tc) => {
+    return {
+        index: tc?.index,
+        id: tc?.id || null,
+        hasFunction: !!tc?.function,
+        functionNameFragment: tc?.function?.name || null,
+        argumentsType: typeof tc?.function?.arguments,
+        argumentsLen: typeof tc?.function?.arguments === "string" ? tc.function.arguments.length : null,
+        argumentsPreview: typeof tc?.function?.arguments === "string"
+            ? tc.function.arguments.substring(0, 120)
+            : null
+    }
+}
+
+let callOAIChatCompletionsStream = async (messages, tools, toolChoice, onToken, logger = null) => {
+    let shouldDebug = !!(window.eso?.debugStreamingToolcalls)
+    let debugLog = (...args) => {
+        if (shouldDebug && logger && typeof logger.debug === "function") {
+            logger.debug(...args)
+        }
+    }
+
     let payload = {
         model: (localsettings.custom_oai_model || ""),
         messages,
@@ -169,6 +190,15 @@ let callOAIChatCompletionsStream = async (messages, tools, toolChoice, onToken) 
     let content = ""
     let tool_calls_accum = []
     let finish_reason = null
+    let eventCount = 0
+    let doneSeen = false
+
+    debugLog("[OAI stream] starting", {
+        model: payload.model,
+        toolChoice: payload.tool_choice,
+        messageCount: Array.isArray(messages) ? messages.length : 0,
+        toolCount: Array.isArray(tools) ? tools.length : 0
+    })
 
     await new Promise((resolve, reject) => {
         fetch(apply_proxy_url((custom_oai_endpoint || custom_kobold_endpoint) + "/v1/chat/completions"), reqOpt)
@@ -182,12 +212,27 @@ let callOAIChatCompletionsStream = async (messages, tools, toolChoice, onToken) 
                     .pipeThrough(new TransformStream({
                         start(ctrl) { ctrl.buf = '' },
                         transform(chunk, ctrl) {
+                            if (doneSeen) return
                             ctrl.buf += chunk
                             let evs = [], m
                             while ((m = /^data: ?(.*)(\r?\n){2}/m.exec(ctrl.buf)) !== null) {
                                 let raw = m[1].trim()
-                                if (raw !== '[DONE]') {
-                                    try { evs.push(JSON.parse(raw)) } catch (e) { }
+                                if (raw === '[DONE]') {
+                                    doneSeen = true
+                                    debugLog("[OAI stream] done marker received", { eventCount })
+                                    ctrl.buf = ctrl.buf.substring(m.index + m[0].length)
+                                    break
+                                }
+                                else {
+                                    try {
+                                        evs.push(JSON.parse(raw))
+                                    } catch (e) {
+                                        debugLog("[OAI stream] failed to parse SSE JSON", {
+                                            error: `${e}`,
+                                            rawPreview: raw.substring(0, 240),
+                                            bufferLen: ctrl.buf.length
+                                        })
+                                    }
                                 }
                                 ctrl.buf = ctrl.buf.substring(m.index + m[0].length)
                             }
@@ -197,13 +242,30 @@ let callOAIChatCompletionsStream = async (messages, tools, toolChoice, onToken) 
                     .pipeTo(new WritableStream({
                         write(events) {
                             for (let ev of events) {
+                                eventCount++
                                 let delta = ev?.choices?.[0]?.delta
-                                if (!delta) continue
+                                if (!delta) {
+                                    debugLog("[OAI stream] event without delta", {
+                                        eventCount,
+                                        finishReason: ev?.choices?.[0]?.finish_reason || null
+                                    })
+                                    continue
+                                }
                                 if (delta.content) {
                                     content += delta.content
+                                    debugLog("[OAI stream] content delta", {
+                                        eventCount,
+                                        deltaLen: delta.content.length,
+                                        totalContentLen: content.length
+                                    })
                                     if (typeof onToken === 'function') onToken(delta.content)
                                 }
                                 if (delta.tool_calls) {
+                                    debugLog("[OAI stream] tool_call deltas", {
+                                        eventCount,
+                                        count: delta.tool_calls.length,
+                                        toolCalls: delta.tool_calls.map(getToolCallDebugSummary)
+                                    })
                                     for (let tc of delta.tool_calls) {
                                         let idx = tc.index || 0
                                         if (!tool_calls_accum[idx]) {
@@ -215,15 +277,42 @@ let callOAIChatCompletionsStream = async (messages, tools, toolChoice, onToken) 
                                         }
                                         if (tc.id) tool_calls_accum[idx].id = tc.id
                                         if (tc.function?.name) tool_calls_accum[idx].function.name += tc.function.name
-                                        if (tc.function?.arguments) tool_calls_accum[idx].function.arguments += tc.function.arguments
+                                        if (tc.function?.arguments !== undefined && tc.function?.arguments !== null) {
+                                            let argFragment = `${tc.function.arguments}`
+                                            tool_calls_accum[idx].function.arguments += argFragment
+                                            if (typeof onToken === 'function') onToken(argFragment)
+                                            debugLog("[OAI stream] appended argument fragment", {
+                                                eventCount,
+                                                index: idx,
+                                                fragmentLen: argFragment.length,
+                                                totalArgsLen: tool_calls_accum[idx].function.arguments.length,
+                                                fragmentPreview: argFragment
+                                            })
+                                        }
                                     }
                                 }
                                 if (ev?.choices?.[0]?.finish_reason) {
                                     finish_reason = ev.choices[0].finish_reason
+                                    debugLog("[OAI stream] finish reason set", { eventCount, finishReason: finish_reason })
                                 }
                             }
                         },
-                        close() { resolve() },
+                        close() {
+                            debugLog("[OAI stream] closed", {
+                                eventCount,
+                                doneSeen,
+                                finishReason: finish_reason,
+                                contentLen: content.length,
+                                toolCallCount: tool_calls_accum.length,
+                                toolCalls: tool_calls_accum.map(tc => ({
+                                    id: tc?.id || null,
+                                    name: tc?.function?.name || null,
+                                    argsLen: tc?.function?.arguments?.length || 0,
+                                    argsPreview: (tc?.function?.arguments || "")
+                                }))
+                            })
+                            resolve()
+                        },
                         abort(err) { reject(err) }
                     }))
             })
@@ -561,7 +650,7 @@ repack_instruct_turns = (input, usertag, aitag, systag, allow_blank, filterOutAc
         }).filter(elem => elem !== null)
     }
     else {
-        return originalRepackInstructTurns(input, usertag, aitag, allow_blank)
+        return originalRepackInstructTurns(input, usertag, aitag, systag, allow_blank)
     }
 };
 
@@ -633,6 +722,9 @@ let getFinalAgentPrompt = (agentRunState, commands, objectiveForCurrentAction) =
     if (Object.keys(availableAgentMacros).length > 0) {
         let macroNames = Object.keys(availableAgentMacros).join(", ")
         prompt.push(`All available agent macros: ${macroNames}`)
+    }
+    if (is_using_kcpp_with_open_lumara()) {
+        prompt.push(`OpenLumara is enabled. Authentication required: ${is_using_kcpp_with_open_lumara_authenticated() ? "yes" : "no"}.`)
     }
     if (is_using_kcpp_with_fs()) {
         prompt.push(`KCPP with file system access is enabled.`)
@@ -1441,7 +1533,7 @@ let runAgentCycle = async (agentRunState = {}) => {
                     ? callOAIChatCompletionsStream(planningMessages, planningTools, { type: "function", function: { name: "plan_actions" } }, (tok) => {
                         streamAccum += tok
                         updateAgentStreamingDisplay(streamAccum)
-                    })
+                    }, agentRunState?.logger)
                     : callOAIChatCompletions(planningMessages, planningTools, { type: "function", function: { name: "plan_actions" } })
                 ).catch(e => { agentRunState.errors.push(e); return null })
                 await contextUsage.triggerRerenderFromServerPerfEndpoint()
@@ -1453,7 +1545,19 @@ let runAgentCycle = async (agentRunState = {}) => {
                 } else {
                     let tc = planResult.tool_calls[0]
                     let planArgs = {}
-                    try { planArgs = JSON.parse(tc.function.arguments) } catch (e) { }
+                    try {
+                        planArgs = JSON.parse(tc.function.arguments)
+                    } catch (e) {
+                        if (!!agentRunState?.logger) {
+                            agentRunState.logger.debug("[OAI stream] failed to parse planning tool arguments", {
+                                error: `${e}`,
+                                toolCallId: tc?.id || null,
+                                functionName: tc?.function?.name || null,
+                                argsLen: tc?.function?.arguments?.length || 0,
+                                argsPreview: (tc?.function?.arguments || "")
+                            })
+                        }
+                    }
 
                     if (!!planArgs?.orderOfActions) {
                         currentOrderOfActionsOverall = planArgs.orderOfActions.map(a => a.action)
@@ -1534,7 +1638,7 @@ let runAgentCycle = async (agentRunState = {}) => {
                     ? callOAIChatCompletionsStream(oaiMessages, execTools, execToolChoice, (tok) => {
                         streamAccum += tok
                         updateAgentStreamingDisplay(streamAccum)
-                    })
+                    }, agentRunState?.logger)
                     : callOAIChatCompletions(oaiMessages, execTools, execToolChoice)
                 ).catch(e => { agentRunState.errors.push(e); return null })
                 await contextUsage.triggerRerenderFromServerPerfEndpoint()
@@ -1566,7 +1670,19 @@ let runAgentCycle = async (agentRunState = {}) => {
 
                 let tc = execResult.tool_calls[0]
                 let cmdArgs = {}
-                try { cmdArgs = JSON.parse(tc.function.arguments) } catch (e) { }
+                try {
+                    cmdArgs = JSON.parse(tc.function.arguments)
+                } catch (e) {
+                    if (!!agentRunState?.logger) {
+                        agentRunState.logger.debug("[OAI stream] failed to parse execution tool arguments", {
+                            error: `${e}`,
+                            toolCallId: tc?.id || null,
+                            functionName: tc?.function?.name || null,
+                            argsLen: tc?.function?.arguments?.length || 0,
+                            argsPreview: (tc?.function?.arguments || "")
+                        })
+                    }
+                }
 
                 if (tc.function.name === "stop_thinking") {
                     isCompleted = true

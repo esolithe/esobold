@@ -38,8 +38,18 @@ class OpenlumaraClient {
         return url.toString();
     }
 
+    _authHeaders(extraHeaders = {}) {
+        let headers = { ...extraHeaders };
+        if (typeof window.getOpenLumaraAuthHeader === "function") {
+            headers = { ...window.getOpenLumaraAuthHeader(), ...headers };
+        }
+        return headers;
+    }
+
     async _get(path, params) {
-        const resp = await fetch(this._url(path, params));
+        const resp = await fetch(this._url(path, params), {
+            headers: this._authHeaders(),
+        });
         if (!resp.ok) {
             const body = await resp.text().catch(() => '');
             throw new Error(`OpenLumara GET ${path} failed (${resp.status}): ${body}`);
@@ -50,7 +60,7 @@ class OpenlumaraClient {
     async _post(path, body_obj) {
         const resp = await fetch(this.base_url + path, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'charset': 'utf-8' },
+            headers: this._authHeaders({ 'Content-Type': 'application/json', 'charset': 'utf-8' }),
             body: JSON.stringify(body_obj ?? {}),
         });
         if (!resp.ok) {
@@ -63,7 +73,7 @@ class OpenlumaraClient {
     async _delete(path, body_obj) {
         const resp = await fetch(this.base_url + path, {
             method: 'DELETE',
-            headers: { 'Content-Type': 'application/json', 'charset': 'utf-8' },
+            headers: this._authHeaders({ 'Content-Type': 'application/json', 'charset': 'utf-8' }),
             body: JSON.stringify(body_obj ?? {}),
         });
         if (!resp.ok) {
@@ -154,7 +164,7 @@ class OpenlumaraClient {
     async stream(data) {
         const resp = await fetch(this.base_url + '/stream', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: this._authHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify(data ?? {}),
         });
         if (!resp.ok) {
