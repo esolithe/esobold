@@ -187,82 +187,7 @@ public:
     }
 
     void init_backend() {
-#ifdef SD_USE_CUDA
-        LOG_DEBUG("Using CUDA backend");
-        size_t device          = 0; //kcpp: ported device selection from vulkan
-        const int device_count = ggml_backend_cuda_get_device_count();
-        if (device_count) {
-            const char* SD_VK_DEVICE = getenv("SD_VK_DEVICE");
-            if (SD_VK_DEVICE != nullptr) {
-                std::string sd_vk_device_str = SD_VK_DEVICE;
-                try {
-                    device = std::stoull(sd_vk_device_str);
-                } catch (const std::invalid_argument&) {
-                    LOG_WARN("SD_VK_DEVICE environment variable is not a valid integer (%s). Falling back to device 0.", SD_VK_DEVICE);
-                    device = 0;
-                } catch (const std::out_of_range&) {
-                    LOG_WARN("SD_VK_DEVICE environment variable value is out of range for `unsigned long long` type (%s). Falling back to device 0.", SD_VK_DEVICE);
-                    device = 0;
-                }
-                if (device >= device_count) {
-                    LOG_WARN("Cannot find targeted cuda device (%llu). Falling back to device 0.", device);
-                    device = 0;
-                }
-            }
-            LOG_INFO("CUDA: Using device %llu", device);
-        }
-        backend = ggml_backend_cuda_init(device);
-#endif
-#ifdef SD_USE_METAL
-        LOG_DEBUG("Using Metal backend");
-        backend = ggml_backend_metal_init();
-#endif
-#ifdef SD_USE_VULKAN
-        LOG_DEBUG("Using Vulkan backend");
-        size_t device          = 0;
-        const int device_count = ggml_backend_vk_get_device_count();
-        if (device_count) {
-            const char* SD_VK_DEVICE = getenv("SD_VK_DEVICE");
-            if (SD_VK_DEVICE != nullptr) {
-                std::string sd_vk_device_str = SD_VK_DEVICE;
-                try {
-                    device = std::stoull(sd_vk_device_str);
-                } catch (const std::invalid_argument&) {
-                    LOG_WARN("SD_VK_DEVICE environment variable is not a valid integer (%s). Falling back to device 0.", SD_VK_DEVICE);
-                    device = 0;
-                } catch (const std::out_of_range&) {
-                    LOG_WARN("SD_VK_DEVICE environment variable value is out of range for `unsigned long long` type (%s). Falling back to device 0.", SD_VK_DEVICE);
-                    device = 0;
-                }
-                if (device >= device_count) {
-                    LOG_WARN("Cannot find targeted vulkan device (%zu). Falling back to device 0.", device);
-                    device = 0;
-                }
-            }
-            LOG_INFO("Vulkan: Using device %zu", device);
-            backend = ggml_backend_vk_init(device);
-        }
-        if (!backend) {
-            LOG_WARN("Failed to initialize Vulkan backend");
-        }
-#endif
-#ifdef SD_USE_OPENCL
-        LOG_DEBUG("Using OpenCL backend");
-        // ggml_log_set(ggml_log_callback_default, nullptr); // Optional ggml logs
-        backend = ggml_backend_opencl_init();
-        if (!backend) {
-            LOG_WARN("Failed to initialize OpenCL backend");
-        }
-#endif
-#ifdef SD_USE_SYCL
-        LOG_DEBUG("Using SYCL backend");
-        backend = ggml_backend_sycl_init(0);
-#endif
-
-        if (!backend) {
-            LOG_DEBUG("Using CPU backend");
-            backend = ggml_backend_cpu_init();
-        }
+        backend = sd_get_default_backend();
     }
 
     std::shared_ptr<RNG> get_rng(rng_type_t rng_type) {
@@ -4279,4 +4204,62 @@ SD_API sd_image_t* generate_video(sd_ctx_t* sd_ctx, const sd_vid_gen_params_t* s
     return result;
 }
 
+
+#include "kcpp_sd_extensions.h"
+
+namespace kcpp_sd {
+
+    static_assert((int)SD_TYPE_COUNT == (int)GGML_TYPE_COUNT,
+            "inconsistency between SD_TYPE_COUNT and GGML_TYPE_COUNT");
+
+    int get_loaded_sd_version(sd_ctx_t* ctx) {
+        return ctx->sd->version;
+    }
+
+    bool loaded_model_is_chroma(sd_ctx_t* ctx) {
+        if (ctx != nullptr && ctx->sd != nullptr) {
+            auto maybe_flux = std::dynamic_pointer_cast<FluxModel>(ctx->sd->diffusion_model);
+            if (maybe_flux != nullptr) {
+                return maybe_flux->flux.flux_params.is_chroma;
+            }
+        }
+        return false;
+    }
+
+    int get_spatial_multiple(sd_ctx_t* ctx) {
+        return ctx->sd->get_vae_scale_factor() * ctx->sd->get_diffusion_model_down_factor();
+    }
+
+    model_info get_model_info(sd_ctx_t* ctx)
+    {
+        model_info res = {};
+        auto loadedsdver = get_loaded_sd_version(ctx);
+        res.is_wan = (loadedsdver == SDVersion::VERSION_WAN2 || loadedsdver == SDVersion::VERSION_WAN2_2_I2V || loadedsdver == SDVersion::VERSION_WAN2_2_TI2V);
+        res.is_qwenimg = (loadedsdver == SDVersion::VERSION_QWEN_IMAGE);
+        res.is_chroma = loaded_model_is_chroma(ctx);
+        res.is_kontext = (loadedsdver==SDVersion::VERSION_FLUX && !res.is_chroma);
+        res.is_flux2 = (loadedsdver == SDVersion::VERSION_FLUX2 || loadedsdver == SDVersion::VERSION_FLUX2_KLEIN);
+        res.is_flux1 = (loadedsdver == SDVersion::VERSION_FLUX);
+        res.is_zimage = (loadedsdver == SDVersion::VERSION_Z_IMAGE);
+        res.is_sdxs = (loadedsdver == SDVersion::VERSION_SDXS_512_DS || loadedsdver == SDVersion::VERSION_SDXS_09);
+        res.is_sd1 = (loadedsdver == SDVersion::VERSION_SD1);
+        res.is_sd2 = (loadedsdver == SDVersion::VERSION_SD2);
+        res.spatial_multiple = get_spatial_multiple(ctx);
+        return res;
+    }
+
+    void SetCircularAxesAll(sd_ctx_t* ctx, bool circular_x, bool circular_y) {
+        ctx->sd->SetCircularAxesAll(circular_x, circular_y);
+    }
+
+    void set_lora_cache(sd_ctx_t *ctx, bool enable) {
+        ctx->sd->kcpp_lora_cache_populate = enable;
+    }
+
+    void apply_loras(sd_ctx_t *ctx, const std::vector<sd_lora_t>& lora_specs)
+    {
+        ctx->sd->apply_loras(lora_specs.data(), lora_specs.size());
+    }
+
+}
 

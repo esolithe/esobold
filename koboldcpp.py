@@ -253,7 +253,7 @@ class load_model_inputs(ctypes.Structure):
                 ("max_context_length", ctypes.c_int),
                 ("low_vram", ctypes.c_bool),
                 ("use_mmq", ctypes.c_bool),
-                ("use_rowsplit", ctypes.c_bool),
+                ("splitmode", ctypes.c_int),
                 ("executable_path", ctypes.c_char_p),
                 ("model_filename", ctypes.c_char_p),
                 ("lora_filename", ctypes.c_char_p),
@@ -272,7 +272,6 @@ class load_model_inputs(ctypes.Structure):
                 ("use_contextshift", ctypes.c_bool),
                 ("use_fastforward", ctypes.c_bool),
                 ("kcpp_main_gpu", ctypes.c_int),
-                ("vulkan_info", ctypes.c_char_p),
                 ("batchsize", ctypes.c_int),
                 ("autofit", ctypes.c_bool),
                 ("autofit_tax_mb", ctypes.c_int),
@@ -372,7 +371,6 @@ class sd_load_model_inputs(ctypes.Structure):
     _fields_ = [("model_filename", ctypes.c_char_p),
                 ("executable_path", ctypes.c_char_p),
                 ("kcpp_main_gpu", ctypes.c_int),
-                ("vulkan_info", ctypes.c_char_p),
                 ("threads", ctypes.c_int),
                 ("quant", ctypes.c_int),
                 ("flash_attention", ctypes.c_bool),
@@ -451,7 +449,6 @@ class whisper_load_model_inputs(ctypes.Structure):
     _fields_ = [("model_filename", ctypes.c_char_p),
                 ("executable_path", ctypes.c_char_p),
                 ("kcpp_main_gpu", ctypes.c_int),
-                ("vulkan_info", ctypes.c_char_p),
                 ("devices_override", ctypes.c_char_p),
                 ("quiet", ctypes.c_bool),
                 ("debugmode", ctypes.c_int)]
@@ -472,7 +469,6 @@ class tts_load_model_inputs(ctypes.Structure):
                 ("cts_model_filename", ctypes.c_char_p),
                 ("executable_path", ctypes.c_char_p),
                 ("kcpp_main_gpu", ctypes.c_int),
-                ("vulkan_info", ctypes.c_char_p),
                 ("gpulayers", ctypes.c_int),
                 ("flash_attention", ctypes.c_bool),
                 ("ttsmaxlen", ctypes.c_int),
@@ -499,7 +495,6 @@ class embeddings_load_model_inputs(ctypes.Structure):
                 ("model_filename", ctypes.c_char_p),
                 ("executable_path", ctypes.c_char_p),
                 ("kcpp_main_gpu", ctypes.c_int),
-                ("vulkan_info", ctypes.c_char_p),
                 ("gpulayers", ctypes.c_int),
                 ("flash_attention", ctypes.c_bool),
                 ("use_mmap", ctypes.c_bool),
@@ -525,7 +520,6 @@ class music_load_model_inputs(ctypes.Structure):
                 ("lowvram", ctypes.c_bool),
                 ("executable_path", ctypes.c_char_p),
                 ("kcpp_main_gpu", ctypes.c_int),
-                ("vulkan_info", ctypes.c_char_p),
                 ("devices_override", ctypes.c_char_p),
                 ("quiet", ctypes.c_bool),
                 ("debugmode", ctypes.c_int)]
@@ -971,6 +965,8 @@ def init_library():
     handle.last_logprobs.restype = last_logprobs_outputs
     handle.detokenize.argtypes = [token_count_outputs]
     handle.detokenize.restype = ctypes.c_char_p
+    handle.set_environment_variable.restype = ctypes.c_int
+    handle.set_environment_variable.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
 
 def set_backend_props(inputs):
     # we must force an explicit tensor split
@@ -1009,13 +1005,10 @@ def set_backend_props(inputs):
             elif (args.usecuda and "3" in args.usecuda):
                 inputs.kcpp_main_gpu = 3
 
-    if args.usevulkan: #is an empty array if using vulkan without defined gpu
-        s = ""
-        for it in range(0,len(args.usevulkan)):
-            s += str(args.usevulkan[it])
-        inputs.vulkan_info = s.encode("UTF-8")
-    else:
-        inputs.vulkan_info = "".encode("UTF-8")
+    if "GGML_VK_VISIBLE_DEVICES" not in os.environ:
+        if args.usevulkan: # is an empty array if using vulkan without defined gpu
+            vulkangpus = ','.join([str(g) for g in args.usevulkan])
+            handle.set_environment_variable("GGML_VK_VISIBLE_DEVICES".encode("UTF-8"),vulkangpus.encode("UTF-8"))
 
     # set universal flags
     inputs.devices_override = (args.device if args.device else "").encode("UTF-8")
@@ -1432,7 +1425,8 @@ def get_capabilities():
     _admindocsdir = str(getattr(args, "admindocsdir", "") or "").strip()
     can_search_documents = has_embeddings and bool(_admindocsdir) and os.path.isdir(_admindocsdir)
     hasOpenLumaraEnabled = global_memory["OpenLumara"]
-    return {"result":"KoboldCpp", "version":KcppVersion, "protected":has_password, "llm":has_llm, "txt2img":has_txt2img,"vision":visionSupport,"audio":audioSupport,"transcribe":has_whisper,"multiplayer":has_multiplayer,"websearch":has_search,"tts":has_tts, "embeddings":has_embeddings, "music":has_music, "fs":has_fs, "fsMode":fs_mode, "savedata":(savedata_obj is not None), "admin": admin_type, "router":has_router, "guidance": has_guidance, "jinja": has_jinja, "mcp":has_mcp, "hasServerSaving": has_server_saving, "hasAdminWithHF": had_admin_with_hf, "embeddingModel": embeddingModel, "canSearchDocuments": can_search_documents, "hasOpenLumaraEnabled": hasOpenLumaraEnabled}
+    hasOpenLumaraAuthenticated = bool(getattr(args, "OpenLumara_requirelogin", True))
+    return {"result":"KoboldCpp", "version":KcppVersion, "protected":has_password, "llm":has_llm, "txt2img":has_txt2img,"vision":visionSupport,"audio":audioSupport,"transcribe":has_whisper,"multiplayer":has_multiplayer,"websearch":has_search,"tts":has_tts, "embeddings":has_embeddings, "music":has_music, "fs":has_fs, "fsMode":fs_mode, "savedata":(savedata_obj is not None), "admin": admin_type, "router":has_router, "guidance": has_guidance, "jinja": has_jinja, "mcp":has_mcp, "hasServerSaving": has_server_saving, "hasAdminWithHF": had_admin_with_hf, "embeddingModel": embeddingModel, "canSearchDocuments": can_search_documents, "hasOpenLumaraEnabled": hasOpenLumaraEnabled, "hasOpenLumaraAuthenticated": hasOpenLumaraAuthenticated}
 
 
 def scan_directory(dirpath, valid_exts, depth):
@@ -1926,9 +1920,8 @@ def load_model(model_filename):
     inputs.max_context_length = maxctx #initial value to use for ctx, can be overwritten
     inputs.threads = args.threads
     inputs.low_vram = True if args.lowvram else False
-    inputs.use_mmq = (True if (args.usecuda and "nommq" not in args.usecuda) else False)
-    inputs.use_rowsplit = (True if (args.usecuda and "rowsplit" in args.usecuda) else False)
-    inputs.vulkan_info = "0".encode("UTF-8")
+    inputs.use_mmq = False if args.nommq else True
+    inputs.splitmode = splitmode_choices_to_int(args.splitmode) #layer=1, row=2, tensor=3
     inputs.blasthreads = args.blasthreads
     inputs.use_mmap = args.usemmap
     inputs.use_mlock = args.usemlock
@@ -4217,6 +4210,56 @@ def extract_json_from_string(input_string, check_strict=False):
         pass
     return []
 
+def find_json_value_end(buf, start):
+    """
+    Find the exclusive end index of a complete JSON value starting at buf[start].
+    Handles objects {}, arrays [], quoted strings, and scalar values.
+    Returns -1 if the value is not yet complete or if start is out of range.
+    """
+    n = len(buf)
+    i = start
+    while i < n and buf[i] in ' \t\r\n':
+        i += 1
+    if i >= n:
+        return -1
+    c = buf[i]
+    if c in '{[':
+        depth = 0
+        in_str = False
+        while i < n:
+            ch = buf[i]
+            if in_str:
+                if ch == '\\':
+                    i += 1  # skip escaped character
+                elif ch == '"':
+                    in_str = False
+            else:
+                if ch == '"':
+                    in_str = True
+                elif ch in '{[':
+                    depth += 1
+                elif ch in '}]':
+                    depth -= 1
+                    if depth == 0:
+                        return i + 1
+            i += 1
+        return -1
+    elif c == '"':
+        i += 1
+        while i < n:
+            ch = buf[i]
+            if ch == '\\':
+                i += 1
+            elif ch == '"':
+                return i + 1
+            i += 1
+        return -1
+    else:
+        # number, boolean (true/false/null) - ends at any JSON structural char or whitespace
+        while i < n and buf[i] not in ' \t\r\n,}]':
+            i += 1
+        return i if i > start else -1
+
 def parse_last_logprobs(lastlogprobs):
     if not lastlogprobs:
         return None
@@ -4609,7 +4652,10 @@ ws ::= | " " | "\n" [ \t]{0,20}
             jinja_output = None
             jinjatools = genparams.get('tools', [])
             if use_jinja and cached_chat_template:
-                jinja_output = format_jinja(messages_array,jinjatools,cached_jinja_kwargs)
+                copied_jinja_kwargs = dict(cached_jinja_kwargs or {})
+                if "reasoning_effort" in genparams and genparams["reasoning_effort"] is not None:
+                    copied_jinja_kwargs["reasoning_effort"] = genparams["reasoning_effort"]
+                jinja_output = format_jinja(messages_array,jinjatools,copied_jinja_kwargs)
             if jinja_output:
                 messages_string = jinja_output
                 for pair in thinkformats:
@@ -6579,31 +6625,89 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
 
         autoswapEnabled = global_memory["autoswapmode"] is not None and global_memory["autoswapmode"]
         model_switch_pass = False
+
         if not is_OpenLumara_request:
-            if is_post and (is_completions_path or is_chat_completions_path):
-                model_name = ""
-                isValidModelRequest = False
-                if body:
-                    try:
-                        request_json = json.loads(body.decode("utf-8"))
-                        model_name = request_json.get("model")
-                    except Exception:
-                        pass
+            with proxy_reload_lock:
+                if is_post and (is_completions_path or is_chat_completions_path or (not autoswapEnabled and is_wake_request)):
+                    model_name = ""
+                    if body:
+                        try:
+                            request_json = json.loads(body.decode("utf-8"))
+                            model_name = request_json.get("model")
+                        except Exception:
+                            pass
 
-                is_different_model = False
-                # we only need to check if the currently loaded model is different from the requested model. everything else is handled downstream in the stack
-                if model_name and model_name != global_memory["current_model"]:
-                    is_different_model = True
+                    was_auto_unloaded = (global_memory["triggered_sleeping"] and global_memory["current_model"]=="unload_model")
 
-                if is_different_model or model_switch_pass:
-                    model_switch_pass = True
-                    whitelist = get_current_admindir_list() # see if its an allowed swap
-                    if model_switch_pass and not model_name:
-                        model_name = "initial_model"
-                    if is_different_model and (model_name in whitelist):
-                        global_memory["last_active_timestamp"] = datetime.now()
-                        global_memory["triggered_sleeping"] = False
-                        reqbody = json.dumps({"filename":model_name})
+                    is_different_model = False
+                    # we only need to check if the currently loaded model is different from the requested model. everything else is handled downstream in the stack
+                    if model_name and model_name != global_memory["current_model"]:
+                        is_different_model = True
+
+                    if is_different_model or was_auto_unloaded:
+                        whitelist = get_current_admindir_list() # see if its an allowed swap
+                        if was_auto_unloaded and not model_name:
+                            model_name = "initial_model"
+                        if is_different_model and (model_name in whitelist):
+                            model_switch_pass = True
+                            global_memory["last_active_timestamp"] = datetime.now()
+                            global_memory["triggered_sleeping"] = False
+                            reqbody = json.dumps({"filename":model_name})
+                            reqheaders = {
+                                'Content-Type': 'application/json',
+                                'Content-Length': str(len(reqbody)),
+                            }
+                            if args.adminpassword:
+                                reqheaders["Authorization"] = f"Bearer {args.adminpassword}"
+                            conn = http.client.HTTPConnection('localhost', upstream_port, timeout=args.reqtimeout)
+                            conn.request("POST", "/api/admin/reload_config", body=reqbody, headers=reqheaders)
+                            resp = conn.getresponse()
+                            time.sleep(3)
+                            global_memory["last_active_timestamp"] = datetime.now()
+                            global_memory["triggered_sleeping"] = False
+                            if not self.wait_for_upstream_ready(upstream_port,120,0.5):
+                                self.send_error(504, "KoboldCpp model swap reload timed out")
+                                return
+                            time.sleep(0.1)
+                if autoswapEnabled and not model_switch_pass:
+                    textReqs = ["/api/extra/generate/stream","/api/extra/tokencount","/api/v1/generate","/sdapi/v1/interrogate","/v1/completions","/v1/chat/completions","/v1/responses","/completions","/chat/completions","/responses"]
+                    sttReqs = ["/api/extra/transcribe","/v1/audio/transcriptions"]
+                    ttsReqs = ["/api/extra/tts", "/v1/audio/speech"]
+                    embedReqs = ["/api/extra/embeddings", "/v1/embeddings", "/api/extra/fs/semantic_search", "/api/extra/fs/search_all_documents"]
+                    musicReqs = ["/api/extra/music/prepare","/api/extra/music/generate"]
+                    imageReqs = ["/sdapi/v1/txt2img", "/sdapi/v1/img2img", "/sdapi/v1/upscale"] # "/sdapi/v1/sd-models", "/sdapi/v1/options", "/sdapi/v1/samplers"
+
+                    swapModeChanged = False
+
+                    autoswapSettings = global_memory["autoswapSettings"]
+                    skipTextUnload = autoswapSettings.get("skipTextUnload", False)
+                    skipTTSUnload = autoswapSettings.get("skipTTSUnload", False)
+                    skipSSTUnload = autoswapSettings.get("skipSSTUnload", False)
+                    skipEmbedUnload = autoswapSettings.get("skipEmbedUnload", False)
+                    skipMusicUnload = autoswapSettings.get("skipMusicUnload", False)
+                    skipImageUnload = autoswapSettings.get("skipImageUnload", False)
+
+                    if not skipTextUnload and any(self.path.endswith(e) for e in textReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "text"):
+                        global_memory["swapReqType"] = "text"
+                        swapModeChanged = True
+                    elif not skipSSTUnload and any(self.path.endswith(e) for e in sttReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "stt"):
+                        global_memory["swapReqType"] = "stt"
+                        swapModeChanged = True
+                    elif not skipTTSUnload and any(self.path.endswith(e) for e in ttsReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "tts"):
+                        global_memory["swapReqType"] = "tts"
+                        swapModeChanged = True
+                    elif not skipEmbedUnload and any(self.path.endswith(e) for e in embedReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "embed"):
+                        global_memory["swapReqType"] = "embed"
+                        swapModeChanged = True
+                    elif not skipMusicUnload and any(self.path.endswith(e) for e in musicReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "music"):
+                        global_memory["swapReqType"] = "music"
+                        swapModeChanged = True
+                    elif not skipImageUnload and any(self.path.endswith(e) for e in imageReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "image"):
+                        global_memory["swapReqType"] = "image"
+                        swapModeChanged = True
+
+                    if (global_memory["swapReqType"] is not None and swapModeChanged):
+                        reqbody = json.dumps({"filename":global_memory["current_model"], "baseconfig": global_memory["base_config"], "modelName": global_memory["current_model_override"]})
                         reqheaders = {
                             'Content-Type': 'application/json',
                             'Content-Length': str(len(reqbody)),
@@ -6615,65 +6719,10 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                         resp = conn.getresponse()
                         time.sleep(3)
                         global_memory["last_active_timestamp"] = datetime.now()
-                        global_memory["triggered_sleeping"] = False
                         if not self.wait_for_upstream_ready(upstream_port,120,0.5):
                             self.send_error(504, "KoboldCpp model swap reload timed out")
                             return
                         time.sleep(0.1)
-            if autoswapEnabled and not model_switch_pass:
-                textReqs = ["/api/extra/generate/stream","/api/extra/tokencount","/api/v1/generate","/sdapi/v1/interrogate","/v1/completions","/v1/chat/completions","/v1/responses","/completions","/chat/completions","/responses"]
-                sttReqs = ["/api/extra/transcribe","/v1/audio/transcriptions"]
-                ttsReqs = ["/api/extra/tts", "/v1/audio/speech"]
-                embedReqs = ["/api/extra/embeddings", "/v1/embeddings", "/api/extra/fs/semantic_search", "/api/extra/fs/search_all_documents"]
-                musicReqs = ["/api/extra/music/prepare","/api/extra/music/generate"]
-                imageReqs = ["/sdapi/v1/txt2img", "/sdapi/v1/img2img", "/sdapi/v1/upscale"] # "/sdapi/v1/sd-models", "/sdapi/v1/options", "/sdapi/v1/samplers"
-
-                swapModeChanged = False
-
-                autoswapSettings = global_memory["autoswapSettings"]
-                skipTextUnload = autoswapSettings.get("skipTextUnload", False)
-                skipTTSUnload = autoswapSettings.get("skipTTSUnload", False)
-                skipSSTUnload = autoswapSettings.get("skipSSTUnload", False)
-                skipEmbedUnload = autoswapSettings.get("skipEmbedUnload", False)
-                skipMusicUnload = autoswapSettings.get("skipMusicUnload", False)
-                skipImageUnload = autoswapSettings.get("skipImageUnload", False)
-
-                if not skipTextUnload and any(self.path.endswith(e) for e in textReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "text"):
-                    global_memory["swapReqType"] = "text"
-                    swapModeChanged = True
-                elif not skipSSTUnload and any(self.path.endswith(e) for e in sttReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "stt"):
-                    global_memory["swapReqType"] = "stt"
-                    swapModeChanged = True
-                elif not skipTTSUnload and any(self.path.endswith(e) for e in ttsReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "tts"):
-                    global_memory["swapReqType"] = "tts"
-                    swapModeChanged = True
-                elif not skipEmbedUnload and any(self.path.endswith(e) for e in embedReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "embed"):
-                    global_memory["swapReqType"] = "embed"
-                    swapModeChanged = True
-                elif not skipMusicUnload and any(self.path.endswith(e) for e in musicReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "music"):
-                    global_memory["swapReqType"] = "music"
-                    swapModeChanged = True
-                elif not skipImageUnload and any(self.path.endswith(e) for e in imageReqs) and (global_memory["swapReqType"] is None or global_memory["swapReqType"] != "image"):
-                    global_memory["swapReqType"] = "image"
-                    swapModeChanged = True
-
-                if (global_memory["swapReqType"] is not None and swapModeChanged):
-                    reqbody = json.dumps({"filename":global_memory["current_model"], "baseconfig": global_memory["base_config"], "modelName": global_memory["current_model_override"]})
-                    reqheaders = {
-                        'Content-Type': 'application/json',
-                        'Content-Length': str(len(reqbody)),
-                    }
-                    if args.adminpassword:
-                        reqheaders["Authorization"] = f"Bearer {args.adminpassword}"
-                    conn = http.client.HTTPConnection('localhost', upstream_port, timeout=args.reqtimeout)
-                    conn.request("POST", "/api/admin/reload_config", body=reqbody, headers=reqheaders)
-                    resp = conn.getresponse()
-                    time.sleep(3)
-                    global_memory["last_active_timestamp"] = datetime.now()
-                    if not self.wait_for_upstream_ready(upstream_port,120,0.5):
-                        self.send_error(504, "KoboldCpp model swap reload timed out")
-                        return
-                    time.sleep(0.1)
 
         try:  # connect upstream
             target_host = '127.0.0.1' if is_OpenLumara_request else 'localhost'
@@ -7539,6 +7588,40 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(f'data: {data}\n\n'.encode())
         self.wfile.flush()
 
+    def getDummyJinjaParsedBody(self):
+        import re
+        from jinja2 import Environment
+
+        # Fetch the template already done at load time:
+        ctbytes = handle.get_chat_template()
+        template_src = ctypes.string_at(ctbytes).decode("UTF-8", "ignore")
+
+        # Option 1 — regex scan for tool_call / function patterns:
+        tool_patterns = re.findall(r'tool_call[^\s<>"\']*|function[^\s<>"\']*', template_src)
+
+        def strftime_now(format='%Y-%m-%d %H:%M:%S'):
+            return datetime.now().strftime(format)
+        def tojson(x, ensure_ascii=False, indent=None, separators=None, sort_keys=False):
+            return json.dumps(x, ensure_ascii=ensure_ascii, indent=indent, separators=separators, sort_keys=sort_keys)
+        def raise_exception(msg):
+            print(f"Warning: Jinja template raised an exception: {msg}")
+            return ""
+        from jinja2.sandbox import ImmutableSandboxedEnvironment
+        jinja_env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True)
+        jinja_env.globals['strftime_now'] = strftime_now
+        jinja_env.globals['raise_exception'] = raise_exception
+        jinja_env.filters["tojson"] = tojson
+        jinja_compiled_template = jinja_env.from_string(template_src)
+        rendered = jinja_compiled_template.render(
+            messages=[{"role": "user", "content": "test"}, {"role": "assistant", "tool_calls": [{"id": "0", "type": "function",
+                "function": {"name": "super_unique_func", "arguments": {"loc": "x"}}}]}],
+            tools=[{"type": "function", "function": {"name": "super_unique_func",
+                "description": "test", "parameters": {"type": "object", "properties": {"loc": {"type": "string"}}}}}],
+            add_generation_prompt=True,
+            bos_token="", eos_token=""
+        )
+        return rendered
+    
     async def handle_sse_stream(self, genparams, api_format):
         global friendlymodelname, currfinishreason, thinkformats, tool_call_pairs, cached_chat_template
         global autoswapmode, textName, sttName, ttsName, embedName, musicName, imageName, mmprojName
@@ -7546,6 +7629,12 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         modelNameToReturn = friendlymodelname
         if autoswapmode and textName is not None:
             modelNameToReturn = textName
+
+        rendered = None
+        try:
+            rendered = self.getDummyJinjaParsedBody()
+        except Exception as e:
+            print(f"Error rendering Jinja template for tool call segmentation: {e}")
 
         using_openai_tools = genparams.get('using_openai_tools', False)
         req_id_suffix = genparams.get('oai_uniqueid',1)
@@ -7564,6 +7653,21 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             if streamhandled and cached_chat_template and start in cached_chat_template:
                 tool_segment_tag = start
                 break
+        # If not found in raw template, also check the rendered dummy output (more reliable for some models)
+        if not tool_segment_tag and rendered:
+            for start, end, streamhandled in tool_call_pairs:
+                if streamhandled and start in rendered:
+                    tool_segment_tag = start
+                    break
+        # If still not found but we have a rendered output, try to extract the outermost wrapping tag dynamically
+        if not tool_segment_tag and rendered:
+            import re as _re
+            # Look for any XML-style open tag that immediately precedes the function pattern
+            m_seg = _re.search(r'(<[a-zA-Z_:|][^<>]*>)\s*.*super_unique_func', rendered, _re.DOTALL)
+            if m_seg:
+                tool_segment_tag = m_seg.group(1)
+                if args.developerMode and args.debugmode >= 1:
+                    print(f"[TC] Dynamically extracted tool_segment_tag from rendered output: {tool_segment_tag!r}")
         jinjatools = (args.jinja and args.jinja_tools)
         if api_format == 4 and using_openai_tools:
             if not jinjatools or not tool_segment_tag:
@@ -7576,6 +7680,19 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             encap_in_thinking = True
         encap_first_loop = True
         thinkpairs = json.loads(json.dumps(thinkformats))
+        self.inToolcallStream = False
+        inToolcallTagBuffer = ""
+        tcParamState = 'idle'  # 'idle','key','value','json'
+        tcParamKey = ''
+        tcParamBoundaryBuf = ''
+        tcParamFirst = True
+        tcParamValueStarted = False
+        tcParamIsString = None  # True=string value, False=raw JSON (array/object/number/bool/null)
+        tcJsonDepth = 0  # brace depth for JSON passthrough mode
+        tcJsonClosed = False  # True when JSON args object has been fully closed (depth back to 0)
+        tcJsonInString = False  # True when the depth counter is currently inside a JSON string value
+        tcJsonEscaped = False  # True when the previous char was a backslash (escape) inside a string
+        tcRawJsonTailBuf = ''  # deferred trailing whitespace for raw JSON passthrough; discarded when param closes
         responses_first_loop = True
         anthropic_first_loop = True
         rseq_num = 0
@@ -7646,81 +7763,166 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
 
                         sync_potential_toolcall_splitmatch = ""
                         if tokenStr!="" or streamDone:
-                            # Tool boundary detection for tool-capable chat completions.
-                            # if triggered, stop real streaming, and let the buffered fakestreaming take over
-                            if api_format == 4 and using_openai_tools:
-                                tokenStr = tokenReserve + tokenStr
-                                tokenReserve = ""
-                                splitter = tool_segment_tag
-                                if splitter in tokenStr:
-                                    if not genparams.get("sync_toolcall_potential_triggered",False):
-                                        sync_potential_toolcall_splitmatch = splitter
-                                        genparams['sync_toolcall_potential_triggered'] = True #if tool calls is triggered, rest will be sync fake streaming. we'll buffer it for later
-
-                            need_split_final_msg = True if (currfinishreason is not None and streamDone and tokenStr!="") else False
-
-                            # Hack for lcppui reasoning_content for thinking models
-                            delta = {'role': 'assistant'}
-                            if genparams.get('encapsulate_thinking', True):
-                                if encap_in_thinking:
-                                    foundend = False
-                                    for pair in thinkpairs:
-                                        if pair["end"] in tokenStr:
-                                            encap_in_thinking = False
-                                            foundend = True
-                                            out1, out2 = tokenStr.split(pair["end"], 1)
-                                            if out1:
-                                                delta['reasoning_content'] = out1
-                                            if out2:
-                                                delta['content'] = out2
-                                            break
-                                    if not foundend:
-                                        # Still thinking
-                                        delta['reasoning_content'] = tokenStr
-                                else:
-                                    # Not thinking. Let's see if a start tag appears in this chunk.
-                                    matched_start = False
-                                    for pair in thinkpairs:
-                                        # Condition A: The prompt ended exactly with the start tag
-                                        if encap_first_loop and genparams.get("prompt", "").endswith(pair["start"]):
-                                            encap_in_thinking = True
-                                            thinkpairs = [pair] # lock in this pair
-                                            delta['reasoning_content'] = tokenStr
-                                            matched_start = True
-                                            break
-                                        # Condition B: The start tag is inside this chunk
-                                        elif pair["start"] in tokenStr:
-                                            encap_in_thinking = True
-                                            thinkpairs = [pair] # lock in this pair
-                                            out1, out2 = tokenStr.split(pair["start"], 1)
-                                            # Preserve text that came BEFORE the start tag
-                                            if out1:
-                                                delta['content'] = out1
-                                            if out2:
-                                                delta['reasoning_content'] = out2
-                                            # Edge Case: The end tag is ALSO in this exact same chunk (in out2)
-                                            if pair["end"] in out2:
-                                                encap_in_thinking = False
-                                                out2_think, out2_content = out2.split(pair["end"], 1)
-                                                # Overwrite reasoning with the exact thinking part
-                                                delta['reasoning_content'] = out2_think
-                                                # Append anything after the end tag to the content part
-                                                if out2_content:
-                                                    delta['content'] = delta.get('content', '') + out2_content
-                                            matched_start = True
-                                            break
-                                    # Condition C: No start tag found, just normal text
-                                    if not matched_start:
-                                        delta['content'] = tokenStr
-                                encap_first_loop = False
+                            if streamDone and tokenStr=="" and currfinishreason is not None:
+                                # Set boolean flag to trigger final message with just finish reason and no content, since some clients require a final message to know the finish reason
+                                break
                             else:
-                                delta['content'] = tokenStr
+                                # Tool boundary detection for tool-capable chat completions.
+                                # if triggered, stop real streaming, and let the buffered fakestreaming take over
+                                if api_format == 4 and using_openai_tools:
+                                    tokenStr = tokenReserve + tokenStr
+                                    tokenReserve = ""
+                                    # FIND ME
+                                    if tool_segment_tag in tokenStr:
+                                        if not genparams.get("sync_toolcall_potential_triggered",False):
+                                            sync_potential_toolcall_splitmatch = tool_segment_tag
+                                            genparams['sync_toolcall_potential_triggered'] = True #if tool calls is triggered, rest will be sync fake streaming. we'll buffer it for later
+
+                                need_split_final_msg = True if (currfinishreason is not None and streamDone and tokenStr!="") else False
+
+                                # Hack for lcppui reasoning_content for thinking models
+                                delta = {'role': 'assistant'}
+                                if genparams.get('encapsulate_thinking', True):
+                                    if encap_in_thinking:
+                                        foundend = False
+                                        for pair in thinkpairs:
+                                            if pair["end"] in tokenStr:
+                                                encap_in_thinking = False
+                                                foundend = True
+                                                out1, out2 = tokenStr.split(pair["end"], 1)
+                                                # Swallow any extraneous start tags that appear while already thinking
+                                                if pair["start"] in out1:
+                                                    out1 = out1.replace(pair["start"], "")
+                                                if out1:
+                                                    delta['reasoning_content'] = out1
+                                                # Swallow any extraneous end tags that appear after already ending
+                                                if pair["end"] in out2:
+                                                    out2 = out2.replace(pair["end"], "")
+                                                if out2:
+                                                    delta['content'] = out2
+                                                break
+                                        if not foundend:
+                                            # Still thinking - swallow extraneous start tags from THIS pair only
+                                            cleaned = tokenStr
+                                            if pair["start"] in cleaned:
+                                                cleaned = cleaned.replace(pair["start"], "")
+                                            delta['reasoning_content'] = cleaned
+                                    else:
+                                        # Not thinking. Let's see if a start tag appears in this chunk.
+                                        matched_start = False
+                                        for pair in thinkpairs:
+                                            # Condition A: The prompt ended exactly with the start tag
+                                            if encap_first_loop and genparams.get("prompt", "").endswith(pair["start"]):
+                                                encap_in_thinking = True
+                                                thinkpairs = [pair] # lock in this pair
+                                                delta['reasoning_content'] = tokenStr
+                                                matched_start = True
+                                                break
+                                            # Condition B: The start tag is inside this chunk
+                                            elif pair["start"] in tokenStr:
+                                                encap_in_thinking = True
+                                                thinkpairs = [pair] # lock in this pair
+                                                out1, out2 = tokenStr.split(pair["start"], 1)
+                                                # Preserve text that came BEFORE the start tag
+                                                if out1:
+                                                    delta['content'] = out1
+                                                if out2:
+                                                    delta['reasoning_content'] = out2
+                                                # Edge Case: The end tag is ALSO in this exact same chunk (in out2)
+                                                if pair["end"] in out2:
+                                                    encap_in_thinking = False
+                                                    out2_think, out2_content = out2.split(pair["end"], 1)
+                                                    # Overwrite reasoning with the exact thinking part
+                                                    delta['reasoning_content'] = out2_think
+                                                    # Append anything after the end tag to the content part
+                                                    if out2_content:
+                                                        delta['content'] = delta.get('content', '') + out2_content
+                                                matched_start = True
+                                                break
+                                        # Condition C: No start tag found, just normal text
+                                        # Swallow any extraneous end tags that appear while not thinking
+                                        if not matched_start:
+                                            cleaned = tokenStr
+                                            # Only swallow stray end tags if we've already locked in a pair
+                                            if len(thinkpairs) == 1 and thinkpairs[0]["end"] in cleaned:
+                                                cleaned = cleaned.replace(thinkpairs[0]["end"], "")
+                                            delta['content'] = cleaned
+                                    encap_first_loop = False
+                                else:
+                                    delta['content'] = tokenStr
 
                             if genparams.get("sync_toolcall_potential_triggered",False) and delta: # if sync_toolcall_potential_triggered, buffer up the impending content chunk for tools in fakestreaming, in case toolcalls fail
+                                if args.developerMode and args.debugmode >= 1:
+                                    print(delta.get("content","") + " || " + delta.get("reasoning_content",""))
                                 ec = genparams.get("sync_toolcall_extra_content","")
                                 erc = genparams.get("sync_toolcall_extra_reasoning_content","")
                                 ec += delta.get("content","")
                                 erc += delta.get("reasoning_content","")
+
+                                if args.jinja_stream_toolcall and rendered is not None:
+                                    # Lazy-initialize the streaming parser once per request.
+                                    if 'tc_stream_parser' not in genparams:
+                                        try:
+                                            import sys as _sys, os as _os
+                                            _mod_dir = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), 'esoExtras')
+                                            if _mod_dir not in _sys.path:
+                                                _sys.path.insert(0, _mod_dir)
+                                            from esoExtras.toolcall_stream_parser import (
+                                                detect_format, detect_quote_markers, ToolCallStreamParser)
+                                            _qm  = detect_quote_markers(rendered)
+                                            _spec = detect_format(rendered, tool_segment_tag, _qm)
+                                            genparams['tc_stream_parser'] = ToolCallStreamParser(_spec)
+                                            genparams['tc_parser_ec_offset'] = 0
+                                            if args.developerMode and args.debugmode >= 1:
+                                                print(f"[TC] stream parser initialized: spec={_spec}, qm={_qm}")
+                                        except Exception as _tc_init_err:
+                                            print(f"[TC] stream parser init failed: {_tc_init_err}")
+                                            genparams['tc_stream_parser'] = None
+
+                                    _parser = genparams.get('tc_stream_parser')
+                                    if _parser is not None:
+                                        # Feed all content accumulated since the last iteration.
+                                        _offset = genparams.get('tc_parser_ec_offset', 0)
+                                        _new_content = ec[_offset:]
+                                        genparams['tc_parser_ec_offset'] = len(ec)
+                                        if _new_content:
+                                            if args.developerMode and args.debugmode >= 1:
+                                                print(f"[TC] feeding {len(_new_content)} chars to parser, preview={_new_content[:60]!r}")
+                                            for _ev in _parser.feed(_new_content):
+                                                if _ev[0] == 'name':
+                                                    self.inToolcallStream = True
+                                                    _tool_call_id = f"call_{req_id_suffix}"
+                                                    _name_ev = json.dumps({"id": chatcmpl_id, "object": "chat.completion.chunk", "created": int(time.time()), "model": modelNameToReturn, "choices": [{"index": 0, "finish_reason": None, "delta": {"role": "assistant", "tool_calls": [{"index": 0, "id": _tool_call_id, "type": "function", "function": {"name": _ev[1], "arguments": ""}}]}}]})
+                                                    await self.send_oai_sse_event(_name_ev)
+                                                    if args.developerMode and args.debugmode >= 1:
+                                                        print(f"[TC] name emitted: {_ev[1]!r}")
+                                                elif _ev[0] == 'args_chunk':
+                                                    _args_ev = json.dumps({"id": chatcmpl_id, "object": "chat.completion.chunk", "created": int(time.time()), "model": modelNameToReturn, "choices": [{"index": 0, "finish_reason": None, "delta": {"tool_calls": [{"index": 0, "function": {"arguments": _ev[1]}}]}}]})
+                                                    await self.send_oai_sse_event(_args_ev)
+
+                                        # On stream end, flush any content still buffered inside the parser.
+                                        if streamDone and not _parser.is_done:
+                                            for _ev in _parser.flush():
+                                                if _ev[0] == 'args_chunk':
+                                                    _args_ev = json.dumps({"id": chatcmpl_id, "object": "chat.completion.chunk", "created": int(time.time()), "model": modelNameToReturn, "choices": [{"index": 0, "finish_reason": None, "delta": {"tool_calls": [{"index": 0, "function": {"arguments": _ev[1]}}]}}]})
+                                                    await self.send_oai_sse_event(_args_ev)
+
+                                        # Finish once the parser has a complete tool call or the stream ended.
+                                        if self.inToolcallStream and (_parser.is_done or streamDone):
+                                            _finish_ev = json.dumps({"id": chatcmpl_id, "object": "chat.completion.chunk", "created": int(time.time()), "model": modelNameToReturn, "choices": [{"index": 0, "finish_reason": "tool_calls", "delta": {}}]})
+                                            await self.send_oai_sse_event(_finish_ev)
+                                            await self.send_oai_sse_event('[DONE]')
+                                            await asyncio.sleep(async_sleep_short)
+                                            self.wfile.flush()
+                                            await asyncio.sleep(0.1)
+                                            self.close_connection = True
+                                            await asyncio.sleep(0.05)
+                                            genparams['tc_true_streamed'] = True
+                                            return
+
+                                        genparams['sync_toolcall_extra_content'] = ec
+                                        continue  # suppress normal send path while parser is active
+
                                 if erc and sync_potential_toolcall_splitmatch and sync_potential_toolcall_splitmatch in erc:
                                     parts = erc.split(sync_potential_toolcall_splitmatch,1)
                                     erc = sync_potential_toolcall_splitmatch + parts[1]
@@ -7731,12 +7933,16 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                     delta["content"] = parts[0]
                                 genparams['sync_toolcall_extra_content'] = ec
                                 genparams['sync_toolcall_extra_reasoning_content'] = erc
-                                if not sync_potential_toolcall_splitmatch:
-                                    if not streamDone:
-                                        await asyncio.sleep(async_sleep_short)
-                                        continue
-                                    await asyncio.sleep(async_sleep_short)
-                                    return
+                                continue  # suppress normal send path while buffering tool call content
+                                # if not sync_potential_toolcall_splitmatch:
+                                #     if args.jinja_stream_toolcall:
+                                        
+                                #     else:
+                                #         # if not streamDone: # still generating: skip this chunk and wait for next
+                                #         #     await asyncio.sleep(async_sleep_short)
+                                #         #     continue
+                                #         # await asyncio.sleep(async_sleep_short) # generation finished: end stream handler
+                                #         # return
 
                             if need_split_final_msg: #we need to send one message without the finish reason, then send a finish reason with no msg to follow standards
                                 if api_format == 4:  # if oai chat, set format to expected openai streaming response
@@ -10136,147 +10342,151 @@ Change Mode<br>
                             self.end_headers(content_type='application/json')
                             self.wfile.write(genresp)
                         elif api_format == 4 and genparams.get('using_openai_tools', False): #special case, fake streaming for openai tool calls
-                            # we only send content_text and reasoning_text if tools aren't used. they contain the balance of the output after sync_toolcall_potential_triggered was triggered
-                            content_text = genparams.get('sync_toolcall_extra_content', "") #populated by the sse call, we don't use gendat['choices'][0]['message'].get('content', None)
-                            reasoning_text = genparams.get('sync_toolcall_extra_reasoning_content', "")
-                            toolsdata_res = []
-                            try:
-                                toolsdata_res = gendat['choices'][0]['message']['tool_calls']
-                                if toolsdata_res and len(toolsdata_res)>0:
-                                    toolsdata_res[0]["index"] = 0 # need to add an index for OWUI
-                            except Exception:
+                            if genparams.get('tc_true_streamed', False):
+                                # True streaming already sent all chunks (meta, args, finish_reason, [DONE]) in handle_sse_stream
+                                self.close_connection = True
+                            else:
+                                # we only send content_text and reasoning_text if tools aren't used. they contain the balance of the output after sync_toolcall_potential_triggered was triggered
+                                content_text = genparams.get('sync_toolcall_extra_content', "") #populated by the sse call, we don't use gendat['choices'][0]['message'].get('content', None)
+                                reasoning_text = genparams.get('sync_toolcall_extra_reasoning_content', "")
                                 toolsdata_res = []
+                                try:
+                                    toolsdata_res = gendat['choices'][0]['message']['tool_calls']
+                                    if toolsdata_res and len(toolsdata_res)>0:
+                                        toolsdata_res[0]["index"] = 0 # need to add an index for OWUI
+                                except Exception:
+                                    toolsdata_res = []
 
-                           # Send role chunk first, if needed
-                            if genparams.get('sync_toolcall_first_role_sent', False):
-                                genparams['sync_toolcall_first_role_sent'] = True
-                                chunk_role = json.dumps({
+                               # Send role chunk first, if needed
+                                if genparams.get('sync_toolcall_first_role_sent', False):
+                                    genparams['sync_toolcall_first_role_sent'] = True
+                                    chunk_role = json.dumps({
+                                        "id": "koboldcpp",
+                                        "object": "chat.completion.chunk",
+                                        "created": int(time.time()),
+                                        "model": modelNameToReturn,
+                                        "choices": [{"index": 0, "finish_reason": None, "delta": {"role": "assistant"}}]
+                                    })
+                                    self.wfile.write(f"data: {chunk_role}\n\n".encode())
+                                    self.wfile.flush()
+
+                                # if no valid tool splitter, we have to do 100% synchronous
+                                if not content_text and not reasoning_text and genparams.get('sync_toolcall_stream_ineligible', False):
+                                    temp_content = ""
+                                    temp_reasoning = ""
+                                    try:
+                                        temp_content = gendat['choices'][0]['message'].get('content', None)
+                                    except Exception:
+                                        temp_content = None
+                                    try:
+                                        temp_reasoning = gendat['choices'][0]['message'].get('reasoning_content', None)
+                                    except Exception:
+                                        temp_reasoning = None
+                                    if temp_content and not temp_reasoning: #fix incorrect reasoning sent as content
+                                        thinkstrips = [item["start"] for item in thinkformats] #start thinking tags
+                                        thinksplitters = [item["end"] for item in thinkformats] #end thinking tags
+                                        for tsp in thinksplitters:
+                                            if tsp in temp_content:
+                                                parts = temp_content.split(tsp, 1)
+                                                temp_reasoning = parts[0]
+                                                temp_content = parts[1]
+                                                for ts in thinkstrips:
+                                                    temp_reasoning = temp_reasoning.replace(ts, "")
+
+                                    if temp_reasoning:
+                                        chunk_content = json.dumps({
+                                            "id": "koboldcpp",
+                                            "object": "chat.completion.chunk",
+                                            "created": int(time.time()),
+                                            "model": modelNameToReturn,
+                                            "choices": [{"index": 0, "finish_reason": None, "delta": {"reasoning_content": temp_reasoning}}]
+                                        })
+                                        self.wfile.write(f"data: {chunk_content}\n\n".encode())
+                                        self.wfile.flush()
+                                    if temp_content:
+                                        chunk_content = json.dumps({
+                                            "id": "koboldcpp",
+                                            "object": "chat.completion.chunk",
+                                            "created": int(time.time()),
+                                            "model": modelNameToReturn,
+                                            "choices": [{"index": 0, "finish_reason": None, "delta": {"content": temp_content}}]
+                                        })
+                                        self.wfile.write(f"data: {chunk_content}\n\n".encode())
+                                        self.wfile.flush()
+
+                                # Send tool calls incrementally in OpenAI format
+                                if toolsdata_res and len(toolsdata_res) > 0:
+                                    for idx, tool_call in enumerate(toolsdata_res):
+                                        tc_meta = {
+                                            "index": idx,
+                                            "id": tool_call.get("id", f"call_{idx}"),
+                                            "type": "function",
+                                            "function": {
+                                                "name": tool_call.get("function", {}).get("name", ""),
+                                                "arguments": ""
+                                            }
+                                        }
+                                        chunk_meta = json.dumps({
+                                            "id": "koboldcpp",
+                                            "object": "chat.completion.chunk",
+                                            "created": int(time.time()),
+                                            "model": modelNameToReturn,
+                                            "choices": [{"index": 0, "finish_reason": None, "delta": {"tool_calls": [tc_meta]}}]
+                                        })
+                                        self.wfile.write(f"data: {chunk_meta}\n\n".encode())
+                                        self.wfile.flush()
+
+                                        args_str = tool_call.get("function", {}).get("arguments", "{}")
+                                        if isinstance(args_str, dict):
+                                            args_str = json.dumps(args_str)
+                                        tc_args = {
+                                            "index": idx,
+                                            "function": {"arguments": args_str}
+                                        }
+                                        chunk_args = json.dumps({
+                                            "id": "koboldcpp",
+                                            "object": "chat.completion.chunk",
+                                            "created": int(time.time()),
+                                            "model": modelNameToReturn,
+                                            "choices": [{"index": 0, "finish_reason": None, "delta": {"tool_calls": [tc_args]}}]
+                                        })
+                                        self.wfile.write(f"data: {chunk_args}\n\n".encode())
+                                        self.wfile.flush()
+                                else:
+                                    # Send remaining buffered content if no tool calls were made
+                                    if reasoning_text:
+                                        chunk_content = json.dumps({
+                                            "id": "koboldcpp",
+                                            "object": "chat.completion.chunk",
+                                            "created": int(time.time()),
+                                            "model": modelNameToReturn,
+                                            "choices": [{"index": 0, "finish_reason": None, "delta": {"reasoning_content": reasoning_text}}]
+                                        })
+                                        self.wfile.write(f"data: {chunk_content}\n\n".encode())
+                                        self.wfile.flush()
+                                    if content_text:
+                                        chunk_content = json.dumps({
+                                            "id": "koboldcpp",
+                                            "object": "chat.completion.chunk",
+                                            "created": int(time.time()),
+                                            "model": modelNameToReturn,
+                                            "choices": [{"index": 0, "finish_reason": None, "delta": {"content": content_text}}]
+                                        })
+                                        self.wfile.write(f"data: {chunk_content}\n\n".encode())
+                                        self.wfile.flush()
+
+                                # Final chunk
+                                chunk_final = json.dumps({
                                     "id": "koboldcpp",
                                     "object": "chat.completion.chunk",
                                     "created": int(time.time()),
                                     "model": modelNameToReturn,
-                                    "choices": [{"index": 0, "finish_reason": None, "delta": {"role": "assistant"}}]
+                                    "choices": [{"index": 0, "finish_reason": "tool_calls" if (len(toolsdata_res) > 0) else currfinishreason, "delta": {}}]
                                 })
-                                self.wfile.write(f"data: {chunk_role}\n\n".encode())
+                                self.wfile.write(f"data: {chunk_final}\n\n".encode())
+                                self.wfile.write("data: [DONE]\n\n".encode())
                                 self.wfile.flush()
-
-                            # if no valid tool splitter, we have to do 100% synchronous
-                            if not content_text and not reasoning_text and genparams.get('sync_toolcall_stream_ineligible', False):
-                                temp_content = ""
-                                temp_reasoning = ""
-                                try:
-                                    temp_content = gendat['choices'][0]['message'].get('content', None)
-                                except Exception:
-                                    temp_content = None
-                                try:
-                                    temp_reasoning = gendat['choices'][0]['message'].get('reasoning_content', None)
-                                except Exception:
-                                    temp_reasoning = None
-                                if temp_content and not temp_reasoning: #fix incorrect reasoning sent as content
-                                    thinkstrips = [item["start"] for item in thinkformats] #start thinking tags
-                                    thinksplitters = [item["end"] for item in thinkformats] #end thinking tags
-                                    for tsp in thinksplitters:
-                                        if tsp in temp_content:
-                                            parts = temp_content.split(tsp, 1)
-                                            temp_reasoning = parts[0]
-                                            temp_content = parts[1]
-                                            for ts in thinkstrips:
-                                                temp_reasoning = temp_reasoning.replace(ts, "")
-
-                                if temp_reasoning:
-                                    chunk_content = json.dumps({
-                                        "id": "koboldcpp",
-                                        "object": "chat.completion.chunk",
-                                        "created": int(time.time()),
-                                        "model": modelNameToReturn,
-                                        "choices": [{"index": 0, "finish_reason": None, "delta": {"reasoning_content": temp_reasoning}}]
-                                    })
-                                    self.wfile.write(f"data: {chunk_content}\n\n".encode())
-                                    self.wfile.flush()
-                                if temp_content:
-                                    chunk_content = json.dumps({
-                                        "id": "koboldcpp",
-                                        "object": "chat.completion.chunk",
-                                        "created": int(time.time()),
-                                        "model": modelNameToReturn,
-                                        "choices": [{"index": 0, "finish_reason": None, "delta": {"content": temp_content}}]
-                                    })
-                                    self.wfile.write(f"data: {chunk_content}\n\n".encode())
-                                    self.wfile.flush()
-
-                            # Send tool calls incrementally in OpenAI format
-                            if toolsdata_res and len(toolsdata_res) > 0:
-                                for idx, tool_call in enumerate(toolsdata_res):
-                                    tc_meta = {
-                                        "index": idx,
-                                        "id": tool_call.get("id", f"call_{idx}"),
-                                        "type": "function",
-                                        "function": {
-                                            "name": tool_call.get("function", {}).get("name", ""),
-                                            "arguments": ""
-                                        }
-                                    }
-                                    chunk_meta = json.dumps({
-                                        "id": "koboldcpp",
-                                        "object": "chat.completion.chunk",
-                                        "created": int(time.time()),
-                                        "model": modelNameToReturn,
-                                        "choices": [{"index": 0, "finish_reason": None, "delta": {"tool_calls": [tc_meta]}}]
-                                    })
-                                    self.wfile.write(f"data: {chunk_meta}\n\n".encode())
-                                    self.wfile.flush()
-
-                                    args_str = tool_call.get("function", {}).get("arguments", "{}")
-                                    if isinstance(args_str, dict):
-                                        args_str = json.dumps(args_str)
-                                    tc_args = {
-                                        "index": idx,
-                                        "function": {"arguments": args_str}
-                                    }
-                                    chunk_args = json.dumps({
-                                        "id": "koboldcpp",
-                                        "object": "chat.completion.chunk",
-                                        "created": int(time.time()),
-                                        "model": modelNameToReturn,
-                                        "choices": [{"index": 0, "finish_reason": None, "delta": {"tool_calls": [tc_args]}}]
-                                    })
-                                    self.wfile.write(f"data: {chunk_args}\n\n".encode())
-                                    self.wfile.flush()
-                            else:
-                                # Send remaining buffered content if no tool calls were made
-                                if reasoning_text:
-                                    chunk_content = json.dumps({
-                                        "id": "koboldcpp",
-                                        "object": "chat.completion.chunk",
-                                        "created": int(time.time()),
-                                        "model": modelNameToReturn,
-                                        "choices": [{"index": 0, "finish_reason": None, "delta": {"reasoning_content": reasoning_text}}]
-                                    })
-                                    self.wfile.write(f"data: {chunk_content}\n\n".encode())
-                                    self.wfile.flush()
-                                if content_text:
-                                    chunk_content = json.dumps({
-                                        "id": "koboldcpp",
-                                        "object": "chat.completion.chunk",
-                                        "created": int(time.time()),
-                                        "model": modelNameToReturn,
-                                        "choices": [{"index": 0, "finish_reason": None, "delta": {"content": content_text}}]
-                                    })
-                                    self.wfile.write(f"data: {chunk_content}\n\n".encode())
-                                    self.wfile.flush()
-
-                            # Final chunk
-                            chunk_final = json.dumps({
-                                "id": "koboldcpp",
-                                "object": "chat.completion.chunk",
-                                "created": int(time.time()),
-                                "model": modelNameToReturn,
-                                "choices": [{"index": 0, "finish_reason": "tool_calls" if (len(toolsdata_res) > 0) else currfinishreason, "delta": {}}]
-                            })
-                            self.wfile.write(f"data: {chunk_final}\n\n".encode())
-                            self.wfile.write("data: [DONE]\n\n".encode())
-                            self.wfile.flush()
-                            self.close_connection = True
+                                self.close_connection = True
                     except Exception as ex:
                         utfprint(ex,1)
                         print("Generate: The response could not be sent, maybe connection was terminated?")
@@ -10723,6 +10933,16 @@ def save_config_dict(filename, savdict, template):
         file.write(json.dumps(filtered,indent=2))
     return filenamestr
 
+splitmode_choices = ['layer','row','tensor']
+def splitmode_choices_to_int(value): #layer=1, row=2, tensor=3
+    if value=='layer':
+        return 1
+    elif value=='row':
+        return 2
+    elif value=='tensor':
+        return 3
+    return 1
+
 # note: customtkinter-5.2.0
 def show_gui():
     global using_gui_launcher
@@ -10851,6 +11071,7 @@ def show_gui():
         togglectxshift(1,1,1)
         togglehorde(1,1,1)
         toggletaesd(1,1,1)
+        togglesdlora(1,1,1)
         togglejinja(1,1,1)
         toggleadmin(1,1,1)
         tabbuttonaction(tabnames[curr_tab_idx])
@@ -10977,7 +11198,7 @@ def show_gui():
     blas_size_var = ctk.IntVar()
     autofit_var = ctk.IntVar()
     tensor_split_str_vars = ctk.StringVar(value="")
-    rowsplit_var = ctk.IntVar()
+    splitmode_var = ctk.StringVar(value=splitmode_choices[0])
     maingpu_var = ctk.StringVar(value="-1")
     deviceoverride_var = ctk.StringVar(value="")
 
@@ -11000,6 +11221,7 @@ def show_gui():
     jinjatemplate_var = ctk.StringVar()
     jinja_var = ctk.IntVar(value=0)
     jinja_tools_var = ctk.IntVar(value=0)
+    jinja_stream_toolcall_var = ctk.IntVar(value=0)
     jinja_kwargs_var = ctk.StringVar()
     moeexperts_var = ctk.StringVar(value=str(-1))
     moecpu_var = ctk.StringVar(value=str(0))
@@ -11030,7 +11252,7 @@ def show_gui():
 
     port_var = ctk.StringVar(value=defaultport)
     host_var = ctk.StringVar(value="")
-    multiuser_var = ctk.IntVar(value=1)
+    multiuser_var = ctk.StringVar(value=str(multiuser_concurrent_limit))
     multiplayer_var = ctk.IntVar(value=has_multiplayer)
     websearch_var = ctk.IntVar(value=0)
     horde_name_var = ctk.StringVar(value="koboldcpp")
@@ -11059,6 +11281,7 @@ def show_gui():
     sd_offload_cpu_var = ctk.IntVar(value=0)
     sd_vae_cpu_var = ctk.IntVar(value=0)
     sd_clip_gpu_var = ctk.IntVar(value=0)
+    sd_runtime_loras_var = ctk.IntVar(value=0)
     sd_vaeauto_var = ctk.IntVar(value=0)
     sd_tiled_vae_var = ctk.StringVar(value=str(default_vae_tile_threshold))
     sd_convdirect_var = ctk.StringVar(value=str(sd_convdirect_choices[0]))
@@ -11119,6 +11342,7 @@ def show_gui():
     OpenLumara_sandboxfolder_var = ctk.StringVar(value="")
     OpenLumara_apiurl_var = ctk.StringVar(value="")
     OpenLumara_TemporaryMode_var = ctk.IntVar(value=0)
+    OpenLumara_requirelogin_var = ctk.IntVar(value=1)
 
     nozenity_var = ctk.IntVar(value=0)
 
@@ -11165,7 +11389,6 @@ def show_gui():
 
     def makelabelcombobox(parent, text, variable=None, row=0, width=50, command=None, padx=8,tooltiptxt="", values=[], labelpadx=8):
         label = makelabel(parent, text, row, 0, tooltiptxt, padx=labelpadx)
-        label=None
         combo = ctk.CTkComboBox(parent, variable=variable, width=width, values=values, state="readonly")
         if command is not None and variable is not None:
             variable.trace_add("write", command)
@@ -11566,7 +11789,9 @@ def show_gui():
             CUDA_quick_gpu_selector_box.grid(row=3, column=1, padx=8, pady=1, stick="nw")
             maingpu_label.grid(row=8, column=0, padx = 270, pady=1, stick="nw")
             maingpu_entry.grid(row=8, column=0, padx = 340, pady=1, stick="nw")
-            lowvram_box.grid(row=4, column=0, padx=8, pady=1,  stick="nw")
+            lowvram_box.grid(row=4, column=0, padx=8, pady=1, stick="nw")
+            splitmode_box.grid(row=4, column=0, padx=230, pady=1, stick="nw")
+            splitmode_box_label.grid(row=4, column=0, padx=160, pady=1, stick="nw")
         else:
             quick_gpuname_label.grid_remove()
             gpuname_label.grid_remove()
@@ -11577,11 +11802,12 @@ def show_gui():
             maingpu_label.grid_remove()
             maingpu_entry.grid_remove()
             lowvram_box.grid_remove()
+            splitmode_box.grid_remove()
+            splitmode_box_label.grid_remove()
 
         if index == "Use CUDA" or index == "Use hipBLAS (ROCm)":
-            mmq_box.grid(row=4, column=0, padx=160, pady=1,  stick="nw")
+            mmq_box.grid(row=4, column=0, padx=340, pady=1,  stick="nw")
             quick_mmq_box.grid(row=4, column=1, padx=8, pady=1,  stick="nw")
-            splitmode_box.grid(row=4, column=0, padx=300, pady=1,  stick="nw")
             tensor_split_label.grid(row=8, column=0, padx = 8, pady=1, stick="nw")
             tensor_split_entry.grid(row=8, column=0, padx = 160, pady=1, stick="nw")
         else:
@@ -11589,7 +11815,6 @@ def show_gui():
             quick_mmq_box.grid_remove()
             tensor_split_label.grid_remove()
             tensor_split_entry.grid_remove()
-            splitmode_box.grid_remove()
 
         if index == "Use Vulkan" or index == "Use Vulkan (Old CPU)":
             tensor_split_label.grid(row=8, column=0, padx = 8, pady=1, stick="nw")
@@ -11694,8 +11919,8 @@ def show_gui():
     gpuname_label.grid(row=3, column=0, padx=230, sticky="W")
     gpuname_label.configure(text_color="#ffff00")
     lowvram_box = makecheckbox(hardware_tab,  "No KV offload", lowvram_var, 4,0, tooltiptxt='Avoid offloading KV Cache or scratch buffers to VRAM.\nAllows more layers to fit, but may result in a large speed loss.')
-    mmq_box = makecheckbox(hardware_tab,  "Use MMQ", mmq_var, 4,0,padx=160, tooltiptxt="Enable MMQ mode to use finetuned kernels instead of default CuBLAS/HipBLAS for prompt processing.\nRead the wiki. Speed may vary.")
-    splitmode_box = makecheckbox(hardware_tab,  "Row-Split", rowsplit_var, 4,0,padx=300, tooltiptxt="Split rows across GPUs instead of splitting layers and KV across GPUs.\nUses the main GPU for small tensors and intermediate results. Speed may vary.")
+    mmq_box = makecheckbox(hardware_tab,  "Use MMQ", mmq_var, 4,0,padx=340, tooltiptxt="Enable MMQ mode to use finetuned kernels instead of default CuBLAS/HipBLAS for prompt processing.\nRead the wiki. Speed may vary.")
+    splitmode_box,splitmode_box_label = makelabelcombobox(hardware_tab, "SplitMode: ", splitmode_var, 4, width=(80), padx=(230), labelpadx=160, tooltiptxt="How to split the model across multiple GPUs. Layer split is default.", values=splitmode_choices)
     gpu_layers_entry,gpu_layers_label = makelabelentry(hardware_tab,"GPU Layers:", gpulayers_var, 6, 50, padx=160,singleline=True,tooltip="How many layers to offload onto the GPU.\nUsage varies based on model type and increases with model and context size.\nRequires some trial and error to find the best fit value.\n\nNote: The auto estimation is often inaccurate! Please set layers yourself for best results!")
     autofit_padding_entry,autofit_padding_label = makelabelentry(hardware_tab,"Autofit Padding (MB):", autofit_padding_var, 6, 50, padx=160,singleline=True,tooltip="How much spare allowance in MB should autofit reserve? If it's too little, the load might fail.")
     layercounter_label = ctk.CTkLabel(hardware_tab, text="")
@@ -11788,17 +12013,21 @@ def show_gui():
     def togglejinja(a,b,c):
         if jinja_var.get()==1:
             jinjatoolsbox.grid()
+            jinja_stream_toolcall_box.grid()
             jinjakwargsbox.grid()
             jinjakwargsboxlbl.grid()
         else:
             jinja_tools_var.set(0)
+            jinja_stream_toolcall_var.set(0)
             jinjatoolsbox.grid_remove()
+            jinja_stream_toolcall_box.grid_remove()
             jinjakwargsbox.grid_remove()
             jinjakwargsboxlbl.grid_remove()
         changed_gpulayers_estimate()
     makecheckbox(context_tab, "Use Jinja", jinja_var, row=45, command=togglejinja, tooltiptxt="Enables using jinja chat template formatting for chat completions endpoint. Other endpoints are unaffected.")
     jinjatoolsbox = makecheckbox(context_tab, "Jinja for Tools", jinja_tools_var, row=45 ,padx=(140), tooltiptxt="Allows jinja even with tool calls. If unchecked, jinja will be disabled when tools are used.")
-    jinjakwargsbox,jinjakwargsboxlbl = makelabelentry(context_tab, "Jj.Kwargs:", jinja_kwargs_var, row=45, width=80, padx=(350), singleline=True, tooltip='Set additiona fields for Jinja JSON template parser, must be a valid json object.\nSpecified as JSON fields: {"KEY1":"VALUE1", "KEY2":"VALUE2"...}', labelpadx=285)
+    jinja_stream_toolcall_box = makecheckbox(context_tab, "Stream ToolCalls", jinja_stream_toolcall_var, row=45, padx=(295), tooltiptxt="When jinja tool calls are active, stream the tool call content as tokens are generated rather than buffering silently until generation is complete.")
+    jinjakwargsbox,jinjakwargsboxlbl = makelabelentry(context_tab, "Jj.Kwargs:", jinja_kwargs_var, row=45, width=80, padx=(480), singleline=True, tooltip='Set additiona fields for Jinja JSON template parser, must be a valid json object.\nSpecified as JSON fields: {"KEY1":"VALUE1", "KEY2":"VALUE2"...}', labelpadx=415)
     jinja_var.trace_add("write", togglejinja)
     makelabelentry(context_tab, "MoE Experts:", moeexperts_var, row=55, padx=(86), singleline=True, tooltip="Override number of MoE experts.")
     moecpu_box,moecpu_box_lbl = makelabelentry(context_tab, "MoE CPU Layers:", moecpu_var, row=55, padx=(334), singleline=True, tooltip="Force Mixture of Experts (MoE) weights of the first N layers to the CPU.\nSetting it higher than GPU layers has no effect.", labelpadx=(230))
@@ -11850,8 +12079,7 @@ def show_gui():
     makelabelentry(network_tab, "Port: ", port_var, 1, 150,tooltip=f"Select the port to host the KoboldCPP webserver.\n(Defaults to {defaultport})")
     makelabelentry(network_tab, "Host: ", host_var, 2, 150,tooltip="Select a specific host interface to bind to.\n(Defaults to all)")
 
-    makecheckbox(network_tab, "Multiuser Mode", multiuser_var, 3,tooltiptxt="Allows requests by multiple different clients to be queued and handled in sequence.")
-    makecheckbox(network_tab, "Remote Tunnel", remotetunnel_var, 3, 1,tooltiptxt="Creates a trycloudflare tunnel.\nAllows you to access koboldcpp from other devices over an internet URL.")
+    makecheckbox(network_tab, "Remote Tunnel", remotetunnel_var, 3,tooltiptxt="Creates a trycloudflare tunnel.\nAllows you to access koboldcpp from other devices over an internet URL.")
     makecheckbox(network_tab, "Quiet Mode", quietmode, 4,tooltiptxt="Prevents all generation related terminal output from being displayed.")
     makecheckbox(network_tab, "NoCertify Mode (Insecure)", nocertifymode, 4, 1,tooltiptxt="Allows insecure SSL connections. Use this if you have cert errors and need to bypass certificate restrictions.")
     makecheckbox(network_tab, "Shared Multiplayer", multiplayer_var, 5,tooltiptxt="Hosts a shared multiplayer session that others can join.")
@@ -11861,9 +12089,10 @@ def show_gui():
     makefileentry(network_tab, "SSL Key:", "Select SSL key.pem file", ssl_key_var, 9, width=200, filetypes=[("Unencrypted Key PEM", "*.pem")], singlerow=True, singlecol=False, tooltiptxt="Select your unencrypted .pem SSL key file for https.\nCan be generated with OpenSSL.")
     makelabelentry(network_tab, "Password: ", password_var, 10, 200,tooltip="Enter a password required to use this instance.\nThis key will be required for all text endpoints.\nImage endpoints are not secured.")
 
-    makelabelentry(network_tab, "Max Req. Size (MB):", maxrequestsize_var, row=20, width=50, tooltip="Specify a max request payload size. Any requests to the server larger than this size will be dropped. Do not change if unsure.")
-    makelabelentry(network_tab, "IP Rate Limiter (s):", ratelimit_var, row=22, width=50, tooltip="Rate limits each IP to allow a new request once per X seconds. Do not change if unsure.")
-    makelabelentry(network_tab, "Request Timeout (s):", reqtimeout_var, row=24, width=50, tooltip="Timeout in seconds for HTTP requests")
+    makelabelentry(network_tab, "Multiuser Queue:", multiuser_var, row=20, width=50, tooltip="Maximum queued incoming requests.")
+    makelabelentry(network_tab, "Max Req. Size (MB):", maxrequestsize_var, row=22, width=50, tooltip="Specify a max request payload size. Any requests to the server larger than this size will be dropped. Do not change if unsure.")
+    makelabelentry(network_tab, "IP Rate Limiter (s):", ratelimit_var, row=24, width=50, tooltip="Rate limits each IP to allow a new request once per X seconds. Do not change if unsure.")
+    makelabelentry(network_tab, "Request Timeout (s):", reqtimeout_var, row=26, width=50, tooltip="Timeout in seconds for HTTP requests")
 
 
     # Horde Tab
@@ -11896,18 +12125,41 @@ def show_gui():
     # Image Gen Tab
 
     images_tab = tabcontent["Image Gen"]
-    makefileentry(images_tab, "Image Gen. Model (safetensors/gguf):", "Select Image Gen Model File", sd_model_var, 1, width=280, singlecol=True, filetypes=[("*.safetensors *.gguf","*.safetensors *.gguf")], tooltiptxt="Select a .safetensors or .gguf Image Generation model file on disk to be loaded.")
-    makelabelentry(images_tab, "Clamp Resolution Limit (Hard):", sd_clamped_var, 4, 50, padx=(190),singleline=True,tooltip="Limit generation steps and output image size for shared use.\nSet to 0 to disable, otherwise value is clamped to the max size limit (min 512px).")
-    makelabelentry(images_tab, "(Soft):", sd_clamped_soft_var, 4, 50, padx=(290),singleline=True,tooltip="Square image size restriction, to protect the server against memory crashes.\nAllows width-height tradeoffs, eg. 640 allows 640x640 and 512x768\nLeave at 0 for the default value: 832 for SD1.5/SD2, 1024 otherwise.",labelpadx=(250))
+    makefileentry(images_tab, "Image Model:", "Select Image Gen Model File (safetensors/gguf)", sd_model_var, 1, width=280, singlerow=True, filetypes=[("*.safetensors *.gguf","*.safetensors *.gguf")], tooltiptxt="Select a .safetensors or .gguf Image Generation model file on disk to be loaded.")
+
+    def togglesdlora(a,b,c):
+        if sd_runtime_loras_var.get()==1:
+            imglora1.grid_remove()
+            imglora2.grid_remove()
+            imglora3.grid_remove()
+            imglora4.grid_remove()
+            imglora5.grid_remove()
+            imglora6.grid()
+            imglora7.grid()
+            imglora8.grid()
+        else:
+            imglora1.grid()
+            imglora2.grid()
+            imglora3.grid()
+            imglora4.grid()
+            imglora5.grid()
+            imglora6.grid_remove()
+            imglora7.grid_remove()
+            imglora8.grid_remove()
+
+    makelabelentry(images_tab, "Clamp Resolution (Hard):", sd_clamped_var, 14, 50, padx=(150),singleline=True,tooltip="Limit generation steps and output image size for shared use.\nSet to 0 to disable, otherwise value is clamped to the max size limit (min 512px).")
+    makelabelentry(images_tab, "(Soft):", sd_clamped_soft_var, 14, 50, padx=(250),singleline=True,tooltip="Square image size restriction, to protect the server against memory crashes.\nAllows width-height tradeoffs, eg. 640 allows 640x640 and 512x768\nLeave at 0 for the default value: 832 for SD1.5/SD2, 1024 otherwise.",labelpadx=(210))
+    makecheckbox(images_tab, "Runtime LoRAs", sd_runtime_loras_var, 14,command=togglesdlora, padx=(310), tooltiptxt="Allow using LoRAs in a directory dynamically (syntax is <lora:name:weight>)")
+
     makelabelentry(images_tab, "ImgThreads:" , sd_threads_var, 8, 40,padx=(280),singleline=True,tooltip="How many threads to use during image generation.\nIf left blank, uses same value as threads.",labelpadx=(200))
     makelabelentry(images_tab, "ImgGPU:" , sd_main_gpu_var, 8, 40,padx=394,singleline=True,tooltip="Which GPU ID to use for Image Gen?\nIf left blank or -1, uses default value.",labelpadx=340)
-
     sd_model_var.trace_add("write", gui_changed_modelfile)
     makelabelcombobox(images_tab, "Compress Weights: ", sd_quant_var, 8, width=(60), padx=(126), labelpadx=8, tooltiptxt="Quantizes the SD model weights to save memory.\nHigher levels save more memory, and cause more quality degradation.", values=sd_quant_choices)
     sd_quant_var.trace_add("write", changed_gpulayers_estimate)
 
-    makefileentry(images_tab, "Image LoRA:", "Select SD lora file",sd_lora_var, 20, width=160, singlerow=True, filetypes=[("*.safetensors *.gguf", "*.safetensors *.gguf")],tooltiptxt="Select a .safetensors or .gguf SD LoRA model file to be loaded. Should be unquantized!", multiple=True)
-    makelabelentry(images_tab, "Multiplier:" , sd_loramult_var, 20, 50,padx=(390),singleline=True,tooltip="What mutiplier value to apply the SD LoRA with.",labelpadx=(330))
+    imglora1,imglora2,imglora3 = makefileentry(images_tab, "Image LoRAs:", "Select SD lora files to load",sd_lora_var, 20, width=160, singlerow=True, filetypes=[("*.safetensors *.gguf", "*.safetensors *.gguf")],tooltiptxt="Select multiple .safetensors or .gguf SD LoRA model files to be loaded. Should be unquantized!", multiple=True)
+    imglora4,imglora5 = makelabelentry(images_tab, "Multiplier:" , sd_loramult_var, 20, 50,padx=(390),singleline=True,tooltip="What mutiplier value to apply the SD LoRA with.",labelpadx=(330))
+    imglora6,imglora7,imglora8 = makefileentry(images_tab, "LoRA Dir:", "Select directory for runtime lora triggers",sd_lora_var, 20, width=280, singlerow=True, dialog_type=2,tooltiptxt="Select directory containing LoRAs that can be used at runtime.\nSyntax is <lora:name:weight>")
 
     makefileentry(images_tab, "T5-XXL File:", "Select T5-XXL model file (SD3, Flux, WAN)",sd_t5xxl_var, 24, width=280, singlerow=True, filetypes=[("*.safetensors *.gguf","*.safetensors *.gguf")],tooltiptxt="Select a .safetensors t5xxl file to be loaded.")
     makefileentry(images_tab, "Clip-1 File:", "Select First Clip model file (Clip-L for SD3 or Flux, or other vision encoder)",sd_clip1_var, 26, width=280, singlerow=True, filetypes=[("*.safetensors *.gguf","*.safetensors *.gguf")],tooltiptxt="Select a .safetensors Clip-1 file to be loaded.\nThis is Clip-L for SD3 and Flux, Clip Vision for WAN, and Qwen2.5VL for QwenImage")
@@ -12087,6 +12339,7 @@ def show_gui():
     makefileentry(OpenLumara_tab, "Sandbox Folder (required):", "Select OpenLumara sandbox folder", OpenLumara_sandboxfolder_var, 7, width=220, dialog_type=2, tooltiptxt="Path to the sandbox directory used by OpenLumara for agent file access.")
     makelabelentry(OpenLumara_tab, "OAI API URL (optional):", OpenLumara_apiurl_var, 9, 220, tooltip=f"Overrides the API URL in the OpenLumara config.\nLeave blank to use the value already in the config.\nExample: https://localhost:{defaultport}/v1")
     makecheckbox(OpenLumara_tab, "Temporary Mode", OpenLumara_TemporaryMode_var, 11, tooltiptxt="Enable temporary mode for OpenLumara. Prevents writing through most tools to disk. Does not apply to shell commands.")
+    makecheckbox(OpenLumara_tab, "Require Login", OpenLumara_requirelogin_var, 12, tooltiptxt="Require users to log in before accessing the OpenLumara WebUI. Enabled by default for security. Default credentials are admin:admin, change these in the OpenLumara webui or config file after the first launch.")
 
     # refresh
     runopts_var.trace_add("write", changerunmode)
@@ -12097,6 +12350,8 @@ def show_gui():
     toggleflashattn(1,1,1)
     togglectxshift(1,1,1)
     togglehorde(1,1,1)
+    toggletaesd(1,1,1)
+    togglesdlora(1,1,1)
     togglejinja(1,1,1)
     toggleadmin(1,1,1)
 
@@ -12139,6 +12394,8 @@ def show_gui():
         qkvopt = quantkv_text[quantkv_var.get()].lower() if (quantkv_var.get()>=0 and quantkv_var.get() < len(quantkv_text)) else "f16"
         args.quantkv = qkvopt
         args.lowvram = lowvram_var.get()==1
+        args.nommq = mmq_var.get()==1
+        args.splitmode = splitmode_var.get() if splitmode_var.get() in splitmode_choices else splitmode_choices[0]
 
         gpuchoiceidx = 0
         args.usecpu = False
@@ -12153,12 +12410,6 @@ def show_gui():
                 args.usecuda = ["normal"]
             else:
                 args.usecuda = ["normal",str(gpuchoiceidx)]
-            if mmq_var.get()==1:
-                args.usecuda.append("mmq")
-            else:
-                args.usecuda.append("nommq")
-            if rowsplit_var.get()==1:
-                args.usecuda.append("rowsplit")
         if runopts_var.get() == "Use Vulkan" or runopts_var.get() == "Use Vulkan (Old CPU)" or runopts_var.get() == "Use Vulkan (Older CPU)":
             if gpu_choice_var.get()=="All":
                 args.usevulkan = []
@@ -12220,6 +12471,7 @@ def show_gui():
         args.nobostoken = (nobostoken_var.get()==1)
         args.jinja = (jinja_var.get()==1)
         args.jinja_tools = (jinja_tools_var.get()==1)
+        args.jinja_stream_toolcall = (jinja_stream_toolcall_var.get()==1)
         args.jinja_kwargs = jinja_kwargs_var.get()  if jinja_kwargs_var.get() != "" else ""
         args.jinjatemplate = jinjatemplate_var.get() if jinjatemplate_var.get() != "" else ""
         args.enableguidance = (enableguidance_var.get()==1)
@@ -12270,7 +12522,7 @@ def show_gui():
         args.port_param = defaultport if port_var.get()=="" else int(port_var.get())
         args.port = args.port_param
         args.host = host_var.get()
-        args.multiuser = multiuser_var.get()
+        args.multiuser = int(multiuser_var.get()) if multiuser_var.get()!="" else multiuser_concurrent_limit
         args.multiplayer = (multiplayer_var.get()==1)
         args.websearch = (websearch_var.get()==1)
         args.maxrequestsize = int(maxrequestsize_var.get()) if maxrequestsize_var.get()!="" else 32
@@ -12368,6 +12620,7 @@ def show_gui():
         args.OpenLumara_sandboxfolder = OpenLumara_sandboxfolder_var.get()
         args.OpenLumara_apiurl = OpenLumara_apiurl_var.get()
         args.OpenLumara_TemporaryMode = (OpenLumara_TemporaryMode_var.get()==1)
+        args.OpenLumara_requirelogin = (OpenLumara_requirelogin_var.get()==1)
 
     def import_vars(mydict):
         global importvars_in_progress
@@ -12416,8 +12669,6 @@ def show_gui():
                     runopts_var.set(cublas_option)
                 elif hipblas_option:
                     runopts_var.set(hipblas_option)
-                mmq_var.set(1 if "mmq" in mydict["usecuda"] else 0)
-                rowsplit_var.set(1 if "rowsplit" in mydict["usecuda"] else 0)
                 gpu_choice_var.set("All")
                 for g in range(4):
                     if str(g) in mydict["usecuda"]:
@@ -12513,6 +12764,7 @@ def show_gui():
         nobostoken_var.set(mydict["nobostoken"] if ("nobostoken" in mydict) else 0)
         jinja_var.set(mydict["jinja"] if ("jinja" in mydict) else 0)
         jinja_tools_var.set(mydict["jinja_tools"] if ("jinja_tools" in mydict) else 0)
+        jinja_stream_toolcall_var.set(mydict["jinja_stream_toolcall"] if ("jinja_stream_toolcall" in mydict) else 0)
         jinja_kwargs = (mydict["jinja_kwargs"] if ("jinja_kwargs" in mydict and mydict["jinja_kwargs"]) else "")
         if isinstance(jinja_kwargs, type({})):
             jinja_kwargs = json.dumps(jinja_kwargs)
@@ -12543,6 +12795,9 @@ def show_gui():
             else:
                 lora_var.set(mydict["lora"][0])
         loramult_var.set(str(mydict["loramult"]) if ("loramult" in mydict and mydict["loramult"]) else "1.0")
+
+        splitmode_var.set(mydict["splitmode"] if ("splitmode" in mydict and mydict["splitmode"] in splitmode_choices) else splitmode_choices[0])
+        mmq_var.set(0 if "nommq" in mydict and mydict["nommq"] else 1)
 
         mmproj_var.set(mydict["mmproj"] if ("mmproj" in mydict and mydict["mmproj"]) else "")
         mmprojcpu_var.set(1 if ("mmprojcpu" in mydict and mydict["mmprojcpu"]) else 0)
@@ -12575,7 +12830,7 @@ def show_gui():
         chatcompletionsadapter_var.set(mydict["chatcompletionsadapter"] if ("chatcompletionsadapter" in mydict and mydict["chatcompletionsadapter"]) else "")
         port_var.set(mydict["port_param"] if ("port_param" in mydict and mydict["port_param"]) else defaultport)
         host_var.set(mydict["host"] if ("host" in mydict and mydict["host"]) else "")
-        multiuser_var.set(mydict["multiuser"] if ("multiuser" in mydict) else 1)
+        multiuser_var.set(mydict["multiuser"] if ("multiuser" in mydict and mydict["multiuser"]>1) else multiuser_concurrent_limit)
         multiplayer_var.set(mydict["multiplayer"] if ("multiplayer" in mydict) else 0)
         websearch_var.set(mydict["websearch"] if ("websearch" in mydict) else 0)
         download_dir_var.set(mydict["downloaddir"] if ("downloaddir" in mydict and mydict["downloaddir"]) else "")
@@ -12608,12 +12863,17 @@ def show_gui():
         sd_upscaler_var.set(mydict["sdupscaler"] if ("sdupscaler" in mydict and mydict["sdupscaler"]) else "")
         sd_vaeauto_var.set(1 if ("sdvaeauto" in mydict and mydict["sdvaeauto"]) else 0)
         sd_tiled_vae_var.set(str(mydict["sdtiledvae"]) if ("sdtiledvae" in mydict and mydict["sdtiledvae"]) else str(default_vae_tile_threshold))
-        sd_lora_var.set("|".join(sanitize_lora_list(mydict.get('sdlora'))))
+        sdl_sanitized = sanitize_lora_list(mydict.get('sdlora'))
+        sd_lora_var.set("|".join(sdl_sanitized))
         sd_loramult_var.set(" ".join(f"{n:.3f}".rstrip('0').rstrip('.') for n in mydict.get("sdloramult", [])))
         if "sdmaingpu" in mydict:
             sd_main_gpu_var.set(mydict["sdmaingpu"])
         else:
             sd_main_gpu_var.set("-1")
+        if sdl_sanitized and len(sdl_sanitized)==1 and os.path.isdir(sdl_sanitized[0]):
+            sd_runtime_loras_var.set(1)
+        else:
+            sd_runtime_loras_var.set(0)
 
         gendefaults = (mydict["gendefaults"] if ("gendefaults" in mydict and mydict["gendefaults"]) else "")
         if isinstance(gendefaults, type({})):
@@ -12671,6 +12931,7 @@ def show_gui():
         OpenLumara_sandboxfolder_var.set(mydict["OpenLumara_sandboxfolder"] if ("OpenLumara_sandboxfolder" in mydict and mydict["OpenLumara_sandboxfolder"]) else "")
         OpenLumara_apiurl_var.set(mydict["OpenLumara_apiurl"] if ("OpenLumara_apiurl" in mydict and mydict["OpenLumara_apiurl"]) else "")
         OpenLumara_TemporaryMode_var.set(1 if "OpenLumara_TemporaryMode" in mydict and mydict["OpenLumara_TemporaryMode"] else 0)
+        OpenLumara_requirelogin_var.set(0 if "OpenLumara_requirelogin" in mydict and not mydict["OpenLumara_requirelogin"] else 1)
 
         importvars_in_progress = False
         gui_changed_modelfile()
@@ -13078,6 +13339,10 @@ def convert_invalid_args(args):
         dict["usecuda"] = dict["usecublas"]
     if "usecuda" in dict and dict["usecuda"] and "lowvram" in dict["usecuda"]:
         dict["lowvram"] = True
+    if "usecuda" in dict and dict["usecuda"] and "nommq" in dict["usecuda"]:
+        dict["nommq"] = True
+    if "usecuda" in dict and dict["usecuda"] and "rowsplit" in dict["usecuda"]:
+        dict["splitmode"] = "row"
     if "batchsize" not in dict and "blasbatchsize" in dict and dict["blasbatchsize"]:
         dict["batchsize"] = dict["blasbatchsize"]
     if "sdconfig" in dict and dict["sdconfig"] and len(dict["sdconfig"])>0:
@@ -13123,6 +13388,9 @@ def convert_invalid_args(args):
         dict["sdclip2"] = dict["sdclipg"]
     if "jinja_tools" in dict and dict["jinja_tools"]:
         dict["jinja"] = True
+    if "jinja_stream_toolcall" in dict and dict["jinja_stream_toolcall"]:
+        dict["jinja"] = True
+        dict["jinja_tools"] = True
     if "jinja_kwargs" in dict and dict["jinja_kwargs"]:
         dict["jinja"] = True
     if "sdgendefaults" in dict and "gendefaults" not in dict:
@@ -13233,7 +13501,7 @@ def reload_from_new_args(newargs):
         args.istemplate = False
         newargs = convert_invalid_args(newargs)
         for key, value in newargs.items(): #do not overwrite certain values
-            if key not in ["remotetunnel","showgui","port","host","port_param","admin","adminpassword","password","adminunloadtimeout","routermode","admindir","admintextmodelsdir","admindatadir","admindocsdir","adminallowhf","developerMode","fsmaxsize","fsdir","fsdirect","OpenLumara", "OpenLumara_configfile", "OpenLumara_datadir", "OpenLumara_sandboxfolder", "OpenLumara_apiurl","ssl","nocertify","benchmark","prompt","config","baseconfig","downloaddir"]:
+            if key not in ["remotetunnel","showgui","port","host","port_param","admin","adminpassword","password","adminunloadtimeout","routermode","admindir","admintextmodelsdir","admindatadir","admindocsdir","adminallowhf","developerMode","fsmaxsize","fsdir","fsdirect","OpenLumara", "OpenLumara_configfile", "OpenLumara_datadir", "OpenLumara_sandboxfolder", "OpenLumara_apiurl", "OpenLumara_requirelogin","ssl","nocertify","benchmark","prompt","config","baseconfig","downloaddir"]:
                 setattr(args, key, value)
         setattr(args,"showgui",False)
         setattr(args,"benchmark",False)
@@ -13304,6 +13572,8 @@ def convert_args_to_template(savdict):
     savdict["draftgpusplit"] = None
     savdict["config"] = None
     savdict["ttsthreads"] = 0
+    savdict["nommq"] = False
+    savdict["splitmode"] = splitmode_choices[0]
     return savdict
 
 def save_config_cli(filename, template):
@@ -13767,6 +14037,7 @@ def launch_OpenLumara(launch_args):
                 "--api.max_context", f"{launch_args.contextsize if launch_args.contextsize is not None else 8192}",
                 "--channels.settings.webui.host", "0.0.0.0",
                 "--channels.settings.webui.port", f"{OpenLumara_default_webui_port}",
+                "--channels.settings.webui.require_login", "true" if (launch_args.OpenLumara_requirelogin is None or launch_args.OpenLumara_requirelogin) else "false",
                 "--core.data_folder", f"{launch_args.OpenLumara_datadir if launch_args.OpenLumara_datadir is not None else 'data'}",
                 "--modules.settings.sandboxed_files.sandbox_folder", f"{launch_args.OpenLumara_sandboxfolder if launch_args.OpenLumara_sandboxfolder is not None else 'sandbox'}",
                 "--modules.settings.coder.sandbox_folder", f"{launch_args.OpenLumara_sandboxfolder if launch_args.OpenLumara_sandboxfolder is not None else 'sandbox'}",
@@ -13844,14 +14115,30 @@ def main(launch_args, default_args):
     cfgname = ""
     if args.config and len(args.config)==1: #handle initial config loading for launch
         cfgname = args.config[0] #store first so baseconfig wont overwrite it
+    
+    basecfgname = ""
+    if args.baseconfig: #handle initial base config loading for launch
+        basecfgname = args.baseconfig
 
+    if basecfgname and not cfgname: #handle initial base config loading for launch
+        if isinstance(basecfgname, str):
+            dlfile = download_model_from_url(basecfgname,[".kcpps",".kcppt"])
+            if dlfile:
+                basecfgname = dlfile
+        if isinstance(basecfgname, str) and os.path.exists(basecfgname):
+           load_config_cli(basecfgname)
     if cfgname: #handle initial config loading for launch
         if isinstance(cfgname, str):
             dlfile = download_model_from_url(cfgname,[".kcpps",".kcppt"])
             if dlfile:
                 cfgname = dlfile
         if isinstance(cfgname, str) and os.path.exists(cfgname):
-           load_config_cli(cfgname)
+            if basecfgname: # if base config was loaded, then merge the new config on top of it instead of replacing
+                load_config_cli(basecfgname) # load base config first to populate args with it
+                safeArgs = convert_invalid_args(args)
+                reload_new_config(cfgname,vars(safeArgs),True)
+            else:
+                load_config_cli(cfgname)
         elif args.ignoremissing:
             print("Ignoring missing kcpp config file...")
         else:
@@ -14128,20 +14415,14 @@ def main(launch_args, default_args):
                 input()
 
 
-def mk_lora_info(imgloras, multipliers, mock_filesystem=False):
+def mk_lora_info(imgloras, multipliers):
     first_multiplier = multipliers[0] if len(multipliers) > 0 else 1.
     lora_files = []
     lora_dirs = []
     # identify files and dirs
     for i, lora_path in enumerate(imgloras):
         multiplier = multipliers[i] if i < len(multipliers) else first_multiplier
-        if mock_filesystem:
-            print('fake filesystem access')
-            if lora_path.endswith('/'):
-                lora_dirs.append(lora_path)
-            else:
-                lora_files.append(('', lora_path, multiplier))
-        elif os.path.isfile(lora_path):
+        if os.path.isfile(lora_path):
             lora_files.append(('', lora_path, multiplier))
         elif os.path.isdir(lora_path):
             lora_dirs.append(lora_path)
@@ -14152,11 +14433,7 @@ def mk_lora_info(imgloras, multipliers, mock_filesystem=False):
     # scan all dirs
     for lora_dir in lora_dirs:
         print(f'Scanning {lora_dir} for LoRAs...')
-        if mock_filesystem:
-            print('fake directory scan')
-            files = ['lora1_makebelieve.gguf', 'lora2/makebelieve.gguf']
-        else:
-            files = scan_directory(lora_dir, ('.safetensors', '.gguf'), 1)
+        files = scan_directory(lora_dir, ('.safetensors', '.gguf'), 1)
         print(f'  found {len(files)} files under {lora_dir}')
         for file in files:
             lora_files.append((lora_dir, file, 0.0))
@@ -14175,8 +14452,7 @@ def mk_lora_info(imgloras, multipliers, mock_filesystem=False):
             # we don't know which portion of the path we can show, so omit it
             lora_file = os.path.basename(lora_path)
             preloaded = True
-        if not mock_filesystem:
-            lora_fullpath = os.path.abspath(lora_fullpath)
+        lora_fullpath = os.path.abspath(lora_fullpath)
         # dedup paths (e.g. preloaded and on directory)
         info = lora_fullmap.get(lora_fullpath)
         if info:
@@ -14506,6 +14782,13 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
         except Exception as e:
             print(f"Error loading jinja templat: {e}")
             preloaded_custom_jinja = ""
+
+    # jinja_stream_toolcall implies jinja_tools which implies jinja
+    if getattr(args, 'jinja_stream_toolcall', False):
+        args.jinja_tools = True
+        args.jinja = True
+    if args.jinja_tools:
+        args.jinja = True
 
     # sanitize and replace the default vanity name. remember me....
     if args.model_param and args.model_param!="":
@@ -15206,7 +15489,7 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
                 s_pp = float(benchmaxctx-benchlen)/t_pp
                 s_gen = float(benchlen)/t_gen
                 datetimestamp = datetime.now(timezone.utc)
-                benchflagstr = f"NoAVX2={args.noavx2} Threads={args.threads} HighPriority={args.highpriority} Cuda_Args={args.usecuda} Tensor_Split={args.tensor_split} BlasThreads={args.blasthreads} BatchSize={args.batchsize} FlashAttention={not args.noflashattention} KvCache={args.quantkv}"
+                benchflagstr = f"{str(vars(args))}"
                 print(f"\nBenchmark Completed - v{KcppVersion} Results:\n======")
                 print(f"Flags: {benchflagstr}")
                 print(f"Timestamp: {datetimestamp}")
@@ -15273,7 +15556,7 @@ if __name__ == '__main__':
     parser.add_argument("--config", metavar=('[filename]'), help="Load settings from a .kcpps file. Other arguments will be ignored", type=str, nargs=1)
     parser.add_argument("--threads","-t", metavar=('[threads]'), help="Use a custom number of threads if specified. Otherwise, uses an amount based on CPU cores", type=int, default=get_default_threads())
     compatgroup = parser.add_mutually_exclusive_group()
-    compatgroup.add_argument("--usecuda", "--usecublas", "--usehipblas", help="Use CUDA for GPU Acceleration. Requires CUDA. Enter a number afterwards to select and use 1 GPU. Leaving no number will use all GPUs.", nargs='*',metavar=('[main GPU ID] [mmq|nommq] [rowsplit]'), choices=['normal', 'lowvram', '0', '1', '2', '3', 'all', 'mmq', 'nommq', 'rowsplit'])
+    compatgroup.add_argument("--usecuda", "--usecublas", "--usehipblas", help="Use CUDA for GPU Acceleration. Requires CUDA. Enter a number afterwards to select and use 1 GPU. Leaving no number will use all GPUs.", nargs='*',metavar=('[main GPU ID]'), choices=['0','1','2','3','all',  'mmq','nommq','normal','lowvram','rowsplit'])
     compatgroup.add_argument("--usevulkan", help="Use Vulkan for GPU Acceleration. Can optionally specify one or more GPU Device ID (e.g. --usevulkan 0), leave blank to autodetect.", metavar=('[Device IDs]'), nargs='*', type=int, default=None)
     compatgroup.add_argument("--usecpu", help="Do not use any GPU acceleration (CPU Only)", action='store_true')
     parser.add_argument("--contextsize","--ctx-size", "-c", help="Controls the memory allocated for maximum context size, only change if you need more RAM for big contexts. (default 8192).",metavar=('[256 to 262144]'), type=check_range(int,256,262144), default=8192)
@@ -15288,6 +15571,8 @@ if __name__ == '__main__':
     advparser.add_argument("--maingpu","--main-gpu","-mg", help="Only used in a multi-gpu setup. Sets the index of the main GPU that will be used.",metavar=('[Device ID]'), type=int, default=-1)
     advparser.add_argument("--batchsize","--blasbatchsize","--batch-size","-b", help="Sets the batch size used in batched processing (default 512). Setting it to -1 disables batched mode, but keeps other benefits like GPU offload.", type=int,choices=[-1,16,32,64,128,256,512,1024,2048,4096], default=512)
     advparser.add_argument("--blasthreads","--batchthreads","--threadsbatch","--threads-batch", help="Use a different number of threads during batching if specified. Otherwise, has the same value as --threads",metavar=('[threads]'), type=int, default=0)
+    advparser.add_argument("--splitmode","-sm","--split-mode", help="How to split the model across multiple GPUs", metavar=('[split mode]'), type=str, choices=splitmode_choices, default=splitmode_choices[0])
+    advparser.add_argument("--nommq", help="Disables MMQ, only used for cuda backend. This flag may be removed in future.", action='store_true')
     advparser.add_argument("--lora", help="GGUF models only, applies a lora file on top of model.", metavar=('[lora_filename]'), nargs='+')
     advparser.add_argument("--loramult", metavar=('[amount]'), help="Multiplier for the Text LORA model to be applied.", type=float, default=1.0)
     advparser.add_argument("--noshift","--no-context-shift", help="If set, do not attempt to Trim and Shift the GGUF context.", action='store_true')
@@ -15302,13 +15587,13 @@ if __name__ == '__main__':
     advparser.add_argument("--usemlock","--mlock", help="Enables mlock, preventing the RAM used to load the model from being paged out. Not usually recommended.", action='store_true')
     advparser.add_argument("--noavx2", help="Do not use AVX2 instructions, a slower compatibility mode for older devices.", action='store_true')
     advparser.add_argument("--failsafe", help="Use failsafe mode, extremely old CPU compatibility mode that should work on all devices.", action='store_true')
-    advparser.add_argument("--debugmode", help="Shows additional debug info in the terminal.", nargs='?', const=1, type=int, default=0)
+    advparser.add_argument("--debugmode", help="Shows additional debug info in the terminal. Levels: -1 (Horde-quiet, suppresses non-essential prints; auto-applied when Horde args are set), 0 (default, normal output), 1 (verbose: extra slot/cache info, larger print buffers, retains horde-debug prefix). Passing the flag without a value implies 1.", nargs='?', const=1, type=int, default=0)
     advparser.add_argument("--onready", help="An optional shell command to execute after the model has been loaded.", metavar=('[shell command]'), type=str, default="",nargs=1)
     advparser.add_argument("--benchmark", help="Do not start server, instead run benchmarks. If filename is provided, appends results to provided file.", metavar=('[filename]'), nargs='?', const="stdout", type=str, default=None)
     advparser.add_argument("--prompt","-p", metavar=('[prompt]'), help="Passing a prompt string triggers a direct inference, loading the model, outputs the response to stdout and exits. Can be used alone or with benchmark.", type=str, default="")
     advparser.add_argument("--cli", help="Does not launch KoboldCpp HTTP server. Instead, enables KoboldCpp from the command line, accepting interactive console input and displaying responses to the terminal.", action='store_true')
     advparser.add_argument("--genlimit","--promptlimit", help="Sets the maximum number of generated tokens, it will restrict all generations to this or lower. Also usable with --prompt or --benchmark.",metavar=('[token limit]'), type=int, default=0)
-    advparser.add_argument("--multiuser", help="Runs in multiuser mode, which queues incoming requests instead of blocking them.", metavar=('limit'), nargs='?', const=1, type=int, default=1)
+    advparser.add_argument("--multiuser", help="Set maximum number of queued incoming requests allowed.", metavar=('limit'), type=int, default=multiuser_concurrent_limit)
     advparser.add_argument("--multiplayer", help="Hosts a shared multiplayer session that others can join.", action='store_true')
     advparser.add_argument("--websearch", help="Enable the local search engine proxy so Web Searches can be done.", action='store_true')
     advparser.add_argument("--remotetunnel", help="Uses Cloudflare to create a remote tunnel, allowing you to access koboldcpp remotely over the internet even behind a firewall.", action='store_true')
@@ -15334,6 +15619,7 @@ if __name__ == '__main__':
     advparser.add_argument("--chatcompletionsadapter", metavar=('[filename]'), help="Select an optional ChatCompletions Adapter JSON file to force custom instruct tags.", default="AutoGuess")
     advparser.add_argument("--jinja", help="Enables using jinja chat template formatting for chat completions endpoint. Other endpoints are unaffected. Tool calls are done without jinja.", action='store_true')
     advparser.add_argument("--jinja_tools","--jinja-tools","--jinjatools", help="Enables using jinja chat template formatting for chat completions endpoint. Other endpoints are unaffected. Tool calls are done with jinja.", action='store_true')
+    advparser.add_argument("--jinja_stream_toolcall","--jinja-stream-toolcall","--jinjastreamtoolcall", help="When jinja tool calls are active, stream the tool call content as tokens are generated rather than buffering silently until generation is complete. Implies --jinja and --jinja_tools.", action='store_true')
     advparser.add_argument("--jinja_kwargs","--jinja-kwargs","--jinjakwargs","--chat-template-kwargs", metavar=('{"parameter":"value",...}'), help="Set additional fields for Jinja JSON template parser, must be a valid JSON object.", default="")
     advparser.add_argument("--jinjatemplate","--chat-template-file", metavar=('[filename]'), help="Select a custom Jinja chat template, will overwrite model jinja chat template", default="")
     advparser.add_argument("--noflashattention","--no-flash-attn","-nofa", help="Disables flash attention.", action='store_true')
@@ -15452,6 +15738,7 @@ if __name__ == '__main__':
     OpenLumaragroup.add_argument("--OpenLumara_datadir", metavar=('[directory]'), help="Overrides the data_dir field in the OpenLumara config.", default="", type=str)
     OpenLumaragroup.add_argument("--OpenLumara_sandboxfolder", metavar=('[directory]'), help="Overrides the sandbox_folder field in the OpenLumara config.", default="", type=str)
     OpenLumaragroup.add_argument("--OpenLumara_apiurl", metavar=('[url]'), help="Overrides the API URL field in the OpenLumara config.", default="", type=str)
+    OpenLumaragroup.add_argument("--OpenLumara_requirelogin", help="Require login for the OpenLumara WebUI (default: true). Default credentials are admin:admin, change these in the OpenLumara webui or config file after the first launch.", action='store_true', default=True)
 
     deprecatedgroup = parser.add_argument_group('Deprecated Commands, DO NOT USE!')
     deprecatedgroup.add_argument("--hordeconfig", help=argparse.SUPPRESS, nargs='+')

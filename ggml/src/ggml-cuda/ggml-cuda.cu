@@ -4609,8 +4609,8 @@ static const ggml_backend_i ggml_backend_cuda_interface = {
     /* .free                    = */ ggml_backend_cuda_free,
     /* .set_tensor_async        = */ ggml_backend_cuda_set_tensor_async,
     /* .get_tensor_async        = */ ggml_backend_cuda_get_tensor_async,
-    /* .get_tensor_2d_async     = */ ggml_backend_cuda_set_tensor_2d_async,
-    /* .set_tensor_2d_async     = */ ggml_backend_cuda_get_tensor_2d_async,
+    /* .set_tensor_2d_async     = */ ggml_backend_cuda_set_tensor_2d_async,
+    /* .get_tensor_2d_async     = */ ggml_backend_cuda_get_tensor_2d_async,
     /* .cpy_tensor_async        = */ ggml_backend_cuda_cpy_tensor_async,
     /* .synchronize             = */ ggml_backend_cuda_synchronize,
     /* .graph_plan_create       = */ NULL,
@@ -5453,8 +5453,8 @@ ggml_backend_reg_t ggml_backend_cuda_reg() {
                 CUDA_CHECK(cudaGetDeviceProperties(&prop, i));
                 dev_ctx->description = prop.name;
 
-                char pci_bus_id[16] = {};
-                snprintf(pci_bus_id, sizeof(pci_bus_id), "%04x:%02x:%02x.0", prop.pciDomainID, prop.pciBusID, prop.pciDeviceID);
+                char pci_bus_id[32] = {};
+                CUDA_CHECK(cudaDeviceGetPCIBusId(pci_bus_id, sizeof(pci_bus_id), i));
                 dev_ctx->pci_bus_id = pci_bus_id;
                 dev_ctx->op_offload_min_batch_size = min_batch_size;
 
