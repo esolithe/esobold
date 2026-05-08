@@ -64,6 +64,10 @@
         return 'other';
     }
 
+    function canEditFile(meta) {
+        return !!meta && meta.binary === false;
+    }
+
     function loadViewMode() {
         try {
             const stored = localStorage.getItem(VIEW_MODE_KEY);
@@ -375,6 +379,35 @@
         return '<div class="tile-preview">&#128196;</div>';
     }
 
+    function bindEditHandlers(container, dir) {
+        container.querySelectorAll('[data-edit-file]').forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const path = btn.dataset.editFile;
+                if (!path) {
+                    return;
+                }
+                try {
+                    if (typeof window.openEditorForFileSystem !== 'function') {
+                        throw new Error('Editor popup is not available on this page.');
+                    }
+                    await window.openEditorForFileSystem(path, {
+                        onSaveSuccess: async () => {
+                            showToast(`Saved ${path}`, false);
+                            await renderListing(dir);
+                        },
+                        onSaveError: async (error) => {
+                            showToast(`Save failed: ${error?.message || error}`, true);
+                        },
+                    });
+                } catch (error) {
+                    showToast(`Editor failed to open: ${error?.message || error}`, true);
+                }
+            });
+        });
+    }
+
     function bindDeleteHandlers(container, dir) {
         container.querySelectorAll('[data-delete]').forEach(btn => {
             btn.addEventListener('click', async () => {
@@ -508,6 +541,9 @@
                 const size = meta ? formatBytes(meta.size_bytes != null ? meta.size_bytes : meta.size) : '—';
                 const mod = meta ? formatDate(meta.last_modified != null ? meta.last_modified : meta.modified) : '—';
                 const isSelected = isPickerMode && pickerSelectedEntries.has(`file:${filePath}`);
+                const editButton = canEditFile(meta)
+                    ? `<button class="btn btn-secondary" data-edit-file="${esc(filePath)}" title="Edit">Edit</button>`
+                    : '';
                 const tileClasses = `tile-card entry-file${isSelected ? ' picker-selected' : ''}`;
                 const tileAttributes = isPickerMode ? ` data-picker-toggle-file="${esc(filePath)}" aria-pressed="${isSelected ? 'true' : 'false'}"` : '';
                 const nameAnchor = isPickerMode
@@ -519,7 +555,7 @@
                         ${nameAnchor}
                         <div class="tile-sub">${esc(size)} | ${esc(mod)}</div>
                     </div>
-                    ${isPickerMode ? '<div class="tile-actions"><span class="picker-chip">Tap to select</span></div>' : `<div class="tile-actions"><button class="btn btn-danger" data-delete="${esc(filePath)}" title="Delete">&#128465;</button></div>`}
+                    ${isPickerMode ? '<div class="tile-actions"><span class="picker-chip">Tap to select</span></div>' : `<div class="tile-actions">${editButton}<button class="btn btn-danger" data-delete="${esc(filePath)}" title="Delete">&#128465;</button></div>`}
                 </article>`);
             }
 
@@ -531,6 +567,7 @@
                 bindPickerSelectionHandlers(tileGrid);
                 updatePickerSelectionStatus();
             } else {
+                bindEditHandlers(tileGrid, dir);
                 bindDeleteHandlers(tileGrid, dir);
             }
             return;
@@ -567,6 +604,9 @@
             const size = meta ? formatBytes(meta.size_bytes != null ? meta.size_bytes : meta.size) : '—';
             const mod = meta ? formatDate(meta.last_modified != null ? meta.last_modified : meta.modified) : '—';
             const isSelected = isPickerMode && pickerSelectedEntries.has(`file:${filePath}`);
+            const editButton = canEditFile(meta)
+                ? `<button class="btn btn-secondary" data-edit-file="${esc(filePath)}" title="Edit">Edit</button>`
+                : '';
             const rowClasses = `entry-file${isSelected ? ' picker-selected' : ''}`;
             const rowAttributes = isPickerMode ? ` data-picker-toggle-file="${esc(filePath)}" aria-pressed="${isSelected ? 'true' : 'false'}"` : '';
             const nameAnchor = isPickerMode
@@ -576,7 +616,7 @@
                 <td class="col-name">&#128196; ${nameAnchor}</td>
                 <td class="col-size">${esc(size)}</td>
                 <td class="col-modified">${esc(mod)}</td>
-                <td class="col-actions">${isPickerMode ? '<span class="picker-chip">Select</span>' : `<button class="btn btn-danger" data-delete="${esc(filePath)}" title="Delete">&#128465;</button>`}</td>
+                <td class="col-actions">${isPickerMode ? '<span class="picker-chip">Select</span>' : `${editButton}<button class="btn btn-danger" data-delete="${esc(filePath)}" title="Delete">&#128465;</button>`}</td>
             </tr>`);
         }
 
@@ -585,6 +625,7 @@
             bindPickerSelectionHandlers(tbody);
             updatePickerSelectionStatus();
         } else {
+            bindEditHandlers(tbody, dir);
             bindDeleteHandlers(tbody, dir);
         }
     }

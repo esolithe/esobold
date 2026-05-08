@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Filesystem Browser</title>
     <link rel="stylesheet" href="/static/css/fs_browser.css">
+    <link rel="stylesheet" href="/static/css/popupUtils.css">
 </head>
 <body>
     <div id="app">
@@ -62,6 +63,89 @@
         </div>
     </div>
 
+    <script src="/static/js/fs.js"></script>
+    <script src="/static/js/popupUtils.js"></script>
+    <script type="module" src="/static/js/editorPopup.js"></script>
     <script src="/static/js/fs_browser.js"></script>
+    <style>
+        .popupcontainer {
+            position: fixed;
+            top: 0px;
+            left: 0px;
+            z-index: 3;
+            display: flex;
+            width: 100%;
+            height: 100%;
+            flex-direction: column;
+            align-items: center;
+            justify-content: space-around;
+        }
+
+        .popupbg {
+            position: fixed;
+            top: 0;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            z-index: -1;
+            background-color: rgba(0, 0, 0, 0.5);
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        #popupContainer > .nspopup {
+            background: var(--accent2);
+            max-height: 80%;
+            max-width: 80%;
+            margin-top: unset !important;
+            border-radius: 5px;
+        }
+
+        #popupContainer .popuptitlebar {
+            height: 40px;
+            padding: 6px;
+            font-weight: bold;
+        }
+
+        #popupContainer .popupContent {
+            overflow-y: auto;
+            overflow-x: hidden;
+        }
+
+        #popupContainer .popupfooter {
+            display: block;
+        }
+
+        #popupContainer .popupfooter button {
+            width: unset;
+        }
+
+        #popupContainer .popupContent input[type="text"],
+        #popupContainer .popupContent input[type="file"],
+        #popupContainer .popupContent textarea,
+        #popupContainer .popupContent select {
+            background-color: var(--theme_color_input_bg);
+            border-color: var(--theme_color_border);
+            color: var(--theme_color_input_fg);
+            border: 1px solid var(--theme_color_border, #ccc);
+            border-radius: 6px;
+            padding: 6px 8px;
+            box-sizing: border-box;
+        }
+
+        .esoEditorPopup,
+        .esoAceEditor {
+            height: 100%;
+            width: 100%;
+        }
+
+        .ace_editor {
+            font-size: var(--theme_font_size_content, 14px);
+        }
+    </style>
 </body>
 </html>

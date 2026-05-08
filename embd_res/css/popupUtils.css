@@ -175,3 +175,12 @@
 		top: 0px;
 		float: right;
 	}
+
+	.esoEditorPopup, .esoAceEditor {
+		height: 100%;
+		width: 100%;
+	}
+
+	.ace_editor {
+		font-size: var(--theme_font_size_content);
+	}
