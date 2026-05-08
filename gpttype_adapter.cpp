@@ -2169,6 +2169,9 @@ void kcpp_init_audio_proj(clip_ctx * ctx_a)
         case PROJECTOR_TYPE_LFM2A:
             audio_preproc = std::make_unique<mtmd_audio_preprocessor_conformer>(ctx_a);
             break;
+        case PROJECTOR_TYPE_GRANITE_SPEECH:
+            audio_preproc = std::make_unique<mtmd_audio_preprocessor_granite_speech>(ctx_a);
+            break;
         case PROJECTOR_TYPE_GEMMA4A:
             audio_preproc = std::make_unique<mtmd_audio_preprocessor_gemma4a>(ctx_a);
             break;
