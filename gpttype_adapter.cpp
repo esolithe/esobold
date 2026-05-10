@@ -3284,6 +3284,117 @@ bool gpttype_generate_abort()
     return true;
 }
 
+//some quick prompt manipulation helper functions, these mutate the inputs
+void ApplyPromptFormatAdjustments(std::string & added_memory, std::string & input_prompt)
+{
+    //prompt mod to improve coherency for GLM4, by ensuring injection for gmask, sop and an extra space
+    //deepseek2 is actually used for glm 4.7 flash
+    if (file_format == FileFormat::GGUF_GENERIC && (file_format_meta.model_architecture == llm_arch::LLM_ARCH_GLM4 || file_format_meta.model_architecture == llm_arch::LLM_ARCH_GLM4_MOE || file_format_meta.model_architecture == llm_arch::LLM_ARCH_DEEPSEEK2)) {
+        std::string temp = gpttype_get_chat_template();
+        if (temp.find("[gMASK]<sop>") != std::string::npos) {
+            if (added_memory == "") {
+                if (!input_prompt.empty() && input_prompt.rfind("[gMASK]", 0) == 0) {  //check startswith
+                    input_prompt.erase(0, 7);
+                }
+                if (!input_prompt.empty() && input_prompt.rfind("<sop>", 0) == 0) {  //check startswith
+                    input_prompt.erase(0, 5);
+                }
+                if (!input_prompt.empty() && input_prompt[0] == ' ') {  // check for leading space
+                    input_prompt.erase(0, 1);
+                }
+                added_memory = "[gMASK]<sop> ";
+            } else {
+                if (!added_memory.empty() && added_memory.rfind("[gMASK]", 0) == 0) {  //check startswith
+                    added_memory.erase(0, 7);
+                }
+                if (!added_memory.empty() && added_memory.rfind("<sop>", 0) == 0) {  //check startswith
+                    added_memory.erase(0, 5);
+                }
+                if (!added_memory.empty() && added_memory[0] == ' ') {  // check for leading space
+                    added_memory.erase(0, 1);
+                }
+                added_memory = "[gMASK]<sop> " + added_memory;
+            }
+        }
+    }
+
+    // prompt mod to increase coherency for gemma4
+    if (file_format == FileFormat::GGUF_GENERIC && (file_format_meta.model_architecture == llm_arch::LLM_ARCH_GEMMA4)) {
+        std::string temp = gpttype_get_chat_template();
+        if (temp.find("<|channel>thought\\n<channel|>") != std::string::npos) {
+            const std::string channel_open  = "<|channel>";
+            const std::string channel_close = "<channel|>";
+            const std::string channel_prefix = channel_open + channel_close;
+            const std::string systhink = "<|think|>";
+
+            const std::string fullbody = added_memory + input_prompt;
+
+            const bool has_open  = fullbody.find(channel_open)  != std::string::npos;
+            const bool has_close = fullbody.find(channel_close) != std::string::npos;
+            const bool has_systhink = fullbody.find(systhink) != std::string::npos;
+            const bool ends_with_turn = kcpp_string_ends_with(kcpp_rstrip(fullbody),"<|turn>model");
+            const bool acceptable_jinja_exception = (ends_with_turn && has_systhink);
+
+            // If neither opening nor closing tag is present anywhere, prepend both
+            if (!has_open && !has_close && !acceptable_jinja_exception) {
+                added_memory = channel_prefix + added_memory;
+            }
+        }
+    }
+}
+
+void AppendDedicatedMemoryAndNegativePrompt(std::vector<int> & embd_inp, const std::vector<int> & embd_inp_mem, const std::vector<int> & negprompt_tokens, int n_predict, int nctx)
+{
+    //added special memory, overwrite if needed
+    if (embd_inp_mem.size() + negprompt_tokens.size() > 0)
+    {
+        std::vector<int> embd_inp_mem_copy = embd_inp_mem;
+
+        //remove bos token from prompt, it'll be taken from memory
+        std::vector<int> bos;
+        TokenizeString("", bos, file_format, add_bos_token);
+
+        if (bos.size()>0 && !embd_inp.empty() && bos[0]==embd_inp[0]) { //strip away bos if exists
+            embd_inp.erase(embd_inp.begin());
+        }
+
+        //shorten memory if needed
+        if (embd_inp_mem_copy.size() > 0 && embd_inp_mem_copy.size() + n_predict + 4 > nctx)
+        {
+            int offset = embd_inp_mem_copy.size() - nctx + n_predict + 4;
+            embd_inp_mem_copy = std::vector<int>(embd_inp_mem_copy.begin() + offset, embd_inp_mem_copy.end());
+            //replace bos into front if exists
+            if(bos.size()>0 && embd_inp_mem_copy.size()>0)
+            {
+                embd_inp_mem_copy[0] = bos[0];
+            }
+        }
+
+        //shorten main prompt by trimming the front if needed
+        int addmemtokens = embd_inp_mem_copy.size() + negprompt_tokens.size() + 1;
+        int totalsize = (addmemtokens + embd_inp.size() + n_predict);
+        if(totalsize > nctx)
+        {
+            int excess = totalsize - nctx;
+            if (embd_inp.size() >= excess) {
+                embd_inp.erase(embd_inp.begin(), embd_inp.begin() + excess);
+            } else {
+                embd_inp.clear();
+            }
+        }
+
+        //stick memory to front of prompt
+        embd_inp.insert(embd_inp.begin(), embd_inp_mem_copy.begin(), embd_inp_mem_copy.end());
+        if(add_bos_token && embd_inp.size()>0 && bos.size()>0 && bos[0]!=embd_inp[0])
+        {
+            embd_inp.insert(embd_inp.begin(), bos[0]);  //insert bos at front, if added
+        }
+    }
+}
+
+
+//alpin's batching stuff
+
 enum class BatchState
 {
     WAITING,
@@ -4657,63 +4768,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
         }
     }
 
-    //need to add a cursed hack to improve coherency for GLM4, by ensuring injection for gmask, sop and an extra space
-    //any complaints please direct them to henky
-    //deepseek2 is actually used for glm 4.7 flash
-    if (file_format == FileFormat::GGUF_GENERIC && (file_format_meta.model_architecture == llm_arch::LLM_ARCH_GLM4 || file_format_meta.model_architecture == llm_arch::LLM_ARCH_GLM4_MOE || file_format_meta.model_architecture == llm_arch::LLM_ARCH_DEEPSEEK2)) {
-        std::string temp = gpttype_get_chat_template();
-        if (temp.find("[gMASK]<sop>") != std::string::npos) {
-            if (addedmemory == "") {
-                if (!kcpp_data->prompt.empty() && kcpp_data->prompt.rfind("[gMASK]", 0) == 0) {  //check startswith
-                    kcpp_data->prompt.erase(0, 7);
-                }
-                if (!kcpp_data->prompt.empty() && kcpp_data->prompt.rfind("<sop>", 0) == 0) {  //check startswith
-                    kcpp_data->prompt.erase(0, 5);
-                }
-                if (!kcpp_data->prompt.empty() && kcpp_data->prompt[0] == ' ') {  // check for leading space
-                    kcpp_data->prompt.erase(0, 1);
-                }
-                addedmemory = "[gMASK]<sop> ";
-            } else {
-                if (!addedmemory.empty() && addedmemory.rfind("[gMASK]", 0) == 0) {  //check startswith
-                    addedmemory.erase(0, 7);
-                }
-                if (!addedmemory.empty() && addedmemory.rfind("<sop>", 0) == 0) {  //check startswith
-                    addedmemory.erase(0, 5);
-                }
-                if (!addedmemory.empty() && addedmemory[0] == ' ') {  // check for leading space
-                    addedmemory.erase(0, 1);
-                }
-                addedmemory = "[gMASK]<sop> " + addedmemory;
-            }
-        }
-    }
-
-    // Round two, gemma4 boogalo
-    // If it breaks your stuff you can blame me again (Or thank me because you can actually use gemma 31B stable now). - Henk
-    // For the record, the GLM4 one didn't break anyone and everyone forgot GLM4 needed this :D
-    if (file_format == FileFormat::GGUF_GENERIC && (file_format_meta.model_architecture == llm_arch::LLM_ARCH_GEMMA4)) {
-        std::string temp = gpttype_get_chat_template();
-        if (temp.find("<|channel>thought\\n<channel|>") != std::string::npos) {
-            const std::string channel_open  = "<|channel>";
-            const std::string channel_close = "<channel|>";
-            const std::string channel_prefix = channel_open + channel_close;
-            const std::string systhink = "<|think|>";
-
-            const std::string fullbody = addedmemory + kcpp_data->prompt;
-
-            const bool has_open  = fullbody.find(channel_open)  != std::string::npos;
-            const bool has_close = fullbody.find(channel_close) != std::string::npos;
-            const bool has_systhink = fullbody.find(systhink) != std::string::npos;
-            const bool ends_with_turn = kcpp_string_ends_with(kcpp_rstrip(fullbody),"<|turn>model");
-            const bool acceptable_jinja_exception = (ends_with_turn && has_systhink);
-
-            // If neither opening nor closing tag is present anywhere, prepend both
-            if (!has_open && !has_close && !acceptable_jinja_exception) {
-                addedmemory = channel_prefix + addedmemory;
-            }
-        }
-    }
+    ApplyPromptFormatAdjustments(addedmemory, kcpp_data->prompt);
 
     //thinking budget handling
     std::vector<int> thinking_start_sequence;
@@ -4796,8 +4851,6 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
 
     int32_t nctx = kcpp_data->n_ctx;
 
-    TokenizeString(kcpp_data->prompt, embd_inp, file_format, add_bos_token);
-
     if(media_composite_image_signature=="")
     {
         last_media_mem.clear();
@@ -4808,6 +4861,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
         media_embds_built = true;
     }
 
+    TokenizeString(kcpp_data->prompt, embd_inp, file_format, add_bos_token);
     if(addedmemory!="")
     {
         TokenizeString(addedmemory, embd_inp_mem, file_format, add_bos_token);
@@ -4875,49 +4929,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
         }
     }
 
-    //added special memory, overwrite if needed
-    if (embd_inp_mem.size() + negprompt_tokens.size() > 0)
-    {
-        //remove bos token from prompt, it'll be taken from memory
-        std::vector<int> bos;
-        TokenizeString("", bos, file_format, add_bos_token);
-
-        if (bos.size()>0 && !embd_inp.empty() && bos[0]==embd_inp[0]) { //strip away bos if exists
-            embd_inp.erase(embd_inp.begin());
-        }
-
-        //shorten memory if needed
-        if (embd_inp_mem.size() > 0 && embd_inp_mem.size() + kcpp_data->n_predict + 4 > nctx)
-        {
-            int offset = embd_inp_mem.size() - nctx + kcpp_data->n_predict + 4;
-            embd_inp_mem = std::vector<int>(embd_inp_mem.begin() + offset, embd_inp_mem.end());
-            //replace bos into front if exists
-            if(bos.size()>0 && embd_inp_mem.size()>0)
-            {
-                embd_inp_mem[0] = bos[0];
-            }
-        }
-
-        //shorten main prompt by trimming the front if needed
-        int addmemtokens = embd_inp_mem.size() + negprompt_tokens.size() + 1;
-        int totalsize = (addmemtokens + embd_inp.size() + kcpp_data->n_predict);
-        if(totalsize > nctx)
-        {
-            int excess = totalsize - nctx;
-            if (embd_inp.size() >= excess) {
-                embd_inp.erase(embd_inp.begin(), embd_inp.begin() + excess);
-            } else {
-                embd_inp.clear();
-            }
-        }
-
-        //stick memory to front of prompt
-        embd_inp.insert(embd_inp.begin(), embd_inp_mem.begin(), embd_inp_mem.end());
-        if(add_bos_token && embd_inp.size()>0 && bos.size()>0 && bos[0]!=embd_inp[0])
-        {
-            embd_inp.insert(embd_inp.begin(), bos[0]);  //insert bos at front, if added
-        }
-    }
+    AppendDedicatedMemoryAndNegativePrompt(embd_inp, embd_inp_mem, negprompt_tokens, kcpp_data->n_predict, nctx);
 
     //prepare negative prompt
     if(guidance_ctx && negprompt_tokens.size()>0 && inputs.guidance_scale!=1.0f)

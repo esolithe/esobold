@@ -4836,7 +4836,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                             tc["function"]["arguments"] = json.dumps(tcarg)
                     recvtxt = None
                     currfinishreason = "tool_calls"
-                    if args.debugmode:
+                    if args.debugmode >= 1:
                         print(f"\nDebug ToolCall Response: {json.dumps(tool_calls)}")
 
         modelNameToReturn = friendlymodelname
