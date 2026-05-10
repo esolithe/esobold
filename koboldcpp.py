@@ -2290,7 +2290,7 @@ def continuous_batching_python_eligible(genparams, api_format):
         return False
     if not getattr(args, "noshift", False) or getattr(args, "smartcontext", False) or getattr(args, "draftmodel", "") or getattr(args, "mmproj", "") or getattr(args, "enableguidance", False):
         return False
-    if genparams.get("memory") or genparams.get("negative_prompt") or genparams.get("images") or genparams.get("audio"):
+    if genparams.get("negative_prompt") or genparams.get("images") or genparams.get("audio"):
         return False
     if genparams.get("ban_eos_token", False):
         return False
