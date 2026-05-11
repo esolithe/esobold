@@ -3550,7 +3550,7 @@ static bool batch_inputs_eligible(const generation_inputs & inputs)
     {
         return false;
     }
-    if(draft_ctx || guidance_ctx || clp_ctx_v || clp_ctx_a)
+    if(draft_ctx || guidance_ctx || inputs.images_len>0 || inputs.audio_len>0)
     {
         return false;
     }

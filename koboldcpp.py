@@ -2288,7 +2288,7 @@ def continuous_batching_python_eligible(genparams, api_format):
     model_path = str(getattr(args, "model_param", "") or "").lower()
     if model_path and not model_path.endswith(".gguf"):
         return False
-    if not getattr(args, "noshift", False) or getattr(args, "smartcontext", False) or getattr(args, "draftmodel", "") or getattr(args, "mmproj", "") or getattr(args, "enableguidance", False):
+    if not getattr(args, "noshift", False) or getattr(args, "smartcontext", False) or getattr(args, "draftmodel", "") or getattr(args, "enableguidance", False):
         return False
     if genparams.get("negative_prompt") or genparams.get("images") or genparams.get("audio"):
         return False
