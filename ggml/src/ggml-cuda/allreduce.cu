@@ -210,7 +210,9 @@ static __global__ void ggml_cuda_ar_add_kernel(
     const int nt  = gridDim.x * blockDim.x;
     for (int i = tid; i < count; i += nt) {
         const T_src d_low = ggml_cuda_cast<T_src>(dst[i]);
-        dst[i] = ggml_cuda_cast<T_dst>(d_low) + ggml_cuda_cast<T_dst>(src[i]);
+        const float a = (float) ggml_cuda_cast<float>(d_low);
+        const float b = (float) ggml_cuda_cast<float>(src[i]);
+        dst[i] = ggml_cuda_cast<T_dst>(a + b);
     }
 }
 
