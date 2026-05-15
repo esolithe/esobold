@@ -6397,6 +6397,8 @@ Change Mode<br>
         muint = int(args.multiuser)
         if muint<=0 and ((args.whispermodel and args.whispermodel!="") or (args.sdmodel and args.sdmodel!="") or (args.ttsmodel and args.ttsmodel!="") or (args.embeddingsmodel and args.embeddingsmodel!="")):
             muint = 2 # this prevents errors when using voice/img together with text
+        if getattr(args, "continuous_batching", 0) > 1 and muint <=0:
+            muint = multiuser_concurrent_limit # multiuser required for batching
         multiuserlimit = ((muint-1) if muint > 1 else multiuser_concurrent_limit)
         #backwards compatibility for up to X concurrent requests, use default limit of X if multiuser set to 1
         if muint > 0 and requestsinqueue < multiuserlimit:
@@ -8638,7 +8640,7 @@ def show_gui():
         qkvopt = quantkv_text[quantkv_var.get()].lower() if (quantkv_var.get()>=0 and quantkv_var.get() < len(quantkv_text)) else "f16"
         args.quantkv = qkvopt
         args.lowvram = lowvram_var.get()==1
-        args.nommq = mmq_var.get()==1
+        args.nommq = mmq_var.get()==0
         args.splitmode = splitmode_var.get() if splitmode_var.get() in splitmode_choices else splitmode_choices[0]
 
         gpuchoiceidx = 0
@@ -9358,7 +9360,7 @@ def make_url_request(url, data, method='POST', headers={}, timeout=300):
         return None
 
 #A very simple and stripped down embedded horde worker with no dependencies
-def run_horde_worker(args, api_key, worker_name, worker_id, threads_to_show):
+def run_horde_worker(args, api_key, worker_name, worker_id, parallel_batching_threads):
     global friendlymodelname, maxhordectx, maxhordelen, exitcounter, punishcounter, modelbusy, session_starttime, sslvalid
     epurl = get_my_epurl()
 
@@ -9440,7 +9442,7 @@ def run_horde_worker(args, api_key, worker_name, worker_id, threads_to_show):
             continue
 
         #first, make sure we are not generating
-        if modelbusy.locked():
+        if parallel_batching_threads<=1 and modelbusy.locked():
             time.sleep(0.2)
             continue
 
@@ -9454,8 +9456,8 @@ def run_horde_worker(args, api_key, worker_name, worker_id, threads_to_show):
             "softprompts": [],
             "bridge_agent": BRIDGE_AGENT,
         }
-        if threads_to_show>1:
-            gen_dict["threads"] = threads_to_show
+        if parallel_batching_threads>1:
+            gen_dict["threads"] = parallel_batching_threads
         pop = make_url_request_horde(f'{cluster}/api/v2/generate/text/pop',gen_dict)
         if not pop:
             punishcounter += 1
@@ -9478,7 +9480,7 @@ def run_horde_worker(args, api_key, worker_name, worker_id, threads_to_show):
 
         #do gen
         while exitcounter < 10:
-            if not modelbusy.locked():
+            if parallel_batching_threads>1 or not modelbusy.locked():
                 #horde gets a genkey to avoid KCPP overlap
                 current_payload['genkey'] = f"HORDEREQ_{random.randint(100, 999)}"
                 current_generation = make_url_request_horde(f'{epurl}/api/v1/generate', current_payload, method='POST',addmykey=True)
