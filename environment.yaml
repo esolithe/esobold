@@ -39,6 +39,8 @@ dependencies:
     - requests
     - fastapi
     - uvicorn
+    - itsdangerous
+    - websockets
     - discord.py
     - python-telegram-bot
     - matrix-nio

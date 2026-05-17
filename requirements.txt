@@ -37,6 +37,8 @@ python-ulid>=3.1.0
 requests>=2.33.1
 fastapi
 uvicorn
+itsdangerous
+websockets
 discord.py>=2.7.0
 python-telegram-bot>=22.7.0
 matrix-nio>=0.25.2
