@@ -84,7 +84,7 @@ dry_seq_break_max = 128
 extra_images_max = 4 # for kontext/qwen img
 
 # global vars
-KcppVersion = "1.113"
+KcppVersion = "1.113.1"
 showdebug = True
 kcpp_instance = None #global running instance
 global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "currentBaseConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "base_config":"", "swapReqType": None, "autoswapmode": False, "autoswapSettings": {}, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}, "restart_override_base_config": "", "current_model_override": "", "OpenLumara": False}
@@ -124,6 +124,9 @@ maxctx = 8192
 maxhordectx = 0 #set to whatever maxctx is if 0
 maxhordelen = 1024
 modelbusy = threading.Lock()
+batched_lock = threading.Lock()
+batched_cond = threading.Condition(batched_lock)
+batched_request_runner_count = 0 #incremented when a batched request is running, prevents all non-batched requests
 requestsinqueue = 0
 ratelimitlookup = {}
 defaultport = 5001
@@ -235,6 +238,11 @@ class token_count_outputs(ctypes.Structure):
     _fields_ = [("count", ctypes.c_int),
                 ("ids", ctypes.POINTER(ctypes.c_int))]
 
+class detokenize_inputs(ctypes.Structure):
+    _fields_ = [("count", ctypes.c_int),
+                ("ids", ctypes.POINTER(ctypes.c_int)),
+                ("special", ctypes.c_bool)]
+
 # returns top 5 logprobs per token
 class logprob_item(ctypes.Structure):
      _fields_ = [("option_count", ctypes.c_int),
@@ -301,7 +309,8 @@ class load_model_inputs(ctypes.Structure):
                 ("lora_multiplier", ctypes.c_float),
                 ("devices_override", ctypes.c_char_p),
                 ("quiet", ctypes.c_bool),
-                ("debugmode", ctypes.c_int)]
+                ("debugmode", ctypes.c_int),
+                ("continuous_batching_slots", ctypes.c_int)]
 
 class generation_inputs(ctypes.Structure):
     _fields_ = [("seed", ctypes.c_int),
@@ -376,6 +385,7 @@ class sd_load_model_inputs(ctypes.Structure):
                 ("quant", ctypes.c_int),
                 ("flash_attention", ctypes.c_bool),
                 ("offload_cpu", ctypes.c_bool),
+                ("use_mmap", ctypes.c_bool),
                 ("vae_cpu", ctypes.c_bool),
                 ("clip_cpu", ctypes.c_bool),
                 ("diffusion_conv_direct", ctypes.c_bool),
@@ -910,6 +920,23 @@ def init_library():
     handle.new_token.argtypes = [ctypes.c_int]
     handle.get_stream_count.restype = ctypes.c_int
     handle.has_finished.restype = ctypes.c_bool
+    handle.batch_generate_enabled.restype = ctypes.c_bool
+    handle.batch_generate_submit.argtypes = [generation_inputs]
+    handle.batch_generate_submit.restype = ctypes.c_int
+    handle.batch_generate_has_finished.argtypes = [ctypes.c_int]
+    handle.batch_generate_has_finished.restype = ctypes.c_bool
+    handle.batch_generate_stream_count.argtypes = [ctypes.c_int]
+    handle.batch_generate_stream_count.restype = ctypes.c_int
+    handle.batch_generate_new_token.argtypes = [ctypes.c_int, ctypes.c_int]
+    handle.batch_generate_new_token.restype = ctypes.c_char_p
+    handle.batch_generate_pending_output.argtypes = [ctypes.c_int]
+    handle.batch_generate_pending_output.restype = ctypes.c_char_p
+    handle.batch_generate_result.argtypes = [ctypes.c_int]
+    handle.batch_generate_result.restype = generation_outputs
+    handle.batch_generate_abort.argtypes = [ctypes.c_int]
+    handle.batch_generate_abort.restype = ctypes.c_bool
+    handle.batch_generate_release.argtypes = [ctypes.c_int]
+    handle.batch_generate_release.restype = None
     handle.has_audio_support.restype = ctypes.c_bool
     handle.has_vision_support.restype = ctypes.c_bool
     handle.get_last_eval_time.restype = ctypes.c_float
@@ -964,7 +991,7 @@ def init_library():
     handle.music_generate.argtypes = [music_generation_inputs]
     handle.music_generate.restype = music_generation_outputs
     handle.last_logprobs.restype = last_logprobs_outputs
-    handle.detokenize.argtypes = [token_count_outputs]
+    handle.detokenize.argtypes = [detokenize_inputs]
     handle.detokenize.restype = ctypes.c_char_p
     handle.set_environment_variable.restype = ctypes.c_int
     handle.set_environment_variable.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
@@ -1952,6 +1979,9 @@ def load_model(model_filename):
     inputs.visionmintokens = vmintk
     inputs.visionmaxtokens = vmaxtk
     inputs.use_smartcontext = args.smartcontext
+    if getattr(args, "continuous_batching", 0) > 1 and not args.noshift:
+        print("\nWarning: Continuous batching is enabled, so context shifting has been disabled automatically.\n")
+        args.noshift = True
     inputs.use_contextshift = (0 if args.noshift else 1)
     inputs.use_fastforward = (0 if args.nofastforward else 1)
     inputs.flash_attention =  (False if args.noflashattention else True)
@@ -2024,6 +2054,7 @@ def load_model(model_filename):
     savestate_limit = sclimit
     inputs.smartcacheslots = sclimit
     inputs.pipelineparallel = (not args.nopipelineparallel)
+    inputs.continuous_batching_slots = int(args.continuous_batching) if hasattr(args, "continuous_batching") else 0
     inputs = set_backend_props(inputs)
     ret = handle.load_model(inputs)
     return ret
@@ -2270,16 +2301,65 @@ def generate(genparams, stream_flag=False):
         pendingabortkey = ""
         return {"text":"","status":-1,"stopreason":-1, "prompt_tokens":0, "completion_tokens": 0, "total_tokens": 0}
     else:
-        ret = handle.generate(inputs)
+        batch_request_id = -1
+        if getattr(args, "continuous_batching", 0) > 1:
+            try:
+                batch_request_id = handle.batch_generate_submit(inputs)
+            except Exception:
+                batch_request_id = -1
+        if batch_request_id >= 0:
+            genparams['_batch_request_id'] = batch_request_id
+            ret = handle.batch_generate_result(batch_request_id)
+        else:
+            genparams['_batch_fallback'] = True
+            ret = handle.generate(inputs)
         outstr = ""
         if ret.status==1:
             outstr = ret.text.decode("UTF-8","ignore")
+        if batch_request_id >= 0 and not stream_flag:
+            handle.batch_generate_release(batch_request_id)
+            genparams.pop('_batch_request_id', None)
+            genparams.pop('_batch_expected', None)
+            genparams.pop('_batch_fallback', None)
         if trimstop:
             for trim_str in stop_sequence:
                 sindex = outstr.find(trim_str)
                 if sindex != -1 and trim_str!="":
                     outstr = outstr[:sindex]
         return {"text":outstr,"status":ret.status,"stopreason":ret.stopreason,"prompt_tokens":ret.prompt_tokens, "completion_tokens": ret.completion_tokens}
+
+def continuous_batching_python_eligible(genparams, api_format):
+    if getattr(args, "continuous_batching", 0) <= 1 or api_format <= 0:
+        return False
+    model_path = str(getattr(args, "model_param", "") or "").lower()
+    if model_path and not model_path.endswith(".gguf"):
+        utfprint("Batching disabled due to file format",2)
+        return False
+    if not getattr(args, "noshift", False) or getattr(args, "smartcontext", False) or getattr(args, "draftmodel", "") or getattr(args, "enableguidance", False):
+        utfprint("Batching disabled due to loaded settings",2)
+        return False
+    if genparams.get("negative_prompt") or genparams.get("images") or genparams.get("audio"):
+        utfprint("Batching disabled due to media",2)
+        return False
+    if genparams.get("grammar") or genparams.get("grammar_retain_state") or genparams.get("banned_tokens") or genparams.get("banned_strings"):
+        utfprint("Batching disabled due to grammar or bans",2)
+        return False
+    if tryparsefloat(genparams.get("dry_multiplier", 0), 0) or tryparseint(genparams.get("mirostat", 0), 0) or tryparsefloat(genparams.get("xtc_probability", 0), 0) or tryparsefloat(genparams.get("nsigma", 0), 0):
+        utfprint("Batching disabled due to samplers set 1",2)
+        return False
+    if tryparsefloat(genparams.get("smoothing_factor", 0), 0) or tryparsefloat(genparams.get("adaptive_target", -1), -1) > 0 or genparams.get("using_openai_tools", False):
+        utfprint("Batching disabled due to samplers set 2",2)
+        return False
+    if tryparsefloat(genparams.get("top_a", 0), 0) or tryparsefloat(genparams.get("tfs", 1), 1) != 1 or tryparsefloat(genparams.get("dynatemp_range", 0), 0):
+        utfprint("Batching disabled due to samplers set 3",2)
+        return False
+    if genparams.get("sampler_order") and genparams.get("sampler_order") != [6, 0, 1, 3, 4, 2, 5]:
+        utfprint("Batching disabled due to sampler order",2)
+        return False
+    if genparams.get("reasoning_effort"):
+        utfprint("Batching disabled due to reasoning",2)
+        return False
+    return True
 
 def sd_get_info():
     info = handle.sd_get_info()
@@ -2374,6 +2454,7 @@ def sd_load_model(model_filename,vae_filename,t5xxl_filename,clip1_filename,clip
     inputs.quant = args.sdquant
     inputs.flash_attention = args.sdflashattention
     inputs.offload_cpu = args.sdoffloadcpu
+    inputs.use_mmap = args.usemmap
     inputs.vae_cpu = args.sdvaecpu
     inputs.clip_cpu = False if args.sdclipgpu else True
     sdconvdirect = sd_convdirect_option(args.sdconvdirect)
@@ -3569,12 +3650,13 @@ def tokenize_ids(countprompt,tcaddspecial):
     countdata = [rawcountdata.ids[i] for i in range(countlimit)]
     return countdata
 
-def detokenize_ids(tokids):
+def detokenize_ids(tokids,addspecial):
     tokidslen = len(tokids)
     detokstr = ""
     if tokidslen > 0 and tokidslen < 65536:
-        inputs = token_count_outputs()
+        inputs = detokenize_inputs()
         inputs.count = tokidslen
+        inputs.special = addspecial
         inputs.ids = (ctypes.c_int * tokidslen)()
         for i, cid in enumerate(tokids):
             inputs.ids[i] = cid
@@ -4125,9 +4207,9 @@ def format_jinja(messages_orig, tools, chat_template_kwargs=None):
         last_assist_msg = ""
         if messages:
             last_assist_msg = messages[-1]["content"]
-            assist_should_prefill = (messages and messages[-1]["role"] == "assistant" and last_assist_msg and isinstance(last_assist_msg, str) and len(last_assist_msg.strip())>0) #avoid single character newline or space content
+            assist_should_prefill = (messages and messages[-1]["role"].lower() == "assistant" and last_assist_msg and isinstance(last_assist_msg, str) and len(last_assist_msg.strip())>0) #avoid single character newline or space content
             last_assist_msg = "" if not assist_should_prefill else last_assist_msg
-            messages_for_render = messages[:-1] if assist_should_prefill else messages
+            messages_for_render = messages[:-1] if len(messages) > 1 and assist_should_prefill else messages
         if tools and len(tools)>0:
             text = jinja_compiled_template.render(messages=messages_for_render, tools=tools, add_generation_prompt=True, bos_token="", eos_token="", **chat_template_kwargs)
         else:
@@ -4817,7 +4899,7 @@ ws ::= | " " | "\n" [ \t]{0,20}
         assistant_message_start = adapter_obj.get("assistant_start", "\n\n### Response:\n")
         assistant_message_gen = adapter_obj.get("assistant_gen", assistant_message_start)
         try:
-            detokstr = detokenize_ids(tokids)
+            detokstr = detokenize_ids(tokids,True)
         except Exception as e:
             utfprint("Ollama Context Error: " + str(e))
         ollamasysprompt = genparams.get('system', "")
@@ -7621,7 +7703,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                             tc["function"]["arguments"] = json.dumps(tcarg)
                     recvtxt = None
                     currfinishreason = "tool_calls"
-                    if args.debugmode:
+                    if args.debugmode >= 1:
                         print(f"\nDebug ToolCall Response: {json.dumps(tool_calls)}")
 
         modelNameToReturn = friendlymodelname
@@ -7842,19 +7924,29 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         incomplete_token_buffer = bytearray()
         async_sleep_short = 0.02
         await asyncio.sleep(0.35) #anti race condition, prevent check from overtaking generate
+        batch_request_id = genparams.get('_batch_request_id', -1)
+        batch_final_result = None
 
         try:
             tokenReserve = "" #keeps fully formed tokens that we cannot send out yet
             while True:
-                streamDone = handle.has_finished() #exit next loop on done
+                if batch_request_id < 0:
+                    batch_request_id = genparams.get('_batch_request_id', -1)
+                    if genparams.get('_batch_expected', False) and batch_request_id < 0 and not genparams.get('_batch_fallback', False):
+                        await asyncio.sleep(async_sleep_short)
+                        continue
+                using_batch_stream = batch_request_id >= 0
+                streamDone = handle.batch_generate_has_finished(batch_request_id) if using_batch_stream else handle.has_finished() #exit next loop on done
                 if streamDone:
-                    sr = handle.get_last_stop_reason()
+                    if using_batch_stream and batch_final_result is None:
+                        batch_final_result = handle.batch_generate_result(batch_request_id)
+                    sr = batch_final_result.stopreason if using_batch_stream else handle.get_last_stop_reason()
                     currfinishreason = "error" if sr==-2 else ("length" if (sr!=1) else "stop")
-                    prompttokens = handle.get_last_input_count()
+                    prompttokens = batch_final_result.prompt_tokens if using_batch_stream else handle.get_last_input_count()
                 tokenStr = ""
-                streamcount = handle.get_stream_count()
+                streamcount = handle.batch_generate_stream_count(batch_request_id) if using_batch_stream else handle.get_stream_count()
                 while current_token < streamcount:
-                    token = handle.new_token(current_token)
+                    token = handle.batch_generate_new_token(batch_request_id, current_token) if using_batch_stream else handle.new_token(current_token)
 
                     if token is None: # Token isnt ready yet, received nullpointer
                         break
@@ -8143,7 +8235,8 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                     if streamDone:
                                         # content_part.done, reply full text
                                         await asyncio.sleep(async_sleep_short)
-                                        finaltxt = handle.get_pending_output().decode("UTF-8", "ignore")
+                                        finalraw = handle.batch_generate_pending_output(batch_request_id) if using_batch_stream else handle.get_pending_output()
+                                        finaltxt = finalraw.decode("UTF-8", "ignore")
                                         await asyncio.sleep(async_sleep_short)
                                         done_event = json.dumps({"type": "response.output_text.done", "item_id": item_id, "output_index": 0, "sequence_number":rseq_num, "content_index": 0, "text": finaltxt})
                                         rseq_num += 1
@@ -8152,7 +8245,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                         item_done = json.dumps({"type": "response.output_item.done", "output_index": 0, "sequence_number":rseq_num, "item": { "type": "message", "id": item_id, "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": finaltxt, "annotations": [], "logprobs": []}]}})
                                         rseq_num += 1
                                         await self.send_oai_responses_sse_event("response.output_item.done",item_done)
-                                        usage_pp = handle.get_last_input_count()
+                                        usage_pp = batch_final_result.prompt_tokens if using_batch_stream else handle.get_last_input_count()
                                         usage_gen = current_token
                                         res = self.prepare_basic_responses_body(resp_id,genparams)
                                         res["completed_at"] = int(time.time())
@@ -8200,8 +8293,17 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         except Exception as ex:
             print("Token streaming was interrupted or aborted!")
             print(ex)
-            handle.abort_generate()
+            if batch_request_id >= 0:
+                handle.batch_generate_abort(batch_request_id)
+            else:
+                handle.abort_generate()
             await asyncio.sleep(0.2) #short delay
+        finally:
+            if batch_request_id >= 0:
+                handle.batch_generate_release(batch_request_id)
+                genparams.pop('_batch_request_id', None)
+            genparams.pop('_batch_expected', None)
+            genparams.pop('_batch_fallback', None)
 
         # flush buffers, sleep a bit to make sure all data sent, and then force close the connection
         self.wfile.flush()
@@ -8267,7 +8369,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                     pass
 
     def get_multiplayer_idle_state(self,userid):
-        if modelbusy.locked():
+        if modelbusy.locked() or batched_request_runner_count>0:
             return False
         for key, value in multiplayer_lastactive.items():
             if key!=userid and time.time()-value<6: #6s to idle
@@ -8357,7 +8459,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         return f"{scheme}://{host}{target_path}"
 
     def noscript_webui(self):
-        global modelbusy, sslvalid
+        global modelbusy, sslvalid, batched_request_runner_count
         parsed_url = urllib.parse.urlparse(self.path)
         parsed_dict = urllib.parse.parse_qs(parsed_url.query)
         reply = ""
@@ -8397,7 +8499,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             else:
                 gencommand = False
 
-        if modelbusy.locked():
+        if modelbusy.locked() or batched_request_runner_count>0:
             status = "Model is currently busy, try again later."
         elif gencommand:
             if prompt=="" or max_length<=0:
@@ -8916,7 +9018,7 @@ Change Mode<br>
                     "total_tts_gens": totalttsgens,
                     "total_transcribe_gens": totaltranscribegens,
                     "queue": requestsinqueue,
-                    "idle": (0 if modelbusy.locked() else 1),
+                    "idle": (0 if (modelbusy.locked() or batched_request_runner_count>0) else 1),
                     "hordeexitcounter": exitcounter,
                     "uptime": uptime,
                     "idletime": idletime,
@@ -9208,7 +9310,7 @@ Change Mode<br>
 
     def do_POST(self):
         global thinkformats
-        global modelbusy, requestsinqueue, currentusergenkey, totalgens, pendingabortkey, lastuploadedcomfyimg, lastgeneratedcomfyimg, multiplayer_turn_major, multiplayer_turn_minor, multiplayer_story_data_compressed, multiplayer_dataformat, multiplayer_lastactive, net_save_slots, has_vision_support, savestate_limit, mcp_lock
+        global modelbusy, batched_request_runner_count, requestsinqueue, currentusergenkey, totalgens, pendingabortkey, lastuploadedcomfyimg, lastgeneratedcomfyimg, multiplayer_turn_major, multiplayer_turn_minor, multiplayer_story_data_compressed, multiplayer_dataformat, multiplayer_lastactive, net_save_slots, has_vision_support, savestate_limit, mcp_lock
         global autoswapmode, textName, sttName, ttsName, embedName, musicName, imageName, mmprojName
         post_path = self.path.rstrip('/')
         if self.is_fs_protected_path(post_path):
@@ -9666,7 +9768,8 @@ Change Mode<br>
             try:
                 genparams = json.loads(body)
                 tokids = genparams.get('ids', [])
-                detokstr = detokenize_ids(tokids)
+                addspecial = genparams.get('special', True)
+                detokstr = detokenize_ids(tokids,addspecial)
                 response_body = (json.dumps({"result": detokstr,"success":True}).encode())
             except Exception as e:
                 utfprint("Detokenize Error: " + str(e))
@@ -10211,6 +10314,8 @@ Change Mode<br>
         muint = int(args.multiuser)
         if muint<=0 and ((args.whispermodel and args.whispermodel!="") or (args.sdmodel and args.sdmodel!="") or (args.ttsmodel and args.ttsmodel!="") or (args.embeddingsmodel and args.embeddingsmodel!="")):
             muint = 2 # this prevents errors when using voice/img together with text
+        if getattr(args, "continuous_batching", 0) > 1 and muint <=0:
+            muint = multiuser_concurrent_limit # multiuser required for batching
         multiuserlimit = ((muint-1) if muint > 1 else multiuser_concurrent_limit)
         #backwards compatibility for up to X concurrent requests, use default limit of X if multiuser set to 1
         if muint > 0 and requestsinqueue < multiuserlimit:
@@ -10224,6 +10329,7 @@ Change Mode<br>
                     "type": "service_unavailable",
                 }}).encode())
             return
+        is_batchable_req = False
         if reqblocking:
             requestsinqueue = (requestsinqueue - 1) if requestsinqueue > 0 else 0
 
@@ -10436,10 +10542,22 @@ Change Mode<br>
                 if args.foreground:
                     bring_terminal_to_foreground()
 
+                #if it's a non-batchable request and we already have batching ongoing, stall this request
+                if batched_request_runner_count > 0 and not continuous_batching_python_eligible(genparams, api_format):
+                    with batched_cond:
+                        while batched_request_runner_count > 0:
+                            batched_cond.wait()
+
                 if api_format > 0: #text gen
                     # Check if streaming chat completions, if so, set stream mode to true
                     if (api_format == 4 or api_format == 3 or api_format == 8 or api_format == 9) and "stream" in genparams and genparams["stream"]:
                         sse_stream_flag = True
+                    if continuous_batching_python_eligible(genparams, api_format):
+                        genparams['_batch_expected'] = True
+                        modelbusy.release()
+                        is_batchable_req = True
+                        with batched_cond:
+                            batched_request_runner_count += 1
 
                     gendat = asyncio.run(self.handle_request(genparams, api_format, sse_stream_flag))
 
@@ -10809,7 +10927,12 @@ Change Mode<br>
 
         finally:
             time.sleep(0.05)
-            modelbusy.release()
+            if is_batchable_req:
+                with batched_cond:
+                    batched_request_runner_count -= 1
+                    batched_cond.notify_all()
+            else:
+                modelbusy.release()
 
         self.send_response(404)
         self.end_headers(content_type='text/html')
@@ -12535,7 +12658,7 @@ def show_gui():
         qkvopt = quantkv_text[quantkv_var.get()].lower() if (quantkv_var.get()>=0 and quantkv_var.get() < len(quantkv_text)) else "f16"
         args.quantkv = qkvopt
         args.lowvram = lowvram_var.get()==1
-        args.nommq = mmq_var.get()==1
+        args.nommq = mmq_var.get()==0
         args.splitmode = splitmode_var.get() if splitmode_var.get() in splitmode_choices else splitmode_choices[0]
 
         gpuchoiceidx = 0
@@ -13303,7 +13426,7 @@ def make_url_request(url, data, method='POST', headers={}, timeout=300):
         return None
 
 #A very simple and stripped down embedded horde worker with no dependencies
-def run_horde_worker(args, api_key, worker_name):
+def run_horde_worker(args, api_key, worker_name, worker_id, parallel_batching_threads):
     global friendlymodelname, maxhordectx, maxhordelen, exitcounter, punishcounter, modelbusy, session_starttime, sslvalid
     epurl = get_my_epurl()
 
@@ -13312,7 +13435,7 @@ def run_horde_worker(args, api_key, worker_name):
         reply = make_url_request_horde(url, submit_dict)
         if not reply:
             punishcounter += 1
-            print_with_time("Error, Job submit failed.")
+            print_with_time(f"Worker {worker_id} - Error, Job submit failed.")
         else:
             reward = reply["reward"]
             session_kudos_earned += reward
@@ -13327,7 +13450,7 @@ def run_horde_worker(args, api_key, worker_name):
             earnrate = session_kudos_earned / hrs_float
             jobrate = session_jobs / hrs_float
             jobcost = session_kudos_earned / session_jobs
-            print_with_time(f'Submitted {jobid} and earned {reward:.0f} kudos\n[Total:{session_kudos_earned:.0f} kudos, Time:{elapsedtimestr}, Jobs:{session_jobs}, EarnRate:{earnrate:.2f} kudos/hr, JobRate:{jobrate:.2f} jobs/hr, JobCost:{jobcost:.2f} kudos/job]')
+            print_with_time(f'Worker {worker_id} - Submitted {jobid} and earned {reward:.0f} kudos\n[Total:{session_kudos_earned:.0f} kudos, Time:{elapsedtimestr}, Jobs:{session_jobs}, EarnRate:{earnrate:.2f} kudos/hr, JobRate:{jobrate:.2f} jobs/hr, JobCost:{jobcost:.2f} kudos/job]')
             rewardcounter += 1
             if rewardcounter > 50:
                 rewardcounter = 0
@@ -13341,7 +13464,7 @@ def run_horde_worker(args, api_key, worker_name):
             headers["Authorization"] = f"Bearer {password}"
         ret = make_url_request(url, data, method, headers)
         if not ret:
-            print("Make sure your Horde API key and worker name is valid!")
+            print(f"Worker {worker_id} - Make sure your Horde API key and worker name is valid!")
         return ret
 
     current_id = None
@@ -13357,7 +13480,7 @@ def run_horde_worker(args, api_key, worker_name):
         time.sleep(3)
         readygo = make_url_request_horde(f'{epurl}/api/v1/info/version', None,'GET',addmykey=True)
         if readygo:
-            print_with_time(f"Embedded Horde Worker '{worker_name}' is started.")
+            print_with_time(f"Worker {worker_id} - Embedded Horde Worker '{worker_name}' is started.")
             break
 
     while exitcounter < 10:
@@ -13372,9 +13495,9 @@ def run_horde_worker(args, api_key, worker_name):
                 print_with_time(f"Horde Worker Paused for {penaltytime} min - Too many errors. It will resume automatically, but you should restart it.")
                 print_with_time("Caution: Too many failed jobs may lead to entering maintenance mode.")
                 time.sleep(60 * penaltytime)
-                print_with_time("Horde Worker Resumed")
+                print_with_time(f"Worker {worker_id} - Horde Worker Resumed")
             else:
-                 print_with_time("Horde Worker Exit limit reached, too many errors.")
+                 print_with_time(f"Worker {worker_id} - Horde Worker Exit limit reached, too many errors.")
 
         global last_non_horde_req_time
         sec_since_non_horde = time.time() - last_non_horde_req_time
@@ -13384,7 +13507,7 @@ def run_horde_worker(args, api_key, worker_name):
             time.sleep(1)
             continue
 
-        #first, make sure we are not generating
+        #first, make sure we are not generating (queue is empty)
         if modelbusy.locked():
             time.sleep(0.2)
             continue
@@ -13399,10 +13522,12 @@ def run_horde_worker(args, api_key, worker_name):
             "softprompts": [],
             "bridge_agent": BRIDGE_AGENT,
         }
+        if parallel_batching_threads>1:
+            gen_dict["threads"] = parallel_batching_threads
         pop = make_url_request_horde(f'{cluster}/api/v2/generate/text/pop',gen_dict)
         if not pop:
             punishcounter += 1
-            print_with_time(f"Failed to fetch job from {cluster}. Waiting 10 seconds...")
+            print_with_time(f"Worker {worker_id} - Failed to fetch job from {cluster}. Waiting 10 seconds...")
             time.sleep(10)
             continue
         if not pop["id"]:
@@ -13410,7 +13535,7 @@ def run_horde_worker(args, api_key, worker_name):
             time.sleep(slp)
             sleepy_counter += 1
             if sleepy_counter==20:
-                print_with_time("No recent jobs, entering low power mode...")
+                print_with_time(f"Worker {worker_id} - No recent jobs, entering low power mode...")
             continue
 
         sleepy_counter = 0
@@ -13421,7 +13546,7 @@ def run_horde_worker(args, api_key, worker_name):
 
         #do gen
         while exitcounter < 10:
-            if not modelbusy.locked():
+            if parallel_batching_threads>1 or not modelbusy.locked():
                 #horde gets a genkey to avoid KCPP overlap
                 current_payload['genkey'] = f"HORDEREQ_{random.randint(100, 999)}"
                 current_generation = make_url_request_horde(f'{epurl}/api/v1/generate', current_payload, method='POST',addmykey=True)
@@ -13432,7 +13557,7 @@ def run_horde_worker(args, api_key, worker_name):
                     if currentjob_attempts>5:
                         break
 
-            print_with_time("Server Busy - Not ready to generate...")
+            print_with_time(f"Worker {worker_id} - Server Busy - Not ready to generate...")
             time.sleep(5)
 
         #submit reply
@@ -13447,15 +13572,15 @@ def run_horde_worker(args, api_key, worker_name):
             submit_thread = threading.Thread(target=submit_completed_generation, args=(submiturl, current_id, session_starttime, submit_dict))
             submit_thread.start() #submit job in new thread so nothing is waiting
         else:
-            print_with_time("Error, Abandoned current job due to errors. Getting new job.")
+            print_with_time(f"Worker {worker_id} - Error, Abandoned current job due to errors. Getting new job.")
         current_id = None
         current_payload = None
         time.sleep(0.1)
 
     if exitcounter<100:
-        print_with_time("Horde Worker Shutdown - Too many errors.")
+        print_with_time(f"Worker {worker_id} - Horde Worker Shutdown - Too many errors.")
     else:
-        print_with_time("Horde Worker Shutdown - Server Closing.")
+        print_with_time(f"Worker {worker_id} - Horde Worker Shutdown - Server Closing.")
     exitcounter = 999
     time.sleep(3)
     sys.exit(2)
@@ -15539,9 +15664,15 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
 
         if args.hordekey and args.hordekey!="":
             if args.hordeworkername and args.hordeworkername!="":
-                horde_thread = threading.Thread(target=run_horde_worker,args=(args,args.hordekey,args.hordeworkername))
-                horde_thread.daemon = True
-                horde_thread.start()
+                workers_to_use = 1
+                if args.continuous_batching:
+                    workers_to_use = int(args.continuous_batching) if hasattr(args, "continuous_batching") else 1
+                for w in range(0,workers_to_use):
+                    wid = (w+1)
+                    print(f"Launching horde worker {wid}...")
+                    horde_thread = threading.Thread(target=run_horde_worker,args=(args,args.hordekey,args.hordeworkername,wid,workers_to_use))
+                    horde_thread.daemon = True
+                    horde_thread.start()
             else:
                 print("Horde worker could not start. You need to specify a horde worker name with --hordeworkername")
 
@@ -15711,6 +15842,7 @@ if __name__ == '__main__':
     advparser.add_argument("--analyze", metavar=('[filename]'), help="Reads the metadata, weight types and tensor names in any GGUF file.", default="")
     advparser.add_argument("--maingpu","--main-gpu","-mg", help="Only used in a multi-gpu setup. Sets the index of the main GPU that will be used.",metavar=('[Device ID]'), type=int, default=-1)
     advparser.add_argument("--batchsize","--blasbatchsize","--batch-size","-b", help="Sets the batch size used in batched processing (default 512). Setting it to -1 disables batched mode, but keeps other benefits like GPU offload.", type=int,choices=[-1,16,32,64,128,256,512,1024,2048,4096], default=512)
+    advparser.add_argument("--continuous-batching","--contbatch", help=argparse.SUPPRESS, metavar=('[slots]'), type=check_range(int,0,64), default=0)
     advparser.add_argument("--blasthreads","--batchthreads","--threadsbatch","--threads-batch", help="Use a different number of threads during batching if specified. Otherwise, has the same value as --threads",metavar=('[threads]'), type=int, default=0)
     advparser.add_argument("--splitmode","-sm","--split-mode", help="How to split the model across multiple GPUs", metavar=('[split mode]'), type=str, choices=splitmode_choices, default=splitmode_choices[0])
     advparser.add_argument("--nommq", help="Disables MMQ, only used for cuda backend. This flag may be removed in future.", action='store_true')
@@ -15734,7 +15866,7 @@ if __name__ == '__main__':
     advparser.add_argument("--prompt","-p", metavar=('[prompt]'), help="Passing a prompt string triggers a direct inference, loading the model, outputs the response to stdout and exits. Can be used alone or with benchmark.", type=str, default="")
     advparser.add_argument("--cli", help="Does not launch KoboldCpp HTTP server. Instead, enables KoboldCpp from the command line, accepting interactive console input and displaying responses to the terminal.", action='store_true')
     advparser.add_argument("--genlimit","--promptlimit", help="Sets the maximum number of generated tokens, it will restrict all generations to this or lower. Also usable with --prompt or --benchmark.",metavar=('[token limit]'), type=int, default=0)
-    advparser.add_argument("--multiuser", help="Set maximum number of queued incoming requests allowed.", metavar=('limit'), type=int, default=multiuser_concurrent_limit)
+    advparser.add_argument("--multiuser", help="Set maximum number of queued incoming requests allowed.", metavar=('limit'), type=int, nargs='?', const=multiuser_concurrent_limit, default=multiuser_concurrent_limit)
     advparser.add_argument("--multiplayer", help="Hosts a shared multiplayer session that others can join.", action='store_true')
     advparser.add_argument("--websearch", help="Enable the local search engine proxy so Web Searches can be done.", action='store_true')
     advparser.add_argument("--remotetunnel", help="Uses Cloudflare to create a remote tunnel, allowing you to access koboldcpp remotely over the internet even behind a firewall.", action='store_true')

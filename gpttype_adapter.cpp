@@ -22,6 +22,11 @@
 #include <cctype>
 #include <locale>
 #include <chrono>
+#include <algorithm>
+#include <condition_variable>
+#include <deque>
+#include <memory>
+#include <thread>
 
 #include "utils.h"
 #include "llmutils.h"
@@ -76,6 +81,7 @@ int last_draft_success = 0;
 int last_draft_failed = 0;
 stop_reason last_stop_reason = stop_reason::INVALID;
 std::vector<std::string> generated_tokens;
+static int continuous_batching_slots = 0;
 
 llama_grammar *  grammar = nullptr; //currently used grammar
 llama_grammar_parser parsed_grammar;
@@ -165,6 +171,8 @@ static std::map<int,std::vector<int>> antislop_banned_token_ids; //first is the 
 
 static int savestate_limit = 0;
 static std::vector<savestate_data> savestates;
+
+extern bool kcpp_permit_any_repack;
 
 inline int kcpp_cpu_has_blas(void) {
 #if defined(GGML_USE_BLAS) || defined(GGML_USE_CUDA) || defined(GGML_USE_VULKAN) || defined(GGML_USE_SYCL)
@@ -2158,7 +2166,6 @@ void kcpp_init_audio_proj(clip_ctx * ctx_a)
     switch (proj) {
         case PROJECTOR_TYPE_QWEN2A:
         case PROJECTOR_TYPE_QWEN25O:
-        case PROJECTOR_TYPE_QWEN3A:
         case PROJECTOR_TYPE_ULTRAVOX:
         case PROJECTOR_TYPE_VOXTRAL:
         case PROJECTOR_TYPE_GLMA:
@@ -2166,8 +2173,14 @@ void kcpp_init_audio_proj(clip_ctx * ctx_a)
         case PROJECTOR_TYPE_MERALION:
             audio_preproc = std::make_unique<mtmd_audio_preprocessor_whisper>(ctx_a);
             break;
+        case PROJECTOR_TYPE_QWEN3A:
+            audio_preproc = std::make_unique<mtmd_audio_preprocessor_qwen3a>(ctx_a);
+            break;
         case PROJECTOR_TYPE_LFM2A:
             audio_preproc = std::make_unique<mtmd_audio_preprocessor_conformer>(ctx_a);
+            break;
+        case PROJECTOR_TYPE_GRANITE_SPEECH:
+            audio_preproc = std::make_unique<mtmd_audio_preprocessor_granite_speech>(ctx_a);
             break;
         case PROJECTOR_TYPE_GEMMA4A:
             audio_preproc = std::make_unique<mtmd_audio_preprocessor_gemma4a>(ctx_a);
@@ -2194,6 +2207,11 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
     kcpp_pipeline_parallelism = inputs.pipelineparallel;
     kcpp_data->n_batch = GetBatchSize(inputs.batchsize, in_file_format);
     kcpp_data->n_ubatch = kcpp_data->n_batch;
+    continuous_batching_slots = (isGguf && inputs.continuous_batching_slots > 1) ? inputs.continuous_batching_slots : 0;
+    if(continuous_batching_slots > 0)
+    {
+        printf("Continuous batching: prepared %d GGUF sequence slots.\n", continuous_batching_slots);
+    }
     kcpp_data->vision_min_tokens = inputs.visionmintokens;
     kcpp_data->vision_max_tokens = inputs.visionmaxtokens;
     if(isGguf && kcpp_pipeline_parallelism)
@@ -2428,6 +2446,8 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
         model_params.use_mlock = inputs.use_mlock;
         model_params.use_direct_io = false; //no direct io for now until stable
         model_params.n_gpu_layers = inputs.gpulayers;
+        kcpp_permit_any_repack = (model_params.use_mmap?false:true);
+
 
         //set device overrides if needed
         std::vector<ggml_backend_dev_t> devices_override;
@@ -2458,6 +2478,10 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
 
         llama_ctx_params.n_batch = kcpp_data->n_batch;
         llama_ctx_params.n_ubatch = kcpp_data->n_ubatch;
+        if(continuous_batching_slots > 0)
+        {
+            llama_ctx_params.n_seq_max = continuous_batching_slots + 1;
+        }
         llama_ctx_params.n_threads = kcpp_data->n_threads;
         llama_ctx_params.n_threads_batch = kcpp_data->n_blasthreads;
 
@@ -3266,6 +3290,895 @@ bool gpttype_generate_abort()
     return true;
 }
 
+//some quick prompt manipulation helper functions, these mutate the inputs
+void ApplyPromptFormatAdjustments(std::string & added_memory, std::string & input_prompt)
+{
+    //prompt mod to improve coherency for GLM4, by ensuring injection for gmask, sop and an extra space
+    //deepseek2 is actually used for glm 4.7 flash
+    if (file_format == FileFormat::GGUF_GENERIC && (file_format_meta.model_architecture == llm_arch::LLM_ARCH_GLM4 || file_format_meta.model_architecture == llm_arch::LLM_ARCH_GLM4_MOE || file_format_meta.model_architecture == llm_arch::LLM_ARCH_DEEPSEEK2)) {
+        std::string temp = gpttype_get_chat_template();
+        if (temp.find("[gMASK]<sop>") != std::string::npos) {
+            if (added_memory == "") {
+                if (!input_prompt.empty() && input_prompt.rfind("[gMASK]", 0) == 0) {  //check startswith
+                    input_prompt.erase(0, 7);
+                }
+                if (!input_prompt.empty() && input_prompt.rfind("<sop>", 0) == 0) {  //check startswith
+                    input_prompt.erase(0, 5);
+                }
+                if (!input_prompt.empty() && input_prompt[0] == ' ') {  // check for leading space
+                    input_prompt.erase(0, 1);
+                }
+                added_memory = "[gMASK]<sop> ";
+            } else {
+                if (!added_memory.empty() && added_memory.rfind("[gMASK]", 0) == 0) {  //check startswith
+                    added_memory.erase(0, 7);
+                }
+                if (!added_memory.empty() && added_memory.rfind("<sop>", 0) == 0) {  //check startswith
+                    added_memory.erase(0, 5);
+                }
+                if (!added_memory.empty() && added_memory[0] == ' ') {  // check for leading space
+                    added_memory.erase(0, 1);
+                }
+                added_memory = "[gMASK]<sop> " + added_memory;
+            }
+        }
+    }
+
+    // prompt mod to increase coherency for gemma4
+    if (file_format == FileFormat::GGUF_GENERIC && (file_format_meta.model_architecture == llm_arch::LLM_ARCH_GEMMA4)) {
+        std::string temp = gpttype_get_chat_template();
+        if (temp.find("<|channel>thought\\n<channel|>") != std::string::npos) {
+            const std::string channel_open  = "<|channel>";
+            const std::string channel_close = "<channel|>";
+            const std::string channel_prefix = channel_open + channel_close;
+            const std::string systhink = "<|think|>";
+
+            const std::string fullbody = added_memory + input_prompt;
+
+            const bool has_open  = fullbody.find(channel_open)  != std::string::npos;
+            const bool has_close = fullbody.find(channel_close) != std::string::npos;
+            const bool has_systhink = fullbody.find(systhink) != std::string::npos;
+            const bool ends_with_turn = kcpp_string_ends_with(kcpp_rstrip(fullbody),"<|turn>model");
+            const bool acceptable_jinja_exception = (ends_with_turn && has_systhink);
+
+            // If neither opening nor closing tag is present anywhere, prepend both
+            if (!has_open && !has_close && !acceptable_jinja_exception) {
+                added_memory = channel_prefix + added_memory;
+            }
+        }
+    }
+}
+
+void AppendDedicatedMemoryAndNegativePrompt(std::vector<int> & embd_inp, const std::vector<int> & embd_inp_mem, const std::vector<int> & negprompt_tokens, int n_predict, int nctx)
+{
+    //added special memory, overwrite if needed
+    if (embd_inp_mem.size() + negprompt_tokens.size() > 0)
+    {
+        std::vector<int> embd_inp_mem_copy = embd_inp_mem;
+
+        //remove bos token from prompt, it'll be taken from memory
+        std::vector<int> bos;
+        TokenizeString("", bos, file_format, add_bos_token);
+
+        if (bos.size()>0 && !embd_inp.empty() && bos[0]==embd_inp[0]) { //strip away bos if exists
+            embd_inp.erase(embd_inp.begin());
+        }
+
+        //shorten memory if needed
+        if (embd_inp_mem_copy.size() > 0 && embd_inp_mem_copy.size() + n_predict + 4 > nctx)
+        {
+            int offset = embd_inp_mem_copy.size() - nctx + n_predict + 4;
+            embd_inp_mem_copy = std::vector<int>(embd_inp_mem_copy.begin() + offset, embd_inp_mem_copy.end());
+            //replace bos into front if exists
+            if(bos.size()>0 && embd_inp_mem_copy.size()>0)
+            {
+                embd_inp_mem_copy[0] = bos[0];
+            }
+        }
+
+        //shorten main prompt by trimming the front if needed
+        int addmemtokens = embd_inp_mem_copy.size() + negprompt_tokens.size() + 1;
+        int totalsize = (addmemtokens + embd_inp.size() + n_predict);
+        if(totalsize > nctx)
+        {
+            int excess = totalsize - nctx;
+            if (embd_inp.size() >= excess) {
+                embd_inp.erase(embd_inp.begin(), embd_inp.begin() + excess);
+            } else {
+                embd_inp.clear();
+            }
+        }
+
+        //stick memory to front of prompt
+        embd_inp.insert(embd_inp.begin(), embd_inp_mem_copy.begin(), embd_inp_mem_copy.end());
+        if(add_bos_token && embd_inp.size()>0 && bos.size()>0 && bos[0]!=embd_inp[0])
+        {
+            embd_inp.insert(embd_inp.begin(), bos[0]);  //insert bos at front, if added
+        }
+    }
+}
+
+
+//alpin's batching stuff
+
+enum class BatchState
+{
+    WAITING,
+    PREFILL,
+    GENERATING,
+    FINISHED,
+    FAILED,
+    ABORTED,
+};
+
+struct BatchGenerateRequest
+{
+    int id = 0;
+    int slot = -1;
+    BatchState state = BatchState::WAITING;
+    std::string prompt;
+    std::string prompt_added_memory;
+    std::vector<std::string> stop_sequences;
+    std::vector<llama_logit_bias> logit_biases;
+    int max_context_length = 0;
+    int max_length = 0;
+    int seed = 0;
+    float temperature = 0.0f;
+    int top_k = 0;
+    float top_p = 1.0f;
+    float min_p = 0.0f;
+    float typical_p = 1.0f;
+    float rep_pen = 1.0f;
+    float rep_pen_slope = 1.0f;
+    int rep_pen_range = 0;
+    float presence_penalty = 0.0f;
+    bool allow_eos_token = true;
+    bool bypass_eos_token = false;
+    bool render_special = false;
+    std::vector<llama_token> prompt_tokens;
+    int prompt_pos = 0;
+    int n_past = 0;
+    bool has_pending = false;
+    llama_token pending_token = 0;
+    int i_batch = -1;
+    llama_sampler * sampler = nullptr;
+    std::vector<std::string> generated_pieces;
+    std::string output;
+    int prompt_token_count = 0;
+    int completion_token_count = 0;
+    std::chrono::steady_clock::time_point start_time;
+    stop_reason finish_reason = stop_reason::INVALID;
+    bool abort_requested = false;
+    generation_outputs result;
+
+    ~BatchGenerateRequest()
+    {
+        if(sampler)
+        {
+            llama_sampler_free(sampler);
+            sampler = nullptr;
+        }
+    }
+};
+
+static std::mutex batch_mutex;
+static std::condition_variable batch_cv;
+static std::deque<int> batch_waiting;
+static std::vector<std::unique_ptr<BatchGenerateRequest>> batch_requests;
+static std::thread batch_worker_thread;
+static bool batch_worker_stop = false;
+static bool batch_worker_started = false;
+static bool batch_legacy_active = false;
+static bool batch_touched_since_legacy = false;
+static int batch_legacy_waiting = 0;
+static int batch_next_request_id = 1;
+static std::string batch_empty_string = "";
+
+static BatchGenerateRequest * batch_find_request_locked(int request_id)
+{
+    for(auto & req : batch_requests)
+    {
+        if(req && req->id == request_id)
+        {
+            return req.get();
+        }
+    }
+    return nullptr;
+}
+
+static bool batch_is_live_state(BatchState state)
+{
+    return state == BatchState::WAITING || state == BatchState::PREFILL || state == BatchState::GENERATING;
+}
+
+static bool batch_has_live_locked()
+{
+    for(const auto & req : batch_requests)
+    {
+        if(req && batch_is_live_state(req->state))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void batch_invalidate_legacy_context_locked()
+{
+    if(!batch_touched_since_legacy)
+    {
+        return;
+    }
+    batch_touched_since_legacy = false;
+    n_past = 0;
+    current_context_tokens.clear();
+    last_n_tokens.clear();
+    smartcontext.clear();
+    loaded_latest_logits.clear();
+    if(llama_ctx_v4)
+    {
+        llama_memory_seq_rm(llama_get_memory(llama_ctx_v4), 0, -1, -1);
+    }
+    if(draft_ctx)
+    {
+        llama_memory_seq_rm(llama_get_memory(draft_ctx), 0, -1, -1);
+    }
+    if(debugmode==1 && !is_quiet)
+    {
+        printf("\n[Continuous batching touched shared context; forcing next legacy generation to reprocess prompt]\n");
+    }
+}
+
+class BatchLegacyGuard
+{
+public:
+    BatchLegacyGuard()
+    {
+        std::unique_lock<std::mutex> lock(batch_mutex);
+        batch_legacy_waiting++;
+        batch_cv.notify_all();
+        batch_cv.wait(lock, [](){ return !batch_has_live_locked(); });
+        batch_legacy_waiting--;
+        batch_invalidate_legacy_context_locked();
+        batch_legacy_active = true;
+    }
+
+    ~BatchLegacyGuard()
+    {
+        std::lock_guard<std::mutex> lock(batch_mutex);
+        batch_legacy_active = false;
+        batch_cv.notify_all();
+    }
+};
+
+static bool batch_inputs_eligible(const generation_inputs & inputs)
+{
+    if(continuous_batching_slots <= 1 || file_format != FileFormat::GGUF_GENERIC || !llama_ctx_v4 || !kcpp_data)
+    {
+        return false;
+    }
+    if(draft_ctx || guidance_ctx || inputs.images_len>0 || inputs.audio_len>0)
+    {
+        return false;
+    }
+    if(kcpp_data->use_smartcontext || kcpp_data->use_contextshift || kcpp_data->smartcache)
+    {
+        return false;
+    }
+    if(inputs.negative_prompt && std::string(inputs.negative_prompt).size() > 0)
+    {
+        return false;
+    }
+    if(inputs.images_len > 0 || inputs.audio_len > 0 || inputs.guidance_scale != 1.0f)
+    {
+        return false;
+    }
+    if(inputs.grammar && std::string(inputs.grammar).size() > 0)
+    {
+        return false;
+    }
+    if(inputs.banned_tokens_len > 0 || inputs.dry_multiplier > 0.0f)
+    {
+        return false;
+    }
+    if(inputs.mirostat != 0 || inputs.xtc_probability > 0.0f || inputs.nsigma > 0.0f || inputs.smoothing_factor > 0.0f || inputs.adaptive_target > 0.0f)
+    {
+        return false;
+    }
+    if(inputs.top_a > 0.0f || inputs.tfs != 1.0f || inputs.dynatemp_range > 0.0f)
+    {
+        return false;
+    }
+    static const int default_sampler_order[] = {6, 0, 1, 3, 4, 2, 5};
+    if(inputs.sampler_len > 0)
+    {
+        if(inputs.sampler_len != 7)
+        {
+            return false;
+        }
+        for(int i = 0; i < 7; ++i)
+        {
+            if((int) inputs.sampler_order[i] != default_sampler_order[i])
+            {
+                return false;
+            }
+        }
+    }
+    if(inputs.reasoning_budget >= 0 || inputs.tool_call_fix)
+    {
+        return false;
+    }
+    return true;
+}
+
+struct BatchRepPenSampler
+{
+    int32_t penalty_last_n = 0;
+    float penalty_repeat = 1.0f;
+    float penalty_slope = 1.0f;
+    float penalty_present = 0.0f;
+    std::vector<llama_token> prev;
+};
+
+static const char * batch_rep_pen_name(const llama_sampler * /*smpl*/)
+{
+    return "kcpp-batch-rep-pen";
+}
+
+static void batch_rep_pen_accept(llama_sampler * smpl, llama_token token)
+{
+    auto * ctx = (BatchRepPenSampler *) smpl->ctx;
+    if(ctx->penalty_last_n <= 0)
+    {
+        return;
+    }
+    if(ctx->prev.size() >= (size_t) ctx->penalty_last_n)
+    {
+        ctx->prev.erase(ctx->prev.begin());
+    }
+    ctx->prev.push_back(token);
+}
+
+static void batch_rep_pen_apply(llama_sampler * smpl, llama_token_data_array * cur_p)
+{
+    auto * ctx = (BatchRepPenSampler *) smpl->ctx;
+    int last_n_repeat = std::min((int) ctx->prev.size(), ctx->penalty_last_n);
+    if(last_n_repeat <= 0 || (ctx->penalty_repeat == 1.0f && ctx->penalty_present == 0.0f))
+    {
+        return;
+    }
+
+    const llama_token * last_tokens = ctx->prev.data() + ctx->prev.size() - last_n_repeat;
+    std::unordered_set<llama_token> tokens_near(last_tokens + last_n_repeat / 2, last_tokens + last_n_repeat);
+    std::unordered_set<llama_token> tokens_far(last_tokens, last_tokens + last_n_repeat / 2);
+
+    float penalty_reduced = ctx->penalty_repeat;
+    if(penalty_reduced > 1.0f)
+    {
+        penalty_reduced = 1.0f + ((ctx->penalty_repeat - 1.0f) * ctx->penalty_slope);
+    }
+
+    for(size_t i = 0; i < cur_p->size; ++i)
+    {
+        const bool token_in_near = tokens_near.find(cur_p->data[i].id) != tokens_near.end();
+        const bool token_in_far = tokens_far.find(cur_p->data[i].id) != tokens_far.end();
+        if(!token_in_near && !token_in_far)
+        {
+            continue;
+        }
+
+        float penalty = token_in_near ? ctx->penalty_repeat : penalty_reduced;
+        if(cur_p->data[i].logit <= 0)
+        {
+            cur_p->data[i].logit *= penalty;
+        }
+        else
+        {
+            cur_p->data[i].logit /= penalty;
+        }
+        cur_p->data[i].logit -= ctx->penalty_present;
+    }
+
+    cur_p->sorted = false;
+}
+
+static void batch_rep_pen_reset(llama_sampler * smpl)
+{
+    auto * ctx = (BatchRepPenSampler *) smpl->ctx;
+    ctx->prev.clear();
+}
+
+static llama_sampler * batch_rep_pen_clone(const llama_sampler * smpl)
+{
+    const auto * ctx = (const BatchRepPenSampler *) smpl->ctx;
+    auto * result = llama_sampler_init(smpl->iface, new BatchRepPenSampler {
+        ctx->penalty_last_n,
+        ctx->penalty_repeat,
+        ctx->penalty_slope,
+        ctx->penalty_present,
+        ctx->prev,
+    });
+    return result;
+}
+
+static void batch_rep_pen_free(llama_sampler * smpl)
+{
+    delete (BatchRepPenSampler *) smpl->ctx;
+}
+
+static llama_sampler_i batch_rep_pen_i = {
+    /* .name              = */ batch_rep_pen_name,
+    /* .accept            = */ batch_rep_pen_accept,
+    /* .apply             = */ batch_rep_pen_apply,
+    /* .reset             = */ batch_rep_pen_reset,
+    /* .clone             = */ batch_rep_pen_clone,
+    /* .free              = */ batch_rep_pen_free,
+    /* .backend_init      = */ nullptr,
+    /* .backend_accept    = */ nullptr,
+    /* .backend_apply     = */ nullptr,
+    /* .backend_set_input = */ nullptr,
+};
+
+static llama_sampler * batch_rep_pen_init(int32_t penalty_last_n, float penalty_repeat, float penalty_slope, float penalty_present)
+{
+    penalty_last_n = std::max(penalty_last_n, 0);
+    if(penalty_slope <= 0.0f || penalty_slope > 1.0f)
+    {
+        penalty_slope = 1.0f;
+    }
+    return llama_sampler_init(&batch_rep_pen_i, new BatchRepPenSampler {
+        penalty_last_n,
+        penalty_repeat <= 0.0f ? 1.0f : penalty_repeat,
+        penalty_slope,
+        penalty_present,
+        {},
+    });
+}
+
+static llama_sampler * batch_build_sampler(const BatchGenerateRequest & req)
+{
+    llama_sampler_chain_params params = llama_sampler_chain_default_params();
+    llama_sampler * chain = llama_sampler_chain_init(params);
+    llama_sampler_chain_add(chain, batch_rep_pen_init(
+        req.rep_pen_range,
+        req.rep_pen,
+        req.rep_pen_slope,
+        req.presence_penalty));
+    if(req.logit_biases.size()>0)
+    {
+        int32_t n_vocab = llama_vocab_n_tokens(llama_model_get_vocab(llama_get_model(llama_ctx_v4)));
+        llama_sampler_chain_add(chain, llama_sampler_init_logit_bias(n_vocab, req.logit_biases.size(), req.logit_biases.data()));
+    }
+    if(req.top_k > 0)
+    {
+        llama_sampler_chain_add(chain, llama_sampler_init_top_k(req.top_k));
+    }
+    if(req.top_p > 0.0f && req.top_p < 1.0f)
+    {
+        llama_sampler_chain_add(chain, llama_sampler_init_top_p(req.top_p, 1));
+    }
+    if(req.min_p > 0.0f)
+    {
+        llama_sampler_chain_add(chain, llama_sampler_init_min_p(req.min_p, 1));
+    }
+    if(req.typical_p > 0.0f && req.typical_p < 1.0f)
+    {
+        llama_sampler_chain_add(chain, llama_sampler_init_typical(req.typical_p, 1));
+    }
+    if(req.temperature > 0.0f)
+    {
+        llama_sampler_chain_add(chain, llama_sampler_init_temp(req.temperature));
+        llama_sampler_chain_add(chain, llama_sampler_init_dist(req.seed < 0 ? LLAMA_DEFAULT_SEED : (uint32_t) req.seed));
+    }
+    else
+    {
+        llama_sampler_chain_add(chain, llama_sampler_init_greedy());
+    }
+    return chain;
+}
+
+static void batch_finish_request_locked(BatchGenerateRequest & req, stop_reason reason)
+{
+    auto finish_time = std::chrono::steady_clock::now();
+    float total_time = req.start_time.time_since_epoch().count() == 0 ? 0.0f : std::chrono::duration<float>(finish_time - req.start_time).count();
+    float generated_tps = total_time > 0.0f ? (float) req.completion_token_count / total_time : 0.0f;
+    req.finish_reason = reason;
+    req.result.status = (reason == stop_reason::ERROR_ENCOUNTERED) ? 0 : 1;
+    req.result.stopreason = reason;
+    req.result.prompt_tokens = req.prompt_token_count;
+    req.result.completion_tokens = req.completion_token_count;
+    req.result.text = req.output.c_str();
+    req.state = reason == stop_reason::ERROR_ENCOUNTERED ? BatchState::FAILED : (reason == stop_reason::INVALID ? BatchState::ABORTED : BatchState::FINISHED);
+    if(req.slot >= 0 && llama_ctx_v4)
+    {
+        llama_memory_seq_rm(llama_get_memory(llama_ctx_v4), req.slot, -1, -1);
+    }
+    req.slot = -1;
+    printf("\n[%s] BatchRequest:%d, Prompt:%d, Generated:%d/%d in %.2fs (%.2fT/s), Stop:%d",
+        get_timestamp_str().c_str(), req.id, req.prompt_token_count, req.completion_token_count, req.max_length, total_time, generated_tps, (int) reason);
+    fflush(stdout);
+    batch_cv.notify_all();
+}
+
+static bool batch_output_hit_stop(const BatchGenerateRequest & req)
+{
+    for(const auto & stopper : req.stop_sequences)
+    {
+        if(!stopper.empty() && req.output.find(stopper) != std::string::npos)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool batch_claim_waiting_locked()
+{
+    bool claimed = false;
+    for(int slot = 1; slot <= continuous_batching_slots && !batch_waiting.empty(); ++slot)
+    {
+        bool occupied = false;
+        for(const auto & req : batch_requests)
+        {
+            if(req && req->slot == slot && batch_is_live_state(req->state))
+            {
+                occupied = true;
+                break;
+            }
+        }
+        if(occupied)
+        {
+            continue;
+        }
+        int request_id = batch_waiting.front();
+        batch_waiting.pop_front();
+        BatchGenerateRequest * req = batch_find_request_locked(request_id);
+        if(!req || req->state != BatchState::WAITING)
+        {
+            continue;
+        }
+        req->slot = slot;
+        req->state = BatchState::PREFILL;
+        batch_touched_since_legacy = true;
+
+        ApplyPromptFormatAdjustments(req->prompt_added_memory, req->prompt);
+        std::vector<llama_token> added_memory_tokens; //temporary buf before copying over
+
+        TokenizeString(req->prompt, req->prompt_tokens, file_format, add_bos_token);
+        if(req->prompt_tokens.empty())
+        {
+            TokenizeString("", req->prompt_tokens, file_format, add_bos_token);
+        }
+        if(req->prompt_added_memory!="")
+        {
+            TokenizeString(req->prompt_added_memory, added_memory_tokens, file_format, add_bos_token);
+        }
+
+        int n_ctx = req->max_context_length > 0 ? std::min(req->max_context_length, kcpp_data->n_ctx) : kcpp_data->n_ctx;
+        AppendDedicatedMemoryAndNegativePrompt(req->prompt_tokens, added_memory_tokens, std::vector<llama_token>(), req->max_length, n_ctx);
+
+        if(req->max_length > 0 && (int) req->prompt_tokens.size() + req->max_length > n_ctx)
+        {
+            int keep = std::max(1, n_ctx - req->max_length);
+            if((int) req->prompt_tokens.size() > keep)
+            {
+                req->prompt_tokens.erase(req->prompt_tokens.begin(), req->prompt_tokens.end() - keep);
+            }
+        }
+
+        if (debugmode==1 && !is_quiet)
+        {
+            std::string outstr = "";
+            printf("\n\n[Debug: Dump %zu Raw Input Tokens]\n",req->prompt_tokens.size());
+            outstr += get_tok_vec_str(req->prompt_tokens);
+            printf("%s\n", RemoveBell(outstr).c_str());
+        }
+
+        req->prompt_token_count = req->prompt_tokens.size();
+        req->sampler = batch_build_sampler(*req);
+        for(llama_token token : req->prompt_tokens)
+        {
+            llama_sampler_accept(req->sampler, token);
+        }
+        req->prompt_pos = 0;
+        req->n_past = 0;
+        req->has_pending = false;
+        req->i_batch = -1;
+        req->start_time = std::chrono::steady_clock::now();
+        llama_memory_seq_rm(llama_get_memory(llama_ctx_v4), slot, -1, -1);
+        claimed = true;
+    }
+    return claimed;
+}
+
+static void batch_worker_loop()
+{
+    const int batch_cap = std::max(1, kcpp_data ? kcpp_data->n_batch : 512);
+    llama_batch batch = llama_batch_init(batch_cap, 0, 1);
+    while(true)
+    {
+        std::vector<int> decode_ids;
+        {
+            std::unique_lock<std::mutex> lock(batch_mutex);
+            batch_cv.wait_for(lock, std::chrono::milliseconds(5), [](){
+                return batch_worker_stop || (!batch_legacy_active && batch_has_live_locked());
+            });
+            if(batch_worker_stop)
+            {
+                break;
+            }
+            if(batch_legacy_active)
+            {
+                continue;
+            }
+            batch_claim_waiting_locked();
+            common_batch_clear(batch);
+            for(auto & req_ptr : batch_requests)
+            {
+                if(!req_ptr || !batch_is_live_state(req_ptr->state) || req_ptr->slot < 0 || batch.n_tokens >= batch_cap)
+                {
+                    continue;
+                }
+                BatchGenerateRequest & req = *req_ptr;
+                req.i_batch = -1;
+                if(req.abort_requested)
+                {
+                    batch_finish_request_locked(req, stop_reason::INVALID);
+                    continue;
+                }
+                if(req.state == BatchState::PREFILL)
+                {
+                    while(req.prompt_pos < (int) req.prompt_tokens.size() && batch.n_tokens < batch_cap)
+                    {
+                        bool is_last = req.prompt_pos == (int) req.prompt_tokens.size() - 1;
+                        if(is_last)
+                        {
+                            req.i_batch = batch.n_tokens;
+                        }
+                        common_batch_add(batch, req.prompt_tokens[req.prompt_pos], req.n_past, { req.slot }, is_last);
+                        req.prompt_pos++;
+                        req.n_past++;
+                    }
+                    if(req.prompt_pos == (int) req.prompt_tokens.size())
+                    {
+                        req.state = BatchState::GENERATING;
+                    }
+                }
+                else if(req.state == BatchState::GENERATING && req.has_pending)
+                {
+                    req.i_batch = batch.n_tokens;
+                    common_batch_add(batch, req.pending_token, req.n_past, { req.slot }, true);
+                    req.n_past++;
+                    req.has_pending = false;
+                }
+            }
+            if(batch.n_tokens == 0)
+            {
+                continue;
+            }
+            for(auto & req_ptr : batch_requests)
+            {
+                if(req_ptr && req_ptr->i_batch >= 0)
+                {
+                    decode_ids.push_back(req_ptr->id);
+                }
+            }
+        }
+
+        int decode_status = llama_decode(llama_ctx_v4, batch);
+
+        std::lock_guard<std::mutex> lock(batch_mutex);
+        if(decode_status != 0)
+        {
+            for(int request_id : decode_ids)
+            {
+                BatchGenerateRequest * req = batch_find_request_locked(request_id);
+                if(req && batch_is_live_state(req->state))
+                {
+                    batch_finish_request_locked(*req, stop_reason::ERROR_ENCOUNTERED);
+                }
+            }
+            continue;
+        }
+
+        const llama_vocab * vocab = llama_model_get_vocab(llama_get_model(llama_ctx_v4));
+        const std::vector<llama_token> eog_tokens = GetEogIDs(file_format,n_vocab);
+        for(int request_id : decode_ids)
+        {
+            BatchGenerateRequest * req = batch_find_request_locked(request_id);
+            if(!req || req->state != BatchState::GENERATING || req->i_batch < 0)
+            {
+                continue;
+            }
+            llama_token sampled = llama_sampler_sample(req->sampler, llama_ctx_v4, req->i_batch);
+            req->completion_token_count++;
+            bool is_eog = std::find(eog_tokens.begin(), eog_tokens.end(), sampled) != eog_tokens.end();
+            if(is_eog && !req->bypass_eos_token)
+            {
+                batch_finish_request_locked(*req, stop_reason::EOS_TOKEN_HIT);
+                continue;
+            }
+            std::string piece = FileFormatTokenizeID(sampled, file_format, req->render_special);
+            req->generated_pieces.push_back(piece);
+            req->output += piece;
+            if(batch_output_hit_stop(*req))
+            {
+                batch_finish_request_locked(*req, stop_reason::CUSTOM_STOPPER);
+                continue;
+            }
+            if(req->max_length > 0 && req->completion_token_count >= req->max_length)
+            {
+                batch_finish_request_locked(*req, stop_reason::OUT_OF_TOKENS);
+                continue;
+            }
+            req->pending_token = sampled;
+            req->has_pending = true;
+            req->i_batch = -1;
+        }
+    }
+    llama_batch_free(batch);
+}
+
+static void batch_start_worker_locked()
+{
+    if(batch_worker_started)
+    {
+        return;
+    }
+    batch_worker_stop = false;
+    batch_worker_thread = std::thread(batch_worker_loop);
+    batch_worker_thread.detach();
+    batch_worker_started = true;
+}
+
+bool gpttype_batch_generate_enabled()
+{
+    return continuous_batching_slots > 1 && file_format == FileFormat::GGUF_GENERIC && llama_ctx_v4 && kcpp_data;
+}
+
+int gpttype_batch_generate_submit(const generation_inputs inputs)
+{
+    if(!batch_inputs_eligible(inputs))
+    {
+        return -1;
+    }
+    std::lock_guard<std::mutex> lock(batch_mutex);
+    if(batch_legacy_active || batch_legacy_waiting > 0)
+    {
+        return -1;
+    }
+    auto req = std::make_unique<BatchGenerateRequest>();
+    req->id = batch_next_request_id++;
+    req->prompt = inputs.prompt ? inputs.prompt : "";
+    req->prompt_added_memory = inputs.memory ? inputs.memory : "";
+    req->max_context_length = inputs.max_context_length;
+    req->max_length = inputs.max_length;
+    req->seed = inputs.seed;
+    req->temperature = inputs.temperature;
+    req->top_k = inputs.top_k;
+    req->top_p = inputs.top_p;
+    req->min_p = inputs.min_p;
+    req->typical_p = inputs.typical_p;
+    req->rep_pen = inputs.rep_pen;
+    req->rep_pen_slope = inputs.rep_pen_slope;
+    req->rep_pen_range = inputs.rep_pen_range;
+    req->presence_penalty = inputs.presence_penalty;
+    req->allow_eos_token = inputs.allow_eos_token;
+    req->bypass_eos_token = inputs.bypass_eos_token;
+    req->render_special = inputs.render_special;
+    req->logit_biases = {};
+    for(int i = 0; i < inputs.logit_biases_len; ++i)
+    {
+        int32_t t_id = inputs.logit_biases[i].token_id;
+        float bias = inputs.logit_biases[i].bias;
+        if(t_id >= 0 && t_id < n_vocab && bias!=0)
+        {
+           req->logit_biases.push_back({t_id, bias});
+        }
+    }
+    if(!req->allow_eos_token && !req->bypass_eos_token) //eos token bans
+    {
+        const std::vector<llama_token> eog_tokens = GetEogIDs(file_format,n_vocab);
+        for(int x = 0; x < eog_tokens.size(); ++x)
+        {
+            req->logit_biases.push_back({eog_tokens[x], -999.0f});
+        }
+    }
+    for(int i = 0; i < inputs.stop_sequence_len; ++i)
+    {
+        if(inputs.stop_sequence[i])
+        {
+            req->stop_sequences.emplace_back(inputs.stop_sequence[i]);
+        }
+    }
+    int request_id = req->id;
+    batch_requests.emplace_back(std::move(req));
+    batch_waiting.push_back(request_id);
+    batch_start_worker_locked();
+    batch_cv.notify_all();
+    return request_id;
+}
+
+bool gpttype_batch_generate_has_finished(int request_id)
+{
+    std::lock_guard<std::mutex> lock(batch_mutex);
+    BatchGenerateRequest * req = batch_find_request_locked(request_id);
+    return !req || !batch_is_live_state(req->state);
+}
+
+int gpttype_batch_generate_stream_count(int request_id)
+{
+    std::lock_guard<std::mutex> lock(batch_mutex);
+    BatchGenerateRequest * req = batch_find_request_locked(request_id);
+    return req ? req->generated_pieces.size() : 0;
+}
+
+const char * gpttype_batch_generate_new_token(int request_id, int idx)
+{
+    std::lock_guard<std::mutex> lock(batch_mutex);
+    BatchGenerateRequest * req = batch_find_request_locked(request_id);
+    if(!req || idx < 0 || idx >= (int) req->generated_pieces.size())
+    {
+        return nullptr;
+    }
+    return req->generated_pieces[idx].c_str();
+}
+
+const char * gpttype_batch_generate_pending_output(int request_id)
+{
+    std::lock_guard<std::mutex> lock(batch_mutex);
+    BatchGenerateRequest * req = batch_find_request_locked(request_id);
+    if(!req)
+    {
+        return batch_empty_string.c_str();
+    }
+    return req->output.c_str();
+}
+
+generation_outputs gpttype_batch_generate_result(int request_id)
+{
+    std::unique_lock<std::mutex> lock(batch_mutex);
+    batch_cv.wait(lock, [request_id](){
+        BatchGenerateRequest * req = batch_find_request_locked(request_id);
+        return !req || !batch_is_live_state(req->state);
+    });
+    BatchGenerateRequest * req = batch_find_request_locked(request_id);
+    if(!req)
+    {
+        generation_outputs output;
+        output.status = 0;
+        output.stopreason = stop_reason::ERROR_ENCOUNTERED;
+        output.prompt_tokens = 0;
+        output.completion_tokens = 0;
+        output.text = batch_empty_string.c_str();
+        return output;
+    }
+    req->result.text = req->output.c_str();
+    return req->result;
+}
+
+bool gpttype_batch_generate_abort(int request_id)
+{
+    std::lock_guard<std::mutex> lock(batch_mutex);
+    BatchGenerateRequest * req = batch_find_request_locked(request_id);
+    if(!req)
+    {
+        return false;
+    }
+    req->abort_requested = true;
+    batch_cv.notify_all();
+    return true;
+}
+
+void gpttype_batch_generate_release(int request_id)
+{
+    std::lock_guard<std::mutex> lock(batch_mutex);
+    batch_requests.erase(std::remove_if(batch_requests.begin(), batch_requests.end(), [request_id](const std::unique_ptr<BatchGenerateRequest> & req){
+        return req && req->id == request_id && !batch_is_live_state(req->state);
+    }), batch_requests.end());
+    batch_cv.notify_all();
+}
+
 std::string gpttype_get_chat_template()
 {
     if(kcpp_data==nullptr)
@@ -3544,6 +4457,7 @@ int smartcache_quick_snapshot(int specific_slot = -1)
 
 generation_outputs gpttype_generate(const generation_inputs inputs)
 {
+    BatchLegacyGuard batch_legacy_guard;
     generation_outputs output;
 
     if(kcpp_data==nullptr)
@@ -3770,10 +4684,15 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
             if(clp_ctx_a)
             {
                 int ptype = clip_get_projector_type_ext(clp_ctx_a);
-                if(ptype==PROJECTOR_TYPE_QWEN2A || ptype==PROJECTOR_TYPE_QWEN3A || ptype==PROJECTOR_TYPE_QWEN25O) //qwen omni
+                if(ptype==PROJECTOR_TYPE_QWEN2A || ptype==PROJECTOR_TYPE_QWEN25O) //qwen omni
                 {
                     aud_start = "<|audio_bos|>";
                     aud_end = "<|audio_eos|>\n";
+                }
+                else if(ptype==PROJECTOR_TYPE_QWEN3A)
+                {
+                    aud_start = "<|audio_start|>";
+                    aud_end = "<|audio_end|>";
                 }
                 else if(ptype==PROJECTOR_TYPE_VOXTRAL) //voxtral
                 {
@@ -3899,63 +4818,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
         }
     }
 
-    //need to add a cursed hack to improve coherency for GLM4, by ensuring injection for gmask, sop and an extra space
-    //any complaints please direct them to henky
-    //deepseek2 is actually used for glm 4.7 flash
-    if (file_format == FileFormat::GGUF_GENERIC && (file_format_meta.model_architecture == llm_arch::LLM_ARCH_GLM4 || file_format_meta.model_architecture == llm_arch::LLM_ARCH_GLM4_MOE || file_format_meta.model_architecture == llm_arch::LLM_ARCH_DEEPSEEK2)) {
-        std::string temp = gpttype_get_chat_template();
-        if (temp.find("[gMASK]<sop>") != std::string::npos) {
-            if (addedmemory == "") {
-                if (!kcpp_data->prompt.empty() && kcpp_data->prompt.rfind("[gMASK]", 0) == 0) {  //check startswith
-                    kcpp_data->prompt.erase(0, 7);
-                }
-                if (!kcpp_data->prompt.empty() && kcpp_data->prompt.rfind("<sop>", 0) == 0) {  //check startswith
-                    kcpp_data->prompt.erase(0, 5);
-                }
-                if (!kcpp_data->prompt.empty() && kcpp_data->prompt[0] == ' ') {  // check for leading space
-                    kcpp_data->prompt.erase(0, 1);
-                }
-                addedmemory = "[gMASK]<sop> ";
-            } else {
-                if (!addedmemory.empty() && addedmemory.rfind("[gMASK]", 0) == 0) {  //check startswith
-                    addedmemory.erase(0, 7);
-                }
-                if (!addedmemory.empty() && addedmemory.rfind("<sop>", 0) == 0) {  //check startswith
-                    addedmemory.erase(0, 5);
-                }
-                if (!addedmemory.empty() && addedmemory[0] == ' ') {  // check for leading space
-                    addedmemory.erase(0, 1);
-                }
-                addedmemory = "[gMASK]<sop> " + addedmemory;
-            }
-        }
-    }
-
-    // Round two, gemma4 boogalo
-    // If it breaks your stuff you can blame me again (Or thank me because you can actually use gemma 31B stable now). - Henk
-    // For the record, the GLM4 one didn't break anyone and everyone forgot GLM4 needed this :D
-    if (file_format == FileFormat::GGUF_GENERIC && (file_format_meta.model_architecture == llm_arch::LLM_ARCH_GEMMA4)) {
-        std::string temp = gpttype_get_chat_template();
-        if (temp.find("<|channel>thought\\n<channel|>") != std::string::npos) {
-            const std::string channel_open  = "<|channel>";
-            const std::string channel_close = "<channel|>";
-            const std::string channel_prefix = channel_open + channel_close;
-            const std::string systhink = "<|think|>";
-
-            const std::string fullbody = addedmemory + kcpp_data->prompt;
-
-            const bool has_open  = fullbody.find(channel_open)  != std::string::npos;
-            const bool has_close = fullbody.find(channel_close) != std::string::npos;
-            const bool has_systhink = fullbody.find(systhink) != std::string::npos;
-            const bool ends_with_turn = kcpp_string_ends_with(kcpp_rstrip(fullbody),"<|turn>model");
-            const bool acceptable_jinja_exception = (ends_with_turn && has_systhink);
-
-            // If neither opening nor closing tag is present anywhere, prepend both
-            if (!has_open && !has_close && !acceptable_jinja_exception) {
-                addedmemory = channel_prefix + addedmemory;
-            }
-        }
-    }
+    ApplyPromptFormatAdjustments(addedmemory, kcpp_data->prompt);
 
     //thinking budget handling
     std::vector<int> thinking_start_sequence;
@@ -4038,8 +4901,6 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
 
     int32_t nctx = kcpp_data->n_ctx;
 
-    TokenizeString(kcpp_data->prompt, embd_inp, file_format, add_bos_token);
-
     if(media_composite_image_signature=="")
     {
         last_media_mem.clear();
@@ -4050,6 +4911,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
         media_embds_built = true;
     }
 
+    TokenizeString(kcpp_data->prompt, embd_inp, file_format, add_bos_token);
     if(addedmemory!="")
     {
         TokenizeString(addedmemory, embd_inp_mem, file_format, add_bos_token);
@@ -4117,49 +4979,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
         }
     }
 
-    //added special memory, overwrite if needed
-    if (embd_inp_mem.size() + negprompt_tokens.size() > 0)
-    {
-        //remove bos token from prompt, it'll be taken from memory
-        std::vector<int> bos;
-        TokenizeString("", bos, file_format, add_bos_token);
-
-        if (bos.size()>0 && !embd_inp.empty() && bos[0]==embd_inp[0]) { //strip away bos if exists
-            embd_inp.erase(embd_inp.begin());
-        }
-
-        //shorten memory if needed
-        if (embd_inp_mem.size() > 0 && embd_inp_mem.size() + kcpp_data->n_predict + 4 > nctx)
-        {
-            int offset = embd_inp_mem.size() - nctx + kcpp_data->n_predict + 4;
-            embd_inp_mem = std::vector<int>(embd_inp_mem.begin() + offset, embd_inp_mem.end());
-            //replace bos into front if exists
-            if(bos.size()>0 && embd_inp_mem.size()>0)
-            {
-                embd_inp_mem[0] = bos[0];
-            }
-        }
-
-        //shorten main prompt by trimming the front if needed
-        int addmemtokens = embd_inp_mem.size() + negprompt_tokens.size() + 1;
-        int totalsize = (addmemtokens + embd_inp.size() + kcpp_data->n_predict);
-        if(totalsize > nctx)
-        {
-            int excess = totalsize - nctx;
-            if (embd_inp.size() >= excess) {
-                embd_inp.erase(embd_inp.begin(), embd_inp.begin() + excess);
-            } else {
-                embd_inp.clear();
-            }
-        }
-
-        //stick memory to front of prompt
-        embd_inp.insert(embd_inp.begin(), embd_inp_mem.begin(), embd_inp_mem.end());
-        if(add_bos_token && embd_inp.size()>0 && bos.size()>0 && bos[0]!=embd_inp[0])
-        {
-            embd_inp.insert(embd_inp.begin(), bos[0]);  //insert bos at front, if added
-        }
-    }
+    AppendDedicatedMemoryAndNegativePrompt(embd_inp, embd_inp_mem, negprompt_tokens, kcpp_data->n_predict, nctx);
 
     //prepare negative prompt
     if(guidance_ctx && negprompt_tokens.size()>0 && inputs.guidance_scale!=1.0f)

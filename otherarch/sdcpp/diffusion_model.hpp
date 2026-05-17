@@ -5,6 +5,7 @@
 #include "anima.hpp"
 #include "ernie_image.hpp"
 #include "flux.hpp"
+#include "hidream_o1.hpp"
 #include "mmdit.hpp"
 #include "qwen_image.hpp"
 #include "tensor_ggml.hpp"
@@ -13,22 +14,28 @@
 #include "z_image.hpp"
 
 struct DiffusionParams {
-    const sd::Tensor<float>* x                        = nullptr;
-    const sd::Tensor<float>* timesteps                = nullptr;
-    const sd::Tensor<float>* context                  = nullptr;
-    const sd::Tensor<float>* c_concat                 = nullptr;
-    const sd::Tensor<float>* y                        = nullptr;
-    const sd::Tensor<int32_t>* t5_ids                 = nullptr;
-    const sd::Tensor<float>* t5_weights               = nullptr;
-    const sd::Tensor<float>* guidance                 = nullptr;
-    const std::vector<sd::Tensor<float>>* ref_latents = nullptr;
-    bool increase_ref_index                           = false;
-    int num_video_frames                              = -1;
-    const std::vector<sd::Tensor<float>>* controls    = nullptr;
-    float control_strength                            = 0.f;
-    const sd::Tensor<float>* vace_context             = nullptr;
-    float vace_strength                               = 1.f;
-    const std::vector<int>* skip_layers               = nullptr;
+    const sd::Tensor<float>* x                                         = nullptr;
+    const sd::Tensor<float>* timesteps                                 = nullptr;
+    const sd::Tensor<float>* context                                   = nullptr;
+    const sd::Tensor<float>* c_concat                                  = nullptr;
+    const sd::Tensor<float>* y                                         = nullptr;
+    const sd::Tensor<int32_t>* t5_ids                                  = nullptr;
+    const sd::Tensor<float>* t5_weights                                = nullptr;
+    const sd::Tensor<float>* guidance                                  = nullptr;
+    const std::vector<sd::Tensor<float>>* ref_latents                  = nullptr;
+    const sd::Tensor<int32_t>* input_ids                               = nullptr;
+    const sd::Tensor<int32_t>* input_pos                               = nullptr;
+    const sd::Tensor<int32_t>* token_types                             = nullptr;
+    const sd::Tensor<int32_t>* vinput_mask                             = nullptr;
+    const std::vector<sd::Tensor<float>>* vlm_images                   = nullptr;
+    const std::vector<std::pair<int, sd::Tensor<float>>>* image_embeds = nullptr;
+    bool increase_ref_index                                            = false;
+    int num_video_frames                                               = -1;
+    const std::vector<sd::Tensor<float>>* controls                     = nullptr;
+    float control_strength                                             = 0.f;
+    const sd::Tensor<float>* vace_context                              = nullptr;
+    float vace_strength                                                = 1.f;
+    const std::vector<int>* skip_layers                                = nullptr;
 };
 
 template <typename T>
@@ -49,6 +56,7 @@ struct DiffusionModel {
     virtual void set_weight_adapter(const std::shared_ptr<WeightAdapter>& adapter){};
     virtual int64_t get_adm_in_channels()                            = 0;
     virtual void set_flash_attention_enabled(bool enabled)           = 0;
+    virtual void set_max_graph_vram_bytes(size_t max_vram_bytes)     = 0;
     virtual void set_circular_axes(bool circular_x, bool circular_y) = 0;
 };
 
@@ -96,6 +104,10 @@ struct UNetModel : public DiffusionModel {
 
     void set_flash_attention_enabled(bool enabled) {
         unet.set_flash_attention_enabled(enabled);
+    }
+
+    void set_max_graph_vram_bytes(size_t max_vram_bytes) override {
+        unet.set_max_graph_vram_bytes(max_vram_bytes);
     }
 
     void set_circular_axes(bool circular_x, bool circular_y) override {
@@ -164,6 +176,10 @@ struct MMDiTModel : public DiffusionModel {
         mmdit.set_flash_attention_enabled(enabled);
     }
 
+    void set_max_graph_vram_bytes(size_t max_vram_bytes) override {
+        mmdit.set_max_graph_vram_bytes(max_vram_bytes);
+    }
+
     void set_circular_axes(bool circular_x, bool circular_y) override {
         mmdit.set_circular_axes(circular_x, circular_y);
     }
@@ -227,6 +243,10 @@ struct FluxModel : public DiffusionModel {
 
     void set_flash_attention_enabled(bool enabled) {
         flux.set_flash_attention_enabled(enabled);
+    }
+
+    void set_max_graph_vram_bytes(size_t max_vram_bytes) override {
+        flux.set_max_graph_vram_bytes(max_vram_bytes);
     }
 
     void set_circular_axes(bool circular_x, bool circular_y) override {
@@ -299,6 +319,10 @@ struct AnimaModel : public DiffusionModel {
         anima.set_flash_attention_enabled(enabled);
     }
 
+    void set_max_graph_vram_bytes(size_t max_vram_bytes) override {
+        anima.set_max_graph_vram_bytes(max_vram_bytes);
+    }
+
     void set_circular_axes(bool circular_x, bool circular_y) override {
         anima.set_circular_axes(circular_x, circular_y);
     }
@@ -362,6 +386,10 @@ struct WanModel : public DiffusionModel {
 
     void set_flash_attention_enabled(bool enabled) {
         wan.set_flash_attention_enabled(enabled);
+    }
+
+    void set_max_graph_vram_bytes(size_t max_vram_bytes) override {
+        wan.set_max_graph_vram_bytes(max_vram_bytes);
     }
 
     void set_circular_axes(bool circular_x, bool circular_y) override {
@@ -433,6 +461,10 @@ struct QwenImageModel : public DiffusionModel {
         qwen_image.set_flash_attention_enabled(enabled);
     }
 
+    void set_max_graph_vram_bytes(size_t max_vram_bytes) override {
+        qwen_image.set_max_graph_vram_bytes(max_vram_bytes);
+    }
+
     void set_circular_axes(bool circular_x, bool circular_y) override {
         qwen_image.set_circular_axes(circular_x, circular_y);
     }
@@ -448,6 +480,82 @@ struct QwenImageModel : public DiffusionModel {
                                   tensor_or_empty(diffusion_params.context),
                                   diffusion_params.ref_latents ? *diffusion_params.ref_latents : empty_ref_latents,
                                   true);
+    }
+};
+
+struct HiDreamO1Model : public DiffusionModel {
+    std::string prefix;
+    HiDreamO1::HiDreamO1Runner hidream_o1;
+
+    HiDreamO1Model(ggml_backend_t backend,
+                   bool offload_params_to_cpu,
+                   const String2TensorStorage& tensor_storage_map = {},
+                   const std::string& prefix                      = "model")
+        : prefix(prefix), hidream_o1(backend, offload_params_to_cpu, tensor_storage_map, prefix) {
+    }
+
+    std::string get_desc() override {
+        return hidream_o1.get_desc();
+    }
+
+    void alloc_params_buffer() override {
+        hidream_o1.alloc_params_buffer();
+    }
+
+    void free_params_buffer() override {
+        hidream_o1.free_params_buffer();
+    }
+
+    void free_compute_buffer() override {
+        hidream_o1.free_compute_buffer();
+    }
+
+    void get_param_tensors(std::map<std::string, ggml_tensor*>& tensors) override {
+        hidream_o1.get_param_tensors(tensors, prefix);
+    }
+
+    size_t get_params_buffer_size() override {
+        return hidream_o1.get_params_buffer_size();
+    }
+
+    void set_weight_adapter(const std::shared_ptr<WeightAdapter>& adapter) override {
+        hidream_o1.set_weight_adapter(adapter);
+    }
+
+    int64_t get_adm_in_channels() override {
+        return 0;
+    }
+
+    void set_flash_attention_enabled(bool enabled) {
+        hidream_o1.set_flash_attention_enabled(enabled);
+    }
+
+    void set_max_graph_vram_bytes(size_t max_vram_bytes) override {
+        hidream_o1.set_max_graph_vram_bytes(max_vram_bytes);
+    }
+
+    void set_circular_axes(bool circular_x, bool circular_y) override {
+        hidream_o1.set_circular_axes(circular_x, circular_y);
+    }
+
+    sd::Tensor<float> compute(int n_threads,
+                              const DiffusionParams& diffusion_params) override {
+        GGML_ASSERT(diffusion_params.x != nullptr);
+        GGML_ASSERT(diffusion_params.timesteps != nullptr);
+        GGML_ASSERT(diffusion_params.input_ids != nullptr);
+        GGML_ASSERT(diffusion_params.input_pos != nullptr);
+        GGML_ASSERT(diffusion_params.token_types != nullptr);
+        static const std::vector<sd::Tensor<float>> empty_images;
+        static const std::vector<std::pair<int, sd::Tensor<float>>> empty_image_embeds;
+        return hidream_o1.compute(n_threads,
+                                  *diffusion_params.x,
+                                  *diffusion_params.timesteps,
+                                  *diffusion_params.input_ids,
+                                  *diffusion_params.input_pos,
+                                  *diffusion_params.token_types,
+                                  tensor_or_empty(diffusion_params.vinput_mask),
+                                  diffusion_params.image_embeds ? *diffusion_params.image_embeds : empty_image_embeds,
+                                  diffusion_params.ref_latents ? *diffusion_params.ref_latents : empty_images);
     }
 };
 
@@ -497,6 +605,10 @@ struct ZImageModel : public DiffusionModel {
 
     void set_flash_attention_enabled(bool enabled) {
         z_image.set_flash_attention_enabled(enabled);
+    }
+
+    void set_max_graph_vram_bytes(size_t max_vram_bytes) override {
+        z_image.set_max_graph_vram_bytes(max_vram_bytes);
     }
 
     void set_circular_axes(bool circular_x, bool circular_y) override {
@@ -562,6 +674,10 @@ struct ErnieImageModel : public DiffusionModel {
 
     void set_flash_attention_enabled(bool enabled) {
         ernie_image.set_flash_attention_enabled(enabled);
+    }
+
+    void set_max_graph_vram_bytes(size_t max_vram_bytes) override {
+        ernie_image.set_max_graph_vram_bytes(max_vram_bytes);
     }
 
     void set_circular_axes(bool circular_x, bool circular_y) override {

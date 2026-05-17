@@ -12,7 +12,7 @@ Current version indicated by LITEVER below.
 -->
 <head>
 	<script id="init-config">
-	const LITEVER = 331;
+	const LITEVER = 332;
 	const urlParams = new URLSearchParams(window.location.search);
 	var localflag = urlParams.get('local'); //this will be replaced automatically in embedded kcpp
 	const STORAGE_PREFIX = (localflag?"e_":"")+"kaihordewebui_";
@@ -3677,7 +3677,7 @@ Current version indicated by LITEVER below.
 	var poll_interval_idle = 1000;
 	var poll_interval_multiplayer = 1000; //every 1s
 	var poll_interval_chunked_tts = 300;
-	var max_branches = 6;
+	var max_branches = 8;
 
 	var horde_base_url = "https://aihorde.net"
 	var horde_perf_endpoint = horde_base_url + "/api/v2/status/performance";
@@ -13299,7 +13299,7 @@ Current version indicated by LITEVER below.
 	function togglegeminimodel()
 	{
 		let mdlname = document.getElementById("custom_gemini_model").value;
-		if(mdlname.includes("gemini-3") || mdlname.includes("gemini-2") || mdlname.includes("gemini-1.5-") || mdlname.includes("gemini-exp-"))
+		if(mdlname.includes("gemma") || mdlname.includes("gemini-3") || mdlname.includes("gemini-2") || mdlname.includes("gemini-1.5-") || mdlname.includes("gemini-exp-"))
 		{
 			document.getElementById("gemini_system_instruction").classList.remove("hidden");
 			document.getElementById("gemini_role_options").classList.remove("hidden");
@@ -18320,13 +18320,13 @@ Current version indicated by LITEVER below.
 			inputtxt = unescape_html_alternate(inputtxt);
 		}
 
-		if((localsettings.thinking_action==1 || localsettings.thinking_action==2) && get_thinking_regex()!="") //removal of cot
+		if((localsettings.thinking_action==0 || localsettings.thinking_action==1 || localsettings.thinking_action==2) && get_thinking_regex()!="") //removal of cot
 		{
 			inputtxt = escape_html_alternate(inputtxt);
 			inputtxt = unescape_html(inputtxt);
 			let pat = new RegExp(get_thinking_regex(), "gmi");
 			let matches = [];
-			if(localsettings.thinking_action==1)
+			if(localsettings.thinking_action==0 || localsettings.thinking_action==1)
 			{
 				let temp = inputtxt.match(pat) || []; // Captures matches in an array
 				if(temp.length > 0)
@@ -18373,6 +18373,7 @@ Current version indicated by LITEVER below.
 			}
 			inputtxt = escape_html(inputtxt);
 			inputtxt = unescape_html_alternate(inputtxt);
+			let autoexpanded = (localsettings.thinking_action==0?true:false);
 			if(matches.length > 0)
 			{
 				let matchiter = 0;
@@ -18380,7 +18381,7 @@ Current version indicated by LITEVER below.
 					let curr = matches[matchiter];
 					curr = escape_html(curr);
 					curr = unescape_html_alternate(curr);
-					let expandedhtml = `<span><button type="button" title="Show Thoughts" class="btn btn-primary" style="font-size: var(--theme_font_size_medium);padding:2px 2px;" onclick="toggle_hide_thinking(this)">Show Thoughts (${curr.length} characters)</button><span class="color_lightgreen hidden"><br>${(curr)}\n</span><br></span>`;
+					let expandedhtml = `<span><button type="button" title="Show Thoughts" class="btn btn-primary" style="font-size: var(--theme_font_size_medium);padding:2px 2px;" onclick="toggle_hide_thinking(this)">Show Thoughts (${curr.length} characters)</button><span class="color_lightgreen ${autoexpanded?'':'hidden'}"><br>${(curr)}\n</span><br></span>`;
 					if(!curr || curr.trim()=="" || curr.trim()=="/nothink" || curr.trim()==`${localsettings.start_thinking_tag}${localsettings.stop_thinking_tag}`)
 					{
 						expandedhtml = `<span><button type="button" title="No Thoughts" class="btn btn-primary" style="font-size: var(--theme_font_size_medium);padding:2px 2px;" onclick="">No Thoughts</button><br></span>`;
@@ -23605,8 +23606,13 @@ Current version indicated by LITEVER below.
 							//default to llava if supported, and image is self uploaded
 							let isoaichat = (document.getElementById("useoaichatcompl").checked && custom_oai_key!="");
 							// Exclude images if agent mode is enabled as the agent should pick - it can still be enabled manually, but shouldn't be the default
-							let isAgentModeEnabled = typeof isAgentModeEnabledAndSetCorrectly === "function" && isAgentModeEnabledAndSetCorrectly()
-							let desiredvismode = ((image_db[key].imsource==1 && (((is_using_kcpp_with_vision() || isoaichat) && image_db[key].type==0 && !isAgentModeEnabled) || ((is_using_kcpp_with_audio() || isoaichat) && image_db[key].type==1)))?3:0);
+							let isAgentModeEnabled = typeof isAgentModeEnabledAndSetCorrectly === "function" && isAgentModeEnabledAndSetCorrectly();
+							let isgeminichat = (custom_gemini_key!="");
+							const imgitm = image_db[key];
+							let desiredvismode = (imgitm.imsource == 1 && (
+								((is_using_kcpp_with_vision() || isoaichat || isgeminichat) && imgitm.type == 0 && !isAgentModeEnabled) ||
+								((is_using_kcpp_with_audio() || isoaichat || isgeminichat) && imgitm.type == 1)
+							)) ? 3 : 0;
 							completed_imgs_meta[metaid] = JSON.parse(JSON.stringify(default_imgs_meta));
 							completed_imgs_meta[metaid].prompt = image_db[key].prompt;
 							completed_imgs_meta[metaid].visionmode = desiredvismode;
@@ -30176,11 +30182,7 @@ Current version indicated by LITEVER below.
 					<div id="documentdb_oai_buttons" style="display: flex;">
 						<button type="button" class="btn btn-primary" style="margin:0px; padding:0px; padding-left:2px;padding-right:2px;font-size: var(--theme_font_size_medium);margin-right:2px;margin-left:2px;" onclick="set_oai_embd_url()">Set URL</button>
 						<button type="button" class="btn btn-primary" style="margin:0px; padding:0px; padding-left:2px;padding-right:2px;font-size: var(--theme_font_size_medium);" onclick="set_oai_embd_key()">Set Key</button>
-						<select title="Select OpenAI Embed Model" style="margin:0px 4px 0; width:150px;font-size: var(--theme_font_size_medium);" class="form-control" id="oai_embd_model">
-							<option value="text-embedding-3-small">text-embedding-3-small</option>
-							<option value="text-embedding-3-large">text-embedding-3-large</option>
-							<option value="text-embedding-ada-002">text-embedding-ada-002</option>
-						</select>
+						<input type="text" title="Select OpenAI Embed Model" id="oai_embd_model" style="margin:0px 4px 0; width:150px;font-size: var(--theme_font_size_medium);" placeholder="Enter embedding model" value="text-embedding-3-small"/>
 					</div>
 				</div>
 
@@ -32289,14 +32291,15 @@ Current version indicated by LITEVER below.
 					<option style="display:none;" class="custom_model_option" value="custom">[Custom]</option>
 				</select>
 				<select title="Nvidia NIM AI Model Selection" style="padding:4px;display:inline;width:calc(100% - 200px)" class="form-control hidden" id="custom_nvidianim_model" onchange="oai_model_change(true)">
-					<option value="deepseek-ai/deepseek-v3.1-terminus">deepseek-ai/deepseek-v3.1-terminus</option>
+					<option value="deepseek-ai/deepseek-v4-flash">deepseek-ai/deepseek-v4-flash</option>
 					<option value="google/gemma-3-27b-it">google/gemma-3-27b-it</option>
 					<option value="meta/llama-3.3-70b-instruct">meta/llama-3.3-70b-instruct</option>
-					<option value="mistralai/mistral-medium-3-instruct">mistralai/mistral-medium-3-instruct</option>
-					<option value="moonshotai/kimi-k2-instruct-0905" selected>moonshotai/kimi-k2-instruct-0905</option>
+					<option value="mistralai/mistral-large">mistralai/mistral-large</option>
+					<option value="moonshotai/kimi-k2.6" selected>moonshotai/kimi-k2.6</option>
 					<option value="nvidia/llama-3.3-nemotron-super-49b-v1">nvidia/llama-3.3-nemotron-super-49b-v1</option>
-					<option value="qwen/qwen3-235b-a22b">qwen/qwen3-235b-a22b</option>
-					<option value="z-ai/glm4.7">z-ai/glm4.7</option>
+					<option value="qwen/qwen3.5-397b-a17b">qwen/qwen3.5-397b-a17b</option>
+					<option value="z-ai/glm5">z-ai/glm5</option>
+					<option value="minimaxai/minimax-m2.7">minimaxai/minimax-m2.7</option>
 					<option style="display:none;" class="custom_model_option" value="custom">[Custom]</option>
 				</select>
 				<button type="button" class="btn btn-primary" style="display:inline;width:42px;height:34px;vertical-align: top;" id="oaifindmodel" onclick="find_oai_model()">🔎</button>
@@ -32428,6 +32431,8 @@ Current version indicated by LITEVER below.
 					<option value="gemma-3-4b-it">gemma-3-4b-it</option>
 					<option value="gemma-3-12b-it">gemma-3-12b-it</option>
 					<option value="gemma-3-27b-it">gemma-3-27b-it</option>
+					<option value="gemma-4-26b-a4b-it">gemma-4-26b-a4b-it</option>
+					<option value="gemma-4-31b-it">gemma-4-31b-it</option>
 				</select>
 				<button type="button" class="btn btn-primary" style="display:inline;width:105px;" id="geminifetchlist" onclick="gemini_fetch_models()">Fetch List</button>
 				</div>

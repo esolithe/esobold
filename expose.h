@@ -84,6 +84,7 @@ struct load_model_inputs
     const char * devices_override = nullptr;
     const bool quiet = false;
     const int debugmode = 0;
+    const int continuous_batching_slots = 0;
 };
 struct generation_inputs
 {
@@ -157,6 +158,12 @@ struct token_count_outputs
     int count = 0;
     int * ids; //we'll just use shared memory for this one, bit of a hack
 };
+struct detokenize_inputs
+{
+    int count = 0;
+    int * ids; //we'll just use shared memory for this one, bit of a hack
+    bool special = false;
+};
 
 struct logprob_item {
     int option_count;
@@ -181,6 +188,7 @@ struct sd_load_model_inputs
     const int quant = 0;
     const bool flash_attention = false;
     const bool offload_cpu = false;
+    const bool use_mmap = false;
     const bool vae_cpu = false;
     const bool clip_cpu = false;
     const bool diffusion_conv_direct = false;
@@ -385,3 +393,13 @@ extern int total_transcribe_gens;
 extern int last_draft_success;
 extern int last_draft_failed;
 extern stop_reason last_stop_reason;
+
+bool gpttype_batch_generate_enabled();
+int gpttype_batch_generate_submit(const generation_inputs inputs);
+bool gpttype_batch_generate_has_finished(int request_id);
+int gpttype_batch_generate_stream_count(int request_id);
+const char * gpttype_batch_generate_new_token(int request_id, int idx);
+const char * gpttype_batch_generate_pending_output(int request_id);
+generation_outputs gpttype_batch_generate_result(int request_id);
+bool gpttype_batch_generate_abort(int request_id);
+void gpttype_batch_generate_release(int request_id);

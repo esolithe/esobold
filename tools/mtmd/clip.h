@@ -124,6 +124,13 @@ void clip_image_f32_batch_add_mel(struct clip_image_f32_batch * batch, int n_mel
 
 bool clip_has_vision_encoder(const struct clip_ctx * ctx);
 bool clip_has_audio_encoder(const struct clip_ctx * ctx);
-bool clip_has_whisper_encoder(const struct clip_ctx * ctx);
+
 
 bool clip_model_quantize(const char * fname_inp, const char * fname_out, const int itype) ;
+
+
+struct clip_cap {
+    bool has_vision;
+    bool has_audio;
+};
+struct clip_cap clip_get_cap(const char * fname);

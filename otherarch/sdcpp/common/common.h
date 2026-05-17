@@ -109,6 +109,7 @@ struct SDContextParams {
     rng_type_t rng_type         = CUDA_RNG;
     rng_type_t sampler_rng_type = RNG_TYPE_COUNT;
     bool offload_params_to_cpu  = false;
+    float max_vram              = 0.f;
     bool enable_mmap            = false;
     bool control_net_cpu        = false;
     bool clip_on_cpu            = false;
@@ -167,6 +168,8 @@ struct SDGenerationParams {
 
     sd_sample_params_t sample_params;
     sd_sample_params_t high_noise_sample_params;
+    std::string extra_sample_args;
+    std::string high_noise_extra_sample_args;
     std::vector<int> skip_layers            = {7, 8, 9};
     std::vector<int> high_noise_skip_layers = {7, 8, 9};
 

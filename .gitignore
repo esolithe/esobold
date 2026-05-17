@@ -94,8 +94,23 @@ ppl-*.txt
 qnt-*.txt
 perf-*.txt
 
+/examples/jeopardy/results.txt
+/tools/server/*.css.hpp
+/tools/server/*.html.hpp
+/tools/server/*.js.hpp
+/tools/server/*.mjs.hpp
+/tools/server/*.gz.hpp
+
+# Server Web UI temporary files (+ legacy directory)
+
+/tools/server/webui/node_modules
+/tools/server/webui/dist
+/tools/ui/node_modules
+/tools/ui/dist
 poetry.lock
 poetry.toml
+poetry.lock
+uv.lock
 
 ggml-metal-merged.metal
 

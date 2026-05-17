@@ -2971,6 +2971,7 @@ static void flag_aarch_prepacked_quant(int type)
     }
 }
 
+bool kcpp_permit_any_repack = true; //kcpp: if mmap is enabled, we cannot allow repacking, otherwise we double memory usage
 static const ggml::cpu::tensor_traits * ggml_repack_get_optimal_repack_type(const struct ggml_tensor * cur) {
     // instance for Q4
     static const ggml::cpu::repack::tensor_traits<block_q4_0, 4, 4, GGML_TYPE_Q8_0> q4_0_4x4_q8_0;
@@ -2995,14 +2996,19 @@ static const ggml::cpu::tensor_traits * ggml_repack_get_optimal_repack_type(cons
     // instance for IQ4
     static const ggml::cpu::repack::tensor_traits<block_iq4_nl, 4, 4, GGML_TYPE_Q8_0> iq4_nl_4x4_q8_0;
 
-    bool permit_repack = true;
+    bool kcpp_permit_some_repack = true; //kcpp: we used to disable repacking for clblast on some quants.
 
     // instance for Q8_0
     static const ggml::cpu::repack::tensor_traits<block_q8_0, 4, 4, GGML_TYPE_Q8_0> q8_0_4x4_q8_0;
     static const ggml::cpu::repack::tensor_traits<block_q8_0, 8, 4, GGML_TYPE_Q8_0> q8_0_4x8_q8_0;
 
+    if(!kcpp_permit_any_repack)
+    {
+        return nullptr;
+    }
+
     if (cur->type == GGML_TYPE_Q4_0) {
-        if ((ggml_cpu_has_avx2() && permit_repack) || (ggml_cpu_has_sve() && ggml_cpu_has_matmul_int8() && ggml_cpu_get_sve_cnt() == QK8_0)
+        if ((ggml_cpu_has_avx2() && kcpp_permit_some_repack) || (ggml_cpu_has_sve() && ggml_cpu_has_matmul_int8() && ggml_cpu_get_sve_cnt() == QK8_0)
             || (ggml_cpu_has_riscv_v() && (ggml_cpu_get_rvv_vlen() >= QK4_0))) {
             if (cur->ne[1] % 8 == 0) {
                 return &q4_0_8x8_q8_0;
@@ -3019,7 +3025,7 @@ static const ggml::cpu::tensor_traits * ggml_repack_get_optimal_repack_type(cons
             }
         }
     } else if (cur->type == GGML_TYPE_Q4_K) {
-        if (ggml_cpu_has_avx2() && permit_repack) {
+        if (ggml_cpu_has_avx2() && kcpp_permit_some_repack) {
             if (cur->ne[1] % 8 == 0) {
                 return &q4_K_8x8_q8_K;
             }
@@ -3035,7 +3041,7 @@ static const ggml::cpu::tensor_traits * ggml_repack_get_optimal_repack_type(cons
             }
         }
     } else if (cur->type == GGML_TYPE_Q2_K) {
-        if (ggml_cpu_has_avx512() && permit_repack) {
+        if (ggml_cpu_has_avx512() && kcpp_permit_some_repack) {
             if (cur->ne[1] % 8 == 0) {
                 return &q2_K_8x8_q8_K;
             }
