@@ -41,6 +41,7 @@ dependencies:
     - uvicorn
     - itsdangerous
     - websockets
+    - python-multipart
     - discord.py
     - python-telegram-bot
     - matrix-nio

@@ -39,6 +39,7 @@ fastapi
 uvicorn
 itsdangerous
 websockets
+python-multipart
 discord.py>=2.7.0
 python-telegram-bot>=22.7.0
 matrix-nio>=0.25.2
