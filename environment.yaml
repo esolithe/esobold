@@ -37,7 +37,8 @@ dependencies:
     - aiofiles
     - python-ulid
     - requests
-    - flask
+    - fastapi
+    - uvicorn
     - discord.py
     - python-telegram-bot
     - matrix-nio
