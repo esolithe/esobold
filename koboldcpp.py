@@ -30,6 +30,7 @@ import http.server
 import time
 import asyncio
 import socket
+import select
 import threading
 import html
 import random
@@ -6597,21 +6598,162 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
             except Exception:
                 return body_bytes
 
+    def _is_websocket_upgrade_request(self):
+        upgrade = (self.headers.get("Upgrade") or "").lower()
+        connection = (self.headers.get("Connection") or "").lower()
+        return ("websocket" in upgrade) and ("upgrade" in connection)
+
+    def _build_websocket_forward_headers(self, target_host, target_port):
+        headers = {}
+        for k, v in self.headers.items():
+            lk = k.lower()
+            if lk in {"proxy-authenticate", "proxy-authorization", "te", "trailers", "transfer-encoding"}:
+                continue
+            headers[k] = v
+
+        headers["Host"] = f"{target_host}:{target_port}"
+        headers["Connection"] = "Upgrade"
+        headers["Upgrade"] = "websocket"
+        return headers
+
+    def _normalize_path_from_url(self, raw_url):
+        parsed = urllib.parse.urlsplit(raw_url)
+        normalized_path = parsed.path or "/"
+        if parsed.query:
+            normalized_path = f"{normalized_path}?{parsed.query}"
+        return normalized_path, parsed
+
+    def _resolve_websocket_upstream_target(self, target_host, target_port, forward_path):
+        normalized_path, parsed = self._normalize_path_from_url(forward_path)
+        upstream_secure = False
+
+        scheme = (parsed.scheme or "").lower()
+        if scheme in ("ws", "wss"):
+            if parsed.hostname:
+                target_host = parsed.hostname
+            if parsed.port:
+                target_port = parsed.port
+            elif scheme == "wss":
+                target_port = 443
+            elif scheme == "ws":
+                target_port = 80
+            upstream_secure = (scheme == "wss")
+
+        return target_host, target_port, normalized_path, upstream_secure
+
+    def _relay_websocket_bidirectional(self, client_sock, upstream_sock):
+        sockets = [client_sock, upstream_sock]
+        while True:
+            readable, _, exceptional = select.select(sockets, [], sockets, 1.0)
+            if exceptional:
+                break
+            if not readable:
+                continue
+
+            for src in readable:
+                dst = upstream_sock if src is client_sock else client_sock
+                try:
+                    data = src.recv(self.BULK_CHUNK)
+                except OSError:
+                    return
+                if not data:
+                    return
+                try:
+                    dst.sendall(data)
+                except OSError:
+                    return
+
+    def _proxy_websocket_tunnel(self, target_host, target_port, forward_path, forward_headers, body, upstream_secure=False):
+        upstream_sock = None
+        try:
+            upstream_sock = socket.create_connection((target_host, target_port), timeout=args.reqtimeout)
+
+            if upstream_secure:
+                import ssl
+                if args.nocertify:
+                    context = ssl._create_unverified_context()
+                else:
+                    context = ssl.create_default_context()
+                upstream_sock = context.wrap_socket(upstream_sock, server_hostname=target_host)
+
+            request_head = [f"{self.command} {forward_path} HTTP/1.1"]
+            for k, v in forward_headers.items():
+                request_head.append(f"{k}: {v}")
+            request_data = ("\r\n".join(request_head) + "\r\n\r\n").encode("utf-8")
+            upstream_sock.sendall(request_data)
+            if body:
+                upstream_sock.sendall(body)
+
+            response_head = b""
+            while b"\r\n\r\n" not in response_head:
+                chunk = upstream_sock.recv(4096)
+                if not chunk:
+                    break
+                response_head += chunk
+                if len(response_head) > (64 * 1024):
+                    break
+
+            if not response_head:
+                self.send_error(502, "Upstream websocket handshake failed")
+                return
+
+            self.connection.sendall(response_head)
+
+            status_line = response_head.split(b"\r\n", 1)[0]
+            try:
+                status_code = int(status_line.split()[1])
+            except Exception:
+                status_code = 0
+
+            if status_code != 101:
+                while True:
+                    chunk = upstream_sock.recv(self.BULK_CHUNK)
+                    if not chunk:
+                        break
+                    self.connection.sendall(chunk)
+                return
+
+            self.close_connection = True
+            self._relay_websocket_bidirectional(self.connection, upstream_sock)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except OSError as e:
+            if args.debugmode:
+                print(f"[proxy] websocket tunnel error: {e}", flush=True)
+            try:
+                self.send_error(502, "Unable to establish upstream websocket connection")
+            except Exception:
+                pass
+        finally:
+            if upstream_sock:
+                try:
+                    upstream_sock.close()
+                except Exception:
+                    pass
+
     def _handle(self):
         upstream_port = self.server.upstream_port
         length = self.headers.get("Content-Length") #  read request body
         body = None
         if length:
             body = self.rfile.read(int(length))
+        is_OpenLumara_request = args.OpenLumara and self._is_OpenLumara_path(self.path)
+        target_port = OpenLumara_default_webui_port if is_OpenLumara_request else upstream_port
+        forward_path = self._rewrite_OpenLumara_path(self.path) if is_OpenLumara_request else self.path
+        target_host = '127.0.0.1' if is_OpenLumara_request else 'localhost'
+
+        is_websocket_upgrade = self._is_websocket_upgrade_request()
+        if is_websocket_upgrade:
+            target_host, target_port, forward_path, upstream_secure = self._resolve_websocket_upstream_target(target_host, target_port, forward_path)
+            ws_headers = self._build_websocket_forward_headers(target_host, target_port)
+            self._proxy_websocket_tunnel(target_host, target_port, forward_path, ws_headers, body, upstream_secure=upstream_secure)
+            return
+
         headers = {} # forward headers
         for k, v in self.headers.items():
             if k.lower() not in self.HOP_BY_HOP:
                 headers[k] = v
         headers["Connection"] = "close"
-
-        is_OpenLumara_request = args.OpenLumara and self._is_OpenLumara_path(self.path)
-        target_port = OpenLumara_default_webui_port if is_OpenLumara_request else upstream_port
-        forward_path = self._rewrite_OpenLumara_path(self.path) if is_OpenLumara_request else self.path
 
         global global_memory
         #specifically look for generation requests from completions or chat completions to handle hotswap
@@ -6725,7 +6867,6 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                         time.sleep(0.1)
 
         try:  # connect upstream
-            target_host = '127.0.0.1' if is_OpenLumara_request else 'localhost'
             conn = http.client.HTTPConnection(target_host, target_port, timeout=args.reqtimeout)
             conn.request( self.command, forward_path, body=body, headers=headers)
             resp = conn.getresponse()

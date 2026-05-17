@@ -1,17 +1,61 @@
-window.eso.lumaraPollingIntervalId = null;
+window.setupLumaraListener = async () => {
+    let shouldEnableLumaraListener = isAgentModeEnabledAndSetCorrectly() && is_using_kcpp_with_open_lumara() && !!localsettings?.agentLumaraPollingRate
+    if (shouldEnableLumaraListener) {
+        await startLumaraSocketListener()
+    }
+    else {
+        stopLumaraSocketListener()
+    }
+    if (typeof window.updateLumaraListenerStatusIndicator === "function") {
+        window.updateLumaraListenerStatusIndicator()
+    }
+}
 
-window.setupLumaraPolling = () => {
-    if (!!window.eso.lumaraPollingIntervalId) {
-        clearInterval(window.eso.lumaraPollingIntervalId)
-        window.eso.lumaraPollingIntervalId = null;
+// Legacy alias to avoid touching existing call sites outside this file.
+window.setupLumaraPolling = window.setupLumaraListener;
+
+window.updateLumaraListenerStatusIndicator = () => {
+    let statusElem = document.getElementById("agentLumaraListenerStatus")
+    if (!statusElem) {
+        return
     }
-    
-    if (isAgentModeEnabledAndSetCorrectly() && is_using_kcpp_with_open_lumara() && !!localsettings?.agentLumaraPollingRate && localsettings.agentLumaraPollingRate > 0) {
-        window.eso.currentlyProcessingFromLumara = Promise.resolve();
-        window.eso.lumaraPollingIntervalId = setInterval(async () => {
-            await pollForLatestMessagesFromLumara();
-        }, localsettings?.agentLumaraPollingRate * 1000)
+
+    let status = `${window?.eso?.lumaraSocketStatus || "disabled"}`
+    let detail = `${window?.eso?.lumaraSocketStatusDetail || ""}`.trim()
+    let canUseLumara = is_using_kcpp_with_open_lumara()
+    let enabledBySetting = !!localsettings?.agentLumaraPollingRate
+    let enabledByAgent = isAgentModeEnabledAndSetCorrectly()
+
+    if (!canUseLumara) {
+        status = "unsupported"
+    } else if (!enabledBySetting || !enabledByAgent) {
+        status = "disabled"
     }
+
+    let statusLabel = "Disabled"
+    let statusColor = "#9aa0a6"
+    if (status === "connected") {
+        statusLabel = "Connected"
+        statusColor = "#3aa757"
+    } else if (status === "connecting") {
+        statusLabel = "Connecting"
+        statusColor = "#f4b400"
+    } else if (status === "reconnecting") {
+        statusLabel = "Reconnecting"
+        statusColor = "#f4b400"
+    } else if (status === "awaiting_auth") {
+        statusLabel = "Waiting for authentication"
+        statusColor = "#f4b400"
+    } else if (status === "unsupported") {
+        statusLabel = "Unavailable for current backend"
+        statusColor = "#ea4335"
+    } else if (status === "error") {
+        statusLabel = "Connection error"
+        statusColor = "#ea4335"
+    }
+
+    statusElem.textContent = detail ? `${statusLabel} (${detail})` : statusLabel
+    statusElem.style.color = statusColor
 }
 
 let corpoHide_render_gametext = render_gametext;
@@ -228,8 +272,7 @@ display_settings = () => {
     document.getElementById("agentStreamThinking").checked = localsettings.agentStreamThinking;
     document.getElementById("agentFsContentCharLimit").value = localsettings.agentFsContentCharLimit || 5000;
     document.getElementById("agentFsContentCharLimitnumeric").value = localsettings.agentFsContentCharLimit || 5000;
-    document.getElementById("agentLumaraPollingRate").value = localsettings.agentLumaraPollingRate || 0;
-    document.getElementById("agentLumaraPollingRatenumeric").value = localsettings.agentLumaraPollingRate || 0;
+    document.getElementById("agentLumaraPollingRate").checked = !!localsettings.agentLumaraPollingRate;
     document.getElementById("disableSaveCompressionLocally").checked = localsettings.disableSaveCompressionLocally;
     document.getElementById("enableRunningMemory").checked = localsettings.enableRunningMemory;
     document.getElementById("worldTreePrune").checked = localsettings.worldTreePrune;
@@ -242,6 +285,7 @@ display_settings = () => {
     document.getElementById("corpoHideLeftPanel").checked = localsettings.corpoHideLeftPanel;
     document.getElementById("agentSavedMacros").value = JSON.stringify(localsettings?.agentSavedMacros || window.eso.agentMacros, null, 2)
     renderEsoboldAgentTools()
+    window.updateLumaraListenerStatusIndicator()
 }
 
 updateLegacySaveButtonState = () => {
@@ -269,7 +313,7 @@ confirm_settings = () => {
     localsettings.agentSkipPreviousCOTWhenProcessing = (document.getElementById("agentSkipPreviousCOTWhenProcessing").checked ? true : false);
     localsettings.agentStreamThinking = (document.getElementById("agentStreamThinking").checked ? true : false);
     localsettings.agentFsContentCharLimit = document.getElementById("agentFsContentCharLimit").value || 5000;
-    localsettings.agentLumaraPollingRate = document.getElementById("agentLumaraPollingRate").value || 0;
+    localsettings.agentLumaraPollingRate = (document.getElementById("agentLumaraPollingRate").checked ? true : false);
     localsettings.disableSaveCompressionLocally = (document.getElementById("disableSaveCompressionLocally").checked ? true : false);
     localsettings.enableRunningMemory = (document.getElementById("enableRunningMemory").checked ? true : false);
     localsettings.worldTreePrune = (document.getElementById("worldTreePrune").checked ? true : false);
@@ -301,7 +345,9 @@ confirm_settings = () => {
             window.contextUsage.renderContextUsage();
         }
         
-        window.setupLumaraPolling();
+        window.setupLumaraListener().catch(err => {
+            console.error("Failed to apply Lumara listener settings:", err)
+        });
     }
     catch (e)
     {
@@ -357,6 +403,11 @@ window.addEventListener('load', () => {
     }
     if (localsettings?.agentFsContentCharLimit == undefined) {
         localsettings.agentFsContentCharLimit = 5000
+    }
+    if (localsettings?.agentLumaraPollingRate == undefined) {
+        localsettings.agentLumaraPollingRate = false
+    } else if (typeof localsettings.agentLumaraPollingRate !== "boolean") {
+        localsettings.agentLumaraPollingRate = Number(localsettings.agentLumaraPollingRate) > 0
     }
     if (localsettings?.disableSaveCompressionLocally == undefined) {
         localsettings.disableSaveCompressionLocally = true
@@ -672,8 +723,14 @@ window.addEventListener('load', () => {
     settingLabelElem = createSettingElemRange("agentFsContentCharLimit", "FS content character limit", "Maximum file-content characters sent to agent context per file read via fs_content. If content is truncated, the response includes total file lines and characters.", 500, 100000, 100, 5000)
     agentElems.push(settingLabelElem)
 
-    settingLabelElem = createSettingElemRange("agentLumaraPollingRate", "Lumara polling rate", "Defines the rate at which the agent polls Lumara for new messages (in seconds). Zero means no polling.", 0, 1000, 1, 0)
+    settingLabelElem = createSettingElemBool("agentLumaraPollingRate", "Enable Lumara listener", "When enabled, agent mode listens for live Lumara websocket updates. If disconnected, reconnect attempts run every 60 seconds until connected.")
     agentElems.push(settingLabelElem)
+
+    let lumaraStatusLabel = document.createElement("div")
+    lumaraStatusLabel.id = "agentLumaraListenerStatus"
+    lumaraStatusLabel.classList.add("settingsdesctxt")
+    lumaraStatusLabel.innerText = "Disabled"
+    agentElems.push(lumaraStatusLabel)
 
     // Hidden as this is no longer is in use for now
     settingLabelElem = createSettingElemRange("agentCOTRepeatsMax", "Maximum repeated agent actions of a type", "Defines the maximum number of actions the agent can take of the same type without a user input", 1, 20, 1, 1)
@@ -791,13 +848,13 @@ window.eso.afterKoboldCppVersionCheck = async () => {
     }
     
     if (is_using_kcpp_with_open_lumara()) {
-        localsettings.agentLumaraPollingRate = localsettings?.agentLumaraPollingRate || 0
+        localsettings.agentLumaraPollingRate = !!localsettings?.agentLumaraPollingRate
         injectOpenLumaraButton();
     }
     else {
-        localsettings.agentLumaraPollingRate = 0
+        localsettings.agentLumaraPollingRate = false
     }
-    window.setupLumaraPolling();
+    await window.setupLumaraListener();
 }
 
 let previousRestartNewGameLumara = restart_new_game, previousLoadSelectedFileLumara = load_selected_file

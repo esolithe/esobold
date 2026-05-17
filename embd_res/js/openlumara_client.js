@@ -20,6 +20,8 @@ class OpenlumaraClient {
      */
     constructor(base_url) {
         this.base_url = (base_url || (window.location.origin + '/openlumara')).replace(/\/+$/, '');
+        this._socket = null;
+        this._socketListeners = {};
     }
 
     // -------------------------------------------------------------------------
@@ -44,6 +46,33 @@ class OpenlumaraClient {
             headers = { ...window.getOpenLumaraAuthHeader(), ...headers };
         }
         return headers;
+    }
+
+    _emitSocketEvent(eventName, ...args) {
+        let listeners = this._socketListeners?.[eventName];
+        if (!listeners || listeners.size === 0) {
+            return;
+        }
+        listeners.forEach(listener => {
+            try {
+                listener(...args);
+            } catch (err) {
+                console.error(`OpenLumara socket listener error for ${eventName}:`, err);
+            }
+        });
+    }
+
+    _buildSocketUrl() {
+        const wsUrl = new URL(this.base_url + '/ws');
+        wsUrl.protocol = wsUrl.protocol === 'https:' ? 'wss:' : 'ws:';
+
+        const authHeader = this._authHeaders()?.Authorization || this._authHeaders()?.authorization || '';
+        const token = `${authHeader}`.startsWith('Bearer ') ? `${authHeader}`.slice(7).trim() : '';
+        if (token) {
+            wsUrl.searchParams.set('token', token);
+        }
+
+        return wsUrl.toString();
     }
 
     async _get(path, params) {
@@ -412,6 +441,75 @@ class OpenlumaraClient {
      */
     async restartServer() {
         return this._post('/server/restart');
+    }
+
+    // -------------------------------------------------------------------------
+    // WebSocket Updates
+    // -------------------------------------------------------------------------
+
+    connectSocket() {
+        if (this._socket && (this._socket.readyState === WebSocket.OPEN || this._socket.readyState === WebSocket.CONNECTING)) {
+            return this._socket;
+        }
+
+        const socket = new WebSocket(this._buildSocketUrl());
+        this._socket = socket;
+
+        socket.onopen = (event) => {
+            this._emitSocketEvent('open', event);
+        };
+
+        socket.onmessage = (event) => {
+            let payload = null;
+            try {
+                payload = JSON.parse(event.data);
+            } catch (_err) {
+                return;
+            }
+
+            this._emitSocketEvent('message', payload, event);
+            if (payload?.type) {
+                this._emitSocketEvent(payload.type, payload, event);
+            }
+        };
+
+        socket.onerror = (event) => {
+            this._emitSocketEvent('error', event);
+        };
+
+        socket.onclose = (event) => {
+            if (this._socket === socket) {
+                this._socket = null;
+            }
+            this._emitSocketEvent('close', event);
+        };
+
+        return socket;
+    }
+
+    disconnectSocket() {
+        if (this._socket) {
+            this._socket.close();
+            this._socket = null;
+        }
+    }
+
+    isSocketConnected() {
+        return !!this._socket && this._socket.readyState === WebSocket.OPEN;
+    }
+
+    onSocket(eventName, listener) {
+        if (!this._socketListeners[eventName]) {
+            this._socketListeners[eventName] = new Set();
+        }
+        this._socketListeners[eventName].add(listener);
+    }
+
+    offSocket(eventName, listener) {
+        if (!this._socketListeners[eventName]) {
+            return;
+        }
+        this._socketListeners[eventName].delete(listener);
     }
 }
 
