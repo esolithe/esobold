@@ -221,6 +221,11 @@ class token_count_outputs(ctypes.Structure):
     _fields_ = [("count", ctypes.c_int),
                 ("ids", ctypes.POINTER(ctypes.c_int))]
 
+class detokenize_inputs(ctypes.Structure):
+    _fields_ = [("count", ctypes.c_int),
+                ("ids", ctypes.POINTER(ctypes.c_int)),
+                ("special", ctypes.c_bool)]
+
 # returns top 5 logprobs per token
 class logprob_item(ctypes.Structure):
      _fields_ = [("option_count", ctypes.c_int),
@@ -969,7 +974,7 @@ def init_library():
     handle.music_generate.argtypes = [music_generation_inputs]
     handle.music_generate.restype = music_generation_outputs
     handle.last_logprobs.restype = last_logprobs_outputs
-    handle.detokenize.argtypes = [token_count_outputs]
+    handle.detokenize.argtypes = [detokenize_inputs]
     handle.detokenize.restype = ctypes.c_char_p
     handle.set_environment_variable.restype = ctypes.c_int
     handle.set_environment_variable.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
@@ -3037,12 +3042,13 @@ def tokenize_ids(countprompt,tcaddspecial):
     countdata = [rawcountdata.ids[i] for i in range(countlimit)]
     return countdata
 
-def detokenize_ids(tokids):
+def detokenize_ids(tokids,addspecial):
     tokidslen = len(tokids)
     detokstr = ""
     if tokidslen > 0 and tokidslen < 65536:
-        inputs = token_count_outputs()
+        inputs = detokenize_inputs()
         inputs.count = tokidslen
+        inputs.special = addspecial
         inputs.ids = (ctypes.c_int * tokidslen)()
         for i, cid in enumerate(tokids):
             inputs.ids[i] = cid
@@ -4235,7 +4241,7 @@ ws ::= | " " | "\n" [ \t]{0,20}
         assistant_message_start = adapter_obj.get("assistant_start", "\n\n### Response:\n")
         assistant_message_gen = adapter_obj.get("assistant_gen", assistant_message_start)
         try:
-            detokstr = detokenize_ids(tokids)
+            detokstr = detokenize_ids(tokids,True)
         except Exception as e:
             utfprint("Ollama Context Error: " + str(e))
         ollamasysprompt = genparams.get('system', "")
@@ -6026,7 +6032,8 @@ Change Mode<br>
             try:
                 genparams = json.loads(body)
                 tokids = genparams.get('ids', [])
-                detokstr = detokenize_ids(tokids)
+                addspecial = genparams.get('special', True)
+                detokstr = detokenize_ids(tokids,addspecial)
                 response_body = (json.dumps({"result": detokstr,"success":True}).encode())
             except Exception as e:
                 utfprint("Detokenize Error: " + str(e))

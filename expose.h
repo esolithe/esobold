@@ -158,6 +158,12 @@ struct token_count_outputs
     int count = 0;
     int * ids; //we'll just use shared memory for this one, bit of a hack
 };
+struct detokenize_inputs
+{
+    int count = 0;
+    int * ids; //we'll just use shared memory for this one, bit of a hack
+    bool special = false;
+};
 
 struct logprob_item {
     int option_count;

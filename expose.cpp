@@ -362,14 +362,14 @@ extern "C"
     }
 
     static std::string detokenized_str = ""; //just share a static object for detokenizing
-    const char * detokenize(const token_count_outputs input)
+    const char * detokenize(const detokenize_inputs input)
     {
         std::vector<int> input_arr;
         for(int i=0;i<input.count;++i)
         {
             input_arr.push_back(input.ids[i]);
         }
-        detokenized_str = gpttype_detokenize(input_arr,false);
+        detokenized_str = gpttype_detokenize(input_arr,input.special);
         return detokenized_str.c_str();
     }
 
