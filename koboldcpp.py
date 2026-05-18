@@ -7930,8 +7930,6 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         try:
             tokenReserve = "" #keeps fully formed tokens that we cannot send out yet
             stream_chunk_limit = max(0, getattr(args, 'stream_token_chunk_size', 0))
-            if getattr(args, 'unbuffered_stream', False) and stream_chunk_limit <= 0:
-                stream_chunk_limit = 1
             while True:
                 if batch_request_id < 0:
                     batch_request_id = genparams.get('_batch_request_id', -1)
@@ -11494,7 +11492,6 @@ def show_gui():
     jinja_tools_var = ctk.IntVar(value=0)
     jinja_stream_toolcall_var = ctk.IntVar(value=0)
     jinja_kwargs_var = ctk.StringVar()
-    unbuffered_stream_var = ctk.IntVar(value=0)
     stream_token_chunk_size_var = ctk.StringVar(value="0")
     moeexperts_var = ctk.StringVar(value=str(-1))
     moecpu_var = ctk.StringVar(value=str(0))
@@ -12302,8 +12299,7 @@ def show_gui():
     jinja_stream_toolcall_box = makecheckbox(context_tab, "Stream ToolCalls", jinja_stream_toolcall_var, row=45, padx=(295), tooltiptxt="When jinja tool calls are active, stream the tool call content as tokens are generated rather than buffering silently until generation is complete.")
     jinjakwargsbox,jinjakwargsboxlbl = makelabelentry(context_tab, "Jj.Kwargs:", jinja_kwargs_var, row=45, width=80, padx=(480), singleline=True, tooltip='Set additiona fields for Jinja JSON template parser, must be a valid json object.\nSpecified as JSON fields: {"KEY1":"VALUE1", "KEY2":"VALUE2"...}', labelpadx=415)
     jinja_var.trace_add("write", togglejinja)
-    makecheckbox(context_tab, "Unbuffered Stream", unbuffered_stream_var, row=47, tooltiptxt="Stream tokens directly one-by-one without batching. Makes streaming feel faster and more responsive. Overrides Stream Chunk Size when enabled.")
-    makelabelentry(context_tab, "Stream Chunk:", stream_token_chunk_size_var, row=47, padx=(170), singleline=True, tooltip="Number of tokens to buffer per streaming chunk. 0 = unlimited (default kobold batching). 1 = token-by-token (same as Unbuffered Stream). Higher values = larger batches per SSE event.", labelpadx=(107))
+    makelabelentry(context_tab, "Stream Chunk:", stream_token_chunk_size_var, row=47, padx=(10), singleline=True, tooltip="Number of tokens to buffer per streaming chunk. 0 = unlimited (default kobold batching). 1 = token-by-token direct streaming. Higher values = larger token batches per SSE event.", labelpadx=(0))
     makelabelentry(context_tab, "MoE Experts:", moeexperts_var, row=55, padx=(86), singleline=True, tooltip="Override number of MoE experts.")
     moecpu_box,moecpu_box_lbl = makelabelentry(context_tab, "MoE CPU Layers:", moecpu_var, row=55, padx=(334), singleline=True, tooltip="Force Mixture of Experts (MoE) weights of the first N layers to the CPU.\nSetting it higher than GPU layers has no effect.", labelpadx=(230))
     makelabelentry(context_tab, "Override KV:", override_kv_var, row=57, padx=(86), singleline=True, width=130, tooltip="Override metadata value by key. Separate multiple values with commas. Format is name=type:value. Types: int, float, bool, str")
@@ -12744,7 +12740,6 @@ def show_gui():
         args.defaultgenamt = int(defaultgenamt_var.get()) if defaultgenamt_var.get()!="" else default_genlen
         args.genlimit = int(genlimit_var.get()) if genlimit_var.get()!="" else 0
         args.nobostoken = (nobostoken_var.get()==1)
-        args.unbuffered_stream = (unbuffered_stream_var.get()==1)
         args.stream_token_chunk_size = tryparseint(stream_token_chunk_size_var.get(), 0)
         args.jinja = (jinja_var.get()==1)
         args.jinja_tools = (jinja_tools_var.get()==1)
@@ -13039,7 +13034,6 @@ def show_gui():
         else:
             genlimit_var.set(str(0))
         nobostoken_var.set(mydict["nobostoken"] if ("nobostoken" in mydict) else 0)
-        unbuffered_stream_var.set(mydict["unbuffered_stream"] if ("unbuffered_stream" in mydict) else 0)
         stream_token_chunk_size_var.set(str(mydict["stream_token_chunk_size"]) if ("stream_token_chunk_size" in mydict) else "0")
         jinja_var.set(mydict["jinja"] if ("jinja" in mydict) else 0)
         jinja_tools_var.set(mydict["jinja_tools"] if ("jinja_tools" in mydict) else 0)
@@ -15908,8 +15902,7 @@ if __name__ == '__main__':
     advparser.add_argument("--jinja", help="Enables using jinja chat template formatting for chat completions endpoint. Other endpoints are unaffected. Tool calls are done without jinja.", action='store_true')
     advparser.add_argument("--jinja_tools","--jinja-tools","--jinjatools", help="Enables using jinja chat template formatting for chat completions endpoint. Other endpoints are unaffected. Tool calls are done with jinja.", action='store_true')
     advparser.add_argument("--jinja_stream_toolcall","--jinja-stream-toolcall","--jinjastreamtoolcall", help="When jinja tool calls are active, stream the tool call content as tokens are generated rather than buffering silently until generation is complete. Implies --jinja and --jinja_tools.", action='store_true')
-    advparser.add_argument("--unbuffered_stream","--unbuffered-stream","--unbufferedstream", help="Stream tokens directly one-by-one without batching multiple tokens per SSE chunk. Makes streaming feel faster and more responsive. Equivalent to --stream_token_chunk_size 1.", action='store_true')
-    advparser.add_argument("--stream_token_chunk_size","--stream-token-chunk-size","--streamtokenchunksize", help="Number of tokens to buffer per streaming SSE chunk. 0 = unlimited/default kobold batching. 1 = token-by-token (same as --unbuffered_stream). Higher values = larger token batches per SSE event.", type=int, default=0)
+    advparser.add_argument("--stream_token_chunk_size","--stream-token-chunk-size","--streamtokenchunksize", help="Number of tokens to buffer per streaming SSE chunk. 0 = unlimited/default kobold batching. 1 = token-by-token direct streaming. Higher values = larger token batches per SSE event.", type=int, default=0)
     advparser.add_argument("--jinja_kwargs","--jinja-kwargs","--jinjakwargs","--chat-template-kwargs", metavar=('{"parameter":"value",...}'), help="Set additional fields for Jinja JSON template parser, must be a valid JSON object.", default="")
     advparser.add_argument("--jinjatemplate","--chat-template-file", metavar=('[filename]'), help="Select a custom Jinja chat template, will overwrite model jinja chat template", default="")
     advparser.add_argument("--noflashattention","--no-flash-attn","-nofa", help="Disables flash attention.", action='store_true')
