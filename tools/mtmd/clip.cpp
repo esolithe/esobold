@@ -58,7 +58,7 @@
 #include "models/gemma4v.cpp"
 #include "models/glm4v.cpp"
 #include "models/granite-speech.cpp"
-#include "models/hunyuanocr.cpp"
+#include "models/hunyuanvl.cpp"
 #include "models/internvl.cpp"
 #include "models/kimivl.cpp"
 #include "models/kimik25.cpp"
@@ -996,10 +996,9 @@ static ggml_cgraph * clip_image_build_graph(clip_ctx * ctx, const clip_image_f32
             {
                 builder = std::make_unique<clip_graph_cogvlm>(ctx, img);
             } break;
-        case PROJECTOR_TYPE_HUNYUANOCR:
         case PROJECTOR_TYPE_HUNYUANVL:
             {
-                builder = std::make_unique<clip_graph_hunyuanocr>(ctx, img);
+                builder = std::make_unique<clip_graph_hunyuanvl>(ctx, img);
             } break;
         case PROJECTOR_TYPE_MLP:
         case PROJECTOR_TYPE_MLP_NORM:
@@ -1316,12 +1315,12 @@ struct clip_model_loader {
                         hparams.has_llava_projector = model.proj_type != PROJECTOR_TYPE_COGVLM;
                         hparams.image_pad_color     = {122, 116, 104};
                         if (!hparams.image_res_candidates.empty()) {
-                            hparams.image_resize_pad  = true;
+                            hparams.image_resize_pad  = PAD_CEIL;
                             hparams.image_resize_algo = RESIZE_ALGO_BILINEAR;
                         } else {
                             // llava-1.6 default params
-                            hparams.image_pad_ov         = false;
-                            hparams.image_pad_rf         = true;
+                            hparams.image_pad_ov         = PAD_NONE;
+                            hparams.image_pad_rf         = PAD_CEIL;
                             hparams.image_pad_color_rf   = {122, 116, 104};
                             hparams.image_resize_algo_rf = RESIZE_ALGO_BICUBIC;
                             hparams.image_resize_algo_ov = RESIZE_ALGO_BILINEAR;
@@ -1329,7 +1328,7 @@ struct clip_model_loader {
                     } break;
                 case PROJECTOR_TYPE_GLM_EDGE:
                     {
-                        hparams.image_resize_pad  = true;
+                        hparams.image_resize_pad  = PAD_CEIL;
                         hparams.image_resize_algo = RESIZE_ALGO_BILINEAR;
                     } break;
                 case PROJECTOR_TYPE_MINICPMV:
@@ -1529,7 +1528,7 @@ struct clip_model_loader {
                     {
                         hparams.n_merge = 2;
                         hparams.image_resize_algo = RESIZE_ALGO_BILINEAR;
-                        hparams.image_resize_pad  = false;
+                        hparams.image_resize_pad  = PAD_NONE;
                         get_u32(KEY_SPATIAL_MERGE_SIZE, hparams.n_merge, false);
                         get_u32(KEY_ATTN_WINDOW_SIZE, hparams.attn_window_size, true);
                         std::vector<int> wa_layer_indexes_vec;
@@ -1549,7 +1548,7 @@ struct clip_model_loader {
 
                         // reka model performs better when using resize_bicubic, which stretches
                         // the image to fit fixed square size
-                        hparams.image_resize_pad = false;
+                        hparams.image_resize_pad = PAD_NONE;
                     } break;
                 case PROJECTOR_TYPE_GLM4V:
                     {
@@ -1604,31 +1603,23 @@ struct clip_model_loader {
                         hparams.image_size = 1024;
                         hparams.warmup_image_size = 1024;
                         hparams.image_resize_algo = RESIZE_ALGO_BICUBIC_PILLOW;
-                        hparams.image_pad_color[0] = hparams.image_mean[0];
-                        hparams.image_pad_color[1] = hparams.image_mean[1];
-                        hparams.image_pad_color[2] = hparams.image_mean[2];
+                        hparams.image_pad_color = {127, 127, 127};
 
                         get_u32(KEY_SAM_N_BLOCK, hparams.sam_n_layer, true);
                         get_u32(KEY_SAM_N_HEAD, hparams.sam_n_head, true);
                         get_u32(KEY_SAM_N_EMBD, hparams.sam_n_embd, true);
                         get_u32(KEY_ATTN_WINDOW_SIZE, hparams.attn_window_size, true);
                      } break;
-                case PROJECTOR_TYPE_HUNYUANOCR:
-                    {
-                        hparams.n_merge = 2;
-                        get_u32(KEY_SPATIAL_MERGE_SIZE, hparams.n_merge, false);
-                        get_u32(KEY_IMAGE_MIN_PIXELS, hparams.image_min_pixels);
-                        get_u32(KEY_IMAGE_MAX_PIXELS, hparams.image_max_pixels);
-                        hparams.set_warmup_n_tokens(28*28);
-                    } break;
                 case PROJECTOR_TYPE_HUNYUANVL:
                     {
                         hparams.n_merge = 2;
                         hparams.image_resize_algo = RESIZE_ALGO_BICUBIC_PILLOW;
-                        hparams.image_resize_pad = false;
+                        hparams.image_resize_pad = PAD_NONE;
                         hparams.ffn_op = FFN_GELU;
-                        get_u32(KEY_SPATIAL_MERGE_SIZE, hparams.n_merge, false);
                         hparams.set_limit_image_tokens(256, 16384);
+                        get_u32(KEY_SPATIAL_MERGE_SIZE, hparams.n_merge, false);
+                        get_u32(KEY_IMAGE_MIN_PIXELS, hparams.image_min_pixels, false);
+                        get_u32(KEY_IMAGE_MAX_PIXELS, hparams.image_max_pixels, false);
                         hparams.set_warmup_n_tokens(32*32);
                     } break;
                 case PROJECTOR_TYPE_LFM2A:
@@ -2438,7 +2429,6 @@ struct clip_model_loader {
                     model.mm_boi            = get_tensor(TN_TOK_BOI);
                     model.mm_eoi            = get_tensor(TN_TOK_EOI);
                 } break;
-            case PROJECTOR_TYPE_HUNYUANOCR:
             case PROJECTOR_TYPE_HUNYUANVL:
                 {
                     // proj.0 -> mm.0 (conv1), proj.2 -> mm.2 (conv2), mlp -> mm.model.fc (linear)
@@ -3294,7 +3284,7 @@ void setup_init_vision_shim_kcpp(struct clip_ctx * ctx_v) {
                 } break;
             case PROJECTOR_TYPE_MINICPMV:
                 {
-                    int minicpmv_version = clip_is_minicpmv(ctx_v);
+                    int minicpmv_version = clip_get_hparams(ctx_v)->minicpmv_version;
                     if (minicpmv_version == 2) {
                         // minicpmv 2.5 format:
                         // <image> (overview) </image><slice><image> (slice) </image><image> (slice) </image>\n ... </slice>
@@ -3503,7 +3493,6 @@ void setup_init_vision_shim_kcpp(struct clip_ctx * ctx_v) {
                     img_end = "\n"; // prevent empty batch on llama-server
                     image_preproc = std::make_unique<mtmd_image_preprocessor_deepseekocr>(ctx_v);
                 } break;
-            case PROJECTOR_TYPE_HUNYUANOCR:
             case PROJECTOR_TYPE_HUNYUANVL:
                 {
                     // note: these use fullwidth ｜ (U+FF5C) and ▁ (U+2581) to match the tokenizer vocabulary
@@ -3593,7 +3582,6 @@ int clip_n_output_tokens_x(const struct clip_ctx * ctx, struct clip_image_f32 * 
         case PROJECTOR_TYPE_MIMOVL:
         case PROJECTOR_TYPE_GLM4V:
         case PROJECTOR_TYPE_PADDLEOCR:
-        case PROJECTOR_TYPE_HUNYUANOCR:
         case PROJECTOR_TYPE_HUNYUANVL:
         case PROJECTOR_TYPE_YOUTUVL:
             return (img->nx / params.patch_size) / 2;
@@ -3810,7 +3798,6 @@ int clip_n_output_tokens(const struct clip_ctx * ctx, struct clip_image_f32 * im
             int h = static_cast<int>(std::sqrt(static_cast<float>(n_patches)));
             n_patches = h * (h + 1) + 1;
         } break;
-        case PROJECTOR_TYPE_HUNYUANOCR:
         case PROJECTOR_TYPE_HUNYUANVL:
             {
                 int merge = ctx->model.hparams.n_merge;
@@ -4446,7 +4433,6 @@ bool clip_image_batch_encode(clip_ctx * ctx, const int n_threads, const clip_ima
         case PROJECTOR_TYPE_JANUS_PRO:
         case PROJECTOR_TYPE_PHI4:
         case PROJECTOR_TYPE_COGVLM:
-        case PROJECTOR_TYPE_HUNYUANOCR:
         case PROJECTOR_TYPE_YASA2:
             {
                 // do nothing
@@ -4456,7 +4442,7 @@ bool clip_image_batch_encode(clip_ctx * ctx, const int n_threads, const clip_ima
                 // Compute the HunyuanVL 2D position embedding on CPU (with the
                 // custom sf=(target+0.1)/n_grid bilinear sampling that the
                 // reference implementation uses) and upload it to the graph
-                // input declared in clip_graph_hunyuanocr::build().
+                // input declared in clip_graph_hunyuanvl::build().
                 GGML_ASSERT(model.position_embeddings != nullptr);
                 ggml_tensor * src_t   = model.position_embeddings;
                 const int64_t n_embd  = src_t->ne[0];
@@ -4974,7 +4960,6 @@ int clip_n_mmproj_embd(const struct clip_ctx * ctx) {
         case PROJECTOR_TYPE_KIMIK25:
         case PROJECTOR_TYPE_YASA2:
             return ctx->model.mm_2_w->ne[1];
-        case PROJECTOR_TYPE_HUNYUANOCR:
         case PROJECTOR_TYPE_HUNYUANVL:
             return ctx->model.mm_model_proj->ne[1];
         case PROJECTOR_TYPE_COGVLM:
