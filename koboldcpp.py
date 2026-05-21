@@ -2534,7 +2534,7 @@ def sd_comfyui_tranform_params(genparams):
     return genparams
 
 # json with top-level dict
-def parse_json_object(value, field):
+def parse_json_object(value, field, silent=False):
     if not value:
         return None
     broken = False
@@ -2569,14 +2569,20 @@ def parse_json_object(value, field):
         if value:
             try:
                 import ast
-                value = ast.literal_eval(value)
+                # Convert JS literals to Python literals
+                fixed = re.sub(r'\btrue\b', 'True', value)
+                fixed = re.sub(r'\bfalse\b', 'False', fixed)
+                fixed = re.sub(r'\bnull\b', 'None', fixed)
+                value = ast.literal_eval(fixed)
                 if value and isinstance(value, dict):
                     return value
             except Exception:
                 pass
-        print(f"Warning: couldn't parse {field} field.")
+        if not silent:
+            print(f"Warning: couldn't parse {field} field.")
     else:
-        print(f"Warning: {field} field - not a JSON object.")
+        if not silent:
+            print(f"Warning: {field} field - not a JSON object.")
     return None
 
 def gendefaults_parse_meta_field(value):
@@ -7597,6 +7603,7 @@ def show_gui():
     jinja_var = ctk.IntVar(value=0)
     jinja_tools_var = ctk.IntVar(value=0)
     jinja_kwargs_var = ctk.StringVar()
+    jinja_think_var = ctk.StringVar(value="default")
     moeexperts_var = ctk.StringVar(value=str(-1))
     moecpu_var = ctk.StringVar(value=str(0))
     defaultgenamt_var = ctk.StringVar(value=str(default_genlen))
@@ -8355,16 +8362,46 @@ def show_gui():
             jinjatoolsbox.grid()
             jinjakwargsbox.grid()
             jinjakwargsboxlbl.grid()
+            jinjathinkbox.grid()
+            jinjathinklbl.grid()
         else:
             jinja_tools_var.set(0)
             jinjatoolsbox.grid_remove()
             jinjakwargsbox.grid_remove()
             jinjakwargsboxlbl.grid_remove()
+            jinjathinkbox.grid_remove()
+            jinjathinklbl.grid_remove()
         changed_gpulayers_estimate()
+    def togglejinjathink(a,b,c):
+        curr = parse_json_object(jinja_kwargs_var.get(),"tempjinja")
+        curr = (curr if curr else {})
+        changed = False
+        if jinja_think_var.get()=="true":
+            curr["enable_thinking"] = True
+            changed = True
+        elif jinja_think_var.get()=="false":
+            curr["enable_thinking"] = False
+            changed = True
+        elif "enable_thinking" in curr:
+            del curr["enable_thinking"]
+            changed = True
+        if changed:
+            jinja_kwargs_var.set(json.dumps(curr) if curr else "")
+    def updatejinjathinktoggle(a,b,c):
+        curr = parse_json_object(jinja_kwargs_var.get(),"tempjinja",True)
+        curr = (curr if curr else {})
+        if "enable_thinking" in curr:
+            if curr["enable_thinking"] is True:
+                jinja_think_var.set("true")
+            elif curr["enable_thinking"] is False:
+                jinja_think_var.set("false")
     makecheckbox(context_tab, "Use Jinja", jinja_var, row=45, command=togglejinja, tooltiptxt="Enables using jinja chat template formatting for chat completions endpoint. Other endpoints are unaffected.")
     jinjatoolsbox = makecheckbox(context_tab, "Jinja for Tools", jinja_tools_var, row=45 ,padx=(140), tooltiptxt="Allows jinja even with tool calls. If unchecked, jinja will be disabled when tools are used.")
-    jinjakwargsbox,jinjakwargsboxlbl = makelabelentry(context_tab, "Jj.Kwargs:", jinja_kwargs_var, row=45, width=80, padx=(350), singleline=True, tooltip='Set additiona fields for Jinja JSON template parser, must be a valid json object.\nSpecified as JSON fields: {"KEY1":"VALUE1", "KEY2":"VALUE2"...}', labelpadx=285)
+    jinja_think_choices = ['default', 'true', 'false']
+    jinjathinkbox, jinjathinklbl = makelabelcombobox(context_tab, "Jinja Thinking:", jinja_think_var, 45, command=togglejinjathink,labelpadx=(280), padx=370, width=100, tooltiptxt="Tries to enable or disable thinking in Jinja mode. This is a shortcut to setting Jinja Kwargs directly.", values=jinja_think_choices)
+    jinjakwargsbox,jinjakwargsboxlbl = makelabelentry(context_tab, "Jinja Kwargs:", jinja_kwargs_var, row=47, width=200, padx=(100), singleline=True, tooltip='Set additiona fields for Jinja JSON template parser, must be a valid json object.\nSpecified as JSON fields: {"KEY1":"VALUE1", "KEY2":"VALUE2"...}')
     jinja_var.trace_add("write", togglejinja)
+    jinja_kwargs_var.trace_add("write", updatejinjathinktoggle)
     makelabelentry(context_tab, "MoE Experts:", moeexperts_var, row=55, padx=(86), singleline=True, tooltip="Override number of MoE experts.")
     moecpu_box,moecpu_box_lbl = makelabelentry(context_tab, "MoE CPU Layers:", moecpu_var, row=55, padx=(334), singleline=True, tooltip="Force Mixture of Experts (MoE) weights of the first N layers to the CPU.\nSetting it higher than GPU layers has no effect.", labelpadx=(230))
     makelabelentry(context_tab, "Override KV:", override_kv_var, row=57, padx=(86), singleline=True, width=130, tooltip="Override metadata value by key. Separate multiple values with commas. Format is name=type:value. Types: int, float, bool, str")
@@ -8649,6 +8686,7 @@ def show_gui():
     togglesdlora(1,1,1)
     togglejinja(1,1,1)
     toggleadmin(1,1,1)
+    updatejinjathinktoggle(1,1,1)
 
     # launch
     def guilaunch():
@@ -9038,10 +9076,18 @@ def show_gui():
         nobostoken_var.set(mydict["nobostoken"] if ("nobostoken" in mydict) else 0)
         jinja_var.set(mydict["jinja"] if ("jinja" in mydict) else 0)
         jinja_tools_var.set(mydict["jinja_tools"] if ("jinja_tools" in mydict) else 0)
+        jinja_think_var.set("default")
         jinja_kwargs = (mydict["jinja_kwargs"] if ("jinja_kwargs" in mydict and mydict["jinja_kwargs"]) else "")
         if isinstance(jinja_kwargs, type({})):
             jinja_kwargs = json.dumps(jinja_kwargs)
-        jinja_kwargs_var.set(jinja_kwargs)
+        if "jinjathink" in mydict:
+            jinja_kwargs = (json.loads(jinja_kwargs) if jinja_kwargs else {})
+            if mydict["jinjathink"]=="true":
+                jinja_kwargs["enable_thinking"] = True
+            if mydict["jinjathink"]=="false":
+                jinja_kwargs["enable_thinking"] = False
+            jinja_kwargs = json.dumps(jinja_kwargs) if jinja_kwargs else ""
+        jinja_kwargs_var.set(jinja_kwargs if jinja_kwargs else "")
         jinjatemplate_var.set(mydict["jinjatemplate"] if ("jinjatemplate" in mydict and mydict["jinjatemplate"]) else "")
 
         enableguidance_var.set(mydict["enableguidance"] if ("enableguidance" in mydict) else 0)
@@ -11599,6 +11645,7 @@ if __name__ == '__main__':
     advparser.add_argument("--jinja_tools","--jinja-tools","--jinjatools", help="Enables using jinja chat template formatting for chat completions endpoint. Other endpoints are unaffected. Tool calls are done with jinja.", action='store_true')
     advparser.add_argument("--jinja_kwargs","--jinja-kwargs","--jinjakwargs","--chat-template-kwargs", metavar=('{"parameter":"value",...}'), help="Set additional fields for Jinja JSON template parser, must be a valid JSON object.", default="")
     advparser.add_argument("--jinjatemplate","--chat-template-file", metavar=('[filename]'), help="Select a custom Jinja chat template, will overwrite model jinja chat template", default="")
+    advparser.add_argument("--jinjathink", help="A quick way to enable or disable thinking in the jinja template.", type=str, choices=['default','true','false'], default="default")
     advparser.add_argument("--noflashattention","--no-flash-attn","-nofa", help="Disables flash attention.", action='store_true')
     advparser.add_argument("--lowvram","-nkvo","--no-kv-offload", help="If supported by the backend, do not offload KV to GPU (lowvram mode). Not recommended, will be slow.", action='store_true')
     advparser.add_argument("--quantkv", help="Sets the KV cache data type quantization, options are f16/bf16/q8_0/q5_1/q4_0. Requires Flash Attention for full effect, otherwise only K cache is quantized.",metavar=('[quantization level f16/bf16/q8_0/q5_1/q4_0]'), type=str, choices=["f16","bf16","q8_0","q5_1","q4_0","0","1","2","3"], default="f16")
