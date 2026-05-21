@@ -828,26 +828,6 @@ export class ChatService {
 
 		const contentParts: ApiChatMessageContentPart[] = [];
 
-		if (message.content) {
-			contentParts.push({
-				type: ContentPartType.TEXT,
-				text: message.content
-			});
-		}
-
-		// Include images from all messages
-		const imageFiles = message.extra.filter(
-			(extra: DatabaseMessageExtra): extra is DatabaseMessageExtraImageFile =>
-				extra.type === AttachmentType.IMAGE
-		);
-
-		for (const image of imageFiles) {
-			contentParts.push({
-				type: ContentPartType.IMAGE_URL,
-				image_url: { url: image.base64Url }
-			});
-		}
-
 		const textFiles = message.extra.filter(
 			(extra: DatabaseMessageExtra): extra is DatabaseMessageExtraTextFile =>
 				extra.type === AttachmentType.TEXT
@@ -870,6 +850,26 @@ export class ChatService {
 			contentParts.push({
 				type: ContentPartType.TEXT,
 				text: formatAttachmentText('File', legacyContextFile.name, legacyContextFile.content)
+			});
+		}
+
+		if (message.content) {
+			contentParts.push({
+				type: ContentPartType.TEXT,
+				text: message.content
+			});
+		}
+
+		// Include images from all messages
+		const imageFiles = message.extra.filter(
+			(extra: DatabaseMessageExtra): extra is DatabaseMessageExtraImageFile =>
+				extra.type === AttachmentType.IMAGE
+		);
+
+		for (const image of imageFiles) {
+			contentParts.push({
+				type: ContentPartType.IMAGE_URL,
+				image_url: { url: image.base64Url }
 			});
 		}
 

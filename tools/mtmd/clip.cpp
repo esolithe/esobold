@@ -222,9 +222,15 @@ struct clip_ctx {
 
     bool debug_output_embeddings = false;
 
+    // for measuring memory usage
+    bool no_alloc = false;
+    std::map<ggml_backend_dev_t, size_t> mem_usage;
+    std::map<ggml_backend_dev_t, size_t> mem_compute;
+
     clip_ctx(clip_context_params & ctx_params) {
         flash_attn_type = ctx_params.flash_attn_type;
-	    backend_cpu = ggml_backend_cpu_init(); //always has CPU backend
+        no_alloc = ctx_params.no_alloc;
+	backend_cpu = ggml_backend_cpu_init(); //always has CPU backend
         if (!backend_cpu) {
             throw std::runtime_error("failed to initialize CPU backend");
         }
@@ -1781,6 +1787,8 @@ struct clip_model_loader {
                 ggml_set_name(data_tensor, cur->name);
                 loaded_tensor_names.insert(name);
                 cur = data_tensor;
+                // add to weight memory counter
+                ctx_clip.mem_usage[ggml_backend_get_device(ctx_clip.backend)] += ggml_nbytes(cur);
             }
             return cur;
         };
@@ -2695,7 +2703,7 @@ struct clip_model_loader {
         }
 
         // load data
-        {
+        if (!ctx_clip.no_alloc) {
             std::vector<uint8_t> read_buf;
 
             // alloc memory and offload data
@@ -2769,7 +2777,7 @@ struct clip_model_loader {
         if (ctx_clip.flash_attn_type == CLIP_FLASH_ATTN_TYPE_AUTO) {
             // try to enable flash attention to see if it's supported
             ctx_clip.flash_attn_type = CLIP_FLASH_ATTN_TYPE_ENABLED;
-            info = alloc_compute_meta(ctx_clip, batch);
+            info = reserve_compute_meta(ctx_clip, batch);
             if (!info.fattn && info.fattn_op) {
                 auto op = info.fattn_op;
                 LOG_WRN("%s: *****************************************************************\n", __func__);
@@ -2788,10 +2796,10 @@ struct clip_model_loader {
                 LOG_WRN("%s: please report this on github as an issue\n", __func__);
                 LOG_WRN("%s: *****************************************************************\n", __func__);
                 ctx_clip.flash_attn_type = CLIP_FLASH_ATTN_TYPE_DISABLED;
-                alloc_compute_meta(ctx_clip, batch);
+                reserve_compute_meta(ctx_clip, batch);
             }
         } else {
-            info = alloc_compute_meta(ctx_clip, batch);
+            info = reserve_compute_meta(ctx_clip, batch);
             if (!info.fattn && ctx_clip.flash_attn_type == CLIP_FLASH_ATTN_TYPE_ENABLED) {
                 LOG_WRN("%s: flash attention is not supported by the current backend; falling back to CPU (performance will be degraded)\n", __func__);
             }
@@ -2830,12 +2838,14 @@ struct clip_model_loader {
         }
     }
 
-    static support_info_graph alloc_compute_meta(clip_ctx & ctx_clip, const clip_image_f32_batch & batch) {
+    // only initialize backend buffers, but do not allocate them yet
+    static support_info_graph reserve_compute_meta(clip_ctx & ctx_clip, const clip_image_f32_batch & batch) {
         ctx_clip.buf_compute_meta.resize(ctx_clip.max_nodes * ggml_tensor_overhead() + ggml_graph_overhead());
 
         ggml_cgraph * gf = clip_image_build_graph(&ctx_clip, batch);
         ggml_backend_sched_reserve(ctx_clip.sched.get(), gf);
 
+        ctx_clip.mem_compute.clear();
         for (size_t i = 0; i < ctx_clip.backend_ptrs.size(); ++i) {
             ggml_backend_t backend = ctx_clip.backend_ptrs[i];
             ggml_backend_buffer_type_t buft = ctx_clip.backend_buft[i];
@@ -2845,6 +2855,7 @@ struct clip_model_loader {
                         ggml_backend_buft_name(buft),
                         size / 1024.0 / 1024.0);
             }
+            ctx_clip.mem_compute[ggml_backend_get_device(backend)] += size;
         }
 
         const int n_splits = ggml_backend_sched_get_n_splits(ctx_clip.sched.get());
@@ -4732,7 +4743,7 @@ bool clip_model_quantize(const char * fname_inp, const char * fname_out, const i
         }
         batch.entries.push_back(std::move(img));
 
-        loader.alloc_compute_meta(*ctx_clip,batch);
+        loader.reserve_compute_meta(*ctx_clip,batch);
     } catch (const std::exception & e) {
         printf("%s: failed to load model '%s': %s\n", __func__, fname_inp, e.what());
         if (ctx_clip) {
@@ -5054,6 +5065,14 @@ void clip_image_f32_batch_add_mel(struct clip_image_f32_batch * batch, int n_mel
 
 const clip_hparams * clip_get_hparams(const struct clip_ctx * ctx) {
     return &ctx->model.hparams;
+}
+
+std::map<ggml_backend_dev_t, size_t> clip_get_mem_usage(const struct clip_ctx * ctx) {
+    std::map<ggml_backend_dev_t, size_t> result = ctx->mem_usage;
+    for (auto & [dev, size] : ctx->mem_compute) {
+        result[dev] += size;
+    }
+    return result;
 }
 
 //
