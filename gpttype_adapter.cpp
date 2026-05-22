@@ -2288,20 +2288,9 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
     kcpp_data->use_contextshift = inputs.use_contextshift;
     kcpp_data->use_fastforward = inputs.use_fastforward;
     kcpp_data->smartcache = inputs.smartcache;
-    kcpp_data->swa_full = !inputs.swa_support;
     kcpp_extra_swa_padding = inputs.swa_padding;
-    if (!kcpp_data->swa_full) {
-        if (inputs.use_contextshift) {
-            kcpp_data->swa_full = true;  //cannot use SWA
-            printf("\nSWA Mode IS DISABLED!\nSWA Mode Cannot be used with Context Shifting!\n");
-        } else if (inputs.use_fastforward) {
-            printf("\nSWA Mode is ENABLED!\nNote that using SWA Mode cannot be used with Context Shifting, and can lead to degraded recall when combined with Fast Forwarding!\n");
-        } else {
-            printf("\nSWA Mode IS ENABLED!\nNote that using SWA Mode cannot be used with Context Shifting\n");
-            //since fastforward is disabled, we need no swa padding, because full reprocess always happens
-            kcpp_extra_swa_padding = 0;
-        }
-    }
+    kcpp_data->swa_full = inputs.prevent_swa;
+
     debugmode = inputs.debugmode;
     draft_ctx = nullptr;
     guidance_ctx = nullptr;
@@ -2517,7 +2506,6 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
         model_params.use_direct_io = false; //no direct io for now until stable
         model_params.n_gpu_layers = inputs.gpulayers;
         kcpp_permit_any_repack = (model_params.use_mmap?false:true);
-
 
         //set device overrides if needed
         std::vector<ggml_backend_dev_t> devices_override;
@@ -2772,6 +2760,28 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
         }
 
         llama_model * llamamodel = llama_model_load_from_file(kcpp_data->model_filename.c_str(), model_params);
+
+        //now that the model is loaded, immediately check if SWA is used
+        bool model_has_swa = (llama_model_n_swa(llamamodel)!=0);
+        if(!model_has_swa)
+        {
+             printf("\nThis model does not use SWA\n");
+        }
+        else if(kcpp_data->swa_full)
+        {
+            printf("\nThis model has SWA, but SWA Mode IS DISABLED! Full sized context will be used.\n");
+        }
+        else
+        {
+            if (kcpp_data->use_contextshift) {
+                kcpp_data->use_contextshift = false;  //cannot use shifting with SWA
+                printf("\nSWA Mode is ENABLED!\nNote that using SWA Mode cannot be used with Context Shifting!\nContext shifting is DISABLED!\n");
+            } else if (kcpp_data->use_fastforward) {
+                printf("\nSWA Mode is ENABLED!\nNote that using SWA Mode cannot be used with Context Shifting, and can lead to degraded recall when combined with Fast Forwarding!\n");
+            } else {
+                printf("\nSWA Mode IS ENABLED!\nNote that using SWA Mode cannot be used with Context Shifting\n");
+            }
+        }
 
         //prepare savestate slots
         savestate_limit = inputs.smartcacheslots;

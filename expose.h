@@ -75,7 +75,7 @@ struct load_model_inputs
     const bool check_slowness = false;
     const char * jinja_template = nullptr;
     const bool highpriority = false;
-    const bool swa_support = false;
+    const bool prevent_swa = false;
     const int swa_padding = 0;
     const bool smartcache = false;
     const int smartcacheslots = 0;

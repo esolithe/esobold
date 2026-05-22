@@ -199,6 +199,7 @@ deprecated_keys = {
     "forceversion",
     "sdgendefaults",
     "flashattention",
+    "useswa",
 }
 
 saved_stdout = None
@@ -286,7 +287,7 @@ class load_model_inputs(ctypes.Structure):
                 ("check_slowness", ctypes.c_bool),
                 ("jinja_template", ctypes.c_char_p),
                 ("highpriority", ctypes.c_bool),
-                ("swa_support", ctypes.c_bool),
+                ("prevent_swa", ctypes.c_bool),
                 ("swa_padding", ctypes.c_int),
                 ("smartcache", ctypes.c_bool),
                 ("smartcacheslots", ctypes.c_int),
@@ -2009,8 +2010,8 @@ def load_model(model_filename):
     inputs.check_slowness = (not args.highpriority and os.name == 'nt' and 'Intel' in platform.processor())
     inputs.jinja_template = preloaded_custom_jinja.encode("UTF-8")
     inputs.highpriority = args.highpriority
-    inputs.swa_support = args.useswa
-    inputs.swa_padding = args.swapadding if args.useswa else 0
+    inputs.prevent_swa = args.noswa
+    inputs.swa_padding = 0 if args.noswa else args.swapadding
     scint = int(args.smartcache)
     inputs.smartcache = False if scint<=0 else True
     sclimit = (savestate_limit_default if scint<=1 else scint)
@@ -7585,7 +7586,7 @@ def show_gui():
 
     contextshift_var = ctk.IntVar(value=1)
     fastforward_var = ctk.IntVar(value=1)
-    swa_var = ctk.IntVar(value=0)
+    swa_var = ctk.IntVar(value=1)
     swa_padding_var = ctk.StringVar(value=str(swa_padding_default))
     smartcache_var = ctk.IntVar(value=0)
     smartcacheslots_var = ctk.StringVar(value=str(savestate_limit_default))
@@ -8077,7 +8078,6 @@ def show_gui():
 
     def toggleswa(a,b,c):
         if swa_var.get()==1:
-            contextshift_var.set(0)
             swa_padding_entry.grid()
             swa_padding_label.grid()
         else:
@@ -8099,7 +8099,6 @@ def show_gui():
             smartcontextbox.grid()
         else:
             fastforward_var.set(1)
-            swa_var.set(0)
             smartcontextbox.grid_remove()
         qkvslider.grid()
         qkvlabel.grid()
@@ -8313,7 +8312,7 @@ def show_gui():
     smartcontextbox = makecheckbox(context_tab, "Use SmartContext", smartcontext_var, 3, padx=330,tooltiptxt="Uses SmartContext. Now considered outdated and not recommended.\nCheck the wiki for more info.")
     makecheckbox(context_tab, "Use ContextShift", contextshift_var, 3,padx=180,tooltiptxt="Uses Context Shifting to reduce reprocessing.\nRecommended. Check the wiki for more info.", command=togglectxshift)
     makecheckbox(context_tab, "Use FastForwarding", fastforward_var, 3,tooltiptxt="Use fast forwarding to recycle previous context (always reprocess if disabled).\nRecommended.", command=togglefastforward)
-    makecheckbox(context_tab, "Use SWA", swa_var, 4,tooltiptxt="Allows Sliding Window Attention (SWA) KV Cache, which saves memory but cannot be used with context shifting.", command=toggleswa)
+    makecheckbox(context_tab, "Allow SWA", swa_var, 4,tooltiptxt="SWA will be enabled automatically on models that support it. SWA saves memory but cannot be used with context shifting.", command=toggleswa)
     swa_padding_entry,swa_padding_label = makelabelentry(context_tab,"SWA Padding Tokens:", swa_padding_var, 4, 50, padx=300,singleline=True,tooltip="If the SWA is too small, you can expand it with padding, allowing for greater distance context rewinds.",labelpadx=160)
     makecheckbox(context_tab, "Use SmartCache", smartcache_var, 5,tooltiptxt="Enables intelligent context switching by saving KV cache snapshots to RAM. Requires fast forwarding.", command=togglesmartcache)
     makelabelentry(context_tab, "CacheSlots:", smartcacheslots_var, row=5, padx=(300), singleline=True, tooltip="Number of slots for smartcache",labelpadx=(220))
@@ -8714,7 +8713,7 @@ def show_gui():
         args.noflashattention = flashattention_var.get()==0
         args.noshift = contextshift_var.get()==0
         args.nofastforward = fastforward_var.get()==0
-        args.useswa = swa_var.get()==1
+        args.noswa = swa_var.get()==0
         args.swapadding = int(swa_padding_var.get()) if swa_padding_var.get()!="" else swa_padding_default
         args.smartcache = (0 if smartcache_var.get()!=1 else int(smartcacheslots_var.get()))
         args.remotetunnel = remotetunnel_var.get()==1
@@ -8951,7 +8950,7 @@ def show_gui():
         flashattention_var.set(0 if "noflashattention" in mydict and mydict["noflashattention"] else 1)
         contextshift_var.set(0 if "noshift" in mydict and mydict["noshift"] else 1)
         fastforward_var.set(0 if "nofastforward" in mydict and mydict["nofastforward"] else 1)
-        swa_var.set(1 if "useswa" in mydict and mydict["useswa"] else 0)
+        swa_var.set(0 if "noswa" in mydict and mydict["noswa"] else 1)
         swa_padding_var.set(mydict["swapadding"] if ("swapadding" in mydict) else swa_padding_default)
         smartcache_var.set(1 if "smartcache" in mydict and mydict["smartcache"] else 0)
         smartcacheslots_var.set(mydict["smartcache"] if ("smartcache" in mydict and mydict["smartcache"] and int(mydict["smartcache"])>1) else savestate_limit_default)
@@ -9650,8 +9649,6 @@ def convert_invalid_args(args):
         dict["noavx2"] = True
     if "skiplauncher" in dict and dict["skiplauncher"]:
         dict["showgui"] = False
-    if "useswa" in dict and dict["useswa"]:
-        dict["noshift"] = True
     if ("model_param" not in dict or not dict["model_param"]) and ("model" in dict):
         model_value = dict["model"] #may be null, empty/non-empty string, empty/non empty array
         if isinstance(model_value, str) and model_value:  # Non-empty string
@@ -9676,6 +9673,8 @@ def convert_invalid_args(args):
         dict["gendefaults"] = dict["sdgendefaults"]
     if "flashattention" in dict and "noflashattention" not in dict:
         dict["noflashattention"] = not dict["flashattention"]
+    if "useswa" in dict and "noswa" not in dict:
+        dict["noswa"] = not dict["useswa"]
     if "sdlora" in dict:
         dict["sdlora"] = sanitize_lora_list(dict["sdlora"])
     if "sdloramult" in dict:
@@ -11601,7 +11600,7 @@ if __name__ == '__main__':
     advparser.add_argument("--loramult", metavar=('[amount]'), help="Multiplier for the Text LORA model to be applied.", type=float, default=1.0)
     advparser.add_argument("--noshift","--no-context-shift", help="If set, do not attempt to Trim and Shift the GGUF context.", action='store_true')
     advparser.add_argument("--nofastforward", help="If set, do not attempt to fast forward GGUF context (always reprocess). Will also enable noshift", action='store_true')
-    advparser.add_argument("--useswa", help="If set, allows Sliding Window Attention (SWA) KV Cache, which saves memory but cannot be used with context shifting.", action='store_true')
+    advparser.add_argument("--noswa","--swa-full", help="If set, uses full-size SWA KV Cache. Otherwise, SWA will be enabled automatically on models that support it. SWA saves memory but cannot be used with context shifting.", action='store_true')
     advparser.add_argument("--swapadding", help="How much extra to pad the SWA KV cache, this affects the rewind limit before reprocessing is forced.", type=int, default=swa_padding_default)
     advparser.add_argument("--smartcache", help="Enables intelligent context switching by saving KV cache snapshots to RAM. Requires fast forwarding.", metavar=('limit'), nargs='?', const=1, type=int, default=0)
     advparser.add_argument("--ropeconfig", help="If set, uses customized RoPE scaling from configured frequency scale and frequency base (e.g. --ropeconfig 0.25 10000). Otherwise, uses NTK-Aware scaling set automatically based on context size. For linear rope, simply set the freq-scale and ignore the freq-base",metavar=('[rope-freq-scale]', '[rope-freq-base]'), default=[0.0, 10000.0], type=float, nargs='+')
@@ -11751,6 +11750,7 @@ if __name__ == '__main__':
     deprecatedgroup.add_argument("--forceversion", help=argparse.SUPPRESS, action='store_true') #no longer used
     deprecatedgroup.add_argument("--sdgendefaults", help=argparse.SUPPRESS, action='store_true') # legacy option, see gendefaults
     deprecatedgroup.add_argument("--flashattention","--flash-attn","-fa", help=argparse.SUPPRESS, action='store_true') #flash attention now default on
+    deprecatedgroup.add_argument("--useswa", help=argparse.SUPPRESS, action='store_true')
 
     debuggroup = parser.add_argument_group('Debug Commands')
     debuggroup.add_argument("--testmemory", help=argparse.SUPPRESS, action='store_true')
