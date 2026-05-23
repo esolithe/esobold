@@ -85,6 +85,8 @@ struct load_model_inputs
     const bool quiet = false;
     const int debugmode = 0;
     const int continuous_batching_slots = 0;
+    const int rpc_mode = 0; //0=disabled, 1=connect, 2=host
+    const char * rpc_targets = nullptr;
 };
 struct generation_inputs
 {

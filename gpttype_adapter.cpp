@@ -51,6 +51,7 @@
 #include "tools/mtmd/llava.h"
 #include "tools/mtmd/mtmd-audio.h"
 #include "common/common.h"
+#include "ggml-rpc.h"
 
 #if defined(GGML_USE_HIP)
 // for rocblas_initialize()
@@ -2158,6 +2159,76 @@ static float CalcGradientAIRopeFreqBase(float original_rope_base, int n_ctx_trai
     }
 }
 
+bool host_rpc_server(std::string endpoint, std::string devices_str)
+{
+    llama_backend_init();
+    int num_backends = ggml_backend_reg_count();
+    printf("Number of Backends: %d\n",num_backends);
+    for (size_t i = 0; i < num_backends; i++) {
+        auto * reg = ggml_backend_reg_get(i);
+        printf("Backend %d: %s\n", i, ggml_backend_reg_name(reg));
+    }
+
+    ggml_backend_reg_t reg = ggml_backend_reg_by_name("RPC");
+    if (!reg) {
+        fprintf(stderr, "Error: Failed to find RPC backend\n");
+        return false;
+    }
+
+    auto start_server_fn = (decltype(ggml_backend_rpc_start_server)*) ggml_backend_reg_get_proc_address(reg, "ggml_backend_rpc_start_server");
+    if (!start_server_fn) {
+        fprintf(stderr, "Failed to obtain RPC backend start server function\n");
+        return false;
+    }
+
+    std::vector<ggml_backend_dev_t> devices;
+
+    if(devices_str!="") //check if devices is overridden
+    {
+        devices = kcpp_parse_device_list(devices_str);
+        // Remove all nullptr elements
+        devices.erase( std::remove(devices.begin(), devices.end(), nullptr), devices.end());
+    }
+
+    //try dGPU first
+    if (devices.empty()) {
+        for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
+            ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+            if (ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_GPU) {
+                devices.push_back(dev);
+            }
+        }
+    }
+
+    // if not, find other non-cpu devices
+    if (devices.empty()) {
+        for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
+            ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+            if (ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_CPU) {
+                devices.push_back(dev);
+            }
+        }
+    }
+
+    // If there are no accelerators, fallback to CPU device
+    if (devices.empty()) {
+        ggml_backend_dev_t dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+        if (dev) {
+            devices.push_back(dev);
+        }
+    }
+    printf("\nUsing %d Devices for this RPC server:",devices.size());
+    for(int i=0;i<devices.size();++i)
+    {
+        printf("\n%d: %s",i,ggml_backend_dev_name(devices[i]));
+    }
+
+    printf("\nNote: It's not advised to expose RPC server to the open internet.\n=====\nStarting RPC server on %s, clients may now connect\n=====\n",endpoint.c_str());
+
+    start_server_fn(endpoint.c_str(), "", 4, devices.size(), devices.data());
+    return true;
+}
+
 static void connect_rpc_servers(const std::string & servers) {
     auto rpc_servers = string_split<std::string>(servers, ',');
     if (rpc_servers.empty()) {
@@ -2492,7 +2563,17 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
             auto * reg = ggml_backend_reg_get(i);
             printf("Backend %d: %s\n", i, ggml_backend_reg_name(reg));
         }
-        // connect_rpc_servers("127.0.0.1:7777");
+
+        if(inputs.rpc_mode==2) //host mode, not supposed to happen
+        {
+            printf("\nShould not reach here, RPC host does not need to load models.\n");
+            return ModelLoadResult::FAIL;
+        }
+        else if(inputs.rpc_mode==1) //connect
+        {
+            std::string servers = inputs.rpc_targets;
+            connect_rpc_servers(servers);
+        }
 
         llama_model_params model_params = llama_model_default_params();
         llama_context_params llama_ctx_params = llama_context_default_params();
@@ -2676,7 +2757,6 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
         llama_ctx_params.swa_full = kcpp_data->swa_full;
         llama_ctx_params.type_k = (inputs.quant_k==4?GGML_TYPE_Q4_0:(inputs.quant_k==3?GGML_TYPE_Q5_1:(inputs.quant_k==2?GGML_TYPE_Q8_0:(inputs.quant_k==1?GGML_TYPE_BF16:GGML_TYPE_F16))));
         llama_ctx_params.type_v = (inputs.quant_v==4?GGML_TYPE_Q4_0:(inputs.quant_v==3?GGML_TYPE_Q5_1:(inputs.quant_v==2?GGML_TYPE_Q8_0:(inputs.quant_v==1?GGML_TYPE_BF16:GGML_TYPE_F16))));
-
 
         //apply overrides from autofit
         float tensor_split_temp[128] = {0}; //temp buffer for autofit
