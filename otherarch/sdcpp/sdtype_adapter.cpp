@@ -1410,7 +1410,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
         if (*params.negative_prompt)
             jsoninfo["negative_prompt"] = params.negative_prompt;
         jsoninfo["seed"] = params.seed;
-        jsoninfo["cfg_scale"] = params.sample_params.guidance.txt_cfg;
+        jsoninfo["cfg_scale"] = sd_params->cfg_scale;
         jsoninfo["width"] = params.width;
         jsoninfo["height"] = params.height;
         jsoninfo["steps"] = params.sample_params.sample_steps;
