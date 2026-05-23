@@ -113,7 +113,7 @@
 // PDL host-side support (cudaLaunchKernelEx) requires CUDART >= 11.8 and excludes HIP/MUSA.
 // __CUDA_ARCH__  is undefined in host passes; GPU arch check happens in device-side code.
 #if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && CUDART_VERSION >= 11080
-#    define GGML_CUDA_USE_PDL
+// #    define GGML_CUDA_USE_PDL //KCPP fix: do not use PDL as it breaks cu12.1 build too
 #endif  // !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && CUDART_VERSION >= 11080
 
 static __device__ __forceinline__ void ggml_cuda_pdl_sync() {
