@@ -8169,33 +8169,31 @@ def show_gui():
         if index == "Use CUDA" or index == "Use hipBLAS (ROCm)":
             mmq_box.grid(row=4, column=0, padx=340, pady=1,  stick="nw")
             quick_mmq_box.grid(row=4, column=1, padx=8, pady=1,  stick="nw")
-            tensor_split_label.grid(row=8, column=0, padx = 8, pady=1, stick="nw")
-            tensor_split_entry.grid(row=8, column=0, padx = 160, pady=1, stick="nw")
         else:
             mmq_box.grid_remove()
             quick_mmq_box.grid_remove()
-            tensor_split_label.grid_remove()
-            tensor_split_entry.grid_remove()
 
-        if index == "Use Vulkan" or index == "Use Vulkan (Old CPU)":
-            tensor_split_label.grid(row=8, column=0, padx = 8, pady=1, stick="nw")
-            tensor_split_entry.grid(row=8, column=0, padx = 160, pady=1, stick="nw")
-
-        if index == "Use Vulkan" or index == "Use Vulkan (Old CPU)" or index == "Use Vulkan (Older CPU)" or index == "Use CUDA" or index == "Use hipBLAS (ROCm)":
+        if index == "Use Vulkan" or index == "Use Vulkan (Old CPU)" or index == "Use Vulkan (Older CPU)" or index == "Use CUDA" or index == "Use hipBLAS (ROCm)" or rpcmode_var.get()=="connect":
             gpu_layers_label.grid(row=6, column=0, padx=8, pady=1, stick="nw")
             gpu_layers_entry.grid(row=6, column=0, padx=160, pady=1, stick="nw")
             quick_gpu_layers_label.grid(row=6, column=0, padx = 8, pady=1, stick="nw")
             quick_gpu_layers_entry.grid(row=6, column=1, padx=8, pady=1, stick="nw")
+            tensor_split_label.grid(row=8, column=0, padx = 8, pady=1, stick="nw")
+            tensor_split_entry.grid(row=8, column=0, padx = 160, pady=1, stick="nw")
         elif sys.platform=="darwin":
             gpu_layers_label.grid(row=6, column=0, padx=8, pady=1, stick="nw")
             gpu_layers_entry.grid(row=6, column=0, padx=160, pady=1, stick="nw")
             quick_gpu_layers_label.grid(row=6, column=0, padx = 8, pady=1, stick="nw")
             quick_gpu_layers_entry.grid(row=6, column=1, padx=8, pady=1, stick="nw")
+            tensor_split_label.grid_remove()
+            tensor_split_entry.grid_remove()
         else:
             gpu_layers_label.grid_remove()
             gpu_layers_entry.grid_remove()
             quick_gpu_layers_label.grid_remove()
             quick_gpu_layers_entry.grid_remove()
+            tensor_split_label.grid_remove()
+            tensor_split_entry.grid_remove()
 
         if autofit_var.get()==1:
             gpu_layers_label.grid_remove()
@@ -8512,6 +8510,7 @@ def show_gui():
             rpcdevicebox.grid_remove()
             rpcdevicelbl.grid_remove()
             rpcdesc.configure(text="RPC is disabled and will not be used")
+        changerunmode(1,1,1)
     makelabelcombobox(network_tab, "RPC Mode:", rpcmode_var, row=40, padx=(100), width=90, command=togglerpcmode, tooltiptxt="RPC functionality to connect to remote RPC instances or host one, allowing GPUs to be shared over a network.", values=["disabled","connect","host"])
     rpcdesc = makelabel(network_tab, "RPC is disabled and will not be used", row=42)
     rpcepbox, rpceplbl = makelabelentry(network_tab, "RPC Endpoints: ", rpcendpoints_var, row=44, padx=(100), width=200, singleline=True,tooltip="Specify a comma separated list of remote RPC endpoints to connect to e.g. 127.0.0.1:5551,127.0.0.1:5552")
@@ -10977,9 +10976,9 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
         shouldavoidgpu = False
         if args.usecpu and sys.platform!="darwin":
             shouldavoidgpu = True
-            if args.gpulayers and args.gpulayers>0:
+            if args.gpulayers and args.gpulayers>0 and args.rpcmode!="connect":
                 print("WARNING: GPU layers is set, but a GPU backend was not selected! GPU will not be used!")
-            args.gpulayers = 0
+                args.gpulayers = 0
         elif args.gpulayers==-1 and sys.platform=="darwin" and args.model_param and os.path.exists(args.model_param):
             print("MacOS detected: Auto GPU layers set to maximum")
             args.gpulayers = 200
