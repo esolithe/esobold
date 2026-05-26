@@ -8731,8 +8731,6 @@ def show_gui():
     # refresh
     runopts_var.trace_add("write", changerunmode)
     changerunmode(1,1,1)
-    global runmode_untouched
-    runmode_untouched = True
     togglerope(1,1,1)
     toggleflashattn(1,1,1)
     togglectxshift(1,1,1)
@@ -8743,6 +8741,8 @@ def show_gui():
     toggleadmin(1,1,1)
     updatejinjathinktoggle(1,1,1)
     togglerpcmode(1,1,1)
+    global runmode_untouched
+    runmode_untouched = True
 
     # launch
     def guilaunch():

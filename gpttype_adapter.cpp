@@ -5431,7 +5431,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                     }
                 }
             }
-            if(triggerff && kcpp_data->use_contextshift && (file_format == FileFormat::GGUF_GENERIC))
+            if(triggerff && kcpp_data->use_contextshift && (file_format == FileFormat::GGUF_GENERIC) && !media_data_changed)
             {
                 DoContextShifting(llama_ctx_v4, draft_ctx, current_context_tokens, embd_inp, inputs.max_length, nctx, false);
                 triggersc = false;
