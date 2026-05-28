@@ -12339,7 +12339,6 @@ def show_gui():
     def togglejinja(a,b,c):
         if jinja_var.get()==1:
             jinjatoolsbox.grid()
-            jinja_stream_toolcall_box.grid()
             jinjakwargsbox.grid()
             jinjakwargsboxlbl.grid()
             jinjathinkbox.grid()
@@ -12354,6 +12353,12 @@ def show_gui():
             jinjathinkbox.grid_remove()
             jinjathinklbl.grid_remove()
         changed_gpulayers_estimate()
+    def togglejinjatools(a,b,c):
+        if jinja_tools_var.get()==1:
+            jinja_stream_toolcall_box.grid()
+        else:
+            jinja_stream_toolcall_var.set(0)
+            jinja_stream_toolcall_box.grid_remove()
     def togglejinjathink(a,b,c):
         curr = parse_json_object(jinja_kwargs_var.get(),"tempjinja")
         curr = (curr if curr else {})
@@ -12378,11 +12383,11 @@ def show_gui():
             elif curr["enable_thinking"] is False:
                 jinja_think_var.set("false")
     makecheckbox(context_tab, "Use Jinja", jinja_var, row=45, command=togglejinja, tooltiptxt="Enables using jinja chat template formatting for chat completions endpoint. Other endpoints are unaffected.")
-    jinjatoolsbox = makecheckbox(context_tab, "Jinja for Tools", jinja_tools_var, row=45 ,padx=(140), tooltiptxt="Allows jinja even with tool calls. If unchecked, jinja will be disabled when tools are used.")
+    jinjatoolsbox = makecheckbox(context_tab, "Jinja for Tools", jinja_tools_var, row=45 ,padx=(140), command=togglejinjatools, tooltiptxt="Allows jinja even with tool calls. If unchecked, jinja will be disabled when tools are used.")
     jinja_think_choices = ['default', 'true', 'false']
     jinjathinkbox, jinjathinklbl = makelabelcombobox(context_tab, "Jinja Thinking:", jinja_think_var, 45, command=togglejinjathink,labelpadx=(280), padx=370, width=100, tooltiptxt="Tries to enable or disable thinking in Jinja mode. This is a shortcut to setting Jinja Kwargs directly.", values=jinja_think_choices)
     jinjakwargsbox,jinjakwargsboxlbl = makelabelentry(context_tab, "Jinja Kwargs:", jinja_kwargs_var, row=47, width=200, padx=(100), singleline=True, tooltip='Set additiona fields for Jinja JSON template parser, must be a valid json object.\nSpecified as JSON fields: {"KEY1":"VALUE1", "KEY2":"VALUE2"...}')
-    jinja_stream_toolcall_box = makecheckbox(context_tab, "Stream ToolCalls", jinja_stream_toolcall_var, row=49, padx=(295), tooltiptxt="When jinja tool calls are active, stream the tool call content as tokens are generated rather than buffering silently until generation is complete.")
+    jinja_stream_toolcall_box = makecheckbox(context_tab, "Stream ToolCalls", jinja_stream_toolcall_var, row=49, tooltiptxt="When jinja tool calls are active, stream the tool call content as tokens are generated rather than buffering silently until generation is complete.")
     jinja_var.trace_add("write", togglejinja)
     jinja_kwargs_var.trace_add("write", updatejinjathinktoggle)
     makelabelentry(context_tab, "MoE Experts:", moeexperts_var, row=55, padx=(86), singleline=True, tooltip="Override number of MoE experts.")
