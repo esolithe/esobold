@@ -100,6 +100,7 @@ struct SDParams {
     std::string t5xxl_path;
     std::string diffusion_model_path;
     std::string vae_path;
+    std::string audio_vae_path;
     std::string taesd_path;
     std::string stacked_id_embeddings_path;
     sd_type_t wtype = SD_TYPE_COUNT;
@@ -340,6 +341,7 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
         lora_map.add_lora(inputs.lora_filenames[i], inputs.lora_multipliers[i]);
     }
     std::string vaefilename = inputs.vae_filename;
+    std::string audiovaefilename = inputs.audio_vae_filename;
     std::string t5xxl_filename = inputs.t5xxl_filename;
     std::string clip1_filename = inputs.clip1_filename;
     std::string clip2_filename = inputs.clip2_filename;
@@ -393,6 +395,10 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
     else if(vaefilename!="")
     {
         printf("With Custom VAE: %s\n",vaefilename.c_str());
+    }
+    if(audiovaefilename!="")
+    {
+        printf("With Audio VAE: %s\n",audiovaefilename.c_str());
     }
     if(t5xxl_filename!="")
     {
@@ -457,6 +463,7 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
     sd_params->diffusion_conv_direct = inputs.diffusion_conv_direct;
     sd_params->vae_conv_direct = inputs.vae_conv_direct;
     sd_params->vae_path = vaefilename;
+    sd_params->audio_vae_path = audiovaefilename;
     sd_params->taesd_path = taesdpath;
     sd_params->t5xxl_path = t5xxl_filename;
     sd_params->clip_l_path = clip1_filename;
@@ -490,6 +497,7 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
     params.t5xxl_path = sd_params->t5xxl_path.c_str();
     params.diffusion_model_path = sd_params->diffusion_model_path.c_str();
     params.vae_path = sd_params->vae_path.c_str();
+    params.audio_vae_path = sd_params->audio_vae_path.c_str();
     params.taesd_path = sd_params->taesd_path.c_str();
     params.photo_maker_path = sd_params->stacked_id_embeddings_path.c_str();
 
