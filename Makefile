@@ -55,8 +55,8 @@ ifdef KCPP_SANITIZE
 CFLAGS += -fsanitize=undefined -fsanitize-undefined-trap-on-error
 CXXFLAGS += -fsanitize=undefined -fsanitize-undefined-trap-on-error
 endif
-CFLAGS   += -I. -Iggml/include -Iggml/src -Iggml/src/ggml-cpu -Iinclude -Isrc -I./common -I./vendor -I./vendor/stb -I./include -I./otherarch -I./otherarch/tools -I./otherarch/sdcpp -I./otherarch/ttscpp/include -I./otherarch/ttscpp/src -I./otherarch/qwen3tts -I./otherarch/sdcpp/thirdparty -I./include/vulkan -O3 -fno-finite-math-only -std=c11 -fPIC -DLOG_DISABLE_LOGS -D_GNU_SOURCE -DGGML_USE_CPU -DGGML_USE_CPU_REPACK
-CXXFLAGS += -I. -Iggml/include -Iggml/src -Iggml/src/ggml-cpu -Iinclude -Isrc -I./common -I./vendor -I./vendor/stb -I./include -I./otherarch -I./otherarch/tools -I./otherarch/sdcpp -I./otherarch/ttscpp/include -I./otherarch/ttscpp/src -I./otherarch/qwen3tts -I./otherarch/sdcpp/thirdparty -I./include/vulkan -O3 -fno-finite-math-only -std=c++17 -fPIC -DLOG_DISABLE_LOGS -D_GNU_SOURCE -DGGML_USE_CPU -DGGML_USE_CPU_REPACK
+CFLAGS   += -I. -Iggml/include -Iggml/src -Iggml/src/ggml-cpu -Iinclude -Isrc -I./common -I./vendor -I./vendor/stb -I./include -I./otherarch -I./otherarch/tools -I./otherarch/sdcpp -I./otherarch/ttscpp/include -I./otherarch/ttscpp/src -I./otherarch/qwen3tts -I./otherarch/sdcpp/thirdparty -I./include/vulkan -O3 -fno-finite-math-only -std=c11 -fPIC -DLOG_DISABLE_LOGS -D_GNU_SOURCE -DGGML_USE_CPU -DGGML_USE_CPU_REPACK -DGGML_USE_RPC
+CXXFLAGS += -I. -Iggml/include -Iggml/src -Iggml/src/ggml-cpu -Iinclude -Isrc -I./common -I./vendor -I./vendor/stb -I./include -I./otherarch -I./otherarch/tools -I./otherarch/sdcpp -I./otherarch/ttscpp/include -I./otherarch/ttscpp/src -I./otherarch/qwen3tts -I./otherarch/sdcpp/thirdparty -I./include/vulkan -O3 -fno-finite-math-only -std=c++17 -fPIC -DLOG_DISABLE_LOGS -D_GNU_SOURCE -DGGML_USE_CPU -DGGML_USE_CPU_REPACK -DGGML_USE_RPC
 
 ifndef KCPP_DEBUG
 CFLAGS += -DNDEBUG -s
@@ -110,16 +110,20 @@ endif
 CUBLASLD_FLAGS =
 CUBLAS_OBJS =
 
-OBJS_FULL += ggml-alloc.o ggml-cpu-traits.o ggml-quants.o ggml-cpu-quants.o kcpp-quantmapper.o kcpp-repackmapper.o unicode.o unicode-common.o unicode-data.o ggml-threading.o ggml-cpu-cpp.o gguf.o sgemm.o common.o speculative.o llama-impl.o sampling.o budget.o kcpputils.o kcppllmutils.o mtmdaudio.o
-OBJS_SIMPLE += ggml-alloc.o ggml-cpu-traits.o ggml-quants_noavx2.o ggml-cpu-quants.o kcpp-quantmapper_noavx2.o kcpp-repackmapper_noavx2.o unicode.o unicode-common.o unicode-data.o ggml-threading.o ggml-cpu-cpp.o gguf.o sgemm_noavx2.o common.o speculative.o llama-impl.o sampling.o budget.o kcpputils.o kcppllmutils.o mtmdaudio.o
-OBJS_SIMPLER += ggml-alloc.o ggml-cpu-traits.o ggml-quants_noavx1.o ggml-cpu-quants.o kcpp-quantmapper_noavx1.o kcpp-repackmapper_noavx1.o unicode.o unicode-common.o unicode-data.o ggml-threading.o ggml-cpu-cpp.o gguf.o sgemm_noavx1.o common.o speculative.o llama-impl.o sampling.o budget.o kcpputils.o kcppllmutils.o mtmdaudio.o
-OBJS_FAILSAFE += ggml-alloc.o ggml-cpu-traits.o ggml-quants_failsafe.o ggml-cpu-quants.o kcpp-quantmapper_failsafe.o kcpp-repackmapper_failsafe.o unicode.o unicode-common.o unicode-data.o ggml-threading.o ggml-cpu-cpp.o gguf.o sgemm_failsafe.o common.o speculative.o llama-impl.o sampling.o budget.o kcpputils.o kcppllmutils.o mtmdaudio.o
+OBJS_FULL += ggml-alloc.o ggml-cpu-traits.o ggml-quants.o ggml-cpu-quants.o kcpp-quantmapper.o kcpp-repackmapper.o unicode.o unicode-common.o unicode-data.o ggml-threading.o ggml-cpu-cpp.o gguf.o sgemm.o common.o speculative.o llama-impl.o sampling.o budget.o kcpputils.o kcppllmutils.o mtmdaudio.o ggml-rpc.o transport.o
+OBJS_SIMPLE += ggml-alloc.o ggml-cpu-traits.o ggml-quants_noavx2.o ggml-cpu-quants.o kcpp-quantmapper_noavx2.o kcpp-repackmapper_noavx2.o unicode.o unicode-common.o unicode-data.o ggml-threading.o ggml-cpu-cpp.o gguf.o sgemm_noavx2.o common.o speculative.o llama-impl.o sampling.o budget.o kcpputils.o kcppllmutils.o mtmdaudio.o ggml-rpc.o transport.o
+OBJS_SIMPLER += ggml-alloc.o ggml-cpu-traits.o ggml-quants_noavx1.o ggml-cpu-quants.o kcpp-quantmapper_noavx1.o kcpp-repackmapper_noavx1.o unicode.o unicode-common.o unicode-data.o ggml-threading.o ggml-cpu-cpp.o gguf.o sgemm_noavx1.o common.o speculative.o llama-impl.o sampling.o budget.o kcpputils.o kcppllmutils.o mtmdaudio.o ggml-rpc.o transport.o
+OBJS_FAILSAFE += ggml-alloc.o ggml-cpu-traits.o ggml-quants_failsafe.o ggml-cpu-quants.o kcpp-quantmapper_failsafe.o kcpp-repackmapper_failsafe.o unicode.o unicode-common.o unicode-data.o ggml-threading.o ggml-cpu-cpp.o gguf.o sgemm_failsafe.o common.o speculative.o llama-impl.o sampling.o budget.o kcpputils.o kcppllmutils.o mtmdaudio.o ggml-rpc.o transport.o
 
 # OS specific
 ifeq ($(UNAME_S),Linux)
 CFLAGS   += -pthread
 CXXFLAGS += -pthread
 LDFLAGS += -ldl
+endif
+
+ifeq ($(OS),Windows_NT)
+LDFLAGS += -lws2_32
 endif
 
 ifeq ($(UNAME_S),Darwin)
@@ -627,6 +631,12 @@ llavaclip_cublas.o: tools/mtmd/clip.cpp tools/mtmd/clip.h
 llavaclip_vulkan.o: tools/mtmd/clip.cpp tools/mtmd/clip.h
 	$(CXX) $(CXXFLAGS) $(VULKAN_FLAGS) -c $< -o $@
 
+#rpc
+ggml-rpc.o: ggml/src/ggml-rpc/ggml-rpc.cpp ggml/include/ggml-rpc.h ggml/src/ggml-rpc/transport.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+transport.o: ggml/src/ggml-rpc/transport.cpp ggml/src/ggml-rpc/transport.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
 #this is only used for accelerate
 ggml-blas.o: ggml/src/ggml-blas/ggml-blas.cpp ggml/include/ggml-blas.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
@@ -685,9 +695,10 @@ llama-impl.o: src/llama-impl.cpp src/llama-impl.h
 budget.o: common/reasoning-budget.cpp common/reasoning-budget.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-SDCPP_COMMON_BASENAMES := anima.hpp auto_encoder_kl.hpp avi_writer.h cache_dit.hpp clip.hpp common_block.hpp  common_dit.hpp  condition_cache_utils.hpp conditioner.hpp control.hpp convert.cpp denoiser.hpp diffusion_model.hpp easycache.hpp ernie_image.hpp esrgan.hpp flux.hpp ggml_extend_backend.hpp ggml_extend.hpp image_metadata.cpp image_metadata.h kcpp_sd_extensions.h latent-preview.h llm.hpp lora.hpp ltxv.hpp mmdit.hpp model.cpp model.h model_io/binary_io.h model_io/gguf_io.cpp model_io/gguf_io.h model_io/gguf_reader_ext.h model_io/pickle_io.cpp model_io/pickle_io.h model_io/safetensors_io.cpp model_io/safetensors_io.h model_io/tensor_storage.h model_io/torch_legacy_io.cpp model_io/torch_legacy_io.h model_io/torch_zip_io.cpp model_io/torch_zip_io.h msf_gif.h name_conversion.cpp name_conversion.h ordered_map.hpp pmid.hpp preprocessing.hpp qwen_image.hpp rng.hpp rng_mt19937.hpp rng_philox.hpp rope.hpp sample-cache.cpp sample-cache.h spectrum.hpp stable-diffusion.cpp stable-diffusion.h t5.hpp tae.hpp tensor_ggml.hpp tensor.hpp thirdparty/darts.h thirdparty/miniz.h thirdparty/stb_image_resize.h thirdparty/stb_image_write.h thirdparty/zip.c thirdparty/zip.h tokenizers/bpe_tokenizer.cpp tokenizers/bpe_tokenizer.h tokenizers/clip_tokenizer.cpp tokenizers/clip_tokenizer.h tokenizers/mistral_tokenizer.cpp tokenizers/mistral_tokenizer.h tokenizers/qwen2_tokenizer.cpp tokenizers/qwen2_tokenizer.h tokenizers/t5_unigram_tokenizer.cpp tokenizers/t5_unigram_tokenizer.h tokenizers/tokenizer.cpp tokenizers/tokenizer.h tokenizers/tokenize_util.cpp tokenizers/tokenize_util.h  tokenizers/vocab/vocab.h ucache.hpp unet.hpp upscaler.cpp upscaler.h util.cpp util.h vae.hpp version.cpp wan.hpp z_image.hpp ggml_graph_cut.cpp ggml_graph_cut.h
+SDCPP_COMMON_BASENAMES := anima.hpp auto_encoder_kl.hpp avi_writer.h cache_dit.hpp clip.hpp common_block.hpp common_dit.hpp condition_cache_utils.hpp conditioner.hpp control.hpp convert.cpp denoiser.hpp diffusion_model.hpp easycache.hpp ernie_image.hpp esrgan.hpp flux.hpp ggml_extend.hpp ggml_extend_backend.cpp ggml_extend_backend.h ggml_graph_cut.cpp ggml_graph_cut.h gits_noise.inl guidance.cpp guidance.h hidream_o1.hpp image_metadata.cpp image_metadata.h kcpp_sd_extensions.h latent-preview.h llm.hpp lora.hpp ltx_audio_vae.h ltx_latent_upscaler.hpp ltx_vae.hpp ltxv.hpp mmdit.hpp model.cpp model.h model_io/binary_io.h model_io/gguf_io.cpp model_io/gguf_io.h model_io/gguf_reader_ext.h model_io/pickle_io.cpp model_io/pickle_io.h model_io/safetensors_io.cpp model_io/safetensors_io.h model_io/tensor_storage.h model_io/torch_legacy_io.cpp model_io/torch_legacy_io.h model_io/torch_zip_io.cpp model_io/torch_zip_io.h msf_gif.h name_conversion.cpp name_conversion.h ordered_map.hpp pmid.hpp preprocessing.hpp qwen_image.hpp rng.hpp rng_mt19937.hpp rng_philox.hpp rope.hpp sample-cache.cpp sample-cache.h spectrum.hpp stable-diffusion.cpp stable-diffusion.h t5.hpp tae.hpp tensor.hpp tensor_ggml.hpp thirdparty/LICENSE.darts_clone.txt thirdparty/darts.h thirdparty/miniz.h thirdparty/stb_image_resize.h thirdparty/stb_image_write.h thirdparty/zip.c thirdparty/zip.h tokenizers/bpe_tokenizer.cpp tokenizers/bpe_tokenizer.h tokenizers/clip_tokenizer.cpp tokenizers/clip_tokenizer.h tokenizers/gemma_tokenizer.cpp tokenizers/gemma_tokenizer.h tokenizers/gpt_oss_tokenizer.cpp tokenizers/gpt_oss_tokenizer.h tokenizers/mistral_tokenizer.cpp tokenizers/mistral_tokenizer.h tokenizers/qwen2_tokenizer.cpp tokenizers/qwen2_tokenizer.h tokenizers/t5_unigram_tokenizer.cpp tokenizers/t5_unigram_tokenizer.h tokenizers/tokenize_util.cpp tokenizers/tokenize_util.h tokenizers/tokenizer.cpp tokenizers/tokenizer.h tokenizers/vocab/vocab.h ucache.hpp unet.hpp upscaler.cpp upscaler.h util.cpp util.h vae.hpp wan.hpp z_image.hpp
 
-SDCPP_MAIN_BASENAMES := common/common.cpp common/common.h common/log.cpp common/log.h common/media_io.cpp common/media_io.cpp common/media_io.h common/resource_owners.hpp convert.cpp image_metadata.cpp main.cpp version.cpp tokenizers/vocab/clip_t5.hpp tokenizers/vocab/mistral.hpp tokenizers/vocab/qwen.hpp tokenizers/vocab/umt5.hpp tokenizers/vocab/vocab.cpp
+SDCPP_MAIN_BASENAMES := common/common.cpp common/common.h common/log.cpp common/log.h common/media_io.cpp common/media_io.cpp common/media_io.h common/resource_owners.hpp convert.cpp image_metadata.cpp main.cpp tokenizers/vocab/clip_merges.hpp tokenizers/vocab/gemma_merges.hpp tokenizers/vocab/gemma_vocab.hpp tokenizers/vocab/gpt_oss_merges.hpp tokenizers/vocab/gpt_oss_vocab.hpp tokenizers/vocab/mistral_merges.hpp tokenizers/vocab/mistral_vocab.hpp tokenizers/vocab/qwen_merges.hpp tokenizers/vocab/t5.hpp tokenizers/vocab/umt5.hpp tokenizers/vocab/vocab.cpp version.cpp
+
 
 SOURCES_SDCOMMON := $(foreach f,$(SDCPP_COMMON_BASENAMES),otherarch/sdcpp/$(f))
 HEADERS_SDCOMMON := $(filter %.h,$(SOURCES_SDCOMMON)) $(filter %.hpp, $(SOURCES_SDCOMMON))
@@ -744,7 +755,7 @@ gpttype_adapter_vulkan_noavx2.o: $(GPTTYPE_ADAPTER)
 	$(CXX) $(CXXFLAGS) $(FAILSAFE_FLAGS) $(VULKAN_FLAGS) -c $< -o $@
 
 clean:
-	rm -vf *.o main ttsmain sdmain whispermain quantize_gguf quantize_clip quantize_gpt2 quantize_gptj quantize_neox quantize_mpt vulkan-shaders-gen vulkan-shaders-gen-noext gguf-split mtmd-cli mainvk fitparams embedding embeddingvk qwen3tts acestep-a acestep-b acestep-b.exe acestep-a.exe qwen3tts.exe embeddingvk.exe embedding.exe fitparams.exe mainvk.exe mtmd-cli.exe gguf-split.exe vulkan-shaders-gen.exe vulkan-shaders-gen-noext.exe main.exe ttsmain.exe sdmain.exe whispermain.exe quantize_clip.exe quantize_gguf.exe quantize_gptj.exe quantize_gpt2.exe quantize_neox.exe quantize_mpt.exe koboldcpp_default.dll koboldcpp_failsafe.dll koboldcpp_noavx2.dll koboldcpp_vulkan_failsafe.dll koboldcpp_cublas.dll koboldcpp_hipblas.dll koboldcpp_vulkan.dll koboldcpp_vulkan_noavx2.dll koboldcpp_default.so koboldcpp_failsafe.so koboldcpp_noavx2.so koboldcpp_vulkan_failsafe.so koboldcpp_cublas.so koboldcpp_hipblas.so koboldcpp_vulkan.so koboldcpp_vulkan_noavx2.so ggml/src/ggml-vulkan-shaders.cpp ggml/src/ggml-vulkan-shaders.hpp ggml/src/ggml-vulkan-shaders-noext.cpp ggml/src/ggml-vulkan-shaders-noext.hpp
+	rm -vf *.o main ttsmain sdmain whispermain quantize_gguf quantize_clip quantize_gpt2 quantize_gptj quantize_neox quantize_mpt vulkan-shaders-gen vulkan-shaders-gen-noext gguf-split mtmd-cli mainvk fitparams embedding embeddingvk qwen3tts rpcserver rpcserver.exe qwen3tts.exe embeddingvk.exe embedding.exe fitparams.exe mainvk.exe mtmd-cli.exe gguf-split.exe vulkan-shaders-gen.exe vulkan-shaders-gen-noext.exe main.exe ttsmain.exe sdmain.exe whispermain.exe quantize_clip.exe quantize_gguf.exe quantize_gptj.exe quantize_gpt2.exe quantize_neox.exe quantize_mpt.exe koboldcpp_default.dll koboldcpp_failsafe.dll koboldcpp_noavx2.dll koboldcpp_vulkan_failsafe.dll koboldcpp_cublas.dll koboldcpp_hipblas.dll koboldcpp_vulkan.dll koboldcpp_vulkan_noavx2.dll koboldcpp_default.so koboldcpp_failsafe.so koboldcpp_noavx2.so koboldcpp_vulkan_failsafe.so koboldcpp_cublas.so koboldcpp_hipblas.so koboldcpp_vulkan.so koboldcpp_vulkan_noavx2.so ggml/src/ggml-vulkan-shaders.cpp ggml/src/ggml-vulkan-shaders.hpp ggml/src/ggml-vulkan-shaders-noext.cpp ggml/src/ggml-vulkan-shaders-noext.hpp
 	rm -vrf ggml/src/ggml-cuda/*.o
 	rm -vrf ggml/src/ggml-cuda/template-instances/*.o
 	rm -vrf llguidance
@@ -755,7 +766,7 @@ main: tools/completion/completion.cpp common/arg.cpp common/chat.cpp common/pres
 	$(CXX) $(CXXFLAGS) $(filter-out %.h,$^) -o $@ $(LDFLAGS)
 mainvk: tools/completion/completion.cpp common/arg.cpp common/chat.cpp common/preset.cpp common/download.cpp build-info.h ggml_v4_vulkan.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-unops.o llama.o console.o llavaclip_vulkan.o llava.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_vulkan.o ggml-vulkan.o ggml-vulkan-shaders.o ggml-repack.o $(OBJS_FULL) $(OBJS) lib/vulkan-1.lib
 	$(CXX) $(CXXFLAGS) -DGGML_USE_VULKAN -DSD_USE_VULKAN $(filter-out %.h,$^) -o $@ $(LDFLAGS)
-fitparams: tools/fit-params/fit-params.cpp common/arg.cpp common/chat.cpp common/preset.cpp common/download.cpp build-info.h ggml_v4_vulkan.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-unops.o llama.o console.o llavaclip_vulkan.o llava.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_vulkan.o ggml-vulkan.o ggml-vulkan-shaders.o ggml-repack.o $(OBJS_FULL) $(OBJS) lib/vulkan-1.lib
+fitparams: tools/fit-params/main.cpp tools/fit-params/fit-params.cpp common/arg.cpp common/chat.cpp common/preset.cpp common/download.cpp build-info.h ggml_v4_vulkan.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-unops.o llama.o console.o llavaclip_vulkan.o llava.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_vulkan.o ggml-vulkan.o ggml-vulkan-shaders.o ggml-repack.o $(OBJS_FULL) $(OBJS) lib/vulkan-1.lib
 	$(CXX) $(CXXFLAGS) -DGGML_USE_VULKAN -DSD_USE_VULKAN $(filter-out %.h,$^) -o $@ $(LDFLAGS)
 sdmain: $(OBJS_SDCOMMON) $(OBJS_SDMAIN) build-info.h ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-unops.o llama.o console.o llavaclip_default.o llava.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
 	$(CXX) $(CXXFLAGS) $(SDCPP_FLAGS) $(filter-out %.h,$^) -o $@ $(LDFLAGS)
@@ -935,7 +946,7 @@ koboldcpp_vulkan_failsafe:
 endif
 
 # tools
-quantize_gguf: tools/quantize/quantize.cpp ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-unops.o llama.o llavaclip_default.o llava.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
+quantize_gguf: tools/quantize/main.cpp tools/quantize/quantize.cpp ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-unops.o llama.o llavaclip_default.o llava.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
 quantize_gptj: otherarch/tools/gptj_quantize.cpp otherarch/tools/common-ggml.cpp ggml_v3.o ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-unops.o llama.o llavaclip_default.o llava.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)

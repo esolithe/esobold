@@ -1,8 +1,10 @@
 #include "util.h"
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <codecvt>
 #include <cstdarg>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <locale>
@@ -29,7 +31,7 @@
 
 #include "ggml-backend.h"
 #include "ggml.h"
-#include "ggml_extend_backend.hpp"
+#include "ggml_extend_backend.h"
 #include "stable-diffusion.h"
 
 bool ends_with(const std::string& str, const std::string& ending) {
@@ -420,6 +422,88 @@ std::vector<std::string> split_string(const std::string& str, char delimiter) {
     return result;
 }
 
+KeyValueArgs parse_key_value_args(const char* args, const char* context) {
+    KeyValueArgs pairs;
+
+    if (args == nullptr || args[0] == '\0') {
+        return pairs;
+    }
+
+    std::string raw(args);
+    size_t start = 0;
+    for (size_t pos = 0; pos <= raw.size(); ++pos) {
+        if (pos != raw.size() && raw[pos] != ',' && raw[pos] != ';') {
+            continue;
+        }
+
+        std::string token = trim(raw.substr(start, pos - start));
+        if (!token.empty()) {
+            size_t eq = token.find('=');
+            if (eq == std::string::npos) {
+                const char* log_context = context ? context : "key=value arg";
+                LOG_WARN("ignoring malformed %s '%s'", log_context, token.c_str());
+            } else {
+                std::string key   = trim(token.substr(0, eq));
+                std::string value = trim(token.substr(eq + 1));
+                pairs.emplace_back(std::move(key), std::move(value));
+            }
+        }
+
+        start = pos + 1;
+    }
+
+    return pairs;
+}
+
+KeyValueArgs parse_key_value_args(const std::string& args, const char* context) {
+    return parse_key_value_args(args.c_str(), context);
+}
+
+bool parse_strict_float(const std::string& text, float& value) {
+    try {
+        size_t consumed = 0;
+        float parsed    = std::stof(text, &consumed);
+        if (!trim(text.substr(consumed)).empty()) {
+            return false;
+        }
+        value = parsed;
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+bool parse_strict_int(const std::string& text, int& value) {
+    try {
+        size_t consumed = 0;
+        int parsed      = std::stoi(text, &consumed);
+        if (!trim(text.substr(consumed)).empty()) {
+            return false;
+        }
+        value = parsed;
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+bool parse_strict_bool(const std::string& text, bool& value) {
+    std::string lowered = trim(text);
+    std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+
+    if (lowered == "1" || lowered == "true" || lowered == "yes" || lowered == "on") {
+        value = true;
+        return true;
+    }
+    if (lowered == "0" || lowered == "false" || lowered == "no" || lowered == "off") {
+        value = false;
+        return true;
+    }
+    return false;
+}
+
 // { kcpp
 static int sdloglevel = 0; //-1 = hide all, 0 = normal, 1 = showall
 static bool sdquiet = false;
@@ -790,19 +874,6 @@ std::vector<std::pair<std::string, float>> parse_prompt_attention(const std::str
 
     return res;
 }
-
-// test if the backend is a specific one, e.g. "CUDA", "ROCm", "Vulkan" etc.
-bool sd_backend_is(ggml_backend_t backend, const std::string& name) {
-    if (!backend) {
-        return false;
-    }
-    ggml_backend_dev_t dev = ggml_backend_get_device(backend);
-    if (!dev)
-        return false;
-    std::string dev_name = ggml_backend_dev_name(dev);
-    return dev_name.find(name) != std::string::npos;
-}
-
 #include "kcpp_sd_extensions.h"
 
 void kcpp_sd::set_sd_quiet(bool quiet)
@@ -815,101 +886,138 @@ void kcpp_sd::set_sd_log_level(int log)
     sdloglevel = log;
 }
 
-static int kcpp_main_gpu = -1;
-void kcpp_sd::config_main_gpu(int value) {
-    ggml_backend_load_all_once();
-    if (value >= 0) {
-        size_t dev_count = ggml_backend_dev_count();
-        size_t dev_index = static_cast<size_t>(value);
-        if (dev_index >= dev_count) {
-            LOG_WARN("device %d not found, falling back to default", value);
-            value = -1;
-        }
-    } else if (value <= -2) {
-        value = -2;
+
+static size_t get_utf8_char_len(char c) {
+    unsigned char uc = static_cast<unsigned char>(c);
+    if ((uc & 0x80) == 0) {
+        return 1;
     }
-    kcpp_main_gpu = value;
-}
-static ggml_backend_t kcpp_get_main_gpu() {
-    ggml_backend_t backend = nullptr;
-    if (kcpp_main_gpu != -1) {
-        std::string dev_name;
-        if (kcpp_main_gpu <= -2) {
-            dev_name = "CPU";
-        } else {
-            auto dev = ggml_backend_dev_get(static_cast<size_t>(kcpp_main_gpu));
-            dev_name = ggml_backend_dev_name(dev);
-        }
-        backend = init_named_backend(dev_name);
-        if (backend) {
-            LOG_INFO("Setting %s as main device (#%d)", dev_name.c_str(), kcpp_main_gpu);
-        } else {
-            LOG_WARN("Couldn't initialize device #%d; falling back to the default device", kcpp_main_gpu);
-        }
+    if ((uc & 0xE0) == 0xC0) {
+        return 2;
     }
-    return backend;
+    if ((uc & 0xF0) == 0xE0) {
+        return 3;
+    }
+    if ((uc & 0xF8) == 0xF0) {
+        return 4;
+    }
+    return 1;
 }
 
-ggml_backend_t sd_get_default_backend() {
-    ggml_backend_load_all_once();
-    static std::once_flag once;
-    std::call_once(once, []() {
-        size_t dev_count = ggml_backend_dev_count();
-        if (dev_count == 0) {
-            LOG_ERROR("No devices found!");
-        } else {
-            LOG_DEBUG("Found %zu backend devices:", dev_count);
-            for (size_t i = 0; i < dev_count; ++i) {
-                auto dev = ggml_backend_dev_get(i);
-                LOG_DEBUG("#%zu: %s", i, ggml_backend_dev_name(dev));
-            }
+static bool is_ascii_alpha(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+}
+
+static bool starts_with_at(const std::string& text, size_t pos, const std::string& needle) {
+    return pos + needle.size() <= text.size() && text.compare(pos, needle.size(), needle) == 0;
+}
+
+static bool is_word_internal_apostrophe(const std::string& text, size_t pos) {
+    return pos > 0 && pos + 1 < text.size() &&
+           is_ascii_alpha(text[pos - 1]) && is_ascii_alpha(text[pos + 1]);
+}
+
+static std::vector<std::pair<std::string, bool>> split_quotation(const std::string& text) {
+    static const std::vector<std::pair<std::string, std::string>> quote_pairs = {
+        {"'", "'"},
+        {"\"", "\""},
+        {"\xE2\x80\x98", "\xE2\x80\x99"},
+        {"\xE2\x80\x9C", "\xE2\x80\x9D"},
+    };
+
+    std::vector<std::pair<std::string, bool>> result;
+    size_t segment_start = 0;
+    size_t i             = 0;
+
+    auto push_segment = [&](size_t begin, size_t end, bool matched) {
+        if (end > begin) {
+            result.emplace_back(text.substr(begin, end - begin), matched);
         }
-    });
-    ggml_backend_t backend   = nullptr;
-    const char* SD_VK_DEVICE = getenv("SD_VK_DEVICE");
-    if (SD_VK_DEVICE != nullptr) {
-        std::string sd_vk_device_str = SD_VK_DEVICE;
-        try {
-            unsigned long long device  = std::stoull(sd_vk_device_str);
-            std::string vk_device_name = "Vulkan" + std::to_string(device);
-            if (backend_name_exists(vk_device_name)) {
-                LOG_INFO("Selecting %s as main device by env var SD_VK_DEVICE", vk_device_name.c_str());
-                backend = init_named_backend(vk_device_name);
-                if (!backend) {
-                    LOG_WARN("Device %s requested by SD_VK_DEVICE failed to init. Falling back to the default device.", vk_device_name.c_str());
+    };
+
+    while (i < text.size()) {
+        bool matched_quote = false;
+        for (const auto& quote_pair : quote_pairs) {
+            const std::string& open_quote  = quote_pair.first;
+            const std::string& close_quote = quote_pair.second;
+            if (!starts_with_at(text, i, open_quote)) {
+                continue;
+            }
+            if (open_quote == "'" && is_word_internal_apostrophe(text, i)) {
+                continue;
+            }
+
+            size_t search_pos = i + open_quote.size();
+            size_t close_pos  = std::string::npos;
+            bool invalid      = false;
+            while (search_pos < text.size()) {
+                if (open_quote != close_quote && starts_with_at(text, search_pos, open_quote)) {
+                    invalid = true;
+                    break;
+                }
+                if (starts_with_at(text, search_pos, close_quote)) {
+                    if (close_quote == "'" && is_word_internal_apostrophe(text, search_pos)) {
+                        search_pos += close_quote.size();
+                        continue;
+                    }
+                    close_pos = search_pos;
+                    break;
+                }
+
+                size_t char_len = get_utf8_char_len(text[search_pos]);
+                if (search_pos + char_len > text.size()) {
+                    char_len = 1;
+                }
+                search_pos += char_len;
+            }
+            if (invalid || close_pos == std::string::npos) {
+                continue;
+            }
+
+            size_t quote_start = i;
+            push_segment(segment_start, quote_start, false);
+            i = close_pos + close_quote.size();
+            push_segment(quote_start, i, true);
+            segment_start = i;
+            matched_quote = true;
+            break;
+        }
+        if (!matched_quote) {
+            size_t char_len = get_utf8_char_len(text[i]);
+            if (i + char_len > text.size()) {
+                char_len = 1;
+            }
+            i += char_len;
+        }
+    }
+
+    push_segment(segment_start, text.size(), false);
+    return result;
+}
+
+std::vector<std::pair<std::string, float>> split_quotation_attention(
+    const std::vector<std::pair<std::string, float>>& parsed_attention) {
+    std::vector<std::pair<std::string, float>> result;
+    for (const auto& item : parsed_attention) {
+        const std::string& text = item.first;
+        float weight            = item.second;
+        for (const auto& part : split_quotation(text)) {
+            if (part.second) {
+                size_t i = 0;
+                while (i < part.first.size()) {
+                    size_t char_len = get_utf8_char_len(part.first[i]);
+                    if (i + char_len > part.first.size()) {
+                        char_len = 1;
+                    }
+                    result.emplace_back(part.first.substr(i, char_len), weight);
+                    i += char_len;
                 }
             } else {
-                LOG_WARN("Device %s requested by SD_VK_DEVICE was not found. Falling back to the default device.", vk_device_name.c_str());
+                result.emplace_back(part.first, weight);
             }
-        } catch (const std::invalid_argument&) {
-            LOG_WARN("SD_VK_DEVICE environment variable is not a valid integer (%s). Falling back to the default device.", SD_VK_DEVICE);
-        } catch (const std::out_of_range&) {
-            LOG_WARN("SD_VK_DEVICE environment variable value is out of range for `unsigned long long` type (%s). Falling back to the default device.", SD_VK_DEVICE);
         }
     }
-
-    if (backend == nullptr) { // kcpp
-        backend = kcpp_get_main_gpu();
-    } // kcpp
-
-    if (!backend) {
-        std::string dev_name = get_default_backend_name();
-        backend              = init_named_backend(dev_name);
-        if (!backend && !dev_name.empty()) {
-            LOG_WARN("device %s failed to init", dev_name.c_str());
-        }
-    }
-
-    if (!backend) {
-        LOG_WARN("loading CPU backend");
-        backend = ggml_backend_cpu_init();
-    }
-
-    if (ggml_backend_is_cpu(backend)) {
-        LOG_DEBUG("Using CPU backend");
-    }
-
-    return backend;
+    return result;
 }
 
 // namespace is needed to avoid conflicts with ggml_backend_extend.hpp

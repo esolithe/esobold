@@ -24,7 +24,7 @@
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
 #include "ggml.h"
-#include "ggml_extend_backend.hpp"
+#include "ggml_extend_backend.h"
 #include "zip.h"
 
 #include "name_conversion.h"
@@ -438,7 +438,7 @@ bool ModelLoader::init_from_diffusers_file(const std::string& file_path, const s
 }
 
 SDVersion ModelLoader::get_sd_version() {
-    TensorStorage token_embedding_weight, input_block_weight;
+    TensorStorage token_embedding_weight, input_block_weight, context_ebedding_weight;
 
     bool has_multiple_encoders = false;
     bool is_unet               = false;
@@ -456,7 +456,8 @@ SDVersion ModelLoader::get_sd_version() {
     bool has_attn_1024               = false;
 
     for (auto& [name, tensor_storage] : tensor_storage_map) {
-        if (tensor_storage.name.find("model.diffusion_model.double_blocks.") != std::string::npos) {
+        if (tensor_storage.name.find("model.diffusion_model.double_blocks.") != std::string::npos ||
+            tensor_storage.name.find("model.diffusion_model.single_transformer_blocks.") != std::string::npos) {
             is_flux = true;
         }
         if (tensor_storage.name.find("model.diffusion_model.nerf_final_layer_conv.") != std::string::npos) {
@@ -468,6 +469,10 @@ SDVersion ModelLoader::get_sd_version() {
         if (tensor_storage.name.find("model.x_embedder.proj1.weight") != std::string::npos &&
             tensor_storage_map.find("model.language_model.layers.0.self_attn.q_proj.weight") != tensor_storage_map.end()) {
             return VERSION_HIDREAM_O1;
+        }
+        if (tensor_storage.name.find("model.diffusion_model.transformer_blocks.0.attn.norm_added_q.weight") != std::string::npos &&
+            tensor_storage_map.find("model.diffusion_model.transformer_blocks.0.img_mlp.w1.weight") != tensor_storage_map.end()) {
+            return VERSION_LENS;
         }
         if (tensor_storage.name.find("model.diffusion_model.transformer_blocks.0.img_mod.1.weight") != std::string::npos) {
             return VERSION_QWEN_IMAGE;
@@ -489,6 +494,9 @@ SDVersion ModelLoader::get_sd_version() {
         }
         if (tensor_storage.name.find("model.diffusion_model.layers.0.adaLN_sa_ln.weight") != std::string::npos) {
             return VERSION_ERNIE_IMAGE;
+        }
+        if (tensor_storage.name.find("model.diffusion_model.adaln_single.emb.timestep_embedder.linear_1.bias") != std::string::npos) {
+            return VERSION_LTXAV;
         }
         if (tensor_storage.name.find("model.diffusion_model.blocks.0.cross_attn.norm_k.weight") != std::string::npos) {
             is_wan = true;
@@ -547,6 +555,9 @@ SDVersion ModelLoader::get_sd_version() {
             tensor_storage.name == "unet.conv_in.weight") {
             input_block_weight = tensor_storage;
         }
+        if (tensor_storage.name == "model.diffusion_model.txt_in.weight" || tensor_storage.name == "model.diffusion_model.context_embedder.weight") {
+            context_ebedding_weight = tensor_storage;
+        }
     }
     if (is_wan) {
         LOG_DEBUG("patch_embedding_channels %d", patch_embedding_channels);
@@ -577,16 +588,20 @@ SDVersion ModelLoader::get_sd_version() {
     }
 
     if (is_flux && !is_flux2) {
-        if (input_block_weight.ne[0] == 384) {
-            return VERSION_FLUX_FILL;
+        if (context_ebedding_weight.ne[0] == 3584) {
+            return VERSION_LONGCAT;
+        } else {
+            if (input_block_weight.ne[0] == 384) {
+                return VERSION_FLUX_FILL;
+            }
+            if (input_block_weight.ne[0] == 128) {
+                return VERSION_FLUX_CONTROLS;
+            }
+            if (input_block_weight.ne[0] == 196) {
+                return VERSION_FLEX_2;
+            }
+            return VERSION_FLUX;
         }
-        if (input_block_weight.ne[0] == 128) {
-            return VERSION_FLUX_CONTROLS;
-        }
-        if (input_block_weight.ne[0] == 196) {
-            return VERSION_FLEX_2;
-        }
-        return VERSION_FLUX;
     }
 
     if (is_flux2) {

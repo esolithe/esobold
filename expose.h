@@ -75,7 +75,7 @@ struct load_model_inputs
     const bool check_slowness = false;
     const char * jinja_template = nullptr;
     const bool highpriority = false;
-    const bool swa_support = false;
+    const bool prevent_swa = false;
     const int swa_padding = 0;
     const bool smartcache = false;
     const int smartcacheslots = 0;
@@ -85,6 +85,8 @@ struct load_model_inputs
     const bool quiet = false;
     const int debugmode = 0;
     const int continuous_batching_slots = 0;
+    const int rpc_mode = 0; //0=disabled, 1=connect, 2=host
+    const char * rpc_targets = nullptr;
 };
 struct generation_inputs
 {
@@ -183,14 +185,14 @@ struct sd_load_model_inputs
 {
     const char * model_filename = nullptr;
     const char * executable_path = nullptr;
-    const int kcpp_main_gpu = -1;
+    const int kcpp_main_device = -1;
     const int threads = 0;
     const int quant = 0;
     const bool flash_attention = false;
     const bool offload_cpu = false;
     const bool use_mmap = false;
-    const bool vae_cpu = false;
-    const bool clip_cpu = false;
+    const int kcpp_vae_device = -1;
+    const int kcpp_clip_device = -1;
     const bool diffusion_conv_direct = false;
     const bool vae_conv_direct = false;
     const bool taesd = false;
@@ -199,6 +201,7 @@ struct sd_load_model_inputs
     const char * clip1_filename = nullptr;
     const char * clip2_filename = nullptr;
     const char * vae_filename = nullptr;
+    const char * audio_vae_filename = nullptr;
     const int lora_len = 0;
     const char ** lora_filenames = nullptr;
     const float * lora_multipliers = nullptr;
@@ -207,6 +210,7 @@ struct sd_load_model_inputs
     const char * upscaler_filename = nullptr;
     const int img_hard_limit = 0;
     const int img_soft_limit = 0;
+    float max_vram = 0.f;
     const char * devices_override = nullptr;
     const bool quiet = false;
     const int debugmode = 0;

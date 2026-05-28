@@ -64,6 +64,7 @@ find_package(Threads REQUIRED)
 add_compile_definitions(LOG_DISABLE_LOGS)
 add_compile_definitions(GGML_USE_CPU)
 add_compile_definitions(GGML_USE_CPU_REPACK)
+add_compile_definitions(GGML_USE_RPC)
 add_compile_definitions(NOMINMAX)
 add_compile_definitions(_REGEX_MAX_STACK_COUNT=5000)
 
@@ -99,6 +100,8 @@ if (LLAMA_CUBLAS)
     find_package(CUDAToolkit)
     if (CUDAToolkit_FOUND)
         message(STATUS "cuBLAS found")
+
+        add_compile_options("$<$<COMPILE_LANGUAGE:CUDA>:-Xcudafe;--diag_suppress=177>")
 
         enable_language(CUDA)
 
@@ -279,6 +282,10 @@ if (WIN32)
     endif()
 endif()
 
+if(WIN32)
+    list(APPEND LLAMA_EXTRA_LIBS ws2_32)
+endif()
+
 if (LLAMA_LTO)
     include(CheckIPOSupported)
     check_ipo_supported(RESULT result OUTPUT output)
@@ -455,6 +462,10 @@ add_library(ggml
             ggml/src/ggml-backend-reg.cpp
             ggml/include/gguf.h
             ggml/src/gguf.cpp
+            ggml/src/ggml-rpc/ggml-rpc.cpp
+            ggml/src/ggml-rpc/transport.cpp
+            ggml/include/ggml-rpc.h
+            ggml/src/ggml-rpc/transport.h
             ${GGML_SOURCES_CUDA})
 target_include_directories(ggml PUBLIC . ./ggml/include ./ggml/src ./ggml/src/ggml-cpu ./include ./otherarch ./otherarch/tools ./vendor/stb ./vendor/nlohmann ./vendor)
 target_compile_features(ggml PUBLIC c_std_11) # don't bump
@@ -530,6 +541,8 @@ add_library(sdtype_adapter
             otherarch/sdcpp/util.cpp
             otherarch/sdcpp/name_conversion.cpp
             otherarch/sdcpp/upscaler.cpp
+            otherarch/sdcpp/guidance.cpp
+            otherarch/sdcpp/guidance.h
             otherarch/sdcpp/stable-diffusion.cpp
             otherarch/sdcpp/thirdparty/zip.c
             otherarch/sdcpp/model_io/gguf_io.cpp
@@ -542,8 +555,11 @@ add_library(sdtype_adapter
             otherarch/sdcpp/tokenizers/mistral_tokenizer.cpp
             otherarch/sdcpp/tokenizers/qwen2_tokenizer.cpp
             otherarch/sdcpp/tokenizers/t5_unigram_tokenizer.cpp
+            otherarch/sdcpp/tokenizers/gemma_tokenizer.cpp
+            otherarch/sdcpp/tokenizers/gpt_oss_tokenizer.cpp
             otherarch/sdcpp/tokenizers/tokenizer.cpp
-            otherarch/sdcpp/tokenizers/tokenize_util.cpp)
+            otherarch/sdcpp/tokenizers/tokenize_util.cpp
+            otherarch/sdcpp/ggml_extend_backend.cpp)
 target_include_directories(sdtype_adapter PUBLIC . ./ggml/include ./ggml/src ./ggml/src/ggml-cpu ./include ./otherarch ./otherarch/tools ./vendor/stb ./vendor/nlohmann ./vendor ./otherarch/sdcpp ./otherarch/sdcpp/thirdparty ./tools ./common)
 target_compile_features(sdtype_adapter PUBLIC cxx_std_17) # don't bump
 target_link_libraries(sdtype_adapter PRIVATE common2 ggml ${LLAMA_EXTRA_LIBS})

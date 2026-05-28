@@ -15,8 +15,10 @@ namespace kcpp_sd {
         bool is_sd1;
         bool is_sd2;
         bool is_sdxs;
+        bool is_sdxl;
         bool is_wan;
         bool is_zimage;
+        int vae_scale_factor;
         int spatial_multiple;
     };
 
@@ -31,8 +33,6 @@ namespace kcpp_sd {
     void set_sd_quiet(bool quiet);
 
     void set_sd_log_level(int log);
-
-    void config_main_gpu(int value);
 
 }
 

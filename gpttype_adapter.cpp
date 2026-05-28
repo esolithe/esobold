@@ -51,6 +51,7 @@
 #include "tools/mtmd/llava.h"
 #include "tools/mtmd/mtmd-audio.h"
 #include "common/common.h"
+#include "ggml-rpc.h"
 
 #if defined(GGML_USE_HIP)
 // for rocblas_initialize()
@@ -2158,6 +2159,99 @@ static float CalcGradientAIRopeFreqBase(float original_rope_base, int n_ctx_trai
     }
 }
 
+bool host_rpc_server(std::string endpoint, std::string devices_str)
+{
+    llama_backend_init();
+    int num_backends = ggml_backend_reg_count();
+    printf("Number of Backends: %d\n",num_backends);
+    for (size_t i = 0; i < num_backends; i++) {
+        auto * reg = ggml_backend_reg_get(i);
+        printf("Backend %d: %s\n", i, ggml_backend_reg_name(reg));
+    }
+
+    ggml_backend_reg_t reg = ggml_backend_reg_by_name("RPC");
+    if (!reg) {
+        fprintf(stderr, "Error: Failed to find RPC backend\n");
+        return false;
+    }
+
+    auto start_server_fn = (decltype(ggml_backend_rpc_start_server)*) ggml_backend_reg_get_proc_address(reg, "ggml_backend_rpc_start_server");
+    if (!start_server_fn) {
+        fprintf(stderr, "Failed to obtain RPC backend start server function\n");
+        return false;
+    }
+
+    std::vector<ggml_backend_dev_t> devices;
+
+    if(devices_str!="") //check if devices is overridden
+    {
+        devices = kcpp_parse_device_list(devices_str);
+        // Remove all nullptr elements
+        devices.erase( std::remove(devices.begin(), devices.end(), nullptr), devices.end());
+    }
+
+    //try dGPU first
+    if (devices.empty()) {
+        for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
+            ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+            if (ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_GPU) {
+                devices.push_back(dev);
+            }
+        }
+    }
+
+    // if not, find other non-cpu devices
+    if (devices.empty()) {
+        for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
+            ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+            if (ggml_backend_dev_type(dev) != GGML_BACKEND_DEVICE_TYPE_CPU) {
+                devices.push_back(dev);
+            }
+        }
+    }
+
+    // If there are no accelerators, fallback to CPU device
+    if (devices.empty()) {
+        ggml_backend_dev_t dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+        if (dev) {
+            devices.push_back(dev);
+        }
+    }
+    printf("\nUsing %d Devices for this RPC server:",devices.size());
+    for(int i=0;i<devices.size();++i)
+    {
+        printf("\n%d: %s",i,ggml_backend_dev_name(devices[i]));
+    }
+
+    printf("\nNote: It's not advised to expose RPC server to the open internet.\n=====\nStarting RPC server on %s, clients may now connect\n=====\n",endpoint.c_str());
+
+    start_server_fn(endpoint.c_str(), nullptr, 4, devices.size(), devices.data());
+    return true;
+}
+
+static void connect_rpc_servers(const std::string & servers) {
+    auto rpc_servers = string_split<std::string>(servers, ',');
+    if (rpc_servers.empty()) {
+        throw std::invalid_argument("no RPC servers specified");
+    }
+    ggml_backend_load_all();
+    ggml_backend_reg_t rpc_reg = ggml_backend_reg_by_name("RPC");
+    if (!rpc_reg) {
+        throw std::invalid_argument("failed to find RPC backend");
+    }
+    typedef ggml_backend_reg_t (*ggml_backend_rpc_add_server_t)(const char * endpoint);
+    ggml_backend_rpc_add_server_t ggml_backend_rpc_add_server_fn = (ggml_backend_rpc_add_server_t) ggml_backend_reg_get_proc_address(rpc_reg, "ggml_backend_rpc_add_server");
+    if (!ggml_backend_rpc_add_server_fn) {
+        throw std::invalid_argument("failed to find RPC add server function");
+    }
+    printf("\n");
+    for (const auto & server : rpc_servers) {
+        printf("Use RPC server: %s\n",server.c_str());
+        auto reg = ggml_backend_rpc_add_server_fn(server.c_str());
+        ggml_backend_register(reg);
+    }
+}
+
 void kcpp_init_audio_proj(clip_ctx * ctx_a)
 {
     projector_type proj = clip_get_projector_type(ctx_a);
@@ -2193,6 +2287,46 @@ void kcpp_init_audio_proj(clip_ctx * ctx_a)
     audio_preproc->initialize();
 }
 
+clip_context_params init_clip_ctx_params(bool mmproj_cpu, bool dryrun)
+{
+    #if defined(GGML_USE_METAL)
+    if(file_format_meta.model_architecture == llm_arch::LLM_ARCH_QWEN2VL || file_format_meta.model_architecture == llm_arch::LLM_ARCH_GEMMA3)
+    {
+        mmproj_cpu = true;
+        if(!dryrun)
+        {
+            set_clip_uses_gpu(false);
+            printf("Clip will use CPU for this model!\n");
+        }
+    }
+    #endif
+    clip_flash_attn_type clip_fa = (kcpp_data->flash_attn?CLIP_FLASH_ATTN_TYPE_ENABLED:CLIP_FLASH_ATTN_TYPE_DISABLED); //kcpp: disabled in 1.102.2 as some headsizes break on turing
+    #if defined(GGML_USE_CUDA)
+    clip_fa = CLIP_FLASH_ATTN_TYPE_DISABLED; //kcpp: disabled in 1.102.2 as some headsizes break on turing
+    #endif
+    if(mmproj_cpu)
+    {
+        if(!dryrun)
+        {
+            set_clip_uses_gpu(false);
+            printf("Clip forced to use CPU!\n");
+        }
+        clip_fa = (kcpp_data->flash_attn?CLIP_FLASH_ATTN_TYPE_ENABLED:CLIP_FLASH_ATTN_TYPE_DISABLED); //however if using CPU, fa is fine
+    }
+    clip_context_params ctx_clip_params {
+        /* use_gpu           */ true,
+        /* flash_attn_type   */ clip_fa,
+        /* image_min_tokens  */ kcpp_data->vision_min_tokens,
+        /* image_max_tokens  */ kcpp_data->vision_max_tokens,
+        /* warmup            */ false,
+        /* cb_eval           */ nullptr,
+        /* cb_eval_user_data */ nullptr,
+        /* no_alloc          */ dryrun?true:false,
+    };
+
+    return ctx_clip_params;
+}
+
 ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in_file_format, FileFormatExtraMeta in_file_format_meta)
 {
     is_quiet = inputs.quiet;
@@ -2225,20 +2359,9 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
     kcpp_data->use_contextshift = inputs.use_contextshift;
     kcpp_data->use_fastforward = inputs.use_fastforward;
     kcpp_data->smartcache = inputs.smartcache;
-    kcpp_data->swa_full = !inputs.swa_support;
     kcpp_extra_swa_padding = inputs.swa_padding;
-    if (!kcpp_data->swa_full) {
-        if (inputs.use_contextshift) {
-            kcpp_data->swa_full = true;  //cannot use SWA
-            printf("\nSWA Mode IS DISABLED!\nSWA Mode Cannot be used with Context Shifting!\n");
-        } else if (inputs.use_fastforward) {
-            printf("\nSWA Mode is ENABLED!\nNote that using SWA Mode cannot be used with Context Shifting, and can lead to degraded recall when combined with Fast Forwarding!\n");
-        } else {
-            printf("\nSWA Mode IS ENABLED!\nNote that using SWA Mode cannot be used with Context Shifting\n");
-            //since fastforward is disabled, we need no swa padding, because full reprocess always happens
-            kcpp_extra_swa_padding = 0;
-        }
-    }
+    kcpp_data->swa_full = inputs.prevent_swa;
+
     debugmode = inputs.debugmode;
     draft_ctx = nullptr;
     guidance_ctx = nullptr;
@@ -2434,6 +2557,23 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
     else if(file_format==FileFormat::GGUF_GENERIC)
     {
         llama_backend_init();
+        int num_backends = ggml_backend_reg_count();
+        printf("Number of Backends: %d\n",num_backends);
+        for (size_t i = 0; i < num_backends; i++) {
+            auto * reg = ggml_backend_reg_get(i);
+            printf("Backend %d: %s\n", i, ggml_backend_reg_name(reg));
+        }
+
+        if(inputs.rpc_mode==2) //host mode, not supposed to happen
+        {
+            printf("\nShould not reach here, RPC host does not need to load models.\n");
+            return ModelLoadResult::FAIL;
+        }
+        else if(inputs.rpc_mode==1) //connect
+        {
+            std::string servers = inputs.rpc_targets;
+            connect_rpc_servers(servers);
+        }
 
         llama_model_params model_params = llama_model_default_params();
         llama_context_params llama_ctx_params = llama_context_default_params();
@@ -2447,7 +2587,6 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
         model_params.use_direct_io = false; //no direct io for now until stable
         model_params.n_gpu_layers = inputs.gpulayers;
         kcpp_permit_any_repack = (model_params.use_mmap?false:true);
-
 
         //set device overrides if needed
         std::vector<ggml_backend_dev_t> devices_override;
@@ -2619,7 +2758,6 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
         llama_ctx_params.type_k = (inputs.quant_k==4?GGML_TYPE_Q4_0:(inputs.quant_k==3?GGML_TYPE_Q5_1:(inputs.quant_k==2?GGML_TYPE_Q8_0:(inputs.quant_k==1?GGML_TYPE_BF16:GGML_TYPE_F16))));
         llama_ctx_params.type_v = (inputs.quant_v==4?GGML_TYPE_Q4_0:(inputs.quant_v==3?GGML_TYPE_Q5_1:(inputs.quant_v==2?GGML_TYPE_Q8_0:(inputs.quant_v==1?GGML_TYPE_BF16:GGML_TYPE_F16))));
 
-
         //apply overrides from autofit
         float tensor_split_temp[128] = {0}; //temp buffer for autofit
         std::vector<size_t> fit_params_target = std::vector<size_t>(llama_max_devices(),1024*1024*1024);
@@ -2629,8 +2767,41 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
             rocblas_initialize();
             #endif // defined(GGML_USE_HIP)
 
+            size_t totalmmprojtax = 0;
+            if(mmproj_filename != "" && file_format==FileFormat::GGUF_GENERIC && !inputs.mmproj_cpu)
+            {
+                printf("\nEstimating MMProj GPU usage...");
+                auto saved_log_callback = g_logger_state.log_callback;
+                auto saved_log_user_data = g_logger_state.log_callback_user_data;
+                g_logger_state.log_callback = log_callback_off;
+                g_logger_state.log_callback_user_data = nullptr;
+                clip_context_params ctx_clip_params = init_clip_ctx_params(inputs.mmproj_cpu,true);
+                clip_init_result cres = clip_init(mmproj_filename.c_str(), ctx_clip_params);
+                g_logger_state.log_callback = saved_log_callback;
+                g_logger_state.log_callback_user_data = saved_log_user_data;
+                clip_ctx * test1 = cres.ctx_v;
+                clip_ctx * test2 = cres.ctx_a;
+
+                if(test1)
+                {
+                    for (auto & [dev, size] : clip_get_mem_usage(test1)) {
+                        totalmmprojtax += size;
+                    }
+                    clip_free(test1);
+                }
+                if(test2)
+                {
+                    for (auto & [dev, size] : clip_get_mem_usage(test2)) {
+                        totalmmprojtax += size;
+                    }
+                    clip_free(test2);
+                }
+                totalmmprojtax = totalmmprojtax / (1024*1024);
+                printf("MMProj Autofit Usage: %zu MB", totalmmprojtax);
+            }
+
             common_params temp_params;
-            size_t taxmb = inputs.autofit_tax_mb;
+            size_t taxmb = inputs.autofit_tax_mb + totalmmprojtax;
             printf("\nAttempting to use llama.cpp's automating fitting code. This will override all your layer configs, may or may not work!\n");
             //zero out any customizations made
             tenos.clear();
@@ -2669,6 +2840,28 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
         }
 
         llama_model * llamamodel = llama_model_load_from_file(kcpp_data->model_filename.c_str(), model_params);
+
+        //now that the model is loaded, immediately check if SWA is used
+        bool model_has_swa = (llama_model_n_swa(llamamodel)!=0);
+        if(!model_has_swa)
+        {
+             printf("\nThis model does not use SWA\n");
+        }
+        else if(kcpp_data->swa_full)
+        {
+            printf("\nThis model has SWA, but SWA Mode IS DISABLED! Full sized context will be used.\n");
+        }
+        else
+        {
+            if (kcpp_data->use_contextshift) {
+                kcpp_data->use_contextshift = false;  //cannot use shifting with SWA
+                printf("\nSWA Mode is ENABLED!\nNote that using SWA Mode cannot be used with Context Shifting!\nContext shifting is DISABLED!\n");
+            } else if (kcpp_data->use_fastforward) {
+                printf("\nSWA Mode is ENABLED!\nNote that using SWA Mode cannot be used with Context Shifting, and can lead to degraded recall when combined with Fast Forwarding!\n");
+            } else {
+                printf("\nSWA Mode IS ENABLED!\nNote that using SWA Mode cannot be used with Context Shifting\n");
+            }
+        }
 
         //prepare savestate slots
         savestate_limit = inputs.smartcacheslots;
@@ -2791,29 +2984,7 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
         if(mmproj_filename != "" && file_format==FileFormat::GGUF_GENERIC)
         {
             printf("\nAttempting to apply Multimodal Projector: %s\n", mmproj_filename.c_str());
-            #if defined(GGML_USE_METAL)
-            if(file_format_meta.model_architecture == llm_arch::LLM_ARCH_QWEN2VL || file_format_meta.model_architecture == llm_arch::LLM_ARCH_GEMMA3)
-            {
-                set_clip_uses_gpu(false);
-                printf("Clip will use CPU for this model!\n");
-            }
-            #endif
-            clip_flash_attn_type clip_fa = (kcpp_data->flash_attn?CLIP_FLASH_ATTN_TYPE_ENABLED:CLIP_FLASH_ATTN_TYPE_DISABLED); //kcpp: disabled in 1.102.2 as some headsizes break on turing
-            #if defined(GGML_USE_CUDA)
-            clip_fa = CLIP_FLASH_ATTN_TYPE_DISABLED; //kcpp: disabled in 1.102.2 as some headsizes break on turing
-            #endif
-            if(inputs.mmproj_cpu)
-            {
-                set_clip_uses_gpu(false);
-                printf("Clip forced to use CPU!\n");
-                clip_fa = (kcpp_data->flash_attn?CLIP_FLASH_ATTN_TYPE_ENABLED:CLIP_FLASH_ATTN_TYPE_DISABLED); //however if using CPU, fa is fine
-            }
-            clip_context_params ctx_clip_params {
-                /* use_gpu           */ true,
-                /* flash_attn_type   */ clip_fa,
-                /* image_min_tokens  */ kcpp_data->vision_min_tokens,
-                /* image_max_tokens  */ kcpp_data->vision_max_tokens,
-            };
+            clip_context_params ctx_clip_params = init_clip_ctx_params(inputs.mmproj_cpu,false);
             clip_init_result cres = clip_init(mmproj_filename.c_str(), ctx_clip_params);
             clp_ctx_v = cres.ctx_v;
             clp_ctx_a = cres.ctx_a;
@@ -5260,7 +5431,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                     }
                 }
             }
-            if(triggerff && kcpp_data->use_contextshift && (file_format == FileFormat::GGUF_GENERIC))
+            if(triggerff && kcpp_data->use_contextshift && (file_format == FileFormat::GGUF_GENERIC) && !media_data_changed)
             {
                 DoContextShifting(llama_ctx_v4, draft_ctx, current_context_tokens, embd_inp, inputs.max_length, nctx, false);
                 triggersc = false;

@@ -4,6 +4,7 @@
 #include <memory>
 
 #include "common_block.hpp"
+#include "diffusion_model.hpp"
 #include "flux.hpp"
 
 namespace Qwen {
@@ -479,7 +480,7 @@ namespace Qwen {
         }
     };
 
-    struct QwenImageRunner : public GGMLRunner {
+    struct QwenImageRunner : public DiffusionModelRunner {
     public:
         QwenImageParams qwen_image_params;
         QwenImageModel qwen_image;
@@ -488,12 +489,12 @@ namespace Qwen {
         SDVersion version;
 
         QwenImageRunner(ggml_backend_t backend,
-                        bool offload_params_to_cpu,
+                        ggml_backend_t params_backend,
                         const String2TensorStorage& tensor_storage_map = {},
                         const std::string prefix                       = "",
                         SDVersion version                              = VERSION_QWEN_IMAGE,
                         bool zero_cond_t                               = false)
-            : GGMLRunner(backend, offload_params_to_cpu) {
+            : DiffusionModelRunner(backend, params_backend, prefix) {
             qwen_image_params.num_layers  = 0;
             qwen_image_params.zero_cond_t = zero_cond_t;
             for (auto pair : tensor_storage_map) {
@@ -528,7 +529,7 @@ namespace Qwen {
             return "qwen_image";
         }
 
-        void get_param_tensors(std::map<std::string, ggml_tensor*>& tensors, const std::string prefix) {
+        void get_param_tensors(std::map<std::string, ggml_tensor*>& tensors, const std::string& prefix) override {
             qwen_image.get_param_tensors(tensors, prefix);
         }
 
@@ -624,6 +625,19 @@ namespace Qwen {
             return restore_trailing_singleton_dims(GGMLRunner::compute<float>(get_graph, n_threads, false), x.dim());
         }
 
+        sd::Tensor<float> compute(int n_threads,
+                                  const DiffusionParams& diffusion_params) override {
+            GGML_ASSERT(diffusion_params.x != nullptr);
+            GGML_ASSERT(diffusion_params.timesteps != nullptr);
+            static const std::vector<sd::Tensor<float>> empty_ref_latents;
+            return compute(n_threads,
+                           *diffusion_params.x,
+                           *diffusion_params.timesteps,
+                           tensor_or_empty(diffusion_params.context),
+                           diffusion_params.ref_latents ? *diffusion_params.ref_latents : empty_ref_latents,
+                           diffusion_params.increase_ref_index);
+        }
+
         void test() {
             ggml_init_params params;
             params.mem_size   = static_cast<size_t>(1024 * 1024) * 1024;  // 1GB
@@ -686,7 +700,7 @@ namespace Qwen {
             }
 
             std::shared_ptr<QwenImageRunner> qwen_image = std::make_shared<QwenImageRunner>(backend,
-                                                                                            false,
+                                                                                            backend,
                                                                                             tensor_storage_map,
                                                                                             "model.diffusion_model",
                                                                                             VERSION_QWEN_IMAGE);

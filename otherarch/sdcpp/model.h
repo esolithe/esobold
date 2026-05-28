@@ -42,10 +42,13 @@ enum SDVersion {
     VERSION_ANIMA,
     VERSION_FLUX2,
     VERSION_FLUX2_KLEIN,
+    VERSION_LTXAV,
     VERSION_HIDREAM_O1,
     VERSION_Z_IMAGE,
     VERSION_OVIS_IMAGE,
     VERSION_ERNIE_IMAGE,
+    VERSION_LENS,
+    VERSION_LONGCAT,
     VERSION_COUNT,
 };
 
@@ -105,6 +108,13 @@ static inline bool sd_version_is_flux2(SDVersion version) {
     return false;
 }
 
+static inline bool sd_version_is_ltxav(SDVersion version) {
+    if (version == VERSION_LTXAV) {
+        return true;
+    }
+    return false;
+}
+
 static inline bool sd_version_is_wan(SDVersion version) {
     if (version == VERSION_WAN2 || version == VERSION_WAN2_2_I2V || version == VERSION_WAN2_2_TI2V) {
         return true;
@@ -133,6 +143,13 @@ static inline bool sd_version_is_z_image(SDVersion version) {
     return false;
 }
 
+static inline bool sd_version_is_longcat(SDVersion version) {
+    if (version == VERSION_LONGCAT) {
+        return true;
+    }
+    return false;
+}
+
 static inline bool sd_version_is_ernie_image(SDVersion version) {
     if (version == VERSION_ERNIE_IMAGE) {
         return true;
@@ -140,8 +157,15 @@ static inline bool sd_version_is_ernie_image(SDVersion version) {
     return false;
 }
 
+static inline bool sd_version_is_lens(SDVersion version) {
+    if (version == VERSION_LENS) {
+        return true;
+    }
+    return false;
+}
+
 static inline bool sd_version_uses_flux2_vae(SDVersion version) {
-    if (sd_version_is_flux2(version) || sd_version_is_ernie_image(version)) {
+    if (sd_version_is_flux2(version) || sd_version_is_ernie_image(version) || sd_version_is_lens(version)) {
         return true;
     }
     return false;
@@ -161,13 +185,16 @@ static inline bool sd_version_is_inpaint(SDVersion version) {
 static inline bool sd_version_is_dit(SDVersion version) {
     if (sd_version_is_flux(version) ||
         sd_version_is_flux2(version) ||
+        sd_version_is_ltxav(version) ||
         sd_version_is_sd3(version) ||
         sd_version_is_wan(version) ||
         sd_version_is_qwen_image(version) ||
         version == VERSION_HIDREAM_O1 ||
         sd_version_is_anima(version) ||
         sd_version_is_z_image(version) ||
-        sd_version_is_ernie_image(version)) {
+        sd_version_is_ernie_image(version) ||
+        sd_version_is_lens(version) ||
+        sd_version_is_longcat(version)) {
         return true;
     }
     return false;

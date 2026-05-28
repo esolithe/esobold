@@ -263,6 +263,8 @@ static std::vector<std::string> gpt2_pre_tokenize(const std::string &text) {
     return chunks;
 }
 
+namespace kcpp_workaround_multiple_BPETokenizer {
+
 // BPE tokenizer struct
 struct BPETokenizer {
     std::unordered_map<std::string, int> vocab;  // token_str -> id
@@ -272,6 +274,9 @@ struct BPETokenizer {
     int n_vocab;
     std::vector<std::string> id_to_str;          // id -> token_str (reverse vocab)
 };
+
+}
+using kcpp_workaround_multiple_BPETokenizer::BPETokenizer;
 
 // Minimal JSON parser for vocab.json ({"str": int, ...})
 static bool load_vocab_json(const std::string &path, std::unordered_map<std::string, int> &vocab) {

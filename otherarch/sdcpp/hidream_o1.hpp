@@ -12,6 +12,7 @@
 
 #include "common_dit.hpp"
 #include "conditioner.hpp"
+#include "diffusion_model.hpp"
 #include "llm.hpp"
 #include "util.h"
 
@@ -279,10 +280,10 @@ namespace HiDreamO1 {
         std::array<std::vector<float>, 4> pos_embed_weight_data_;
 
         HiDreamO1VisionRunner(ggml_backend_t backend,
-                              bool offload_params_to_cpu,
+                              ggml_backend_t params_backend,
                               const String2TensorStorage& tensor_storage_map = {},
                               const std::string& prefix                      = "model.visual")
-            : GGMLRunner(backend, offload_params_to_cpu),
+            : GGMLRunner(backend, params_backend),
               params(make_hidream_o1_params()),
               model(std::make_shared<LLM::VisionModel>(false, params.llm.vision)) {
             model->init(params_ctx, tensor_storage_map, prefix);
@@ -329,17 +330,17 @@ namespace HiDreamO1 {
         }
     };
 
-    struct HiDreamO1Runner : public GGMLRunner {
+    struct HiDreamO1Runner : public DiffusionModelRunner {
         HiDreamO1Params params;
         HiDreamO1Model model;
 
         std::vector<float> attention_mask_vec;
 
         HiDreamO1Runner(ggml_backend_t backend,
-                        bool offload_params_to_cpu,
+                        ggml_backend_t params_backend,
                         const String2TensorStorage& tensor_storage_map = {},
                         const std::string& prefix                      = "model")
-            : GGMLRunner(backend, offload_params_to_cpu),
+            : DiffusionModelRunner(backend, params_backend, prefix),
               params(make_hidream_o1_params()) {
             model = HiDreamO1Model(params);
             model.init(params_ctx, tensor_storage_map, prefix);
@@ -349,7 +350,7 @@ namespace HiDreamO1 {
             return "hidream_o1";
         }
 
-        void get_param_tensors(std::map<std::string, ggml_tensor*>& tensors, const std::string& prefix) {
+        void get_param_tensors(std::map<std::string, ggml_tensor*>& tensors, const std::string& prefix) override {
             model.get_param_tensors(tensors, prefix);
         }
 
@@ -454,6 +455,28 @@ namespace HiDreamO1 {
             };
             return restore_trailing_singleton_dims(GGMLRunner::compute<float>(get_graph, n_threads, false), x.dim());
         }
+
+        sd::Tensor<float> compute(int n_threads,
+                                  const DiffusionParams& diffusion_params) override {
+            GGML_ASSERT(diffusion_params.x != nullptr);
+            GGML_ASSERT(diffusion_params.timesteps != nullptr);
+            const auto* extra = diffusion_extra_as<HiDreamO1DiffusionExtra>(diffusion_params);
+            GGML_ASSERT(extra != nullptr);
+            GGML_ASSERT(extra->input_ids != nullptr);
+            GGML_ASSERT(extra->input_pos != nullptr);
+            GGML_ASSERT(extra->token_types != nullptr);
+            static const std::vector<sd::Tensor<float>> empty_images;
+            static const std::vector<std::pair<int, sd::Tensor<float>>> empty_image_embeds;
+            return compute(n_threads,
+                           *diffusion_params.x,
+                           *diffusion_params.timesteps,
+                           *extra->input_ids,
+                           *extra->input_pos,
+                           *extra->token_types,
+                           tensor_or_empty(extra->vinput_mask),
+                           extra->image_embeds ? *extra->image_embeds : empty_image_embeds,
+                           diffusion_params.ref_latents ? *diffusion_params.ref_latents : empty_images);
+        }
     };
 
     struct HiDreamO1Conditioner : public Conditioner {
@@ -461,9 +484,9 @@ namespace HiDreamO1 {
         std::shared_ptr<HiDreamO1VisionRunner> vision_runner;
 
         HiDreamO1Conditioner(ggml_backend_t backend,
-                             bool offload_params_to_cpu,
+                             ggml_backend_t params_backend,
                              const String2TensorStorage& tensor_storage_map = {})
-            : vision_runner(std::make_shared<HiDreamO1VisionRunner>(backend, offload_params_to_cpu, tensor_storage_map)) {}
+            : vision_runner(std::make_shared<HiDreamO1VisionRunner>(backend, params_backend, tensor_storage_map)) {}
 
         void get_param_tensors(std::map<std::string, ggml_tensor*>& tensors) override {
             vision_runner->get_param_tensors(tensors);
