@@ -244,12 +244,38 @@ static void mem_write_u16_le(mem_buffer_t* buf, uint16_t val) {
     mem_write(buf, &val, 2);
 }
 
+static uint8_t* sd_audio_to_pcm16_bytes(const sd_audio_t* audio, size_t* out_size) {
+    *out_size = 0;
+    if (audio == NULL || audio->data == NULL || audio->sample_count == 0 || audio->channels == 0 || audio->sample_rate == 0) {
+        return NULL;
+    }
+
+    size_t pcm_samples = (size_t)audio->sample_count * (size_t)audio->channels;
+    size_t pcm_size = pcm_samples * sizeof(int16_t);
+    uint8_t* bytes = (uint8_t*)malloc(pcm_size);
+    if (bytes == NULL) {
+        return NULL;
+    }
+
+    int16_t* pcm = (int16_t*)bytes;
+    for (size_t i = 0; i < pcm_samples; ++i) {
+        float sample = audio->data[i];
+        if (sample < -1.0f) sample = -1.0f;
+        if (sample > 1.0f) sample = 1.0f;
+        float scaled = sample * 32767.0f;
+        pcm[i] = (int16_t)(scaled >= 0.0f ? scaled + 0.5f : scaled - 0.5f);
+    }
+
+    *out_size = pcm_size;
+    return bytes;
+}
+
 /**
  * Create MJPG AVI file in memory and return as base64 string.
  * Returns 0 on success, -1 on failure
  * must be freed by caller after use
  */
-int create_mjpg_avi_membuf_from_sd_images(sd_image_t* images, int num_images, int fps, int quality,  uint8_t** out_data, size_t *out_len)
+int create_mjpg_avi_membuf_from_sd_images(sd_image_t* images, int num_images, int fps, int quality,  uint8_t** out_data, size_t *out_len, const sd_audio_t* audio = NULL)
 {
     if (num_images == 0) {
         fprintf(stderr, "Error: Image array is empty.\n");
@@ -266,6 +292,18 @@ int create_mjpg_avi_membuf_from_sd_images(sd_image_t* images, int num_images, in
         return -1;
     }
 
+    int mjpg_quality = quality;
+    if (mjpg_quality < 1) mjpg_quality = 1;
+    if (mjpg_quality > 90) mjpg_quality = 90;
+
+    size_t audio_pcm_size = 0;
+    uint8_t* audio_pcm = sd_audio_to_pcm16_bytes(audio, &audio_pcm_size);
+    bool has_audio = audio_pcm != NULL && audio_pcm_size > 0;
+    uint16_t audio_bits_per_sample = 16;
+    uint16_t audio_block_align = has_audio ? (uint16_t)(audio->channels * (audio_bits_per_sample / 8)) : 0;
+    uint32_t audio_byte_rate = has_audio ? (uint32_t)(audio->sample_rate * audio_block_align) : 0;
+    uint32_t audio_data_size = has_audio ? (uint32_t)audio_pcm_size : 0;
+
     // --- RIFF AVI Header ---
     mem_write(&buf, "RIFF", 4);
     size_t riff_size_pos = buf.size;
@@ -274,7 +312,11 @@ int create_mjpg_avi_membuf_from_sd_images(sd_image_t* images, int num_images, in
 
     // 'hdrl' LIST
     mem_write(&buf, "LIST", 4);
-    mem_write_u32_le(&buf, 4 + 8 + 56 + 8 + 4 + 8 + 56 + 8 + 40);
+    uint32_t hdrl_size = 4 + 8 + 56 + 8 + 4 + 8 + 56 + 8 + 40;
+    if (has_audio) {
+        hdrl_size += 8 + (4 + 8 + 56 + 8 + 16);
+    }
+    mem_write_u32_le(&buf, hdrl_size);
     mem_write(&buf, "hdrl", 4);
 
     // 'avih'
@@ -286,7 +328,7 @@ int create_mjpg_avi_membuf_from_sd_images(sd_image_t* images, int num_images, in
     mem_write_u32_le(&buf, 0x110);
     mem_write_u32_le(&buf, num_images);
     mem_write_u32_le(&buf, 0);
-    mem_write_u32_le(&buf, 1);
+    mem_write_u32_le(&buf, has_audio ? 2 : 1);
     mem_write_u32_le(&buf, width * height * 3);
     mem_write_u32_le(&buf, width);
     mem_write_u32_le(&buf, height);
@@ -332,6 +374,40 @@ int create_mjpg_avi_membuf_from_sd_images(sd_image_t* images, int num_images, in
     mem_write_u32_le(&buf, 0);
     mem_write_u32_le(&buf, 0);
 
+    if (has_audio) {
+        // audio 'strl' LIST
+        mem_write(&buf, "LIST", 4);
+        mem_write_u32_le(&buf, 4 + 8 + 56 + 8 + 16);
+        mem_write(&buf, "strl", 4);
+
+        mem_write(&buf, "strh", 4);
+        mem_write_u32_le(&buf, 56);
+        mem_write(&buf, "auds", 4);
+        mem_write_u32_le(&buf, 0);
+        mem_write_u32_le(&buf, 0);
+        mem_write_u16_le(&buf, 0);
+        mem_write_u16_le(&buf, 0);
+        mem_write_u32_le(&buf, 0);
+        mem_write_u32_le(&buf, audio_block_align);
+        mem_write_u32_le(&buf, audio_byte_rate);
+        mem_write_u32_le(&buf, 0);
+        mem_write_u32_le(&buf, (uint32_t)audio->sample_count);
+        mem_write_u32_le(&buf, audio_data_size);
+        mem_write_u32_le(&buf, (uint32_t)-1);
+        mem_write_u32_le(&buf, audio_block_align);
+        mem_write_u16_le(&buf, 0); mem_write_u16_le(&buf, 0);
+        mem_write_u16_le(&buf, 0); mem_write_u16_le(&buf, 0);
+
+        mem_write(&buf, "strf", 4);
+        mem_write_u32_le(&buf, 16);
+        mem_write_u16_le(&buf, 1);
+        mem_write_u16_le(&buf, (uint16_t)audio->channels);
+        mem_write_u32_le(&buf, audio->sample_rate);
+        mem_write_u32_le(&buf, audio_byte_rate);
+        mem_write_u16_le(&buf, audio_block_align);
+        mem_write_u16_le(&buf, audio_bits_per_sample);
+    }
+
     // 'movi' LIST
     mem_write(&buf, "LIST", 4);
     size_t movi_size_pos = buf.size;
@@ -357,7 +433,7 @@ int create_mjpg_avi_membuf_from_sd_images(sd_image_t* images, int num_images, in
         stbi_write_jpg_to_func(
             write_to_buf, &jpeg_data,
             images[i].width, images[i].height,
-            channels, images[i].data, quality
+            channels, images[i].data, mjpg_quality
         );
 
         mem_write(&buf, "00dc", 4);
@@ -370,18 +446,33 @@ int create_mjpg_avi_membuf_from_sd_images(sd_image_t* images, int num_images, in
         free(jpeg_data.buf);
     }
 
+    uint32_t audio_offset = 0;
+    if (has_audio) {
+        mem_write(&buf, "01wb", 4);
+        mem_write_u32_le(&buf, audio_data_size);
+        audio_offset = (uint32_t)(buf.size - 8);
+        mem_write(&buf, audio_pcm, audio_pcm_size);
+        if (audio_pcm_size % 2) mem_write(&buf, "\0", 1);
+    }
+
     // finalize movi size
     uint32_t movi_size = buf.size - movi_size_pos - 4;
     memcpy(buf.data + movi_size_pos, &movi_size, 4);
 
     // write idx1
     mem_write(&buf, "idx1", 4);
-    mem_write_u32_le(&buf, num_images * 16);
+    mem_write_u32_le(&buf, (num_images + (has_audio ? 1 : 0)) * 16);
     for (int i = 0; i < num_images; i++) {
         mem_write(&buf, "00dc", 4);
         mem_write_u32_le(&buf, 0x10);
         mem_write_u32_le(&buf, index[i].offset);
         mem_write_u32_le(&buf, index[i].size);
+    }
+    if (has_audio) {
+        mem_write(&buf, "01wb", 4);
+        mem_write_u32_le(&buf, 0);
+        mem_write_u32_le(&buf, audio_offset);
+        mem_write_u32_le(&buf, audio_data_size);
     }
 
     // finalize RIFF size
@@ -389,6 +480,7 @@ int create_mjpg_avi_membuf_from_sd_images(sd_image_t* images, int num_images, in
     memcpy(buf.data + riff_size_pos, &riff_size, 4);
 
     free(index);
+    free(audio_pcm);
 
     *out_data = buf.data;
     *out_len = buf.size;
