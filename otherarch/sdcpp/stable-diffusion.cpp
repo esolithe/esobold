@@ -5715,6 +5715,7 @@ namespace kcpp_sd {
         res.is_sd1 = (loadedsdver == SDVersion::VERSION_SD1);
         res.is_sd2 = (loadedsdver == SDVersion::VERSION_SD2);
         res.is_sdxl = sd_version_is_sdxl((SDVersion)loadedsdver);
+        res.is_ltx = sd_version_is_ltxav((SDVersion)loadedsdver);
         res.vae_scale_factor = ctx->sd->get_vae_scale_factor();
         res.spatial_multiple = get_spatial_multiple(ctx);
         return res;

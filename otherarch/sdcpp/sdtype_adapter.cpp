@@ -565,7 +565,7 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
         }
     }
 
-    if (info.is_wan)
+    if (info.is_wan || info.is_ltx)
     {
         printf("\nSetting to Video Generation Mode!\n");
         is_vid_model = true;
@@ -1004,7 +1004,7 @@ static std::string raw_image_to_png_base64(const sd_image_t& img, std::string pa
 
 bool supports_reference_images(kcpp_sd::model_info info)
 {
-    bool supported = (info.is_wan || info.is_qwenimg || info.is_flux2 || info.is_kontext || photomaker_enabled);
+    bool supported = (info.is_wan || info.is_ltx || info.is_qwenimg || info.is_flux2 || info.is_kontext || photomaker_enabled);
     return supported;
 }
 
@@ -1099,7 +1099,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
         extra_image_data.clear();
     }
 
-    if(info.is_wan && extra_image_data.size()==0 && is_img2img)
+    if ((info.is_wan || info.is_ltx) && extra_image_data.size() == 0 && is_img2img)
     {
         extra_image_data.push_back(img2img_data);
     }
@@ -1181,7 +1181,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
             int desiredchannels = 3;
             if(supports_reference_images(info))
             {
-                if(info.is_wan)
+                if(info.is_wan || info.is_ltx)
                 {
                     uint8_t * loaded = load_image_from_b64(extra_image_data[i],nx2,ny2,img2imgW,img2imgH,3);
                     if(loaded)
