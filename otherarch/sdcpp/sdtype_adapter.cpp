@@ -565,7 +565,7 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
         }
     }
 
-    if (info.is_wan)
+    if (info.is_wan || info.is_ltx)
     {
         printf("\nSetting to Video Generation Mode!\n");
         is_vid_model = true;
@@ -1004,7 +1004,7 @@ static std::string raw_image_to_png_base64(const sd_image_t& img, std::string pa
 
 bool supports_reference_images(kcpp_sd::model_info info)
 {
-    bool supported = (info.is_wan || info.is_qwenimg || info.is_flux2 || info.is_kontext || photomaker_enabled);
+    bool supported = (info.is_wan || info.is_ltx || info.is_qwenimg || info.is_flux2 || info.is_kontext || photomaker_enabled);
     return supported;
 }
 
@@ -1099,7 +1099,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
         extra_image_data.clear();
     }
 
-    if(info.is_wan && extra_image_data.size()==0 && is_img2img)
+    if ((info.is_wan || info.is_ltx) && extra_image_data.size() == 0 && is_img2img)
     {
         extra_image_data.push_back(img2img_data);
     }
@@ -1181,7 +1181,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
             int desiredchannels = 3;
             if(supports_reference_images(info))
             {
-                if(info.is_wan)
+                if(info.is_wan || info.is_ltx)
                 {
                     uint8_t * loaded = load_image_from_b64(extra_image_data[i],nx2,ny2,img2imgW,img2imgH,3);
                     if(loaded)
@@ -1339,10 +1339,12 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
     int vid_req_frames = inputs.vid_req_frames;
     int video_output_type = inputs.video_output_type;
     int generated_num_results = 1;
+    int vid_fps = inputs.vid_fps;
     remove_limits = inputs.remove_limits;
 
      //special case, is img2img and denoise strength is 0 and steps is 1, do a passthru
     bool is_passthrough = (sd_params->sample_steps<=1 && sd_params->strength<=0 && is_img2img && vid_req_frames<=1 && extra_image_data.size()==0);
+    sd_audio_t* generated_audio = nullptr;
 
     if(is_vid_model)
     {
@@ -1360,6 +1362,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
         vid_gen_params.strength = params.strength;
         vid_gen_params.seed = params.seed;
         vid_gen_params.video_frames = vid_req_frames;
+        vid_gen_params.fps = vid_fps;
         if(wan_imgs.size()>0)
         {
             if(wan_imgs.size()>=1)
@@ -1390,7 +1393,6 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
 
         fflush(stdout);
 
-        sd_audio_t* generated_audio = nullptr;
         results = nullptr;
         if (!generate_video(sd_ctx, &vid_gen_params, &results, &generated_num_results, &generated_audio)) {
             results = nullptr;
@@ -1564,11 +1566,11 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
 
                 if(video_output_type==0 || video_output_type==2)
                 {
-                    status = create_gif_buf_from_sd_images_msf(results, generated_num_results, 16, &out_data,&out_len);
+                    status = create_gif_buf_from_sd_images_msf(results, generated_num_results, vid_fps, &out_data,&out_len);
                 }
                 if(video_output_type==1 || video_output_type==2)
                 {
-                    status2 = create_mjpg_avi_membuf_from_sd_images(results, generated_num_results, 16, 40, &out_data2,&out_len2);
+                    status2 = create_mjpg_avi_membuf_from_sd_images(results, generated_num_results, vid_fps, 40, &out_data2,&out_len2, generated_audio);
                 }
 
                 if(!sd_is_quiet && sddebugmode==1)
@@ -1621,6 +1623,11 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
     {
         free(upscaled_image.data);
         upscaled_image.data = nullptr;
+    }
+
+    if (generated_audio) {
+        free_sd_audio(generated_audio);
+        generated_audio = nullptr;
     }
 
     free(results);

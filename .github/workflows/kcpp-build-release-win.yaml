@@ -183,6 +183,7 @@ jobs:
             ttsmain.exe
             convert_hf_to_gguf.py
             convert_hf_to_gguf_update.py
+            conversion
             gguf-py
             legacy
 
@@ -199,6 +200,7 @@ jobs:
               ttsmain.exe,
               convert_hf_to_gguf.py,
               convert_hf_to_gguf_update.py,
+              conversion,
               gguf-py,
               legacy `
             -DestinationPath koboldcpp_tools.zip `

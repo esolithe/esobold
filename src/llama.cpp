@@ -11,6 +11,7 @@
 #include "llama-grammar.cpp"
 #include "llama-sampler.cpp"
 #include "llama-kv-cache.cpp"
+#include "llama-kv-cache-dsa.cpp"
 #include "llama-kv-cache-iswa.cpp"
 #include "llama-memory-hybrid.cpp"
 #include "llama-memory-hybrid-iswa.cpp"

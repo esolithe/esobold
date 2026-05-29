@@ -285,6 +285,7 @@ public:
         std::string t5_path_fixed         = SAFE_STR(sd_ctx_params->t5xxl_path);
         std::string taesd_path_fixed      = SAFE_STR(sd_ctx_params->taesd_path);
         std::string embed_connector_fixed = SAFE_STR(sd_ctx_params->embeddings_connectors_path);
+        std::string vae_path_fixed        = SAFE_STR(sd_ctx_params->vae_path);
 
         ModelLoader model_loader;
 
@@ -483,6 +484,24 @@ public:
             sd_ctx_params->photo_maker_path = "";
         }
 
+        //for models with TAE suppport, if vae is set, tae is off, and it looks like a tae, swap to tae
+        if(taesd_path_fixed=="" && vae_path_fixed!="" && toLowerCase(vae_path_fixed).rfind("tae")!=std::string::npos)
+        {
+            try {
+                const uintmax_t tae_size_limit = 64 * 1024 * 1024; //if its less than 64mb, it might be a TAE
+                // Get the file size in bytes cross-platform
+                uintmax_t size = std::filesystem::file_size(vae_path_fixed);
+                if (size > 0 && size < tae_size_limit) {
+                    printf("\nVAE appears to be a TAE, loading as TAE instead!\n");
+                    taesd_path_fixed = vae_path_fixed;
+                    vae_path_fixed = "";
+                }
+            }
+            catch (const std::filesystem::filesystem_error& e) {
+                std::printf("Error accessing file: %s\n", e.what());
+            }
+        }
+
         sd_ctx_params->clip_g_path                = clipg_path_fixed.c_str();
         sd_ctx_params->clip_l_path                = clipl_path_fixed.c_str();
         sd_ctx_params->clip_vision_path           = clip_vision_fixed.c_str();
@@ -491,6 +510,7 @@ public:
         sd_ctx_params->t5xxl_path                 = t5_path_fixed.c_str();
         sd_ctx_params->taesd_path                 = taesd_path_fixed.c_str();
         sd_ctx_params->embeddings_connectors_path = embed_connector_fixed.c_str();
+        sd_ctx_params->vae_path                   = vae_path_fixed.c_str();
         //debug print
         // printf("\n\nclip_g: %s\nclip_l: %s\nclip_vision: %s\nllm: %s\nllm_vision: %s\nt5xxl: %s\ntaesd: %s\n",
         // sd_ctx_params->clip_g_path, sd_ctx_params->clip_l_path, sd_ctx_params->clip_vision_path,
@@ -5715,6 +5735,7 @@ namespace kcpp_sd {
         res.is_sd1 = (loadedsdver == SDVersion::VERSION_SD1);
         res.is_sd2 = (loadedsdver == SDVersion::VERSION_SD2);
         res.is_sdxl = sd_version_is_sdxl((SDVersion)loadedsdver);
+        res.is_ltx = sd_version_is_ltxav((SDVersion)loadedsdver);
         res.vae_scale_factor = ctx->sd->get_vae_scale_factor();
         res.spatial_multiple = get_spatial_multiple(ctx);
         return res;

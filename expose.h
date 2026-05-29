@@ -238,6 +238,7 @@ struct sd_generation_inputs
     const float eta = -1.0f;
     const int clip_skip = -1;
     const int vid_req_frames = 1;
+    const int vid_fps = 16;
     const int video_output_type = 0; //0=gif, 1=avi, 2=both
     const bool remove_limits = false;
     const bool circular_x = false;
