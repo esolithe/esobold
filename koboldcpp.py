@@ -421,6 +421,7 @@ class sd_generation_inputs(ctypes.Structure):
                 ("eta", ctypes.c_float),
                 ("clip_skip", ctypes.c_int),
                 ("vid_req_frames", ctypes.c_int),
+                ("vid_fps", ctypes.c_int),
                 ("video_output_type", ctypes.c_int),
                 ("remove_limits", ctypes.c_bool),
                 ("circular_x", ctypes.c_bool),
@@ -2788,6 +2789,7 @@ def sd_generate(genparams):
     eta = tryparsefloat(genparams.get("eta", None), None)
     vid_req_frames = tryparseint(genparams.get("frames", 1),1)
     vid_req_frames = 1 if (not vid_req_frames or vid_req_frames < 1) else vid_req_frames
+    vid_fps = tryparseint(genparams.get("fps", 16),16)
     video_output_type = genparams.get("video_output_type", 0)
     cache_mode = str(genparams.get("cache_mode", ""))
     cache_options = str(genparams.get("cache_options", ""))
@@ -2807,6 +2809,7 @@ def sd_generate(genparams):
         flow_shift = None # fall back to the default
     sample_steps = (1 if sample_steps < 1 else (forced_steplimit if sample_steps > forced_steplimit else sample_steps))
     vid_req_frames = (1 if vid_req_frames < 1 else (120 if vid_req_frames > 120 else vid_req_frames))
+    vid_fps = (16 if vid_fps < 16 else (24 if vid_fps > 24 else vid_fps))
 
     swap_refimg = (True if tryparseint(genparams.get("send_as_refimg", 0),0) else False)
     if len(extra_images_arr)==0 and swap_refimg and init_images and init_images!="" and not mask:
@@ -2841,6 +2844,7 @@ def sd_generate(genparams):
     inputs.eta = -1.0 if eta is None else eta
     inputs.clip_skip = clip_skip
     inputs.vid_req_frames = vid_req_frames
+    inputs.vid_fps = vid_fps
     inputs.video_output_type = video_output_type
     inputs.remove_limits = allow_remove_limits
     inputs.circular_x = tryparseint(adapter_obj.get("circular_x", genparams.get("circular_x",0)),0)

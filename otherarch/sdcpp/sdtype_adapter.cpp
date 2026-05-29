@@ -1339,6 +1339,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
     int vid_req_frames = inputs.vid_req_frames;
     int video_output_type = inputs.video_output_type;
     int generated_num_results = 1;
+    int vid_fps = inputs.vid_fps;
     remove_limits = inputs.remove_limits;
 
      //special case, is img2img and denoise strength is 0 and steps is 1, do a passthru
@@ -1361,6 +1362,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
         vid_gen_params.strength = params.strength;
         vid_gen_params.seed = params.seed;
         vid_gen_params.video_frames = vid_req_frames;
+        vid_gen_params.fps = vid_fps;
         if(wan_imgs.size()>0)
         {
             if(wan_imgs.size()>=1)
@@ -1564,11 +1566,11 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
 
                 if(video_output_type==0 || video_output_type==2)
                 {
-                    status = create_gif_buf_from_sd_images_msf(results, generated_num_results, 16, &out_data,&out_len);
+                    status = create_gif_buf_from_sd_images_msf(results, generated_num_results, vid_fps, &out_data,&out_len);
                 }
                 if(video_output_type==1 || video_output_type==2)
                 {
-                    status2 = create_mjpg_avi_membuf_from_sd_images(results, generated_num_results, 16, 40, &out_data2,&out_len2, generated_audio);
+                    status2 = create_mjpg_avi_membuf_from_sd_images(results, generated_num_results, vid_fps, 40, &out_data2,&out_len2, generated_audio);
                 }
 
                 if(!sd_is_quiet && sddebugmode==1)
