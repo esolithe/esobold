@@ -12,7 +12,7 @@ Current version indicated by LITEVER below.
 -->
 <head>
 	<script id="init-config">
-	const LITEVER = 332;
+	const LITEVER = 334;
 	const urlParams = new URLSearchParams(window.location.search);
 	var localflag = urlParams.get('local'); //this will be replaced automatically in embedded kcpp
 	const STORAGE_PREFIX = (localflag?"e_":"")+"kaihordewebui_";
@@ -4077,7 +4077,8 @@ Current version indicated by LITEVER below.
 		img_clipskip: -1,
 		img_steps: 20,
 		img_sampler: "Euler",
-		img_aspect:0, //0=square,1=portrait,2=landscape,3=bigsquare,4=portrait_long,5=landscape_long
+		img_scheduler: "default",
+		img_aspect:0, //0=square,1=portrait,2=landscape,3=bigsquare,4=portrait_long,5=landscape_long, 6=hugesquare, 7=768x1024, 8=1024x768
 		save_images: true,
 		save_remote_images: false,
 		prompt_for_savename: false,
@@ -5671,7 +5672,7 @@ Current version indicated by LITEVER below.
 		inputtxt = replaceAll(inputtxt,instructsysplaceholder_end.trim(),get_instruct_systag_end(false));
 		return inputtxt;
 	}
-	function replace_noninstruct_placeholders(inputtxt,escape=false,isgametext=true,persistent_countmap=null)
+	function replace_chat_name_placeholders(inputtxt, escape=false)
 	{
 		let firstopponent = localsettings.chatopponent;
 		if (firstopponent && firstopponent.includes("||$||")) {
@@ -5689,7 +5690,11 @@ Current version indicated by LITEVER below.
 			inputtxt = replaceAll(inputtxt,"{{user}}",(localsettings.chatname?localsettings.chatname:"User"),true);
 			inputtxt = replaceAll(inputtxt,"{{char}}",(localsettings.chatopponent?firstopponent:defaultchatopponent),true);
 		}
-
+		return inputtxt;
+	}
+	function replace_noninstruct_placeholders(inputtxt,escape=false,isgametext=true,persistent_countmap=null)
+	{
+		inputtxt = replace_chat_name_placeholders(inputtxt,escape);
 		inputtxt = replaceAll(inputtxt,"{{original}}","",true); //redundant in Lite; use sysprompt or assistant jailbreak instead
 
 		for(let i=0;i<localsettings.placeholder_tags_data.length;++i)
@@ -8948,8 +8953,8 @@ Current version indicated by LITEVER below.
 						"model": use_lora ? ["11", 0] : ["4", 0],
 						"negative": ["7", 0],
 						"positive": ["6", 0],
-						"sampler_name": "euler",
-						"scheduler": "normal",
+						"sampler_name": req_payload.params.sampler_name,
+						"scheduler": (req_payload.params.scheduler?req_payload.params.scheduler:"normal"),
 						"seed": Math.floor(Math.random() * 99999999),
 						"steps": req_payload.params.steps
 					}
@@ -9128,6 +9133,11 @@ Current version indicated by LITEVER below.
 				"initial_noise_multiplier": 1.0,
 				"comma_padding_backtrack": 20.0
 			}
+		}
+
+		if(req_payload.params.scheduler)
+		{
+			a1111_t2i_payload["scheduler"] = req_payload.params.scheduler;
 		}
 
 		let ep = a1111_txt2img_endpoint;
@@ -11784,6 +11794,7 @@ Current version indicated by LITEVER below.
 	 * @type {{
 	 * 		name: string;
 	 * 		urlParam: string;
+	 *      matchers: string[];
 	 *		inputBox: {
 	 *			text: string;
 	 *			placeholder: string;
@@ -11797,6 +11808,7 @@ Current version indicated by LITEVER below.
 		{
 			name: "prompts.forthisfeel.club",
 			urlParam: "aether",
+			matchers: ["forthisfeel.club/"],
 			inputBox: {
 				text: "Enter prompts.forthisfeel.club prompt URL, or 4-digit prompt number",
 				placeholder: "https://prompts.forthisfeel.club/1234"
@@ -11865,6 +11877,7 @@ Current version indicated by LITEVER below.
 		{
 			name: "chub.ai / characterhub.org",
 			urlParam: "chub",
+			matchers: ["chub.ai/","characterhub.org/"],
 			inputBox: {
 				text: "Enter chub.ai or characterhub.org card URL",
 				placeholder: "https://chub.ai/characters/Anonymous/example-character"
@@ -11949,6 +11962,7 @@ Current version indicated by LITEVER below.
 		{
 			name: "pygmalion.chat",
 			urlParam: "pyg",
+			matchers: ["pygmalion.chat/"],
 			inputBox: {
 				text: "Enter pygmalion.chat character UUID",
 				placeholder: "d7950ca8-c241-4725-8de1-42866e389ebf",
@@ -12021,6 +12035,7 @@ Current version indicated by LITEVER below.
 		{
 			name: "aicharactercards.com",
 			urlParam: "aicc",
+			matchers: ["aicharactercards.com/"],
 			inputBox: {
 				text: "Enter aicharactercards.com card URL",
 				placeholder: "https://aicharactercards.com/character-cards/work-jobs/deffcolony/lara-lightland",
@@ -12109,6 +12124,7 @@ Current version indicated by LITEVER below.
 		{
 			name: "character-tavern.com",
 			urlParam: "aicc",
+			matchers: ["character-tavern.com/"],
 			inputBox: {
 				text: "Enter character-tavern.com card URL",
 				placeholder: "https://character-tavern.com/character/yousef/Shinku",
@@ -12159,6 +12175,138 @@ Current version indicated by LITEVER below.
 				};
 
 				finalurl = apply_proxy_url(userInput,true);
+				//try to obtain the full portrait image
+				return fetch(finalurl, {
+					method: 'GET',
+					redirect: 'follow',
+					referrerPolicy: 'no-referrer',
+					})
+					.then(rb => {
+						if(rb.ok)
+						{
+							return rb.blob();
+						}else{
+							throw new Error('Cannot fetch tavern image');
+						}
+					})
+					.then(blob => {
+						preview_temp_scenario();
+
+						readTavernPngFromBlob(blob,(obj)=>{
+							load_temp_scenario_from_tavernobj(obj);
+						});
+
+						const objectURL = URL.createObjectURL(blob);
+						const compressedImg = compressImage(objectURL, (compressedImageURI, aspectratio)=>{
+							temp_scenario.image = compressedImageURI;
+							temp_scenario.image_aspect = aspectratio;
+							preview_temp_scenario();
+						}, true, AVATAR_PX);
+					})
+					.catch(error => {
+						throw new Error("Selected scenario is invalid.");
+						console.error(error);
+					});
+			}
+		},
+		//botbooru
+		{
+			name: "botbooru.com",
+			urlParam: "botbooru",
+			matchers: ["botbooru.com/"],
+			inputBox: {
+				text: "Enter botbooru.com card URL",
+				placeholder: "https://botbooru.com/download/png/32104",
+			},
+			extraction: (userInput) => {
+				if (userInput.match(/character\//i))
+				{
+					userInput = userInput.split("#")[0].split("?")[0];
+					userInput = userInput.endsWith('/') ? userInput.slice(0, -1) : userInput;
+					let tmp = userInput.split("character/")[1];
+					return `https://botbooru.com/download/png/${tmp}`;
+				}
+				else
+				{
+					userInput = userInput.split("#")[0].split("?")[0];
+					userInput = userInput.endsWith('/') ? userInput.slice(0, -1) : userInput;
+					return userInput;
+				}
+			},
+			fetch: (userInput) => {
+				temp_scenario = {
+					"title":"",
+					"desc": "",
+					"opmode":3,
+					"chatopponent": "",
+					"gui_type":1,
+					"prompt":"",
+					"memory": "",
+					"authorsnote": "",
+					"worldinfo": [],
+				};
+
+				finalurl = apply_proxy_url(userInput,true);
+				//try to obtain the full portrait image
+				return fetch(finalurl, {
+					method: 'GET',
+					redirect: 'follow',
+					referrerPolicy: 'no-referrer',
+					})
+					.then(rb => {
+						if(rb.ok)
+						{
+							return rb.blob();
+						}else{
+							throw new Error('Cannot fetch tavern image');
+						}
+					})
+					.then(blob => {
+						preview_temp_scenario();
+
+						readTavernPngFromBlob(blob,(obj)=>{
+							load_temp_scenario_from_tavernobj(obj);
+						});
+
+						const objectURL = URL.createObjectURL(blob);
+						const compressedImg = compressImage(objectURL, (compressedImageURI, aspectratio)=>{
+							temp_scenario.image = compressedImageURI;
+							temp_scenario.image_aspect = aspectratio;
+							preview_temp_scenario();
+						}, true, AVATAR_PX);
+					})
+					.catch(error => {
+						throw new Error("Selected scenario is invalid.");
+						console.error(error);
+					});
+			}
+		},
+		//raw png URL download
+		{
+			name: "Raw URL",
+			urlParam: "rawurl",
+			matchers: ["/"],
+			inputBox: {
+				text: "Enter the direct URL to the character card file",
+				placeholder: "https://example.com/file.png",
+			},
+			extraction: (userInput) => {
+				return userInput;
+			},
+			fetch: (userInput) => {
+				temp_scenario = {
+					"title":"",
+					"desc": "",
+					"opmode":3,
+					"chatopponent": "",
+					"gui_type":1,
+					"prompt":"",
+					"memory": "",
+					"authorsnote": "",
+					"worldinfo": [],
+				};
+
+				finalurl = apply_proxy_url(userInput,false);
 				//try to obtain the full portrait image
 				return fetch(finalurl, {
 					method: 'GET',
@@ -12321,13 +12469,64 @@ Current version indicated by LITEVER below.
 		else inputBox(
 			scenario_source.inputBox.text,
 			"Import from " + scenario_source.name,
-			"",
+			getInputBoxValue(),
 			scenario_source.inputBox.placeholder,
 			(value) => {
 				const input = getInputBoxValue().trim();
 				loadScenario(input);
 			}
 		);
+	}
+
+	function import_scenario_unified_dropdown()
+	{
+		let dropdown = document.getElementById("importscenariounifieddropdown");
+		if(dropdown)
+		{
+			let picked = dropdown.value;
+			if(picked!="-1")
+			{
+				import_scenario(scenario_sources[picked]);
+			}
+		}
+	}
+	function import_scenario_unified() //a single button entry point to import from any source
+	{
+		let combined_txt = "Please enter the full URL of the character card to import, or pick a specific website.";
+		let selbox = `Source: <select style="padding:4px; display: inline; width: 200px; padding: 6px 3px;" class="form-control" id="importscenariounifieddropdown" onchange="import_scenario_unified_dropdown()">`;
+		selbox += `<option value="-1">Automatic</option>`;
+		for(let i=0;i<scenario_sources.length;++i)
+		{
+			selbox += `<option value="${i}">${scenario_sources[i].name}</option>`;
+		}
+		selbox += "</select>";
+		combined_txt += "<br>" + selbox;
+
+		inputBox(combined_txt,"Import character card from URL","","Enter full URL to character card",
+		(value) => {
+			const input = getInputBoxValue().trim();
+			let found = -1;
+			for(let i=0;i<scenario_sources.length;++i)
+			{
+				for(let j=0;j<scenario_sources[i].matchers.length;++j)
+				{
+					let curr = scenario_sources[i].matchers[j].toLowerCase();
+					if(curr && input.toLowerCase().includes(curr))
+					{
+						found = i;
+						break;
+					}
+				}
+				if(found!=-1)
+				{
+					break;
+				}
+			}
+			if(found!=-1)
+			{
+				import_scenario(scenario_sources[found],input);
+			}
+		},true);
 	}
 
 	function display_scenarios()
@@ -12340,10 +12539,7 @@ Current version indicated by LITEVER below.
 		scenarios += `<button type="button" name="" class="scenarioitem purple btn btn-primary" onclick="hide_popups();document.getElementById('loadfileinput').click()">Load Character Card or JSON File</button>`;
 		scenarios += `<button type="button" name="" class="scenarioitem purple btn btn-primary" onclick="hide_popups();display_scenariolibrary();">Load or Save Custom Scenario</button>`;
 		scenarios += `<button type="button" name="" class="scenarioitem purple btn btn-primary" onclick="character_creator()">New Character Creator</button>`;
-
-		for(let i=0;i<scenario_sources.length;++i) {
-			scenarios += `<button type="button" name="" class="scenarioitem purple btn btn-primary" onclick="import_scenario(scenario_sources[${i}])">${scenario_sources[i].name}</button>`
-		}
+		scenarios += `<button type="button" name="" class="scenarioitem purple btn btn-primary" onclick="import_scenario_unified()">Import from Website URL</button>`
 
 		for(let i=0;i<scenario_db.length;++i)
 		{
@@ -16311,6 +16507,7 @@ Current version indicated by LITEVER below.
 		document.getElementById("img_clipskip").value = localsettings.img_clipskip;
 		document.getElementById("img_aspect").value = localsettings.img_aspect;
 		document.getElementById("img_sampler").value = localsettings.img_sampler;
+		document.getElementById("img_scheduler").value = localsettings.img_scheduler;
 		document.getElementById("img_steps").value = localsettings.img_steps;
 		document.getElementById("prompt_for_savename").checked = localsettings.prompt_for_savename;
 		document.getElementById("img_allownsfw").checked = localsettings.img_allownsfw;
@@ -17128,6 +17325,7 @@ Current version indicated by LITEVER below.
 		localsettings.img_clipskip = parseInt(document.getElementById("img_clipskip").value);
 		localsettings.img_aspect = parseInt(document.getElementById("img_aspect").value);
 		localsettings.img_sampler = document.getElementById("img_sampler").value;
+		localsettings.img_scheduler = document.getElementById("img_scheduler").value;
 		localsettings.img_steps = parseInt(document.getElementById("img_steps").value);
 		if(isNaN(localsettings.img_steps))
 		{
@@ -22224,6 +22422,14 @@ Current version indicated by LITEVER below.
 			iwidth = 1024;
 			iheight = 1024;
 		}
+		else if (aspectRatio == 7) {
+			iwidth = 768;
+			iheight = 1024;
+		}
+		else if (aspectRatio == 8) {
+			iwidth = 1024;
+			iheight = 768;
+		}
 
 		return {iwidth, iheight}
 	}
@@ -22247,10 +22453,15 @@ Current version indicated by LITEVER below.
 		sentence = sentence.replace(/###/gm, "");
 
 		let usedsampler = localsettings.img_sampler;
+		let usedscheduler = localsettings.img_scheduler;
+		if(usedscheduler=="default")
+		{
+			usedscheduler = null; // not set by default
+		}
 
-		if (localsettings.generate_images_mode==1) {
-			sentence = sanitize_horde_image_prompt(sentence);
-			switch(usedsampler)
+		if (localsettings.generate_images_mode==1) { //horde
+			usedscheduler = null; //horde does not use schedulers
+			switch(usedsampler) //these names are used for horde only
 			{
 				case "Euler a":
 					usedsampler = "k_euler_a";
@@ -22270,11 +22481,43 @@ Current version indicated by LITEVER below.
 				case "DDIM":
 					usedsampler = "DDIM";
 					break;
+				case "LCM":
+					usedsampler = "lcm";
+					break;
 				default:
 					usedsampler = "k_euler";
 					break;
 			}
-
+		}
+		else if(localsettings.generate_images_mode==4)
+		{
+			switch(usedsampler) //these names are used for comfyui only
+			{
+				case "Euler a":
+					usedsampler = "euler_ancestral";
+					break;
+				case "Euler":
+					usedsampler = "euler";
+					break;
+				case "Heun":
+					usedsampler = "heun";
+					break;
+				case "DPM2":
+					usedsampler = "dpm_2";
+					break;
+				case "DPM++ 2M":
+					usedsampler = "dpmpp_2m";
+					break;
+				case "DDIM":
+					usedsampler = "ddim";
+					break;
+				case "LCM":
+					usedsampler = "lcm";
+					break;
+				default:
+					usedsampler = "euler";
+					break;
+			}
 		}
 
 		console.log("Generating image for: " + sentence);
@@ -22313,6 +22556,12 @@ Current version indicated by LITEVER below.
 			"replacement_filter": true,
 			"r2": false
 		}
+
+		if(usedscheduler) //only assign scheduler if its set
+		{
+			genimg_payload["params"]["scheduler"] = usedscheduler;
+		}
+
 		if(base64img!=null && base64img!="")
 		{
 			genimg_payload["source_image"] = base64img;
@@ -25739,7 +25988,8 @@ Current version indicated by LITEVER below.
 						}
 						else
 						{
-							fulltxt += `<hr style="margin-top: 12px; margin-bottom: 12px;">${isHuman ? `<span class="color_kobotext">` : ""}<img class="containAndScaleImage" onclick="classic_click_turn(this,${i})" style="height:38px;width:38px;padding:3px 6px 3px 3px;border-radius: 8%; background-image: ${imageToUse};" />${currmsg}${isHuman ? `</span>` : ""}`;
+							let ariaLabel = isHuman ? "Human Turn" : "AI Turn";
+							fulltxt += `<hr aria-label="${ariaLabel} ${i}" style="margin-top: 12px; margin-bottom: 12px;">${isHuman ? `<span class="color_kobotext">` : ""}<img class="containAndScaleImage" onclick="classic_click_turn(this,${i})" style="height:38px;width:38px;padding:3px 6px 3px 3px;border-radius: 8%; background-image: ${imageToUse};" />${currmsg}${isHuman ? `</span>` : ""}`;
 						}
 					}
 
@@ -26807,6 +27057,9 @@ Current version indicated by LITEVER below.
 	{
 		let chatunits = []; //parse chat body into nice chat chunks
 		let myturnchat = false; //who is currently speaking?
+
+		//fix: because chat operates on actual names, we MUST replace chat name placeholders early on.
+		input = replace_chat_name_placeholders(input,false);
 
 		var othernamesregex = new RegExp("(?!" + localsettings.chatname + ").+?\: ", "gi");
 
@@ -31118,14 +31371,26 @@ Current version indicated by LITEVER below.
 							<div class="settinglabel">
 								<div class="justifyleft">Image sampler <span class="helpicon">?<span class="helptext">What sampler to use for image generation. Euler is recommended.</span></span></div>
 								<div class="push-right">
-									<select title="Image Sampler" class="form-control" id="img_sampler">
+									<select title="Image sampler" class="form-control" id="img_sampler">
 										<option value="Euler">Euler</option>
 										<option value="Euler a">Euler A</option>
 										<option value="Heun">Heun</option>
 										<option value="DPM2">DPM2</option>
-										<option value="LCM">LCM</option>
-										<option value="DDIM">DDIM</option>
 										<option value="DPM++ 2M">DPM++ 2M</option>
+										<option value="DDIM">DDIM</option>
+										<option value="LCM">LCM</option>
+									</select>
+								</div>
+							</div>
+							<div class="settinglabel">
+								<div class="justifyleft">Image scheduler <span class="helpicon">?<span class="helptext">What scheduler to use for image generation.</span></span></div>
+								<div class="push-right">
+									<select title="Image scheduler" class="form-control" id="img_scheduler">
+										<option value="default">default</option>
+										<option value="simple">simple</option>
+										<option value="karras">karras</option>
+										<option value="exponential">exponential</option>
+										<option value="sgm_uniform">sgm_uniform</option>
 									</select>
 								</div>
 							</div>
@@ -31141,6 +31406,8 @@ Current version indicated by LITEVER below.
 										<option value="3">768 x 768</option>
 										<option value="4">512 x 1024</option>
 										<option value="5">1024 x 512</option>
+										<option value="7">768 x 1024</option>
+										<option value="8">1024 x 768</option>
 										<option value="6">1024 x 1024</option>
 									</select>
 								</div>
@@ -31427,7 +31694,7 @@ Current version indicated by LITEVER below.
 					</div>
 					<div id="expandlogitbias" class="settingsbox hidden">
 						<div class="color_red hidden" id="nologitbias">Logit bias may be unavailable.</div>
-						<div><a href='https://platform.openai.com/docs/api-reference/chat/create#chat-create-logit_bias' target='_blank' class='color_blueurl'>Input is a JSON object, reference here.</a><br></div>
+						<div><a href='https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create' target='_blank' class='color_blueurl'>Input is a JSON object, reference here.</a><br></div>
 						<textarea class="menuinput_multiline" style="width:100%;height: 80px;line-height:1.1;padding:4px;" id="logitbiastxtarea" placeholder="" rows="5"></textarea>
 						<div style="display: flex; column-gap: 4px; margin-bottom: 4px;">
 						<input class="menuinput_inline hidden" inputmode="text" type="text" placeholder="Token String" value="" id="newlogitbiasstring">
