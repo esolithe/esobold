@@ -11018,18 +11018,17 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
         elif args.gpulayers==-1 and sys.platform=="darwin" and args.model_param and os.path.exists(args.model_param):
             print("MacOS detected: Auto GPU layers set to maximum")
             args.gpulayers = 200
-        elif not shouldavoidgpu and args.model_param and os.path.exists(args.model_param):
+        elif not shouldavoidgpu:
             if (args.usecuda is None) and (args.usevulkan is None):
                 print("No GPU or CPU backend was selected. Trying to assign one for you automatically...")
                 auto_set_backend_cli()
             if MaxMemory[0] == 0: #try to get gpu vram for cuda if not picked yet
                 fetch_gpu_properties(True,True)
-                pass
             if args.autofit:
                 print("Forced autofit is selected, moecpu and overridetensors will be set automatically.")
                 args.overridetensors = ""
                 args.moecpu = 0
-            if args.gpulayers==-1:
+            if args.gpulayers==-1 and args.model_param and os.path.exists(args.model_param):
                 if (not args.usecpu) and ((args.usecuda is not None) or (args.usevulkan is not None) or sys.platform=="darwin"):
                     if MaxMemory[0] > 0:
                         extract_modelfile_params(args.model_param,args.sdmodel,args.whispermodel,args.mmproj,args.draftmodel,args.ttsmodel if args.ttsgpu else "",args.embeddingsmodel if args.embeddingsgpu else "", args.musicllm, args.musicdiffusion)
