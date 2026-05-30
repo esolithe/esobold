@@ -1304,6 +1304,10 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
         params.vae_tiling_params.tile_size_x = vae_tile_size;
         params.vae_tiling_params.tile_size_y = vae_tile_size;
     }
+    if(dotile)
+    {
+        params.vae_tiling_params.temporal_tiling = true;
+    }
     parse_cache_options(params.cache, sd_params->cache_mode, sd_params->cache_options);
 
     LoraMap lora_map = sd_params->lora_map;
@@ -1366,6 +1370,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
         vid_gen_params.seed = params.seed;
         vid_gen_params.video_frames = vid_req_frames;
         vid_gen_params.fps = vid_fps;
+        vid_gen_params.vae_tiling_params = params.vae_tiling_params;
         if(wan_imgs.size()>0)
         {
             if(wan_imgs.size()>=1)
