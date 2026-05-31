@@ -1371,15 +1371,16 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
         vid_gen_params.video_frames = vid_req_frames;
         vid_gen_params.fps = vid_fps;
         vid_gen_params.vae_tiling_params = params.vae_tiling_params;
-        if(wan_imgs.size()>0)
-        {
-            if(wan_imgs.size()>=1)
-            {
+        if (wan_imgs.size() > 0) {
+            if (wan_imgs.size() >= 2) {
                 vid_gen_params.init_image = wan_imgs[0];
-            }
-            if(wan_imgs.size()>=2)
-            {
-                vid_gen_params.end_image = wan_imgs[1];
+                vid_gen_params.end_image  = wan_imgs[1];
+            } else if (wan_imgs.size() == 1) {
+                if (inputs.reverse_refimg) {
+                    vid_gen_params.end_image = wan_imgs[0];
+                } else {
+                    vid_gen_params.init_image = wan_imgs[0];
+                }
             }
         }
         if(!sd_is_quiet && sddebugmode==1)

@@ -407,6 +407,7 @@ class sd_generation_inputs(ctypes.Structure):
                 ("mask", ctypes.c_char_p),
                 ("extra_images_len", ctypes.c_int),
                 ("extra_images", ctypes.POINTER(ctypes.c_char_p)),
+                ("reverse_refimg", ctypes.c_bool),
                 ("flip_mask", ctypes.c_bool),
                 ("denoising_strength", ctypes.c_float),
                 ("cfg_scale", ctypes.c_float),
@@ -2814,6 +2815,7 @@ def sd_generate(genparams):
     vid_fps = (16 if vid_fps < 16 else (24 if vid_fps > 24 else vid_fps))
 
     swap_refimg = (True if tryparseint(genparams.get("send_as_refimg", 0),0) else False)
+    reverse_refimg = (True if tryparseint(genparams.get("reverse_refimg", 0),0) else False)
     if len(extra_images_arr)==0 and swap_refimg and init_images and init_images!="" and not mask:
         extra_images_arr = [init_images]
         init_images = ""
@@ -2828,6 +2830,7 @@ def sd_generate(genparams):
     for n, estr in enumerate(extra_images_arr):
         extra_image = strip_base64_prefix(estr)
         inputs.extra_images[n] = extra_image.encode("UTF-8")
+    inputs.reverse_refimg = reverse_refimg
     inputs.flip_mask = flip_mask
     inputs.cfg_scale = cfg_scale
     if distilled_guidance is not None:

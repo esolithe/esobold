@@ -223,6 +223,7 @@ struct sd_generation_inputs
     const char * mask = "";
     const int extra_images_len = 0;
     const char ** extra_images = nullptr;
+    const bool reverse_refimg = false;
     const bool flip_mask = false;
     const float denoising_strength = 0.0f;
     const float cfg_scale = 0.0f;
