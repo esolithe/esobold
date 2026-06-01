@@ -447,7 +447,7 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
         printf("Using mmap for I/O\n");
     }
     if(inputs.max_vram != 0.f) {
-        printf("Using max VRAM = %0.2f\n", inputs.max_vram);
+        printf("Using max VRAM = %0.2f GB\n", inputs.max_vram);
     }
     if(inputs.quant > 0)
     {
