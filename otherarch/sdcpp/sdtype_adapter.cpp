@@ -1304,10 +1304,10 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
         params.vae_tiling_params.tile_size_x = vae_tile_size;
         params.vae_tiling_params.tile_size_y = vae_tile_size;
     }
-    if(dotile)
-    {
-        params.vae_tiling_params.temporal_tiling = true;
-    }
+    // if(dotile)
+    // {
+    //     params.vae_tiling_params.temporal_tiling = true;
+    // }
     parse_cache_options(params.cache, sd_params->cache_mode, sd_params->cache_options);
 
     LoraMap lora_map = sd_params->lora_map;
