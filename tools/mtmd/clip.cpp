@@ -5145,8 +5145,8 @@ bool clip_is_llava(const struct clip_ctx * ctx) {
     return ctx->model.hparams.has_llava_projector;
 }
 
-bool clip_is_gemma4(const struct clip_ctx * ctx) { //for kcpp use
-    return ctx->proj_type() == PROJECTOR_TYPE_GEMMA4V;
+bool clip_is_gemma4v(const struct clip_ctx * ctx) { //for kcpp use
+    return (ctx->proj_type() == PROJECTOR_TYPE_GEMMA4V || ctx->proj_type() == PROJECTOR_TYPE_GEMMA4UV);
 }
 
 bool clip_has_vision_encoder(const struct clip_ctx * ctx) {
