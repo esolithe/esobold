@@ -127,6 +127,7 @@ static std::string media_composite_image_signature = ""; //for identifying when 
 static int current_media_identifier = MEDIA_TOKEN_IDENTIFIER_A;
 static int vision_max_res = 2048;
 static bool use_mrope = false;
+static bool vision_use_non_casual = false;
 
 static kcpp_params * kcpp_data = nullptr;
 static int max_context_limit_at_load = 0;
@@ -2007,7 +2008,10 @@ static bool kcpp_eval_media(llama_context * ctx_llama, const media_chunk & media
     const int image_n_past = *n_past;
 
     kcpp_embd_batch media_batch = kcpp_embd_batch(img_embd, num_img_tokens, image_n_past, use_mrope, is2d, img_nx, img_ny);
-
+    if(vision_use_non_casual)
+    {
+        llama_set_causal_attn(llama_ctx_v4, false);
+    }
     for (int i = 0; i < num_img_tokens; i += n_batch) {
         const int n_eval = std::min(n_batch, num_img_tokens - i);
         llama_batch batch_embd_view = media_batch.get_view(i, n_eval, n_embd_mmproj);
@@ -2015,6 +2019,10 @@ static bool kcpp_eval_media(llama_context * ctx_llama, const media_chunk & media
             fprintf(stderr, "\n%s : failed to eval image\n", __func__);
             return false;
         }
+    }
+    if(vision_use_non_casual)
+    {
+        llama_set_causal_attn(llama_ctx_v4, true);
     }
     *n_past += num_img_tokens;
     return true;
@@ -3022,6 +3030,16 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
             if(clp_ctx_v)
             {
                 vision_multimodal_supported = true;
+                int proj_type = clip_get_projector_type_ext(clp_ctx_v);
+                switch (proj_type) {
+                    case PROJECTOR_TYPE_GEMMA3:
+                    case PROJECTOR_TYPE_GEMMA4V:
+                    case PROJECTOR_TYPE_GEMMA4UV:
+                        vision_use_non_casual = true;
+                        break;
+                    default:
+                        break;
+                }
             }
             clp_img_data = clip_image_u8_init();
             if(clp_ctx_a) //init audio
@@ -4833,7 +4851,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                     img_start = "<|begin_of_image|>";
                     img_end = "<|end_of_image|>\n\n";
                 }
-                else if(ptype==PROJECTOR_TYPE_GEMMA4V)
+                else if(ptype==PROJECTOR_TYPE_GEMMA4V || ptype==PROJECTOR_TYPE_GEMMA4UV)
                 {
                     img_start = "<|image>";
                     img_end = "<image|>\n\n";
