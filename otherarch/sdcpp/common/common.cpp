@@ -35,6 +35,22 @@ const char* const modes_str[] = {
     "metadata",
 };
 
+static sd_vae_format_t str_to_vae_format(const std::string& value) {
+    if (value == "auto") {
+        return SD_VAE_FORMAT_AUTO;
+    }
+    if (value == "flux") {
+        return SD_VAE_FORMAT_FLUX;
+    }
+    if (value == "sd3") {
+        return SD_VAE_FORMAT_SD3;
+    }
+    if (value == "flux2") {
+        return SD_VAE_FORMAT_FLUX2;
+    }
+    return SD_VAE_FORMAT_COUNT;
+}
+
 #if defined(_WIN32)
 static std::string utf16_to_utf8(const std::wstring& wstr) {
     if (wstr.empty())
@@ -229,6 +245,7 @@ bool parse_options(int argc, const char** argv, const std::vector<ArgOptions>& o
         return false;
     };
 
+    bool valid = false;
     for (int i = 1; i < argc; i++) {
         arg            = argv[i];
         bool found_arg = false;
@@ -271,7 +288,7 @@ bool parse_options(int argc, const char** argv, const std::vector<ArgOptions>& o
                 break;
 
             if (match_and_apply(options.manual_options, [&](auto& option) {
-                    int ret = option.cb(argc, argv, i);
+                    int ret = option.cb(argc, argv, i, valid);
                     if (ret < 0) {
                         invalid_arg = true;
                         return;
@@ -283,7 +300,9 @@ bool parse_options(int argc, const char** argv, const std::vector<ArgOptions>& o
         }
 
         if (invalid_arg) {
-            LOG_ERROR("error: invalid parameter for argument: %s", arg.c_str());
+            if (!valid) {
+                LOG_ERROR("error: invalid parameter for argument: %s", arg.c_str());
+            }
             return false;
         }
         if (!found_arg) {
@@ -341,6 +360,10 @@ ArgOptions SDContextParams::get_options() {
          "path to the standalone high noise diffusion model",
          &high_noise_diffusion_model_path},
         {"",
+         "--uncond-diffusion-model",
+         "path to the standalone unconditional diffusion model, currently used by Ideogram4 CFG",
+         &uncond_diffusion_model_path},
+        {"",
          "--embeddings-connectors",
          "path to LTXAV embeddings connectors",
          &embeddings_connectors_path},
@@ -348,6 +371,10 @@ ArgOptions SDContextParams::get_options() {
          "--vae",
          "path to standalone vae model",
          &vae_path},
+        {"",
+         "--vae-format",
+         "VAE latent format override: auto, flux, sd3, or flux2 (default: auto)",
+         &vae_format},
         {"",
          "--audio-vae",
          "path to standalone LTX audio vae model",
@@ -418,6 +445,10 @@ ArgOptions SDContextParams::get_options() {
     };
 
     options.bool_options = {
+        {"",
+         "--stream-layers",
+         "enable residency+prefetch streaming on top of --max-vram (no effect without --max-vram; defaults to false)",
+         true, &stream_layers},
         {"",
          "--force-sdxl-vae-conv-scale",
          "force use of conv scale on sdxl vae",
@@ -639,6 +670,11 @@ bool SDContextParams::validate(SDMode mode) {
         }
     }
 
+    if (str_to_vae_format(vae_format) == SD_VAE_FORMAT_COUNT) {
+        LOG_ERROR("error: vae_format must be 'auto', 'flux', 'sd3', or 'flux2'");
+        return false;
+    }
+
     return true;
 }
 
@@ -677,8 +713,10 @@ std::string SDContextParams::to_string() const {
         << "  llm_vision_path: \"" << llm_vision_path << "\",\n"
         << "  diffusion_model_path: \"" << diffusion_model_path << "\",\n"
         << "  high_noise_diffusion_model_path: \"" << high_noise_diffusion_model_path << "\",\n"
+        << "  uncond_diffusion_model_path: \"" << uncond_diffusion_model_path << "\",\n"
         << "  embeddings_connectors_path: \"" << embeddings_connectors_path << "\",\n"
         << "  vae_path: \"" << vae_path << "\",\n"
+        << "  vae_format: \"" << vae_format << "\",\n"
         << "  audio_vae_path: \"" << audio_vae_path << "\",\n"
         << "  taesd_path: \"" << taesd_path << "\",\n"
         << "  esrgan_path: \"" << esrgan_path << "\",\n"
@@ -694,6 +732,7 @@ std::string SDContextParams::to_string() const {
         << "  sampler_rng_type: " << sd_rng_type_name(sampler_rng_type) << ",\n"
         << "  offload_params_to_cpu: " << (offload_params_to_cpu ? "true" : "false") << ",\n"
         << "  max_vram: " << max_vram << ",\n"
+        << "  stream_layers: " << (stream_layers ? "true" : "false") << ",\n"
         << "  backend: \"" << backend << "\",\n"
         << "  params_backend: \"" << params_backend << "\",\n"
         << "  enable_mmap: " << (enable_mmap ? "true" : "false") << ",\n"
@@ -738,6 +777,7 @@ sd_ctx_params_t SDContextParams::to_sd_ctx_params_t(bool vae_decode_only, bool f
         llm_vision_path.c_str(),
         diffusion_model_path.c_str(),
         high_noise_diffusion_model_path.c_str(),
+        uncond_diffusion_model_path.c_str(),
         embeddings_connectors_path.c_str(),
         vae_path.c_str(),
         audio_vae_path.c_str(),
@@ -772,7 +812,9 @@ sd_ctx_params_t SDContextParams::to_sd_ctx_params_t(bool vae_decode_only, bool f
         chroma_use_t5_mask,
         chroma_t5_mask_pad,
         qwen_image_zero_cond_t,
+        str_to_vae_format(vae_format),
         max_vram,
+        stream_layers,
         backend.c_str(),
         params_backend.c_str(),
     };
@@ -833,7 +875,7 @@ ArgOptions SDGenerationParams::get_options() {
          &hires_upscaler},
         {"",
          "--extra-sample-args",
-         "extra sampler/scheduler args, key=value list. lcm supports noise_clip_std, noise_scale_start, noise_scale_end; ltx2 supports max_shift, base_shift, stretch, terminal; euler_ge supports gamma",
+         "extra sampler/scheduler/guidance args, key=value list. APG supports apg_eta, apg_momentum, apg_norm_threshold, apg_norm_threshold_smoothing; SLG supports slg_uncond; lcm supports noise_clip_std, noise_scale_start, noise_scale_end; ltx2 supports max_shift, base_shift, stretch, terminal; euler_ge supports gamma",
          &extra_sample_args},
         {"",
          "--extra-tiling-args",
@@ -913,7 +955,7 @@ ArgOptions SDGenerationParams::get_options() {
          &sample_params.guidance.txt_cfg},
         {"",
          "--img-cfg-scale",
-         "image guidance scale for inpaint or instruct-pix2pix models: (default: same as --cfg-scale)",
+         "image guidance scale for inpaint or image edit models: (default: same as --cfg-scale)",
          &sample_params.guidance.img_cfg},
         {"",
          "--guidance",
@@ -945,7 +987,7 @@ ArgOptions SDGenerationParams::get_options() {
          &high_noise_sample_params.guidance.txt_cfg},
         {"",
          "--high-noise-img-cfg-scale",
-         "(high noise) image guidance scale for inpaint or instruct-pix2pix models (default: same as --cfg-scale)",
+         "(high noise) image guidance scale for inpaint or image edit models (default: same as --cfg-scale)",
          &high_noise_sample_params.guidance.img_cfg},
         {"",
          "--high-noise-guidance",
@@ -2486,6 +2528,7 @@ std::string build_sdcpp_image_metadata_json(const SDContextParams& ctx_params,
     set_json_basename_if_not_empty(models, "llm_vision", ctx_params.llm_vision_path);
     set_json_basename_if_not_empty(models, "diffusion_model", ctx_params.diffusion_model_path);
     set_json_basename_if_not_empty(models, "high_noise_diffusion_model", ctx_params.high_noise_diffusion_model_path);
+    set_json_basename_if_not_empty(models, "uncond_diffusion_model", ctx_params.uncond_diffusion_model_path);
     set_json_basename_if_not_empty(models, "vae", ctx_params.vae_path);
     set_json_basename_if_not_empty(models, "taesd", ctx_params.taesd_path);
     set_json_basename_if_not_empty(models, "control_net", ctx_params.control_net_path);
@@ -2652,6 +2695,9 @@ std::string get_image_params(const SDContextParams& ctx_params,
     }
     if (!ctx_params.diffusion_model_path.empty()) {
         parameter_string += "Unet: " + sd_basename(ctx_params.diffusion_model_path) + ", ";
+    }
+    if (!ctx_params.uncond_diffusion_model_path.empty()) {
+        parameter_string += "Uncond Unet: " + sd_basename(ctx_params.uncond_diffusion_model_path) + ", ";
     }
     if (!ctx_params.vae_path.empty()) {
         parameter_string += "VAE: " + sd_basename(ctx_params.vae_path) + ", ";

@@ -249,6 +249,93 @@ namespace Rope {
         return embed_nd(ids, bs, axis_thetas, axes_dim, wrap_dims, layout);
     }
 
+    __STATIC_INLINE__ std::vector<float> embed_interleaved_mrope(const std::vector<std::vector<float>>& ids,
+                                                                 int bs,
+                                                                 float theta,
+                                                                 int head_dim,
+                                                                 const std::vector<int>& mrope_section) {
+        GGML_ASSERT(bs > 0);
+        GGML_ASSERT(head_dim % 2 == 0);
+        GGML_ASSERT(mrope_section.size() >= 3);
+
+        std::vector<std::vector<float>> trans_ids = transpose(ids);
+        size_t pos_len                            = ids.size() / bs;
+        int half_dim                              = head_dim / 2;
+
+        std::vector<std::vector<std::vector<float>>> axis_embs;
+        axis_embs.reserve(3);
+        for (int axis = 0; axis < 3; ++axis) {
+            axis_embs.push_back(rope(trans_ids[axis], head_dim, theta));
+        }
+
+        std::vector<std::vector<float>> emb = axis_embs[0];
+        for (int axis = 1; axis < 3; ++axis) {
+            int length = std::min<int>(mrope_section[axis] * 3, half_dim);
+            for (int freq_idx = axis; freq_idx < length; freq_idx += 3) {
+                for (size_t pos_idx = 0; pos_idx < bs * pos_len; ++pos_idx) {
+                    for (int k = 0; k < 4; ++k) {
+                        emb[pos_idx][4 * freq_idx + k] = axis_embs[axis][pos_idx][4 * freq_idx + k];
+                    }
+                }
+            }
+        }
+
+        return flatten(emb);
+    }
+
+    __STATIC_INLINE__ std::vector<float> embed_2d_interleaved(int height,
+                                                              int width,
+                                                              int dim,
+                                                              float theta    = 10000.f,
+                                                              float scale    = 16.f,
+                                                              int ref_grid_h = 0,
+                                                              int ref_grid_w = 0) {
+        assert(dim % 4 == 0);
+        int half_dim      = dim / 2;
+        int dim_axis      = dim / 2;
+        int axis_half_dim = dim_axis / 2;
+
+        float h_ntk = 1.f;
+        float w_ntk = 1.f;
+        if (ref_grid_h > 0 && ref_grid_w > 0 && dim_axis > 2) {
+            float power = static_cast<float>(dim_axis) / static_cast<float>(dim_axis - 2);
+            h_ntk       = std::pow(static_cast<float>(height) / static_cast<float>(ref_grid_h), power);
+            w_ntk       = std::pow(static_cast<float>(width) / static_cast<float>(ref_grid_w), power);
+        }
+
+        std::vector<float> x_pos;
+        std::vector<float> y_pos;
+        x_pos.reserve(static_cast<size_t>(height) * width);
+        y_pos.reserve(static_cast<size_t>(height) * width);
+        for (int iy = 0; iy < height; ++iy) {
+            float y = height == 1 ? 0.f : scale * static_cast<float>(iy) / static_cast<float>(height - 1);
+            for (int ix = 0; ix < width; ++ix) {
+                float x = width == 1 ? 0.f : scale * static_cast<float>(ix) / static_cast<float>(width - 1);
+                x_pos.push_back(x);
+                y_pos.push_back(y);
+            }
+        }
+
+        auto x_emb = rope(x_pos, dim_axis, theta * w_ntk);
+        auto y_emb = rope(y_pos, dim_axis, theta * h_ntk);
+
+        std::vector<float> out(static_cast<size_t>(height) * width * half_dim * 4);
+        for (int pos = 0; pos < height * width; ++pos) {
+            for (int i = 0; i < axis_half_dim; ++i) {
+                int jx        = 2 * i;
+                int jy        = 2 * i + 1;
+                size_t base_x = static_cast<size_t>(pos) * half_dim * 4 + static_cast<size_t>(jx) * 4;
+                size_t base_y = static_cast<size_t>(pos) * half_dim * 4 + static_cast<size_t>(jy) * 4;
+                size_t axis   = static_cast<size_t>(i) * 4;
+                for (int k = 0; k < 4; ++k) {
+                    out[base_x + k] = x_emb[pos][axis + k];
+                    out[base_y + k] = y_emb[pos][axis + k];
+                }
+            }
+        }
+        return out;
+    }
+
     __STATIC_INLINE__ std::vector<std::vector<float>> gen_refs_ids(int patch_size,
                                                                    int bs,
                                                                    int axes_dim_num,

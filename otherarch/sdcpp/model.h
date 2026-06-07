@@ -49,6 +49,8 @@ enum SDVersion {
     VERSION_ERNIE_IMAGE,
     VERSION_LENS,
     VERSION_LONGCAT,
+    VERSION_PID,
+    VERSION_IDEOGRAM4,
     VERSION_COUNT,
 };
 
@@ -164,8 +166,22 @@ static inline bool sd_version_is_lens(SDVersion version) {
     return false;
 }
 
+static inline bool sd_version_is_pid(SDVersion version) {
+    if (version == VERSION_PID) {
+        return true;
+    }
+    return false;
+}
+
+static inline bool sd_version_is_ideogram4(SDVersion version) {
+    if (version == VERSION_IDEOGRAM4) {
+        return true;
+    }
+    return false;
+}
+
 static inline bool sd_version_uses_flux2_vae(SDVersion version) {
-    if (sd_version_is_flux2(version) || sd_version_is_ernie_image(version) || sd_version_is_lens(version)) {
+    if (sd_version_is_flux2(version) || sd_version_is_ernie_image(version) || sd_version_is_lens(version) || sd_version_is_ideogram4(version)) {
         return true;
     }
     return false;
@@ -194,7 +210,9 @@ static inline bool sd_version_is_dit(SDVersion version) {
         sd_version_is_z_image(version) ||
         sd_version_is_ernie_image(version) ||
         sd_version_is_lens(version) ||
-        sd_version_is_longcat(version)) {
+        sd_version_is_longcat(version) ||
+        sd_version_is_pid(version) ||
+        sd_version_is_ideogram4(version)) {
         return true;
     }
     return false;

@@ -56,11 +56,42 @@ struct BoolOption {
     bool* target;
 };
 
+struct ManualFunction {
+    std::function<int(int, const char**, int, bool&)> _func;
+
+    ManualFunction() = default;
+
+    ManualFunction(std::function<int(int argc, const char** argv, int index, bool& valid)> func)
+        : _func(std::move(func)) {
+    }
+
+    template <typename F>
+    ManualFunction(F func)
+        : _func(make_function(func)) {
+    }
+
+    int operator()(int argc, const char** argv, int index, bool& valid) const {
+        return _func(argc, argv, index, valid);
+    }
+
+private:
+    template <typename F>
+    static std::function<int(int, const char**, int, bool&)> make_function(F func) {
+        if constexpr (std::is_invocable_v<F, int, const char**, int, bool&>) {
+            return func;
+        } else {
+            return [func](int argc, const char** argv, int index, bool&) {
+                return func(argc, argv, index);
+            };
+        }
+    }
+};
+
 struct ManualOption {
     std::string short_name;
     std::string long_name;
     std::string desc;
-    std::function<int(int argc, const char** argv, int index)> cb;
+    ManualFunction cb;
 };
 
 struct ArgOptions {
@@ -92,8 +123,10 @@ struct SDContextParams {
     std::string llm_vision_path;
     std::string diffusion_model_path;
     std::string high_noise_diffusion_model_path;
+    std::string uncond_diffusion_model_path;
     std::string embeddings_connectors_path;
     std::string vae_path;
+    std::string vae_format = "auto";
     std::string audio_vae_path;
     std::string taesd_path;
     std::string esrgan_path;
@@ -112,6 +145,7 @@ struct SDContextParams {
     rng_type_t sampler_rng_type = RNG_TYPE_COUNT;
     bool offload_params_to_cpu  = false;
     float max_vram              = 0.f;
+    bool stream_layers          = false;
     std::string backend;
     std::string params_backend;
     bool enable_mmap           = false;
