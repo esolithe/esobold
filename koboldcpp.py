@@ -8680,6 +8680,7 @@ def show_gui():
     makecheckbox(context_tab, "Enable Guidance", enableguidance_var, 43,padx=(140), tooltiptxt="Enables the use of Classifier-Free-Guidance, which allows the use of negative prompts. Has performance and memory impact.")
     def togglejinja(a,b,c):
         if jinja_var.get()==1:
+            jinja_tools_var.set(1)
             jinjatoolsbox.grid()
             jinjakwargsbox.grid()
             jinjakwargsboxlbl.grid()
