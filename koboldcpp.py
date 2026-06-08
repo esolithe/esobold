@@ -5009,6 +5009,8 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             if tool_calls and len(tool_calls) > 0:
                 anthropic_reason = "tool_use"
                 content_blocks = []
+                if reasoningtxt and genparams.get('encapsulate_thinking', True):
+                    content_blocks.append({"type": "thinking", "thinking": reasoningtxt})
                 if recvtxt:  # include any text that preceded the tool call
                     content_blocks.append({"type": "text", "text": recvtxt})
                 for tc in tool_calls:
@@ -5027,7 +5029,10 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                     })
             else:
                 anthropic_reason = "end_turn" if currfinishreason == "stop" else ("max_tokens" if currfinishreason == "length" else "stop_sequence")
-                content_blocks = [{"type": "text", "text": recvtxt}]
+                content_blocks = []
+                if reasoningtxt and genparams.get('encapsulate_thinking', True):
+                    content_blocks.append({"type": "thinking", "thinking": reasoningtxt})
+                content_blocks.append({"type": "text", "text": recvtxt})
             res = {
                 "id": f"msg_A{req_id_suffix}",
                 "type": "message",
@@ -5105,6 +5110,9 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         thinkpairs = json.loads(json.dumps(thinkformats))
         responses_first_loop = True
         anthropic_first_loop = True
+        anthropic_thinking_block_open = False  # True while the thinking content_block is open
+        anthropic_text_block_started = False   # True once the text content_block has been opened
+        anthropic_block_index = 0              # current content block index for Anthropic SSE
         rseq_num = 0
         current_token = 0
         prompttokens = 0
@@ -5298,10 +5306,23 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                 elif api_format == 9:
                                     if anthropic_first_loop:
                                         await self.send_anthropic_sse_event("message_start", json.dumps({"type":"message_start","message":{"type":"message","id":f"msg_A{req_id_suffix}","role":"assistant","model":modelNameToReturn,"usage":{"input_tokens":prompttokens,"output_tokens":0}}}))
-                                        await self.send_anthropic_sse_event("content_block_start", json.dumps({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}))
                                         anthropic_first_loop = False
-                                    if delta.get("content"):
-                                        await self.send_anthropic_sse_event("content_block_delta", json.dumps({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":delta["content"]}}))
+                                    reasoning = delta.get("reasoning_content", "")
+                                    content = delta.get("content", "")
+                                    if reasoning and genparams.get('encapsulate_thinking', True):
+                                        if not anthropic_thinking_block_open:
+                                            await self.send_anthropic_sse_event("content_block_start", json.dumps({"type":"content_block_start","index":anthropic_block_index,"content_block":{"type":"thinking","thinking":""}}))
+                                            anthropic_thinking_block_open = True
+                                        await self.send_anthropic_sse_event("content_block_delta", json.dumps({"type":"content_block_delta","index":anthropic_block_index,"delta":{"type":"thinking_delta","thinking":reasoning}}))
+                                    if content:
+                                        if anthropic_thinking_block_open:
+                                            await self.send_anthropic_sse_event("content_block_stop", json.dumps({"type":"content_block_stop","index":anthropic_block_index}))
+                                            anthropic_thinking_block_open = False
+                                            anthropic_block_index += 1
+                                        if not anthropic_text_block_started:
+                                            await self.send_anthropic_sse_event("content_block_start", json.dumps({"type":"content_block_start","index":anthropic_block_index,"content_block":{"type":"text","text":""}}))
+                                            anthropic_text_block_started = True
+                                        await self.send_anthropic_sse_event("content_block_delta", json.dumps({"type":"content_block_delta","index":anthropic_block_index,"delta":{"type":"text_delta","text":content}}))
                                 else:
                                     event_str = json.dumps({"token": tokenStr, "finish_reason":None})
                                     await self.send_kai_sse_event(event_str)
@@ -5376,14 +5397,35 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                             elif api_format == 9: # Anthropic Streaming Format
                                 if anthropic_first_loop:
                                     await self.send_anthropic_sse_event("message_start", json.dumps({"type":"message_start","message":{"type":"message","id":f"msg_A{req_id_suffix}","role":"assistant","model":modelNameToReturn,"usage":{"input_tokens":prompttokens,"output_tokens":0}}}))
-                                    await self.send_anthropic_sse_event("content_block_start", json.dumps({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}))
                                     anthropic_first_loop = False
-                                if delta.get("content") and not genparams.get("sync_toolcall_potential_triggered", False):
-                                    await self.send_anthropic_sse_event("content_block_delta", json.dumps({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":delta["content"]}}))
+                                if not genparams.get("sync_toolcall_potential_triggered", False):
+                                    reasoning = delta.get("reasoning_content", "")
+                                    content = delta.get("content", "")
+                                    if reasoning and genparams.get('encapsulate_thinking', True):
+                                        if not anthropic_thinking_block_open:
+                                            await self.send_anthropic_sse_event("content_block_start", json.dumps({"type":"content_block_start","index":anthropic_block_index,"content_block":{"type":"thinking","thinking":""}}))
+                                            anthropic_thinking_block_open = True
+                                        await self.send_anthropic_sse_event("content_block_delta", json.dumps({"type":"content_block_delta","index":anthropic_block_index,"delta":{"type":"thinking_delta","thinking":reasoning}}))
+                                    if content:
+                                        if anthropic_thinking_block_open:
+                                            await self.send_anthropic_sse_event("content_block_stop", json.dumps({"type":"content_block_stop","index":anthropic_block_index}))
+                                            anthropic_thinking_block_open = False
+                                            anthropic_block_index += 1
+                                        if not anthropic_text_block_started:
+                                            await self.send_anthropic_sse_event("content_block_start", json.dumps({"type":"content_block_start","index":anthropic_block_index,"content_block":{"type":"text","text":""}}))
+                                            anthropic_text_block_started = True
+                                        await self.send_anthropic_sse_event("content_block_delta", json.dumps({"type":"content_block_delta","index":anthropic_block_index,"delta":{"type":"text_delta","text":content}}))
                                 if streamDone and not genparams.get("sync_toolcall_potential_triggered", False):
-                                    # normal end (no tool call triggered) — close the text block and finish
+                                    # normal end (no tool call triggered) — close any open blocks and finish
                                     anthropic_reason = "end_turn" if currfinishreason == "stop" else ("max_tokens" if currfinishreason == "length" else "stop_sequence")
-                                    await self.send_anthropic_sse_event("content_block_stop", json.dumps({"type":"content_block_stop","index":0}))
+                                    if anthropic_thinking_block_open:
+                                        await self.send_anthropic_sse_event("content_block_stop", json.dumps({"type":"content_block_stop","index":anthropic_block_index}))
+                                        anthropic_thinking_block_open = False
+                                        anthropic_block_index += 1
+                                    if not anthropic_text_block_started:
+                                        # edge case: stream ended with only thinking or no content at all — open a text block so we always close one
+                                        await self.send_anthropic_sse_event("content_block_start", json.dumps({"type":"content_block_start","index":anthropic_block_index,"content_block":{"type":"text","text":""}}))
+                                    await self.send_anthropic_sse_event("content_block_stop", json.dumps({"type":"content_block_stop","index":anthropic_block_index}))
                                     await self.send_anthropic_sse_event("message_delta", json.dumps({"type":"message_delta","delta":{"stop_reason":anthropic_reason,"stop_sequence":None},"usage":{"output_tokens":current_token}}))
                                     await self.send_anthropic_sse_event("message_stop", json.dumps({"type":"message_stop"}))
                             else:
