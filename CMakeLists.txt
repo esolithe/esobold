@@ -489,36 +489,36 @@ set_target_properties(common2 PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 add_library(sdtype_adapter
             otherarch/sdcpp/sdtype_adapter.cpp
-            otherarch/sdcpp/ggml_graph_cut.cpp
-            otherarch/sdcpp/ggml_graph_cut.h
-            otherarch/sdcpp/image_metadata.cpp
-            otherarch/sdcpp/layer_registry.cpp
-            otherarch/sdcpp/layer_registry.h
-            otherarch/sdcpp/model.cpp
-            otherarch/sdcpp/sample-cache.cpp
-            otherarch/sdcpp/util.cpp
-            otherarch/sdcpp/name_conversion.cpp
-            otherarch/sdcpp/upscaler.cpp
-            otherarch/sdcpp/guidance.cpp
-            otherarch/sdcpp/guidance.h
-            otherarch/sdcpp/stable-diffusion.cpp
+            otherarch/sdcpp/src/core/ggml_graph_cut.cpp
+            otherarch/sdcpp/src/core/ggml_graph_cut.h
+            otherarch/sdcpp/examples/cli/image_metadata.cpp
+            otherarch/sdcpp/src/core/layer_registry.cpp
+            otherarch/sdcpp/src/core/layer_registry.h
+            otherarch/sdcpp/src/model.cpp
+            otherarch/sdcpp/src/runtime/sample-cache.cpp
+            otherarch/sdcpp/src/core/util.cpp
+            otherarch/sdcpp/src/name_conversion.cpp
+            otherarch/sdcpp/src/upscaler.cpp
+            otherarch/sdcpp/src/runtime/guidance.cpp
+            otherarch/sdcpp/src/runtime/guidance.h
+            otherarch/sdcpp/src/stable-diffusion.cpp
             otherarch/sdcpp/thirdparty/zip.c
-            otherarch/sdcpp/model_io/gguf_io.cpp
-            otherarch/sdcpp/model_io/pickle_io.cpp
-            otherarch/sdcpp/model_io/safetensors_io.cpp
-            otherarch/sdcpp/model_io/torch_legacy_io.cpp
-            otherarch/sdcpp/model_io/torch_zip_io.cpp
-            otherarch/sdcpp/tokenizers/bpe_tokenizer.cpp
-            otherarch/sdcpp/tokenizers/clip_tokenizer.cpp
-            otherarch/sdcpp/tokenizers/mistral_tokenizer.cpp
-            otherarch/sdcpp/tokenizers/qwen2_tokenizer.cpp
-            otherarch/sdcpp/tokenizers/t5_unigram_tokenizer.cpp
-            otherarch/sdcpp/tokenizers/gemma_tokenizer.cpp
-            otherarch/sdcpp/tokenizers/gpt_oss_tokenizer.cpp
-            otherarch/sdcpp/tokenizers/tokenizer.cpp
-            otherarch/sdcpp/tokenizers/tokenize_util.cpp
-            otherarch/sdcpp/ggml_extend_backend.cpp)
-target_include_directories(sdtype_adapter PUBLIC . ./ggml/include ./ggml/src ./ggml/src/ggml-cpu ./include ./otherarch ./otherarch/tools ./vendor/stb ./vendor/nlohmann ./vendor ./otherarch/sdcpp ./otherarch/sdcpp/thirdparty ./tools ./common)
+            otherarch/sdcpp/src/model_io/gguf_io.cpp
+            otherarch/sdcpp/src/model_io/pickle_io.cpp
+            otherarch/sdcpp/src/model_io/safetensors_io.cpp
+            otherarch/sdcpp/src/model_io/torch_legacy_io.cpp
+            otherarch/sdcpp/src/model_io/torch_zip_io.cpp
+            otherarch/sdcpp/src/tokenizers/bpe_tokenizer.cpp
+            otherarch/sdcpp/src/tokenizers/clip_tokenizer.cpp
+            otherarch/sdcpp/src/tokenizers/mistral_tokenizer.cpp
+            otherarch/sdcpp/src/tokenizers/qwen2_tokenizer.cpp
+            otherarch/sdcpp/src/tokenizers/t5_unigram_tokenizer.cpp
+            otherarch/sdcpp/src/tokenizers/gemma_tokenizer.cpp
+            otherarch/sdcpp/src/tokenizers/gpt_oss_tokenizer.cpp
+            otherarch/sdcpp/src/tokenizers/tokenizer.cpp
+            otherarch/sdcpp/src/tokenizers/tokenize_util.cpp
+            otherarch/sdcpp/src/core/ggml_extend_backend.cpp)
+target_include_directories(sdtype_adapter PUBLIC . ./ggml/include ./ggml/src ./ggml/src/ggml-cpu ./include ./otherarch ./otherarch/tools ./vendor/stb ./vendor/nlohmann ./vendor ./otherarch/sdcpp ./otherarch/sdcpp/include ./otherarch/sdcpp/src ./otherarch/sdcpp/examples ./tools ./common)
 target_compile_features(sdtype_adapter PUBLIC cxx_std_17) # don't bump
 target_link_libraries(sdtype_adapter PRIVATE common2 ggml ${LLAMA_EXTRA_LIBS})
 set_target_properties(sdtype_adapter PROPERTIES POSITION_INDEPENDENT_CODE ON)
