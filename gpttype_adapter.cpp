@@ -3427,7 +3427,7 @@ void ApplyPromptFormatAdjustments(std::string & added_memory, std::string & inpu
     }
 }
 
-void AppendDedicatedMemoryAndNegativePrompt(std::vector<int> & embd_inp, const std::vector<int> & embd_inp_mem, const std::vector<int> & negprompt_tokens, int n_predict, int nctx)
+void AppendDedicatedMemoryAndNegativePrompt(std::vector<int> & embd_inp, const std::vector<int> & embd_inp_mem, const std::vector<int> & negprompt_tokens, int n_predict, int nctx, int context_extra = 0)
 {
     //added special memory, overwrite if needed
     if (embd_inp_mem.size() + negprompt_tokens.size() > 0)
@@ -3443,9 +3443,9 @@ void AppendDedicatedMemoryAndNegativePrompt(std::vector<int> & embd_inp, const s
         }
 
         //shorten memory if needed
-        if (embd_inp_mem_copy.size() > 0 && embd_inp_mem_copy.size() + n_predict + 4 > nctx)
+        if (embd_inp_mem_copy.size() > 0 && embd_inp_mem_copy.size() + context_extra + n_predict + 4 > nctx)
         {
-            int offset = embd_inp_mem_copy.size() - nctx + n_predict + 4;
+            int offset = embd_inp_mem_copy.size() + context_extra - nctx + n_predict + 4;
             embd_inp_mem_copy = std::vector<int>(embd_inp_mem_copy.begin() + offset, embd_inp_mem_copy.end());
             //replace bos into front if exists
             if(bos.size()>0 && embd_inp_mem_copy.size()>0)
@@ -3456,7 +3456,7 @@ void AppendDedicatedMemoryAndNegativePrompt(std::vector<int> & embd_inp, const s
 
         //shorten main prompt by trimming the front if needed
         int addmemtokens = embd_inp_mem_copy.size() + negprompt_tokens.size() + 1;
-        int totalsize = (addmemtokens + embd_inp.size() + n_predict);
+        int totalsize = (addmemtokens + context_extra + embd_inp.size() + n_predict);
         if(totalsize > nctx)
         {
             int excess = totalsize - nctx;
@@ -4465,6 +4465,7 @@ static void PrepareMediaEmbds(const int nctx, const std::vector<int> & media_int
         int outrosize = media_outro.size();
         last_media_mem.clear();
         last_media_pos_count = 0;
+        bool has_prepared_media = false;
 
         for(int i=0;i<media_objects.size();++i)
         {
@@ -4516,7 +4517,7 @@ static void PrepareMediaEmbds(const int nctx, const std::vector<int> & media_int
             // Text wrapper tokens consume both equally, so add them after taking the
             // larger media-side requirement.
             int mediactxneeded = std::max(mediatokensneeded, mediaposneeded) + boundarytokensneeded;
-            if(i==0)
+            if(!has_prepared_media)
             {
                 mediactxneeded += introsize + outrosize;
             }
@@ -4524,7 +4525,7 @@ static void PrepareMediaEmbds(const int nctx, const std::vector<int> & media_int
             {
                 int tokcnt = mediatokensneeded + boundarytokensneeded;
                 int poscnt = mediaposneeded + boundarytokensneeded;
-                if(i==0)
+                if(!has_prepared_media)
                 {
                     tokcnt += introsize + outrosize;
                     poscnt += introsize + outrosize;
@@ -4534,9 +4535,19 @@ static void PrepareMediaEmbds(const int nctx, const std::vector<int> & media_int
                     last_media_mem.push_back(current_media_identifier);
                 }
                 last_media_pos_count += poscnt;
+                has_prepared_media = true;
             }
             else
             {
+                for(size_t j=0;j<media_objects[i].mediachunks.size();++j)
+                {
+                    if(media_objects[i].mediachunks[j].mtmd_chunk!=nullptr)
+                    {
+                        mtmd_input_chunk_free(static_cast<mtmd_input_chunk *>(media_objects[i].mediachunks[j].mtmd_chunk));
+                        media_objects[i].mediachunks[j].mtmd_chunk = nullptr;
+                    }
+                }
+                media_objects[i].mediachunks.clear();
                 media_composite_image_signature = ""; //force invalidate
                 printf("\nWarning: Media excluded - Context size too low or not enough mtmd tokens! (needed %d tokens, %d positions, %d boundary tokens)\nMedia will be IGNORED! You probably want to relaunch with a larger context size!\n",mediatokensneeded,mediaposneeded,boundarytokensneeded);
             }
@@ -4967,6 +4978,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
     std::vector<int> embd_inp_mem; //for storing added memory
     std::vector<int> guidance_embd; //holds the guidance prompt
     bool media_embds_built = false;
+    int media_context_extra = 0;
 
     int32_t nctx = kcpp_data->n_ctx;
 
@@ -5029,7 +5041,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
 
              //shorten memory if needed
             const int media_context_size = std::max((int)last_media_mem.size(), last_media_pos_count);
-            const int media_context_extra = media_context_size - (int)last_media_mem.size();
+            media_context_extra = media_context_size - (int)last_media_mem.size();
             if (embd_inp_mem.size() + media_context_extra + kcpp_data->n_predict + 4 > nctx)
             {
                 int limit = nctx - (kcpp_data->n_predict + 4) - media_context_extra;
@@ -5054,7 +5066,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
         }
     }
 
-    AppendDedicatedMemoryAndNegativePrompt(embd_inp, embd_inp_mem, negprompt_tokens, kcpp_data->n_predict, nctx);
+    AppendDedicatedMemoryAndNegativePrompt(embd_inp, embd_inp_mem, negprompt_tokens, kcpp_data->n_predict, nctx, media_context_extra);
 
     //prepare negative prompt
     if(guidance_ctx && negprompt_tokens.size()>0 && inputs.guidance_scale!=1.0f)
