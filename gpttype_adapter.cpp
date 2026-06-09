@@ -4512,6 +4512,9 @@ static void PrepareMediaEmbds(const int nctx, const std::vector<int> & media_int
             {
                 printf("\nMTMD Media %i used Tokens: %d, Positions: %d, Boundary Tokens: %d",i,mediatokensneeded,mediaposneeded,boundarytokensneeded);
             }
+            // Media chunks have two sizes: placeholder/embed tokens and KV positions.
+            // Text wrapper tokens consume both equally, so add them after taking the
+            // larger media-side requirement.
             int mediactxneeded = std::max(mediatokensneeded, mediaposneeded) + boundarytokensneeded;
             if(i==0)
             {
@@ -5025,11 +5028,15 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
             }
 
              //shorten memory if needed
-            if (embd_inp_mem.size() + kcpp_data->n_predict + 4 > nctx)
+            const int media_context_size = std::max((int)last_media_mem.size(), last_media_pos_count);
+            const int media_context_extra = media_context_size - (int)last_media_mem.size();
+            if (embd_inp_mem.size() + media_context_extra + kcpp_data->n_predict + 4 > nctx)
             {
-                int limit = nctx - (kcpp_data->n_predict + 4);
-                if (embd_inp_mem.size() > limit) {
-                    embd_inp_mem.resize(limit);
+                int limit = nctx - (kcpp_data->n_predict + 4) - media_context_extra;
+                const int protected_media_prefix = (int)last_media_mem.size() + (bos.empty() ? 0 : 1);
+                limit = std::max(limit, protected_media_prefix);
+                if (embd_inp_mem.size() > (size_t)limit) {
+                    embd_inp_mem.resize((size_t)limit);
                 }
             }
         }
