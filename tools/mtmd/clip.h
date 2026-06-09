@@ -106,7 +106,6 @@ bool clip_is_llava(const struct clip_ctx * ctx);
 
 bool clip_has_vision_encoder(const struct clip_ctx * ctx);
 bool clip_has_audio_encoder(const struct clip_ctx * ctx);
-bool clip_model_quantize(const char * fname_inp, const char * fname_out, const int itype) ;
 
 int clip_model_n_batch_max(const struct clip_ctx * ctx);
 
