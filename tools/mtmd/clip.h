@@ -100,21 +100,12 @@ struct clip_image_f32 * clip_image_f32_get_img(const struct clip_image_f32_batch
  */
 void clip_build_img_from_pixels(const unsigned char * rgb_pixels, int nx, int ny, struct clip_image_u8 * img);
 
-/** interpret bytes as an image file with length bytes_length, and use the result to populate img */
-bool clip_image_load_from_bytes(const unsigned char * bytes, size_t bytes_length, struct clip_image_u8 * img, const int maxdims);
-
-/** preprocess img and store the result in res_imgs, pad_to_square may be overridden to false depending on model configuration */
-bool clip_image_preprocess(struct clip_ctx * ctx, const struct clip_image_u8 * img, struct clip_image_f32_batch * res_imgs );
-
 bool clip_image_encode      (struct clip_ctx * ctx, int n_threads, struct clip_image_f32 * img, float * vec);
 bool clip_image_batch_encode(struct clip_ctx * ctx, int n_threads, const struct clip_image_f32_batch * imgs, float * vec);
 
-int clip_is_minicpmv(const struct clip_ctx * ctx);
-bool clip_is_glm(const struct clip_ctx * ctx);
-bool clip_is_gemma4v(const struct clip_ctx * ctx);
 bool clip_is_llava(const struct clip_ctx * ctx);
-void set_clip_uses_gpu(bool usegpu);
-int clip_get_projector_type_ext(clip_ctx * ctx);
+// note for contributor: this clip_is_(model) pattern is deprecated
+//                       do NOT add new functions like this
 
 bool clip_encode_float_image (struct clip_ctx * ctx, int n_threads, float * img, int h, int w, float * vec);
 
@@ -123,7 +114,6 @@ void clip_image_f32_batch_add_mel(struct clip_image_f32_batch * batch, int n_mel
 
 bool clip_has_vision_encoder(const struct clip_ctx * ctx);
 bool clip_has_audio_encoder(const struct clip_ctx * ctx);
-
 bool clip_model_quantize(const char * fname_inp, const char * fname_out, const int itype) ;
 
 std::map<ggml_backend_dev_t, size_t> clip_get_mem_usage(const struct clip_ctx * ctx);

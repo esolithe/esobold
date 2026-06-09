@@ -466,6 +466,7 @@ add_library(common2
             tools/mtmd/mtmd.cpp
             tools/mtmd/mtmd.h
             tools/mtmd/mtmd-helper.cpp
+            tools/mtmd/mtmd-image.cpp
             tools/mtmd/mtmd-helper.h
             tools/mtmd/clip.cpp
             tools/mtmd/clip.h

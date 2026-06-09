@@ -1997,18 +1997,12 @@ static void load_grammar(const std::string & gammarstr)
     }
 }
 
-static bool kcpp_eval_media(llama_context * ctx_llama, const media_chunk & mediachunk, int n_batch, int * n_past, bool is2d) {
+static bool kcpp_eval_media(llama_context * ctx_llama, const media_chunk & mediachunk, int n_batch, int * n_past) {
     if (mtmd_ctx && mediachunk.mtmd_chunk) {
         llama_pos new_n_past = *n_past;
-        int32_t result = mtmd_helper_eval_chunk_single(
-            mtmd_ctx,
-            ctx_llama,
-            static_cast<const mtmd_input_chunk *>(mediachunk.mtmd_chunk),
-            *n_past,
-            0,
-            n_batch,
-            false,
-            &new_n_past);
+        int32_t   result     = mtmd_helper_eval_chunk_single(mtmd_ctx, ctx_llama,
+                                                             static_cast<const mtmd_input_chunk *>(mediachunk.mtmd_chunk),
+                                                             *n_past, 0, n_batch, false, &new_n_past);
         if (result != 0) {
             fprintf(stderr, "\n%s : failed to eval mtmd media chunk, status %d\n", __func__, result);
             return false;
@@ -2016,25 +2010,8 @@ static bool kcpp_eval_media(llama_context * ctx_llama, const media_chunk & media
         *n_past = new_n_past;
         return true;
     }
-
-    float * img_embd = mediachunk.clp_img_embd;
-    int num_img_tokens = mediachunk.clp_image_tokens;
-    int img_nx = mediachunk.nx;
-    int img_ny = mediachunk.ny;
-    int n_embd_mmproj  = llama_model_n_embd_inp(llama_get_model(ctx_llama));
-    const int image_n_past = *n_past;
-
-    kcpp_embd_batch media_batch = kcpp_embd_batch(img_embd, num_img_tokens, image_n_past, use_mrope, is2d, img_nx, img_ny);
-    for (int i = 0; i < num_img_tokens; i += n_batch) {
-        const int n_eval = std::min(n_batch, num_img_tokens - i);
-        llama_batch batch_embd_view = media_batch.get_view(i, n_eval, n_embd_mmproj);
-        if (llama_decode(ctx_llama, batch_embd_view)) {
-            fprintf(stderr, "\n%s : failed to eval image\n", __func__);
-            return false;
-        }
-    }
-    *n_past += num_img_tokens;
-    return true;
+    fprintf(stderr, "\n%s : Error, MTMD or media chunk is not initialized!\n", __func__);
+    return false;
 }
 
 //given an old GGUF context and a new context that has some middle portion removed,
@@ -4763,11 +4740,6 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
         {
             for(int j=0;j<media_objects[i].mediachunks.size();++j)
             {
-                if(media_objects[i].mediachunks[j].clp_img_embd!=nullptr)
-                {
-                    free(media_objects[i].mediachunks[j].clp_img_embd);
-                    media_objects[i].mediachunks[j].clp_img_embd = nullptr;
-                }
                 if(media_objects[i].mediachunks[j].mtmd_chunk!=nullptr)
                 {
                     mtmd_input_chunk_free(static_cast<mtmd_input_chunk *>(media_objects[i].mediachunks[j].mtmd_chunk));
@@ -6180,8 +6152,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                                 {
                                     printf("\rProcessing Media Embedding %d (%d tokens)",(i+1), chunk.clp_image_tokens);
                                 }
-                                bool is2d = (media_objects[i].is_audio?false:true);
-                                bool err = kcpp_eval_media(llama_ctx_v4,chunk,kcpp_data->n_batch,&n_past,is2d);
+                                bool err = kcpp_eval_media(llama_ctx_v4,chunk,kcpp_data->n_batch,&n_past);
                                 mediatokensevaled += chunk.clp_image_tokens;
                                 if(!err)
                                 {
