@@ -167,6 +167,8 @@ static bool check_slowness = false; //will display a suggestion to use highprior
 static bool showed_rnn_warning = false;
 static bool highpriority = false;
 static int rnn_reusable_slot_idx = -1;
+static int rnn_lifeboat_slot_idx = -1;
+static bool rnn_lifeboat_hard_reserved = false;
 static std::string overridden_jinja_template = ""; //if set, overrides jinja template
 
 static int delayed_generated_tokens_limit = 0;
@@ -175,6 +177,9 @@ static std::map<int,std::vector<int>> antislop_banned_token_ids; //first is the 
 
 static int savestate_limit = 0;
 static std::vector<savestate_data> savestates;
+static const int smartcache_rnn_lifeboat_min_prompt_tokens = 2048;
+static const int smartcache_rnn_lifeboat_percent = 65;
+static const int smartcache_rnn_lifeboat_extra_slot_min_user_slots = 4;
 
 extern bool kcpp_permit_any_repack;
 
@@ -3003,6 +3008,9 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
 
         //prepare savestate slots
         savestate_limit = inputs.smartcacheslots;
+        rnn_reusable_slot_idx = -1;
+        rnn_lifeboat_slot_idx = -1;
+        rnn_lifeboat_hard_reserved = false;
 
         //if RNN model AND shifting and fastforward is on, enable smartcache
         if((llama_model_is_recurrent(llamamodel) || llama_model_is_hybrid(llamamodel)) && kcpp_data->use_fastforward && kcpp_data->use_contextshift)
@@ -3012,6 +3020,13 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
                 printf("RNN or Hyrbid model with FF and shifting flags enabled - SmartCache will be enabled with extra slots. Disable CtxShift if you do not want this.\n",savestate_limit);
                 kcpp_data->smartcache = true;
                 savestate_limit += 1;
+                rnn_reusable_slot_idx = savestate_limit - 1;
+                if(inputs.smartcacheslots >= smartcache_rnn_lifeboat_extra_slot_min_user_slots)
+                {
+                    savestate_limit += 1;
+                    rnn_lifeboat_slot_idx = savestate_limit - 1;
+                    rnn_lifeboat_hard_reserved = true;
+                }
             }
         }
         savestates.resize(savestate_limit);
@@ -5690,7 +5705,9 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
     bool startedsampling = false;
     bool firstdecodedone = false; //we CANNOT use logits if the first decode has not been executed yet.
     bool v3_use_scratch = true; //for normal inference always use scratch
-    bool rnn_snapshot_taken = false;
+    bool rnn_lifeboat_taken = false;
+    const int rnn_lifeboat_target = (int)((embd_inp.size() * smartcache_rnn_lifeboat_percent) / 100);
+    const bool rnn_lifeboat_enabled = kcpp_data->smartcache && is_recurrent && file_format==FileFormat::GGUF_GENERIC && (int)embd_inp.size() >= smartcache_rnn_lifeboat_min_prompt_tokens;
 
     speculative_draft_result draft_results; //only use if drafting was used
     bool draft_used = false;
@@ -5813,7 +5830,6 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                             {
                                 //directly snapshot for a small batch
                                 smartcache_quick_snapshot();
-                                rnn_snapshot_taken = true;
                             }
                             else
                             {
@@ -5827,7 +5843,6 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                                     if(p==parts.size()-1)
                                     {
                                         smartcache_quick_snapshot();
-                                        rnn_snapshot_taken = true;
                                     }
                                     std::vector<gpt_vocab::id> chunk = parts[p];
                                     kcpp_embd_batch smallbatch = kcpp_embd_batch(chunk, temp_past, use_mrope, draft_is_mtp);
@@ -5975,6 +5990,12 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
         }
 
         n_past += embd.size();
+        if(rnn_lifeboat_enabled && !rnn_lifeboat_taken && !startedsampling && n_past >= rnn_lifeboat_target && input_consumed < (int)embd_inp.size())
+        {
+            int lifeboat_slot = rnn_lifeboat_hard_reserved ? smartcache_quick_snapshot(rnn_lifeboat_slot_idx) : smartcache_quick_snapshot();
+            printf("\n[SmartCache RNN Lifeboat: Saved %zu-token checkpoint into slot %d%s]\n",current_context_tokens.size(),lifeboat_slot,(rnn_lifeboat_hard_reserved ? "" : " (soft)"));
+            rnn_lifeboat_taken = true;
+        }
         embd.clear();
 
         if (!early_abort && (int)embd_inp.size() <= input_consumed) //if decoding was aborted, DO NOT perform any sampling
@@ -6015,21 +6036,13 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                  //if running rnn model in smartcache mode, save progress before each gen
                 if(kcpp_data->smartcache && is_recurrent && file_format==FileFormat::GGUF_GENERIC && current_context_tokens.size() > 32)
                 {
-                    if(!rnn_snapshot_taken)
+                    if(rnn_reusable_slot_idx!=-1)
                     {
-                        smartcache_quick_snapshot();
+                        smartcache_quick_snapshot(rnn_reusable_slot_idx);
                     }
                     else
                     {
-                        //snapshot to specific slot only
-                        if(rnn_reusable_slot_idx!=-1)
-                        {
-                            smartcache_quick_snapshot(rnn_reusable_slot_idx);
-                        }
-                        else
-                        {
-                            rnn_reusable_slot_idx = smartcache_quick_snapshot();
-                        }
+                        smartcache_quick_snapshot();
                     }
                 }
             }
@@ -6868,7 +6881,11 @@ int get_oldest_slot(int excludeSlotId)
     int slotid = 0;
     for(int i=0;i<savestate_limit;++i)
     {
-        if(savestates[i].last_used <= slotage && i!=excludeSlotId)
+        if(i==excludeSlotId || (rnn_lifeboat_hard_reserved && i==rnn_lifeboat_slot_idx))
+        {
+            continue;
+        }
+        if(savestates[i].last_used <= slotage)
         {
             slotage = savestates[i].last_used;
             slotid = i;
