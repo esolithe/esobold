@@ -4780,11 +4780,71 @@ static void PrepareMediaEmbds(const int nctx, const std::vector<int> & media_int
     }
 }
 
+static const int smartcache_snapshot_min_spacing = 150;
+
+static bool smartcache_prefix_compatible(const std::vector<gpt_vocab::id> & a, const std::vector<gpt_vocab::id> & b)
+{
+    const size_t min_size = std::min(a.size(), b.size());
+    for(size_t i=0;i<min_size;++i)
+    {
+        if(a[i]!=b[i])
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+static int get_nearby_compatible_smartcache_slot()
+{
+    int best_slot = -1;
+    size_t best_size = (size_t)-1;
+    const size_t currctxsize = current_context_tokens.size();
+    for(int i=0;i<savestate_limit;++i)
+    {
+        const auto & slot_tokens = savestates[i].savestate_context_tokens;
+        if(slot_tokens.empty() || savestates[i].media_signature!=media_composite_image_signature)
+        {
+            continue;
+        }
+        const size_t slot_size = slot_tokens.size();
+        const size_t distance = slot_size > currctxsize ? slot_size - currctxsize : currctxsize - slot_size;
+        if(distance > smartcache_snapshot_min_spacing)
+        {
+            continue;
+        }
+        if(!smartcache_prefix_compatible(slot_tokens,current_context_tokens))
+        {
+            continue;
+        }
+        if(slot_size < best_size)
+        {
+            best_size = slot_size;
+            best_slot = i;
+        }
+    }
+    return best_slot;
+}
+
 int smartcache_quick_snapshot(int specific_slot = -1)
 {
     int identical_slot = get_identical_existing_slot();
     if(identical_slot==-1)
     {
+        if(specific_slot==-1)
+        {
+            int nearby_slot = get_nearby_compatible_smartcache_slot();
+            if(nearby_slot!=-1)
+            {
+                if(savestates[nearby_slot].savestate_context_tokens.size() <= current_context_tokens.size())
+                {
+                    touch_slot(nearby_slot);
+                    return nearby_slot;
+                }
+                gpttype_save_state_kv(nearby_slot);
+                return nearby_slot;
+            }
+        }
         if(specific_slot!=-1)
         {
             gpttype_save_state_kv(specific_slot);
@@ -4796,7 +4856,6 @@ int smartcache_quick_snapshot(int specific_slot = -1)
             gpttype_save_state_kv(oldest_slot);
             return oldest_slot;
         }
-
     }
     else
     {
