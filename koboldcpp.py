@@ -9689,7 +9689,7 @@ Change Mode<br>
                 response_code = 400
                 response_body = (json.dumps({"value": -1}).encode())
 
-        elif self.path.endswith('/api/extra/fs/write_lines'):
+        elif clean_path.endswith('/api/extra/fs/write_lines'):
             if not fs_is_enabled():
                 response_code = 503
                 response_body = (json.dumps({"success": False, "error": "Filesystem is disabled. Set --fsmaxsize > 0 to enable it."}).encode())
@@ -9731,7 +9731,7 @@ Change Mode<br>
                     response_code = 400
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
 
-        elif self.path.endswith('/api/extra/fs/mkdir'):
+        elif clean_path.endswith('/api/extra/fs/mkdir'):
             if not fs_is_enabled():
                 response_code = 503
                 response_body = (json.dumps({"success": False, "error": "Filesystem is disabled. Set --fsmaxsize > 0 to enable it."}).encode())
@@ -9758,7 +9758,7 @@ Change Mode<br>
                     response_code = 400
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
 
-        elif self.path.endswith('/api/extra/fs/rmdir'):
+        elif clean_path.endswith('/api/extra/fs/rmdir'):
             if not fs_is_enabled():
                 response_code = 503
                 response_body = (json.dumps({"success": False, "error": "Filesystem is disabled. Set --fsmaxsize > 0 to enable it."}).encode())
@@ -9786,7 +9786,7 @@ Change Mode<br>
                     response_code = 400
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
 
-        elif self.path.endswith('/api/extra/fs/delete'):
+        elif clean_path.endswith('/api/extra/fs/delete'):
             if not fs_is_enabled():
                 response_code = 503
                 response_body = (json.dumps({"success": False, "error": "Filesystem is disabled. Set --fsmaxsize > 0 to enable it."}).encode())
@@ -9813,7 +9813,7 @@ Change Mode<br>
                     response_code = 400
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
 
-        elif self.path.endswith('/api/extra/fs/write'):
+        elif clean_path.endswith('/api/extra/fs/write'):
             if not fs_is_enabled():
                 response_code = 503
                 response_body = (json.dumps({"success": False, "error": "Filesystem is disabled. Set --fsmaxsize > 0 to enable it."}).encode())
@@ -9843,7 +9843,7 @@ Change Mode<br>
                     response_code = 400
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
 
-        elif self.path.endswith('/api/extra/fs/move'):
+        elif clean_path.endswith('/api/extra/fs/move'):
             if not fs_is_enabled():
                 response_code = 503
                 response_body = (json.dumps({"success": False, "error": "Filesystem is disabled. Set --fsmaxsize > 0 to enable it."}).encode())
@@ -9878,7 +9878,7 @@ Change Mode<br>
                     response_code = 400
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
 
-        elif self.path.endswith('/api/extra/fs/copy'):
+        elif clean_path.endswith('/api/extra/fs/copy'):
             if not fs_is_enabled():
                 response_code = 503
                 response_body = (json.dumps({"success": False, "error": "Filesystem is disabled. Set --fsmaxsize > 0 to enable it."}).encode())
@@ -9915,7 +9915,7 @@ Change Mode<br>
                     response_code = 400
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
 
-        elif self.path.endswith('/api/extra/fs/replace_regex'):
+        elif clean_path.endswith('/api/extra/fs/replace_regex'):
             if not fs_is_enabled():
                 response_code = 503
                 response_body = (json.dumps({"success": False, "error": "Filesystem is disabled. Set --fsmaxsize > 0 to enable it."}).encode())
@@ -9956,7 +9956,7 @@ Change Mode<br>
                     response_code = 400
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
 
-        elif self.path.endswith('/api/extra/fs/semantic_search'):
+        elif clean_path.endswith('/api/extra/fs/semantic_search'):
             if not fs_is_enabled():
                 response_code = 503
                 response_body = (json.dumps({"success": False, "error": "Filesystem is disabled. Set --fsmaxsize > 0 to enable it."}).encode())
@@ -9995,7 +9995,7 @@ Change Mode<br>
                     response_code = 400
                     response_body = (json.dumps({"success": False, "error": str(e)}).encode())
 
-        elif self.path.endswith('/api/extra/fs/search_all_documents'):
+        elif clean_path.endswith('/api/extra/fs/search_all_documents'):
             try:
                 tempbody = json.loads(body)
                 search_query = tempbody.get('search_query', '')
@@ -10018,7 +10018,7 @@ Change Mode<br>
                 response_code = 400
                 response_body = (json.dumps({"success": False, "error": str(e)}).encode())
 
-        elif self.path.endswith('/api/extra/fs/upload'):
+        elif clean_path.endswith('/api/extra/fs/upload'):
             if not fs_is_enabled():
                 response_code = 503
                 response_body = (json.dumps({"success": False, "error": "Filesystem is disabled. Set --fsmaxsize > 0 to enable it."}).encode())
@@ -10343,7 +10343,7 @@ Change Mode<br>
                 jsonArray = json.dumps(saves)
                 response_body = (jsonArray).encode()
 
-        elif "/api/data/metadata" == self.path: # Gets metadata about the save types and groups
+        elif "/api/data/metadata" == clean_path: # Gets metadata about the save types and groups
             if not args.admin:
                 response_body = (json.dumps({"success": False, "error": "Data API disabled"}).encode())
             elif args.admindatadir == "":
@@ -10355,7 +10355,7 @@ Change Mode<br>
                 jsonArray = json.dumps(dataMetadata)
                 response_body = (jsonArray).encode()
 
-        elif "/api/data/get" == self.path: # Gets saved data from the server
+        elif "/api/data/get" == clean_path: # Gets saved data from the server
             if not args.admin:
                 response_body = (json.dumps({"success": False, "error": "Data API disabled"}).encode())
             elif args.admindatadir == "":
@@ -10379,7 +10379,7 @@ Change Mode<br>
                 else:
                     response_body = ("\{\}").encode()
         
-        elif "/api/data/put" == self.path: # Saves data to the server (validating it as well)
+        elif "/api/data/put" == clean_path: # Saves data to the server (validating it as well)
             if not args.admin:
                 response_body = (json.dumps({"success": False, "error": "Data API disabled"}).encode())
             elif not self.check_header_password(args.adminpassword):
@@ -10436,7 +10436,7 @@ Change Mode<br>
                                     response_body = (json.dumps({"success": True}).encode())
                     else:
                         response_body = (json.dumps({"success": False, "error": "Save already exists or no save name provided"}).encode())
-        elif "/api/data/delete" == self.path: # Delete data saved on the server
+        elif "/api/data/delete" == clean_path: # Delete data saved on the server
             if not args.admin:
                 response_body = (json.dumps({"success": False, "error": "Data API disabled"}).encode())
             elif not self.check_header_password(args.adminpassword):
@@ -10461,7 +10461,7 @@ Change Mode<br>
                     else:
                         response_body = (json.dumps({"success": False, "error": "Save does not exists or no save name provided"}).encode())
 
-        elif self.path.startswith(("/api/admin/reload_config")): # Reload the config (and optionally provide a model override)
+        elif clean_path.startswith(("/api/admin/reload_config")): # Reload the config (and optionally provide a model override)
             resp = {"success": False}
             if global_memory and args.admin and args.admindir and os.path.exists(args.admindir) and self.check_header_password(args.adminpassword):
                 targetfile = ""
@@ -10743,7 +10743,7 @@ Change Mode<br>
                     is_comfyui_imggen = True
                 elif clean_path.endswith('/v1/images/generations') or clean_path=="/images/generations":
                     is_oai_imggen = True
-            elif self.path.endswith('/api/extra/extractText'):
+            elif clean_path.endswith('/api/extra/extractText'):
                 is_extract_text = True
 
             elif clean_path.endswith('/api/extra/transcribe') or clean_path.endswith('/v1/audio/transcriptions') or clean_path=="/audio/transcriptions":
@@ -10924,7 +10924,7 @@ Change Mode<br>
                                                         "arguments": block.get("input", {})  # already a dict
                                                     }
                                                 })
-                            except Exception:
+                                except Exception:
                                     toolsdata_res = []
 
                             if api_format == 9: # Anthropic fake-stream for tool calls
