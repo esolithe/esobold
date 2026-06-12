@@ -51,6 +51,7 @@ struct load_model_inputs
     const int visionmaxtokens = -1;
     const bool use_mmap = false;
     const bool use_mlock = false;
+    const bool use_mtp = false;
     const bool use_smartcontext = false;
     const bool use_contextshift = false;
     const bool use_fastforward = false;
@@ -223,6 +224,7 @@ struct sd_generation_inputs
     const char * mask = "";
     const int extra_images_len = 0;
     const char ** extra_images = nullptr;
+    const bool reverse_refimg = false;
     const bool flip_mask = false;
     const float denoising_strength = 0.0f;
     const float cfg_scale = 0.0f;
@@ -256,6 +258,7 @@ struct sd_generation_outputs
     int animated = 0;
     const char * data = "";
     const char * data_extra = "";
+    const char * final_frame = ""; //for videos to allow extend
     const char * info = "";
 };
 struct sd_upscale_inputs

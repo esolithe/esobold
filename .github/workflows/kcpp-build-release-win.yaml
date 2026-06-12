@@ -176,7 +176,6 @@ jobs:
           name: koboldcpp_tools
           path: |
             gguf-split.exe
-            quantize_clip.exe
             quantize_gguf.exe
             whispermain.exe
             sdmain.exe
@@ -193,7 +192,6 @@ jobs:
           Compress-Archive `
             -Path `
               gguf-split.exe,
-              quantize_clip.exe,
               quantize_gguf.exe,
               whispermain.exe,
               sdmain.exe,

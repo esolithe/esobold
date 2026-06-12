@@ -511,10 +511,11 @@ struct mpt_model {
 
 struct media_chunk
 {
-   int32_t clp_image_tokens = 0; //holds number of tokens llava used in this chunk
-   float * clp_img_embd = nullptr; //this holds dynamic memory and must be freed each use!
-   int32_t nx = 0; //only used for 2d roped images
-   int32_t ny = 0;
+    bool is_audio = false; //if true its audio, otherwise its vision
+    void * mtmd_chunk = nullptr; // mtmd_input_chunk, owned by this chunk
+    int32_t clp_image_tokens = 0; //holds number of tokens used in this chunk
+    int32_t nx = 0; //only used for 2d roped images
+    int32_t ny = 0;
 };
 struct media_object
 {
@@ -528,9 +529,11 @@ struct media_object
 struct speculative_draft_result
 {
     std::vector<int32_t> draftids;
+    std::vector<int32_t> verify_tokens;
     std::vector<float *> actual_logits;
     bool draft_success = false;
     int drafted_amount = 0;
+    int verify_n_past = 0;
 };
 
 struct savestate_data
