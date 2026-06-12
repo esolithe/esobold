@@ -117,7 +117,7 @@ static llama_v2_context * llama_ctx_v2 = nullptr;
 static llama_v3_context * llama_ctx_v3 = nullptr;
 static llama_context * llama_ctx_v4 = nullptr;
 static llama_context * draft_ctx = nullptr; //will remain null if speculative is unused
-static common_speculative * draft_spec = nullptr; // llama.cpp speculative state, used for MTP draft heads
+static common_speculative * draft_spec = nullptr; // llama.cpp speculative state for draft model / MTP drafting
 static bool draft_is_mtp = false;
 static bool mtp_uses_spec_checkpoint = false;
 static common_prompt_checkpoint mtp_spec_ckpt;
@@ -664,24 +664,36 @@ const char * kcpp_print_system_info(void) {
     return s.c_str();
 }
 
-static bool mtp_speculative_state_setup(llama_context * main_ctx, const llama_context_params & mtp_ctx_params, int draft_gpulayers)
+static bool speculative_state_setup(llama_context * main_ctx, const llama_context_params & draft_ctx_params, int draft_gpulayers, common_speculative_type type)
 {
     common_params_speculative spec_params;
-    spec_params.types = { COMMON_SPECULATIVE_TYPE_DRAFT_MTP };
+    spec_params.types = { type };
     spec_params.draft.ctx_tgt = main_ctx;
     spec_params.draft.ctx_dft = draft_ctx;
     spec_params.draft.n_max = speculative_chunk_amt;
     spec_params.draft.n_min = 0;
     spec_params.draft.p_min = 0.0f;
-    spec_params.draft.backend_sampling = false;
+    spec_params.draft.backend_sampling = true;
     spec_params.draft.n_gpu_layers = draft_gpulayers;
-    spec_params.draft.cache_type_k = mtp_ctx_params.type_k;
-    spec_params.draft.cache_type_v = mtp_ctx_params.type_v;
+    spec_params.draft.cache_type_k = draft_ctx_params.type_k;
+    spec_params.draft.cache_type_v = draft_ctx_params.type_v;
 
-    draft_spec = common_speculative_init(spec_params, 1);
+    try
+    {
+        draft_spec = common_speculative_init(spec_params, 1);
+    }
+    catch(const std::exception & e)
+    {
+        printf("Error: failed to initialize speculative decoding state: %s\n", e.what());
+        llama_free(draft_ctx);
+        draft_ctx = nullptr;
+        draft_is_mtp = false;
+        return false;
+    }
+
     if(draft_spec == nullptr)
     {
-        printf("Error: failed to initialize MTP speculative decoding state.\n");
+        printf("Error: failed to initialize speculative decoding state.\n");
         llama_free(draft_ctx);
         draft_ctx = nullptr;
         draft_is_mtp = false;
@@ -715,7 +727,7 @@ static void mtp_decoding_setup(llama_model * main_model, llama_context * main_ct
     }
 
     draft_is_mtp = true;
-    mtp_speculative_state_setup(main_ctx, mtp_ctx_params, 0);
+    speculative_state_setup(main_ctx, mtp_ctx_params, 0, COMMON_SPECULATIVE_TYPE_DRAFT_MTP);
 }
 
 //loads a model for speculative decoding.
@@ -816,15 +828,19 @@ static void speculative_decoding_setup(std::string spec_model_filename, llama_co
 
         if(draft_ctx && draft_is_mtp)
         {
-            mtp_speculative_state_setup(main_ctx, draft_ctx_params, draft_gpulayers);
+            speculative_state_setup(main_ctx, draft_ctx_params, draft_gpulayers, COMMON_SPECULATIVE_TYPE_DRAFT_MTP);
+        }
+        else if(draft_ctx)
+        {
+            speculative_state_setup(main_ctx, draft_ctx_params, draft_gpulayers, COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE);
         }
     }
 }
 
-static int32_t kcpp_decode_main_and_mtp_spec(llama_context * main_ctx, llama_batch batch)
+static int32_t kcpp_decode_main_and_spec(llama_context * main_ctx, llama_batch batch)
 {
     const int32_t decode_status = llama_decode(main_ctx, batch);
-    if(decode_status == 0 && draft_spec && draft_is_mtp)
+    if(decode_status == 0 && draft_spec)
     {
         if(draft_ctx && llama_get_ctx_other(draft_ctx) != main_ctx && batch.n_tokens > 0 && batch.n_seq_id[0] > 0)
         {
@@ -832,89 +848,34 @@ static int32_t kcpp_decode_main_and_mtp_spec(llama_context * main_ctx, llama_bat
         }
         if(!common_speculative_process(draft_spec, batch))
         {
-            printf("\nERROR: MTP speculative state update failed!\n");
+            printf("\nERROR: Speculative state update failed!\n");
             return -1;
         }
     }
     return decode_status;
 }
 
-static speculative_draft_result speculative_decoding_eval_chunk(llama_context * draft_ctx, llama_context * main_ctx, const llama_tokens & embd, const int n_vocab, const int & n_past)
-{
-    speculative_draft_result results;
-    results.draft_success = false;
-    if(embd.size()==0)
-    {
-        printf("\nERROR: Speculate on empty batch!\n");
-        return results;
-    }
-    if(embd.size()>1)
-    {
-        printf("\nERROR: Speculative decoding applied on large batch!\n");
-        return results;
-    }
-    int draft_npast = n_past;
-    int actual_npast = n_past;
-    std::vector<int> temp_embd;
-    std::vector<int> drafted_ids;
-    temp_embd.push_back(embd[0]);
-    drafted_ids.push_back(embd[0]);
-    for(int i=0;i<speculative_chunk_amt;++i)
-    {
-        kcpp_embd_batch batch1 = kcpp_embd_batch(temp_embd, draft_npast, false, false);
-        auto draftok = (llama_decode(draft_ctx, batch1.batch)==0);
-        if(!draftok)
-        {
-            printf("\nERROR: Speculative draft model 1 failed!\n");
-            return results;
-        }
-        float * draftlogits = llama_get_logits(draft_ctx);
-        //greedy sample the draft model
-        int topid = std::max_element(draftlogits, draftlogits + n_vocab) - draftlogits;
-        drafted_ids.push_back(topid);
-        temp_embd.clear();
-        temp_embd.push_back(topid);
-        ++draft_npast;
-    }
-    //now that we have our drafted tokens, we form a batch and PP it
-
-    std::vector<int> real_embd = drafted_ids;
-    real_embd.pop_back();
-
-    kcpp_embd_batch batch2 = kcpp_embd_batch(real_embd, actual_npast, use_mrope, true);
-    auto draftok = (llama_decode(main_ctx, batch2.batch)==0); //actual eval for big model
-    if(!draftok)
-    {
-        printf("\nERROR: Speculative draft model 2 failed!\n");
-        return results;
-    }
-    results.drafted_amount = 0;
-    for(int i=0;i<drafted_ids.size()-1;++i)
-    {
-         results.drafted_amount += 1;
-        float * fulllogits = llama_get_logits_ith(main_ctx,i);
-        results.draftids.push_back(drafted_ids[i+1]);
-        results.actual_logits.push_back(fulllogits);
-    }
-    results.draft_success = true;
-    return results;
-}
-
-static speculative_draft_result speculative_decoding_eval_mtp_chunk(llama_context * main_ctx, const llama_tokens & embd, const int & n_past)
+static speculative_draft_result speculative_decoding_eval_chunk(llama_context * main_ctx, const llama_tokens & embd, const int & n_past)
 {
     speculative_draft_result results;
     results.draft_success = false;
     if(embd.size()!=1 || draft_spec==nullptr)
     {
-        printf("\nERROR: MTP speculative decoding applied to invalid batch!\n");
+        printf("\nERROR: Speculative decoding applied to invalid batch!\n");
         return results;
     }
 
     std::vector<llama_token> drafted_ids;
-    llama_tokens prompt_tokens(current_context_tokens.begin(), current_context_tokens.end());
+    llama_tokens prompt_tokens;
+    const int n_draft_max = std::min(speculative_chunk_amt, std::max(0, remaining_tokens - 1));
+    if(n_draft_max <= 0)
+    {
+        return results;
+    }
+
     auto & dp = common_speculative_get_draft_params(draft_spec, 0);
     dp.drafting = true;
-    dp.n_max = speculative_chunk_amt;
+    dp.n_max = n_draft_max;
     dp.n_past = n_past;
     dp.id_last = embd[0];
     dp.prompt = &prompt_tokens;
@@ -923,7 +884,7 @@ static speculative_draft_result speculative_decoding_eval_mtp_chunk(llama_contex
     common_speculative_draft(draft_spec);
     if(drafted_ids.empty())
     {
-        printf("\nERROR: MTP draft model produced no draft tokens!\n");
+        printf("\nERROR: Draft model produced no draft tokens!\n");
         return results;
     }
 
@@ -952,10 +913,10 @@ static speculative_draft_result speculative_decoding_eval_mtp_chunk(llama_contex
     }
 
     kcpp_embd_batch batch = kcpp_embd_batch(real_embd, n_past, use_mrope, true);
-    const int32_t decode_status = kcpp_decode_main_and_mtp_spec(main_ctx, batch.batch);
+    const int32_t decode_status = kcpp_decode_main_and_spec(main_ctx, batch.batch);
     if(decode_status != 0)
     {
-        printf("\nERROR: MTP speculative verification failed! (code:%d)\n", decode_status);
+        printf("\nERROR: Speculative verification failed! (code:%d)\n", decode_status);
         return results;
     }
 
@@ -5813,7 +5774,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                     }
                     guidance_n_past += 1;
                 }
-                if(embd.size()!=1 || draft_ctx==nullptr || remaining_tokens<=speculative_chunk_amt || grammar!=nullptr || startedsampling==false) //for large batch, or if no draft model, PP/TG as usual
+                if(embd.size()!=1 || draft_ctx==nullptr || draft_spec==nullptr || remaining_tokens<=1 || grammar!=nullptr || startedsampling==false) //for large batch, or if no draft model, PP/TG as usual
                 {
                     draft_used = false;
                     kcpp_embd_batch batch = kcpp_embd_batch(embd, n_past, use_mrope, draft_is_mtp);
@@ -5846,7 +5807,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                                     }
                                     std::vector<gpt_vocab::id> chunk = parts[p];
                                     kcpp_embd_batch smallbatch = kcpp_embd_batch(chunk, temp_past, use_mrope, draft_is_mtp);
-                                    decode_status = kcpp_decode_main_and_mtp_spec(llama_ctx_v4, smallbatch.batch);
+                                    decode_status = kcpp_decode_main_and_spec(llama_ctx_v4, smallbatch.batch);
                                     if(p==0 && decode_status==1)
                                     {
                                         skipdecodelater = false;
@@ -5861,7 +5822,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
 
                     if(!skipdecodelater)
                     {
-                        decode_status = kcpp_decode_main_and_mtp_spec(llama_ctx_v4, batch.batch);
+                        decode_status = kcpp_decode_main_and_spec(llama_ctx_v4, batch.batch);
                         if(decode_status==1 && embd.size()>128)
                         {
                             printf("Couldn't find a big KV slot. Retry with smaller batch size of 128...\n");
@@ -5872,7 +5833,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                             {
                                 std::vector<gpt_vocab::id> chunk = parts[p];
                                 kcpp_embd_batch smallbatch = kcpp_embd_batch(chunk, temp_past, use_mrope, draft_is_mtp);
-                                int32_t decode_status2 = kcpp_decode_main_and_mtp_spec(llama_ctx_v4, smallbatch.batch);
+                                int32_t decode_status2 = kcpp_decode_main_and_spec(llama_ctx_v4, smallbatch.batch);
                                 if(debugmode==1 && !is_quiet)
                                 {
                                     printf("Retry chunk: %zu at %d... status: %s\n",chunk.size(),temp_past,(decode_status2==0?"ok":"fail"));
@@ -5887,25 +5848,14 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                         }
                     }
 
-                    if(draft_ctx && !draft_is_mtp)
-                    {
-                        evalres = (evalres && (llama_decode(draft_ctx, batch.batch)==0));
-                    }
                 } else { //individual tokens AND speculative is used (generation)
                     draft_used = true;
-                    if(draft_is_mtp)
-                    {
-                        draft_results = speculative_decoding_eval_mtp_chunk(llama_ctx_v4, embd, n_past);
-                    }
-                    else
-                    {
-                        draft_results = speculative_decoding_eval_chunk(draft_ctx, llama_ctx_v4, embd, n_vocab, n_past);
-                    }
+                    draft_results = speculative_decoding_eval_chunk(llama_ctx_v4, embd, n_past);
                     evalres = draft_results.draft_success;
                     if(debugmode==1 && !is_quiet)
                     {
                         std::string draftedtoks = get_tok_vec_str(draft_results.draftids);
-                        printf("\nDrafted %d Tokens: [%s]\n",speculative_chunk_amt,draftedtoks.c_str());
+                        printf("\nDrafted %d Tokens: [%s]\n",draft_results.drafted_amount,draftedtoks.c_str());
                     }
                 }
             }
@@ -6021,9 +5971,13 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
             if (!startedsampling)
             {
                 startedsampling = true;
-                if(draft_is_mtp && draft_spec)
+                if(draft_spec)
                 {
-                    llama_tokens prompt_tokens(current_context_tokens.begin(), current_context_tokens.end());
+                    llama_tokens prompt_tokens;
+                    if(draft_is_mtp)
+                    {
+                        prompt_tokens.assign(current_context_tokens.begin(), current_context_tokens.end());
+                    }
                     common_speculative_begin(draft_spec, 0, prompt_tokens);
                 }
                 process_time = timer_check();
@@ -6399,7 +6353,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                         draft_results.verify_tokens.begin(),
                         draft_results.verify_tokens.begin() + replay_count);
                     kcpp_embd_batch replay_batch = kcpp_embd_batch(replay_tokens, draft_results.verify_n_past, use_mrope, true);
-                    const int32_t replay_status = kcpp_decode_main_and_mtp_spec(llama_ctx_v4, replay_batch.batch);
+                    const int32_t replay_status = kcpp_decode_main_and_spec(llama_ctx_v4, replay_batch.batch);
                     if(replay_status != 0)
                     {
                         printf("\nERROR: MTP speculative checkpoint replay failed! (code:%d)\n", replay_status);
@@ -6417,7 +6371,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                 mtp_recovered_from_checkpoint = true;
             }
 
-            if(draft_used && draft_is_mtp && draft_spec)
+            if(draft_used && draft_spec)
             {
                 common_speculative_accept(draft_spec, 0, draft_accepted_this_round);
             }
