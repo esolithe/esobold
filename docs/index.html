@@ -12,7 +12,7 @@ Current version indicated by LITEVER below.
 -->
 <head>
 	<script id="init-config">
-	const LITEVER = 334;
+	const LITEVER = 337;
 	const urlParams = new URLSearchParams(window.location.search);
 	var localflag = urlParams.get('local'); //this will be replaced automatically in embedded kcpp
 	const STORAGE_PREFIX = (localflag?"e_":"")+"kaihordewebui_";
@@ -3749,6 +3749,7 @@ Current version indicated by LITEVER below.
 	var default_gemini_base = "https://generativelanguage.googleapis.com/v1beta/models/";
 	var default_gemini_suffix = ":generateContent?key=";
 	var default_gemini_stream_suffix = ":streamGenerateContent?alt=sse&key=";
+	var default_gemini_oaicompat_base = "https://generativelanguage.googleapis.com/v1beta/openai";
 	var default_cohere_base = "https://api.cohere.ai/v1/chat";
 
 	var openrouter_credits_endpoint = "/credits";
@@ -3872,7 +3873,6 @@ Current version indicated by LITEVER below.
 	var custom_oai_endpoint = "";
 	var custom_oai_key = ""; //if set, uses the OpenAI API to generate
 	var custom_oai_model = "";
-	var custom_gemini_key = "";
 	var custom_cohere_key = "";
 	var custom_cohere_model = "";
 	var custom_claude_endpoint = "";
@@ -3988,7 +3988,7 @@ Current version indicated by LITEVER below.
 		saved_grok_key:"",
 		saved_claude_key: "", //do not ever share this in save files!
 		saved_claude_addr: default_claude_base, //do not ever share this in save files!
-		saved_palm_key: "", //do not ever share this in save files!
+		saved_gemini_key: "", //do not ever share this in save files!
 		saved_kai_addr: "", //do not ever share this in save files!
 		saved_kai_key: "", //do not ever share this in save files!
 		saved_cohere_key: "", //do not ever share this in save files!
@@ -3997,8 +3997,6 @@ Current version indicated by LITEVER below.
 		saved_claude_jailbreak: "", //claude system prompt
 		saved_claude_jailbreak2: "", //claude assistant postfix
 		saved_cohere_preamble: "", //cohere preamble
-		saved_palm_jailbreak:"", //gemini system prompt
-		saved_palm_jailbreak2:"", //gemini postfix
 		saved_openrouter_provider:"", //for overriding provider
 		saved_oai_custommodel: "", //customized oai custom model
 		saved_oai_role: 3, //0=user,1=assistant,2=system, 3=auto
@@ -4150,8 +4148,8 @@ Current version indicated by LITEVER below.
 		websearch_template: "",
 		wordsearch_enabled: false,
 
-		max_context_length: (localflag?8192:4096),
-		max_length: (localflag?1024:512),
+		max_context_length: (localflag?16384:6144),
+		max_length: (localflag?2048:768),
 		last_maxctx: 0,
 		auto_ctxlen: true,
 		auto_genamt: true,
@@ -4206,7 +4204,7 @@ Current version indicated by LITEVER below.
 		saved_grok_key: true,
 		saved_claude_key: true,
 		saved_claude_addr: true,
-		saved_palm_key: true,
+		saved_gemini_key: true,
 		saved_cohere_key: true,
 		saved_kai_addr: true,
 		saved_kai_key: true,
@@ -7013,64 +7011,6 @@ Current version indicated by LITEVER below.
 			render_gametext();
 		});
 	}
-	function gemini_api_sync_req(targetep, payload, geminiheaders)
-	{
-		fetch(targetep, {
-			method: 'POST',
-			headers: geminiheaders,
-			body: JSON.stringify(payload),
-			referrerPolicy: 'no-referrer',
-		})
-		.then((response) => response.json())
-		.then((data) => {
-			console.log("sync finished response: " + JSON.stringify(data));
-			last_response_obj = JSON.parse(JSON.stringify(data));
-			if (custom_gemini_key != "" && data.candidates != null && data.candidates.length>0 && data.candidates[0].output && data.candidates[0].output != "") {
-				synchro_polled_response = data.candidates[0].output;
-			}else if (custom_gemini_key != "" && data.candidates != null && data.candidates.length>0 && data.candidates[0].content && data.candidates[0].content.parts != null && data.candidates[0].content.parts.length>0) {
-				synchro_polled_response = "";
-				synchro_polled_respimg = null;
-				synchro_polled_resptoolcalls = null;
-				for(let x=0;x<data.candidates[0].content.parts.length;++x)
-				{
-					if(!synchro_polled_respimg && data.candidates[0].content.parts[x].inlineData && data.candidates[0].content.parts[x].inlineData.data)
-					{
-						synchro_polled_respimg = data.candidates[0].content.parts[x].inlineData.data;
-					}
-					if(!data.candidates[0].content.parts[x].text)
-					{
-						continue;
-					}
-					let tmp = data.candidates[0].content.parts[x].text;
-					if(data.candidates[0].content.parts[x].thought)
-					{
-						tmp = `${localsettings.start_thinking_tag}${tmp}${localsettings.stop_thinking_tag}`;
-					}
-					synchro_polled_response += tmp;
-				}
-				//try to handle the stripping of spaces
-				if(localsettings.opmode==1 && gametext_arr.length>0 && synchro_polled_response!="")
-				{
-					synchro_polled_response = cleanup_story_completion(synchro_polled_response);
-				}
-			}
-			else {
-				//error occurred, maybe captcha failed
-				console.error("error occurred in Gemini generation");
-				clear_poll_flags();
-				render_gametext();
-				msgbox("Error occurred during text generation: " + format_json_error(data));
-				on_error_feedback();
-			}
-		})
-		.catch((error) => {
-			console.error('Error:', error);
-			clear_poll_flags();
-			render_gametext();
-			msgbox("Error while submitting prompt: " + error);
-			on_error_feedback();
-		});
-	}
 	function oai_api_sync_req(targetep,oai_payload,oaiheaders)
 	{
 		fetch(targetep, {
@@ -7130,15 +7070,52 @@ Current version indicated by LITEVER below.
 					{
 						synchro_polled_response = cleanup_story_completion(synchro_polled_response);
 					}
-				}
-				else {
+				} else {
 					console.error("Error, unknown OAI response");
 					clear_poll_flags();
 					render_gametext();
 					msgbox("Error, unknown OAI response");
 				}
 			}
-			else {
+			else if (custom_oai_key != "" && data.candidates != null && data.candidates.length > 0) //gemini sync api
+			{
+				synchro_polled_respimg = null;
+				synchro_polled_resptoolcalls = null;
+				if(data.candidates[0].output && data.candidates[0].output != "")
+				{
+					synchro_polled_response = data.candidates[0].output;
+				}
+				else if(data.candidates[0].content && data.candidates[0].content.parts != null && data.candidates[0].content.parts.length > 0)
+				{
+					synchro_polled_response = "";
+					for (let x = 0; x < data.candidates[0].content.parts.length; ++x) {
+						if (!synchro_polled_respimg && data.candidates[0].content.parts[x].inlineData && data.candidates[0].content.parts[x].inlineData.data) {
+							synchro_polled_respimg = data.candidates[0].content.parts[x].inlineData.data;
+						}
+						if (!data.candidates[0].content.parts[x].text) {
+							continue;
+						}
+						let tmp = data.candidates[0].content.parts[x].text;
+						if (data.candidates[0].content.parts[x].thought) {
+							tmp = `${localsettings.start_thinking_tag}${tmp}${localsettings.stop_thinking_tag}`;
+						}
+						synchro_polled_response += tmp;
+					}
+					//try to handle the stripping of spaces
+					if (localsettings.opmode == 1 && gametext_arr.length > 0 && synchro_polled_response != "") {
+						synchro_polled_response = cleanup_story_completion(synchro_polled_response);
+					}
+				} else {
+					//error occurred, maybe captcha failed
+					console.error("error occurred in Gemini generation");
+					clear_poll_flags();
+					render_gametext();
+					msgbox("Error occurred during text generation: " + format_json_error(data));
+					on_error_feedback();
+				}
+			}
+			else
+			{
 				//error occurred, maybe captcha failed
 				console.error("error occurred in OAI generation");
 				clear_poll_flags();
@@ -8857,7 +8834,7 @@ Current version indicated by LITEVER below.
 		.then(modelsdata => {
 
 			if (modelsdata == null || modelsdata.length == 0) {
-				msgbox("Invalid data received or no models found. Is ComfyUI running at the url " + localsettings.saved_comfy_url + " ?\n\nIt must be launched with the flags --listen --enable-cors-header '*' to enable API access");
+				msgbox("Invalid data received or no models found. Is ComfyUI running at the url " + localsettings.saved_comfy_url + " ?\n\nIt must be launched with the flags --listen --enable-cors-header '*' to enable API access.\n(If --enable-cors-header '*' does not work, try --enable-cors-header *)");
 			} else {
 				let current_loaded_model = modelsdata[0];
 				//repopulate our model list
@@ -8872,7 +8849,7 @@ Current version indicated by LITEVER below.
 		}).catch((error) => {
 			if(!silent)
 			{
-				msgbox("ComfyUI Connect Error: " + error+"\nPlease make sure ComfyUI is running at "+localsettings.saved_comfy_url+" and properly configured!\n\nIt must be launched with the flags --listen --enable-cors-header '*' to enable API access. If using ComfyUI-Login, the Bearer Token must match.\n");
+				msgbox("ComfyUI Connect Error: " + error+"\nPlease make sure ComfyUI is running at "+localsettings.saved_comfy_url+" and properly configured!\n\nIt must be launched with the flags --listen --enable-cors-header '*' to enable API access. If using ComfyUI-Login, the Bearer Token must match.\n(If --enable-cors-header '*' does not work, try --enable-cors-header *)\n");
 			}
 			comfyui_is_connected = false;
 		});
@@ -9078,15 +9055,15 @@ Current version indicated by LITEVER below.
 				image_db[imgid].imrefid = resp.prompt_id.toString();
 			}else{
 				console.log("Generation Error!");
-				msgbox("Image Generation Failed!\n\nPlease make sure ComfyUI is running at "+localsettings.saved_comfy_url+" and properly configured!\n\nIt must be launched with the flag --listen --enable-cors-header '*' to enable API access\n");
+				msgbox("Image Generation Failed!\n\nPlease make sure ComfyUI is running at "+localsettings.saved_comfy_url+" and properly configured!\n\nIt must be launched with the flag --listen --enable-cors-header '*' to enable API access\n(If --enable-cors-header '*' does not work, try --enable-cors-header *)\n");
 			}
 		}).catch((error) => {
 			console.log("Generation Error: " + error);
-			msgbox("Image Generation Failed!\n\nPlease make sure ComfyUI is running at "+localsettings.saved_comfy_url+" and properly configured!\n\nIt must be launched with the flag --listen --enable-cors-header '*' to enable API access\n");
+			msgbox("Image Generation Failed!\n\nPlease make sure ComfyUI is running at "+localsettings.saved_comfy_url+" and properly configured!\n\nIt must be launched with the flag --listen --enable-cors-header '*' to enable API access\n(If --enable-cors-header '*' does not work, try --enable-cors-header *)\n");
 		});
 		}).catch((error) => {
 			console.log("Upload Img2Img Error: " + error);
-			msgbox("Image Upload Failed!\n\nPlease make sure ComfyUI is running at "+localsettings.saved_comfy_url+" and properly configured!\n\nIt must be launched with the flag --listen --enable-cors-header '*' to enable API access\n");
+			msgbox("Image Upload Failed!\n\nPlease make sure ComfyUI is running at "+localsettings.saved_comfy_url+" and properly configured!\n\nIt must be launched with the flag --listen --enable-cors-header '*' to enable API access\n(If --enable-cors-header '*' does not work, try --enable-cors-header *)\n");
 		});
 		return imgid;
 	}
@@ -9477,7 +9454,7 @@ Current version indicated by LITEVER below.
 	}
 	function is_using_custom_ep()
 	{
-		return (custom_oai_key!=""||custom_kobold_endpoint!=""||custom_claude_key!=""||custom_gemini_key!=""||custom_cohere_key!="");
+		return (custom_oai_key != "" || custom_kobold_endpoint != "" || custom_claude_key != "" || custom_cohere_key != "");
 	}
 	function is_using_kcpp_with_streaming()
 	{
@@ -9658,8 +9635,7 @@ Current version indicated by LITEVER below.
 			else
 			{
 				let isoai = (custom_oai_key!="" && document.getElementById("useoaichatcompl").checked);
-				let isgemini = (custom_gemini_key!="");
-				return (isoai||isgemini);
+				return isoai;
 			}
 		}
 		else if(currmeta.visionmode==1 || currmeta.visionmode==2)
@@ -10090,7 +10066,7 @@ Current version indicated by LITEVER below.
 			new_save_storyobj.savedsettings.saved_grok_key = "";
 			new_save_storyobj.savedsettings.saved_claude_key = "";
 			new_save_storyobj.savedsettings.saved_claude_addr = "";
-			new_save_storyobj.savedsettings.saved_palm_key = "";
+			new_save_storyobj.savedsettings.saved_gemini_key = "";
 			new_save_storyobj.savedsettings.saved_cohere_key = "";
 			new_save_storyobj.savedsettings.saved_kai_addr = "";
 			new_save_storyobj.savedsettings.saved_kai_key = "";
@@ -12820,7 +12796,9 @@ Current version indicated by LITEVER below.
 			let clickinfo = "";
 			if(elem.info && elem.info!="")
 			{
-				clickinfo += escape_html(replaceAll(elem.info,"\'","\\\'"));
+				let tmp = replaceAll(elem.info,"\'","\\\'");
+				tmp = replaceAll(tmp,"\n"," ");
+				clickinfo += escape_html(tmp);
 			}
 			if(elem.threads>1)
 			{
@@ -13456,6 +13434,7 @@ Current version indicated by LITEVER below.
 	function toggleoaichatcompl()
 	{
 		document.getElementById("oaiemulatecompletionsbox").classList.add("hidden");
+		document.getElementById("usegeminiwebbox").classList.add("hidden");
 		if(document.getElementById("useoaichatcompl").checked)
 		{
 			document.getElementById("useoaichatcomplbox").classList.remove("hidden");
@@ -13466,6 +13445,10 @@ Current version indicated by LITEVER below.
 			if(document.getElementById("customapidropdown").value==7 || (document.getElementById("customapidropdown").value==2 && document.getElementById("custom_oai_endpoint").value.includes(".moonshot."))) //mistral api supports prefill
 			{
 				document.getElementById("oaiemulatecompletionsbox").classList.remove("hidden");
+			}
+			if(document.getElementById("customapidropdown").value==5)
+			{
+				document.getElementById("usegeminiwebbox").classList.remove("hidden");
 			}
 		}else{
 			document.getElementById("useoaichatcomplbox").classList.add("hidden");
@@ -13492,41 +13475,6 @@ Current version indicated by LITEVER below.
 		}
 	}
 
-	function togglegeminimodel()
-	{
-		let mdlname = document.getElementById("custom_gemini_model").value;
-		if(mdlname.includes("gemma") || mdlname.includes("gemini-3") || mdlname.includes("gemini-2") || mdlname.includes("gemini-1.5-") || mdlname.includes("gemini-exp-"))
-		{
-			document.getElementById("gemini_system_instruction").classList.remove("hidden");
-			document.getElementById("gemini_role_options").classList.remove("hidden");
-			if(localsettings.saved_palm_jailbreak=="")
-			{
-				document.getElementById("gemini_system_instruction").value = "";
-			} else {
-				document.getElementById("gemini_system_instruction").value = localsettings.saved_palm_jailbreak;
-			}
-			if(localsettings.saved_palm_jailbreak2=="")
-			{
-				document.getElementById("gemini_postfix_text").value = "";
-			} else {
-				document.getElementById("gemini_postfix_text").value = localsettings.saved_palm_jailbreak2;
-			}
-			togglegeminirole();
-		}else{
-			document.getElementById("gemini_system_instruction").classList.add("hidden");
-			document.getElementById("gemini_role_options").classList.add("hidden");
-		}
-	}
-	function togglegeminirole()
-	{
-		let sentrole = document.getElementById("geminiroledropdown").value;
-		if(sentrole=="")
-		{
-			document.getElementById("gemini_role_options2").classList.add("hidden");
-		}else{
-			document.getElementById("gemini_role_options2").classList.remove("hidden");
-		}
-	}
 
 	function get_custom_ep_model_dropdown(ep_id=null) //if desired id not provided, use dynamic val
 	{
@@ -13564,7 +13512,7 @@ Current version indicated by LITEVER below.
 	function ep_should_always_use_chat_completions()
 	{
 		let epchoice = document.getElementById("customapidropdown").value;
-		return (epchoice==7 || epchoice==10 || epchoice==11);
+		return (epchoice==5 || epchoice==7 || epchoice==10 || epchoice==11);
 	}
 
 	function find_oai_model()
@@ -13688,67 +13636,7 @@ Current version indicated by LITEVER below.
 					dropdown.appendChild(el);
 				}
 				dropdown.selectedIndex = selidx;
-				togglegeminimodel();
-			}
-			else
-			{
-				let errmsg = "";
-				if(data && data.error)
-				{
-					errmsg = data.error;
-				}
-				else
-				{
-					errmsg = data;
-				}
-				msgbox(JSON.stringify(errmsg),"Error Encountered",false,false);
-			}
-		})
-		.catch(error => {
-			console.log("Error: " + error);
-			msgbox("Error: " + error,"Error Encountered",false,false,()=>{
-				hide_msgbox();
-			});
-		});
-	}
-	function gemini_fetch_models()
-	{
-		let desired_gemini_key = document.getElementById("custom_gemini_key").value.trim();
-		if(desired_gemini_key=="")
-		{
-			msgbox("Gemini requires an API key to fetch model list!");
-			return;
-		}
-
-		let dropdown = document.getElementById("custom_gemini_model");
-		fetch((default_gemini_base + "?key=" + desired_gemini_key), {
-			method: 'GET',
-			referrerPolicy: 'no-referrer',
-		})
-		.then((response) => response.json())
-		.then((data) => {
-			console.log(data);
-			if (data && data.models && data.models.length > 0)
-			{
-				for (var i = dropdown.options.length - 1; i >= 0; i--) {
-					var option = dropdown.options[i];
-					dropdown.remove(option);
-				}
-				let selidx = 0;
-				for(var i = 0; i < data.models.length; i++) {
-					var opt = data.models[i];
-					var el = document.createElement("option");
-					let optname = opt.name;
-					if(optname.toLowerCase().startsWith("models/"))
-					{
-						optname = optname.substring(7);
-					}
-					el.textContent = optname;
-					el.value = optname;
-					dropdown.appendChild(el);
-				}
-				dropdown.selectedIndex = selidx;
-				togglegeminimodel();
+				toggleclaudemodel();
 			}
 			else
 			{
@@ -13810,7 +13698,7 @@ Current version indicated by LITEVER below.
 
 		let oaiheaders = get_oai_header(desired_oai_key);
 
-		if (desired_oai_ep.toLowerCase().includes("api.mistral.ai") || desired_oai_ep.toLowerCase().includes("api.x.ai")) {
+		if (desired_oai_ep.toLowerCase().includes("googleapis.com") || desired_oai_ep.toLowerCase().includes("api.mistral.ai") || desired_oai_ep.toLowerCase().includes("api.x.ai")) {
 			if(desired_oai_key=="" || desired_oai_key==dummy_api_key)
 			{
 				msgbox("This API requires an API key to fetch model list!");
@@ -13845,6 +13733,18 @@ Current version indicated by LITEVER below.
 				data = { "data": data }; //fix for their bad format
 			}
 
+			//fix for gemini fetch models, truncate name
+			if(data && data.data && desired_oai_ep.toLowerCase().includes("googleapis.com"))
+			{
+				for(let x=0;x<data.data.length;++x)
+				{
+					if(data.data[x].id && data.data[x].id.toLowerCase().startsWith("models/"))
+					{
+						data.data[x].id = data.data[x].id.substring(7);
+					}
+				}
+			}
+
 			if (!data.error && data.data && data.data.length > 0)
 			{
 				update_oai_model_list(data,dropdown,epchoice);
@@ -13877,16 +13777,7 @@ Current version indicated by LITEVER below.
 
 	function toggleclaudemodel()
 	{
-		if(document.getElementById("custom_claude_model").value.toLowerCase().includes("claude-3-7")||
-		document.getElementById("custom_claude_model").value.toLowerCase().includes("claude-sonnet-4")||
-		document.getElementById("custom_claude_model").value.toLowerCase().includes("claude-haiku-4")||
-		document.getElementById("custom_claude_model").value.toLowerCase().includes("claude-opus-4"))
-		{
-			document.getElementById("claudethinkingbox").classList.remove("hidden");
-		}else
-		{
-			document.getElementById("claudethinkingbox").classList.add("hidden");
-		}
+		//currently does nothing
 	}
 
 	let autofetch_attempt_dict = {};
@@ -13942,7 +13833,7 @@ Current version indicated by LITEVER below.
 		document.getElementById("oaicustom").classList.add("hidden");
 		document.getElementById("koboldcustom").classList.add("hidden");
 		document.getElementById("claudecustom").classList.add("hidden");
-		document.getElementById("geminicustom").classList.add("hidden");
+		document.getElementById("custom_gemini_model").classList.add("hidden");
 		document.getElementById("custom_oai_model").classList.add("hidden");
 		document.getElementById("custom_openrouter_model").classList.add("hidden");
 		document.getElementById("custom_mistralai_model").classList.add("hidden");
@@ -13967,13 +13858,14 @@ Current version indicated by LITEVER below.
 				document.getElementById("customkoboldkey").value = localsettings.saved_kai_key;
 			}
 		}
-		else if(epchoice==2 || epchoice==3 || epchoice==7 || epchoice==8 || epchoice==9 || epchoice==10 || epchoice==11)
+		else if(epchoice==2 || epchoice==3 || epchoice==5 || epchoice==7 || epchoice==8 || epchoice==9 || epchoice==10 || epchoice==11)
 		{
 			document.getElementById("oaicustom").classList.remove("hidden");
 			document.getElementById("custom_oai_endpoint").classList.add("hidden");
 			document.getElementById("custom_oai_key").classList.remove("hidden");
 			document.getElementById("openrouterdesc").classList.add("hidden");
 			document.getElementById("mistralaidesc").classList.add("hidden");
+			document.getElementById("geminidesc").classList.add("hidden");
 			document.getElementById("featherlessdesc").classList.add("hidden");
 			document.getElementById("nvidianimdesc").classList.add("hidden");
 			document.getElementById("grokdesc").classList.add("hidden");
@@ -14002,6 +13894,13 @@ Current version indicated by LITEVER below.
 				document.getElementById("openrouterproviders").value = localsettings.saved_openrouter_provider;
 				document.getElementById("custom_oai_key").value =(localsettings.saved_openrouter_key==dummy_api_key?"":localsettings.saved_openrouter_key);
 				try_fetch_oai_models_auto();
+			}
+			else if(epchoice==5)
+			{
+				document.getElementById("custom_gemini_model").classList.remove("hidden");
+				document.getElementById("geminidesc").classList.remove("hidden");
+				document.getElementById("custom_oai_key").value = (localsettings.saved_gemini_key==dummy_api_key?"":localsettings.saved_gemini_key);
+				document.getElementById("custom_oai_endpoint").value = default_gemini_oaicompat_base;
 			}
 			else if(epchoice==7)
 			{
@@ -14053,14 +13952,6 @@ Current version indicated by LITEVER below.
 			document.getElementById("custom_claude_endpoint").value = (localsettings.saved_claude_addr?localsettings.saved_claude_addr:default_claude_base);
 			document.getElementById("claudesystemprompt").value = localsettings.saved_claude_jailbreak;
 			document.getElementById("claudejailbreakprompt").value = localsettings.saved_claude_jailbreak2;
-		}
-		else if(epchoice==5)
-		{
-			document.getElementById("geminicustom").classList.remove("hidden");
-			document.getElementById("custom_gemini_key").value = localsettings.saved_palm_key;
-			document.getElementById("gemini_system_instruction").value = localsettings.saved_palm_jailbreak;
-			document.getElementById("gemini_postfix_text").value = localsettings.saved_palm_jailbreak2;
-			togglegeminimodel();
 		}
 		else if(epchoice==6)
 		{
@@ -14146,7 +14037,6 @@ Current version indicated by LITEVER below.
 		custom_kobold_key = "";
 		custom_oai_key = "";
 		custom_claude_key = "";
-		custom_gemini_key = "";
 		custom_cohere_key = "";
 
 		let epchoice = document.getElementById("customapidropdown").value;
@@ -14348,17 +14238,17 @@ Current version indicated by LITEVER below.
 											document.getElementById("max_context_length_slide").max = ep_maxctx;
 											document.getElementById("max_context_length_slide_label").innerText = ep_maxctx;
 										}
-										if(ep_maxctx && ep_maxctx>=8192 && document.getElementById("max_length_slide").max<2048)
-										{
-											document.getElementById("max_length_slide").max = 2048;
-											document.getElementById("max_length_slide_label").innerText = 2048;
-										}
 										if(ep_maxctx && ep_maxctx>=16384 && document.getElementById("max_length_slide").max<4096)
 										{
 											document.getElementById("max_length_slide").max = 4096;
 											document.getElementById("max_length_slide_label").innerText = 4096;
 										}
-										if(localflag && ep_maxctx>=4096 && localsettings.max_context_length<ep_maxctx && (localsettings.last_maxctx!=ep_maxctx || localsettings.max_context_length==defaultsettings.max_context_length))
+										if(ep_maxctx && ep_maxctx>=32768 && document.getElementById("max_length_slide").max<8192)
+										{
+											document.getElementById("max_length_slide").max = 8192;
+											document.getElementById("max_length_slide_label").innerText = 8192;
+										}
+										if(localflag && ep_maxctx>=16384 && localsettings.max_context_length<ep_maxctx && (localsettings.last_maxctx!=ep_maxctx || localsettings.max_context_length==defaultsettings.max_context_length))
 										{
 											localsettings.max_context_length = ep_maxctx;
 											localsettings.last_maxctx = ep_maxctx;
@@ -14545,7 +14435,7 @@ Current version indicated by LITEVER below.
 				});
 			}
 		}
-		else if(epchoice==2 || epchoice==3 || epchoice==7 || epchoice==8 || epchoice==9 || epchoice==10 || epchoice==11) //connect to OAI / OpenRouter / MistralAI / Featherless / Grok Endpoint / NvidiaNim
+		else if(epchoice==2 || epchoice==3 || epchoice==5 || epchoice==7 || epchoice==8 || epchoice==9 || epchoice==10 || epchoice==11) //connect to OAI / OpenRouter / Gemini / MistralAI / Featherless / Grok Endpoint / NvidiaNim
 		{
 			let desired_oai_key = document.getElementById("custom_oai_key").value.trim();
 			let desired_oai_ep = document.getElementById("custom_oai_endpoint").value.trim();
@@ -14588,6 +14478,10 @@ Current version indicated by LITEVER below.
 					{
 						uses_cors_proxy = true;
 					}
+				}
+				else if(epchoice==5)
+				{
+					localsettings.saved_gemini_key = custom_oai_key;
 				}
 				else if(epchoice==7)
 				{
@@ -14708,38 +14602,6 @@ Current version indicated by LITEVER below.
 				document.getElementById("connectstatus").innerHTML = "Claude Endpoint";
 				render_gametext();
 
-			}
-		}
-		else if(epchoice==5) //gemini endpoint
-		{
-			let desired_gemini_key = document.getElementById("custom_gemini_key").value.trim();
-			let mdlname = document.getElementById("custom_gemini_model").value;
-
-			if(desired_gemini_key!="")
-			{
-				dismiss_endpoint_container();
-
-				//good to go
-				custom_gemini_key = desired_gemini_key;
-				localsettings.saved_palm_key = custom_gemini_key;
-				localsettings.saved_palm_jailbreak = document.getElementById("gemini_system_instruction").value;
-				localsettings.saved_palm_jailbreak2 = document.getElementById("gemini_postfix_text").value;
-
-				selected_models = [{ "performance": 100.0, "queued": 0.0, "eta": 0, "name": mdlname, "count": 1 }];
-				selected_workers = [];
-				if (perfdata == null) {
-					//generate some fake perf data if horde is offline and using custom endpoint
-					perfdata = {
-						"queued_requests": 0,
-						"queued_tokens": 0,
-						"past_minute_tokens": 0,
-						"worker_count": 0
-					};
-					document.body.classList.add("connected");
-					document.getElementById("connectstatus").classList.add("color_connected");
-				}
-				document.getElementById("connectstatus").innerHTML = "Gemini Endpoint";
-				render_gametext();
 			}
 		}
 		else if(epchoice==6) //cohere endpoint
@@ -15863,7 +15725,6 @@ Current version indicated by LITEVER below.
 		custom_kobold_endpoint = "";
 		custom_oai_key = "";
 		custom_claude_key = "";
-		custom_gemini_key = "";
 		custom_cohere_key = "";
 
 		let prep_sel_models = [];
@@ -16075,10 +15936,6 @@ Current version indicated by LITEVER below.
 		if (x && x.type === "password") {
 			x.type = "text";
 		}
-		x = document.getElementById("custom_gemini_key");
-		if (x && x.type === "password") {
-			x.type = "text";
-		}
 	}
 	function blur_api_keys() {
 		var x = document.getElementById("apikey");
@@ -16098,10 +15955,6 @@ Current version indicated by LITEVER below.
 			x.type = "password";
 		}
 		x = document.getElementById("custom_cohere_key");
-		if (x && x.type === "text") {
-			x.type = "password";
-		}
-		x = document.getElementById("custom_gemini_key");
 		if (x && x.type === "text") {
 			x.type = "password";
 		}
@@ -16310,7 +16163,7 @@ Current version indicated by LITEVER below.
 		document.getElementById("voice_typing_mode").disabled = !is_using_kcpp_with_whisper();
 		document.getElementById("transcribe_file_btn").disabled = !is_using_kcpp_with_whisper();
 
-		if(custom_kobold_endpoint=="" && custom_oai_key=="" && custom_gemini_key=="")
+		if(custom_kobold_endpoint=="" && custom_oai_key=="")
 		{
 			document.getElementById("tokenstreaminglabel").classList.add("color_red");
 		}
@@ -16461,13 +16314,14 @@ Current version indicated by LITEVER below.
 		if(is_using_custom_ep())
 		{
 			document.getElementById("nologitbias").classList.add("hidden");
-			document.getElementById("notokenbans").classList.add("hidden");
 			if(is_using_kcpp_with_added_memory())
 			{
 				document.getElementById("newlogitbiasstringtogglesection").classList.remove("hidden");
+				document.getElementById("notokenbans").classList.add("hidden");
 			}else{
 				document.getElementById("newlogitbiasstringtogglesection").classList.add("hidden");
 				document.getElementById("newlogitbiasstringtoggle").checked = false;
+				document.getElementById("notokenbans").classList.remove("hidden");
 			}
 			if(is_using_kcpp_with_guidance())
 			{
@@ -16990,10 +16844,12 @@ Current version indicated by LITEVER below.
 		if(is_using_kcpp_with_lcppui())
 		{
 			document.getElementById("btn_open_lcppui").classList.remove("hidden");
+			document.getElementById("links_to_other_uis").classList.remove("hidden");
 		}
 		else
 		{
 			document.getElementById("btn_open_lcppui").classList.add("hidden");
+			document.getElementById("links_to_other_uis").classList.add("hidden");
 		}
 	}
 
@@ -20291,10 +20147,7 @@ Current version indicated by LITEVER below.
 
 		//match the request for creating images in instruct modes
 		let model_allow_imggen = localsettings.img_gen_from_instruct;
-		if(custom_gemini_key!=""
-		&& (document.getElementById("custom_gemini_model").value.toLowerCase().includes("-flash-image")
-		|| document.getElementById("custom_gemini_model").value.toLowerCase().includes("-pro-image")
-		|| document.getElementById("custom_gemini_model").value.toLowerCase().includes("nano-banana")))
+		if(custom_oai_key!="" && document.getElementById("custom_oai_model").value.toLowerCase().includes("image"))
 		{
 			model_allow_imggen = false; //nano banana interferes with imggen instructions
 		}
@@ -21411,38 +21264,95 @@ Current version indicated by LITEVER below.
 		return submit_payload;
 	}
 
-	function oai_append_media(mainoaibody)
-	{
-		for(let i=0;i<insertAIVisionImages.length;++i)
-		{
-			let oaiimg = {
-				"type": "image_url",
-				"image_url": {
-					"url": insertAIVisionImages[i]
-				}
-			};
-			mainoaibody.push(oaiimg);
+	//inject actual media into turns that contain media placeholders
+	function oai_append_media(oai_messages) {
+		var insert_image_idx = 0;
+		var insert_audio_idx = 0;
+		var regex = /\n?\(Attached (Image|Audio) \d+\)\n?/g;
+		function makeImagePart(url) {
+			return { type: "image_url", image_url: { url: url } };
 		}
-		for(let i=0;i<insertAIAudioSounds.length;++i)
-		{
-			let curr = insertAIAudioSounds[i];
-			let format = "wav";
-			if(curr.includes("base64,"))
-			{
-				let parts = curr.split("base64,");
-				curr = parts[1];
-				format = (parts[0].includes("mp3")||parts[0].includes("mpeg"))?"mp3":"wav";
+
+		function makeAudioPart(src) {
+			var curr = String(src || "");
+			var format = "wav";
+			if (curr.indexOf("base64,") !== -1) {
+				var parts = curr.split("base64,");
+				var header = parts[0];
+				curr = parts.slice(1).join("base64,");
+				format = header.indexOf("mp3") !== -1 || header.indexOf("mpeg") !== -1 ? "mp3" : "wav";
 			}
-			let oaiimg = {
-				"type": "input_audio",
-				"input_audio": {
-					"data": curr,
-					"format": format
-				}
-			};
-			mainoaibody.push(oaiimg);
+			return { type: "input_audio", input_audio: { data: curr, format: format } };
 		}
-		return mainoaibody;
+
+		function appendMediaFromText(text, out) {
+			var matches = text.match(regex);
+			if (!matches) return text;
+
+			for (var i = 0; i < matches.length; ++i) {
+				var m = matches[i];
+				if (m.indexOf("Image") !== -1) {
+					if (insert_image_idx < insertAIVisionImages.length) {
+						out.push(makeImagePart(insertAIVisionImages[insert_image_idx]));
+						insert_image_idx++;
+					}
+				}
+				else if (m.indexOf("Audio") !== -1) {
+					if (insert_audio_idx < insertAIAudioSounds.length) {
+						out.push(makeAudioPart(insertAIAudioSounds[insert_audio_idx]));
+						insert_audio_idx++;
+					}
+				}
+			}
+
+			return text.replace(regex, "");
+		}
+
+		for (var i = 0; i < oai_messages.length; ++i) {
+			var msg = oai_messages[i];
+			if (!msg || typeof msg !== "object") continue;
+
+			var content = msg.content;
+
+			if (typeof content === "string") {
+				var mediaParts = [];
+				var cleanedText = appendMediaFromText(content, mediaParts);
+
+				if (mediaParts.length > 0) {
+					msg.content = mediaParts;
+					if (cleanedText.length > 0) {
+						msg.content.push({
+							type: "text",
+							text: cleanedText
+						});
+					}
+				} else {
+					msg.content = cleanedText;
+				}
+			}
+			else if (Array.isArray(content)) {
+				var newContent = [];
+				var combinedText = "";
+
+				for (var j = 0; j < content.length; ++j) {
+					var part = content[j];
+
+					if (part && part.type === "text" && typeof part.text === "string") {
+						combinedText += appendMediaFromText(part.text, newContent);
+					} else {
+						newContent.push(part);
+					}
+				}
+
+				if (combinedText.length > 0) {
+					newContent.push({ type: "text", text: combinedText });
+				}
+
+				msg.content = newContent;
+			}
+		}
+
+		return oai_messages;
 	}
 
 	function dispatch_submit_generation(submit_payload, input_was_empty) //if input is not empty, always unban eos
@@ -21492,53 +21402,7 @@ Current version indicated by LITEVER below.
 					submit_payload.messages = [];
 					submit_payload.continue_assistant_turn = true;
 					let mhistory = repack_instruct_history(combinedprompt);
-					let oaiimgs = [];
-					oaiimgs = oai_append_media(oaiimgs);
-					if(mhistory.length>0 && oaiimgs.length>0)
-					{
-						//do we have the same number of images as placeholders? if so, assign each image to the right turns
-						let placeholder_count = 0;
-						const regex = /\n\(Attached (Image|Audio) \d+\)\n/g;
-						for(let i=0;i<mhistory.length;++i)
-						{
-							const matches = mhistory[i].msg.match(regex);
-							const count = matches ? matches.length : 0;
-							placeholder_count += count;
-						}
-						if(placeholder_count==oaiimgs.length)
-						{
-							//exactly same number, so we can put images into matching turns
-							let mediaidx = 0;//for each occurance of the regex in this turn, insert mediaidx from oaiimgs and increment it
-							for (let i = 0; i < mhistory.length; ++i)
-							{
-								let msg = mhistory[i].msg;
-								const matches = msg.match(regex);
-								const count = matches ? matches.length : 0;
-								if(count>0)
-								{
-									msg = msg.replace(regex, '');
-									let newMsg = [{ type: 'text', text: msg }];
-									for (let j = 0; j < count; ++j)
-									{
-										if (mediaidx < oaiimgs.length)
-										{
-											newMsg.push(oaiimgs[mediaidx]);
-											mediaidx++;
-										}
-									}
-									mhistory[i].msg = newMsg;
-								}
-							}
-						}
-						else
-						{
-							mhistory[0].msg = [{type: 'text', text: mhistory[0].msg}];
-							for(let i=0;i<oaiimgs.length;++i)
-							{
-								mhistory[0].msg.push(oaiimgs[i]);
-							}
-						}
-					}
+
 					for(let i=0;i<mhistory.length;++i)
 					{
 						let cturn = { "role": (mhistory[i].myturn?"user":(mhistory[i].issystem?"system":"assistant")), "content": mhistory[i].msg };
@@ -21553,6 +21417,9 @@ Current version indicated by LITEVER below.
 						}
 						submit_payload.messages.push(cturn);
 					}
+
+					submit_payload.messages = oai_append_media(submit_payload.messages);
+
 					if(determine_if_mcp_active())
 					{
 						let senttools = MCPGetAllowedTools();
@@ -21639,9 +21506,9 @@ Current version indicated by LITEVER below.
 				{
 					delete oai_payload["top_p"];
 				}
-				if(!targetep.toLowerCase().includes("pollinations.ai") && !targetep.toLowerCase().includes("api.mistral.ai") && !targetep.toLowerCase().includes("api.x.ai"))
+				if(!targetep.toLowerCase().includes("googleapis.com") && !targetep.toLowerCase().includes("pollinations.ai") && !targetep.toLowerCase().includes("api.mistral.ai") && !targetep.toLowerCase().includes("api.x.ai"))
 				{
-					//mistral api does not support presence pen
+					//some apis do not support presence pen
 					if(scaled_rep_pen>0)
 					{
 						oai_payload.presence_penalty = scaled_rep_pen;
@@ -21697,7 +21564,6 @@ Current version indicated by LITEVER below.
 								"text": mainoaibody
 							}
 						];
-						mainoaibody = oai_append_media(mainoaibody);
 					}
 
 					oai_payload.messages = [];
@@ -21771,6 +21637,8 @@ Current version indicated by LITEVER below.
 							oai_payload.messages.push(cturn);
 						}
 					}
+
+					oai_payload.messages = oai_append_media(oai_payload.messages);
 
 					if(determine_if_mcp_active())
 					{
@@ -21893,6 +21761,130 @@ Current version indicated by LITEVER below.
 				if(is_browser_supports_sse() && localsettings.tokenstreammode!=0)
 				{
 					oai_payload.stream = true;
+				}
+
+				//if we enable websearch and its gemini, we are FORCED to use the dedicated gemini API endpoints instead, the openai one does not support it.
+				if(targetep.toLowerCase().includes("googleapis.com") && !oai_payload.tools) //eventually if oai compat allows search, we can ditch this
+				{
+					let mdlname = document.getElementById("custom_gemini_model").value;
+
+					const geminiPayload = {
+						contents: [],
+						safetySettings: [
+							{
+							"category": "HARM_CATEGORY_HARASSMENT",
+							"threshold": "OFF"
+							},
+							{
+							"category": "HARM_CATEGORY_HATE_SPEECH",
+							"threshold": "OFF"
+							},
+							{
+							"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+							"threshold": "OFF"
+							},
+							{
+							"category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+							"threshold": "OFF"
+							},
+							{
+							"category":"HARM_CATEGORY_CIVIC_INTEGRITY",
+							"threshold":"OFF"
+							}
+						],
+						generationConfig: {
+							temperature: submit_payload.params.temperature,
+							maxOutputTokens: submit_payload.params.max_length,
+							topP: submit_payload.params.top_p,
+							candidateCount: 1,
+							stopSequences: get_stop_sequences().slice(0, 4)
+						}
+					};
+					if (oai_payload.messages && Array.isArray(oai_payload.messages))
+					{
+						const systemInstructions = [];
+						for (const msg of oai_payload.messages) {
+							// 1. Handle System Instructions
+							if (msg.role === 'system') {
+								systemInstructions.push({ text: msg.content });
+								continue;
+							}
+							// 2. Map Roles
+							let role = 'user';
+							if (msg.role === 'assistant') {
+								role = 'model';
+							}
+							const parts = [];
+							if (typeof msg.content === 'string') { // Handle Standard Text
+								parts.push({ text: msg.content });
+							}
+							else if (Array.isArray(msg.content))  // Handle Multimodal Arrays (Text + Image + Audio)
+							{
+								for (const item of msg.content) {
+									if (item.type === 'text') {
+										parts.push({ text: item.text });
+									} else if (item.type === 'image_url') {
+										const url = item.image_url.url;
+										if (url.startsWith('data:')) {
+											// Extract MIME type and base64 string
+											const mimeTypeMatch = url.match(/data:([a-zA-Z0-9]+\/[a-zA-Z0-9-.+]+).*?,/);
+											const mimeType = mimeTypeMatch ? mimeTypeMatch[1] : 'image/jpeg';
+											const base64Data = url.split(',')[1];
+											parts.push({ inlineData: { mimeType: mimeType, data: base64Data } });
+										} else {
+											parts.push({ inlineData: { mimeType: "image/jpeg", data: url } });
+										}
+									} else if (item.type === 'input_audio') {
+										parts.push({ inlineData: { mimeType: `audio/${item.input_audio.format || 'mp3'}`, data: item.input_audio.data } });
+									}
+								}
+							}
+
+							// Append the processed message to contents
+							if (parts.length > 0) {
+								geminiPayload.contents.push({ role: role, parts: parts });
+							}
+						}
+
+						// Attach system instructions at the top level
+						if (systemInstructions.length > 0) {
+							geminiPayload.systemInstruction = { parts: systemInstructions };
+						}
+					}
+
+					Object.assign(geminiPayload, localsettings.custom_sampler_fields);
+
+					if(document.getElementById("usegeminiweb").checked)
+					{
+						geminiPayload["tools"] = [{"google_search": {}}];
+					}
+
+					geminiPayload["generationConfig"]["thinkingConfig"] = {includeThoughts: true};
+					if(oai_payload.reasoning_effort && oai_payload.reasoning_effort!="") //adapt reasoning effort for openrouter
+					{
+						let allowthink = (oai_payload.reasoning_effort=="none"?false:true);
+						if(!allowthink)
+						{
+							//gemini pro cannot fully disable thinking
+							geminiPayload["generationConfig"]["thinkingConfig"] = {includeThoughts: false, thinkingBudget: (mdlname.includes("pro")?128:0)};
+						}
+					}
+
+					let geminiheaders = { 'Content-Type': 'application/json' };
+					if(is_browser_supports_sse() && localsettings.tokenstreammode!=0)
+					{
+						targetep = default_gemini_base + mdlname + default_gemini_stream_suffix + custom_oai_key;
+					}
+					else
+					{
+						targetep = default_gemini_base + mdlname + default_gemini_suffix + custom_oai_key;
+					}
+					oai_payload = geminiPayload;
+					oaiheaders = geminiheaders;
+				}
+
+				if(is_browser_supports_sse() && localsettings.tokenstreammode!=0)
+				{
 					oai_api_stream_sse(targetep,oai_payload,oaiheaders);
 				}
 				else
@@ -21917,8 +21909,8 @@ Current version indicated by LITEVER below.
 					"model": custom_claude_model,
 					"messages": [],
 					"max_tokens": submit_payload.params.max_length,
-					"temperature": submit_payload.params.temperature,
 				};
+
 				Object.assign(claude_payload, localsettings.custom_sampler_fields);
 				claude_payload.messages.push({"role": "user", "content": submit_payload.prompt})
 				if(sysprompt)
@@ -21926,43 +21918,48 @@ Current version indicated by LITEVER below.
 					claude_payload.system = sysprompt;
 				}
 
-				let claude_is_v4 = (custom_claude_model.toLowerCase().includes("claude-3-7")
-				|| custom_claude_model.toLowerCase().includes("claude-sonnet-4")
+				let claude_is_v4 = (custom_claude_model.toLowerCase().includes("claude-sonnet-4")
 				|| custom_claude_model.toLowerCase().includes("claude-haiku-4")
 				|| custom_claude_model.toLowerCase().includes("claude-opus-4"));
 
-				let claude_is_v4_5 = (custom_claude_model.toLowerCase().includes("claude-sonnet-4-5")
-				|| custom_claude_model.toLowerCase().includes("claude-haiku-4-5")
-				|| custom_claude_model.toLowerCase().includes("claude-opus-4-1"));
+				let claude_is_v4_new = (custom_claude_model.toLowerCase().includes("claude-haiku-4-7")
+				|| custom_claude_model.toLowerCase().includes("claude-haiku-4-8")
+				|| custom_claude_model.toLowerCase().includes("claude-haiku-4-9")
+				|| custom_claude_model.toLowerCase().includes("claude-sonnet-4-7")
+				|| custom_claude_model.toLowerCase().includes("claude-sonnet-4-8")
+				|| custom_claude_model.toLowerCase().includes("claude-sonnet-4-9")
+				|| custom_claude_model.toLowerCase().includes("claude-opus-4-7")
+				|| custom_claude_model.toLowerCase().includes("claude-opus-4-8")
+				|| custom_claude_model.toLowerCase().includes("claude-opus-4-9"));
 
-				if(claudethinking && claude_is_v4)
+				if(claudethinking)
 				{
-					claude_payload.thinking = {
-						"type": "enabled",
-						"budget_tokens": 1024
+					if(claude_is_v4_new)
+					{
+						claude_payload.thinking = {"type": "adaptive", "display": "summarized"};
+					} else {
+						claude_payload.thinking = {"type": "enabled", "budget_tokens": 1024};
+						claude_payload.max_tokens += 1024;
 					}
-					claude_payload.max_tokens += 1024;
-					claude_payload.temperature = 1;
 				}
 				else
 				{
-					//unsupported with thinking
-					claude_payload.top_k = (submit_payload.params.top_k<1?300:submit_payload.params.top_k);
-					claude_payload.top_p = submit_payload.params.top_p;
-
-					//for claude 4.5, if temperature is not 1, do not send top p
-					if(claude_is_v4_5)
+					//modern claude does not allow top-p or temperature anymore.
+					if(claude_is_v4 && !claude_is_v4_new)
 					{
-						if(claude_payload.temperature == 1)
+						//only for claude 4 to claude 4.6
+						//unsupported with thinking, and if temperature is not 1, do not send top p
+						if(submit_payload.params.temperature==1)
 						{
-							delete claude_payload["temperature"];
+							claude_payload.top_p = submit_payload.params.top_p;
 						}
 						else
 						{
-							delete claude_payload["top_p"];
+							claude_payload.temperature = submit_payload.params.temperature;
 						}
 					}
 				}
+
 
 				if(localsettings.opmode==1)
 				{
@@ -22046,168 +22043,6 @@ Current version indicated by LITEVER below.
 						msgbox("Error while submitting prompt: " + error);
 						on_error_feedback();
 					});
-			}
-			else if (custom_gemini_key != "")//handle for Gemini
-			{
-				let mdlname = document.getElementById("custom_gemini_model").value;
-				let geminitopk = (submit_payload.params.top_k<1?100:submit_payload.params.top_k);
-				geminitopk = geminitopk>100?100:geminitopk;
-				if(mdlname.includes("flash-8b"))
-				{
-					geminitopk = geminitopk>40?40:geminitopk; //gemini 8b limits topk to 40
-				}
-
-				if(localsettings.opmode==1)
-				{
-					submit_payload.prompt = submit_payload.prompt + " \nASSISTANT: Here is a direct partial continuation of the text without repeating it: \nASSISTANT:";
-					submit_payload.params.max_length += 100; //add length
-				}
-
-
-				let geminiparts = [];
-
-				if (insertAIVisionImages.length > 0 || insertAIAudioSounds.length > 0) {
-					for (let i = 0; i < insertAIVisionImages.length; ++i) {
-						let imgd = insertAIVisionImages[i];
-						let oaiimg = {
-							"inline_data": {
-								"mime_type": "image/jpeg",
-								"data": (imgd.includes("base64,")?imgd.split("base64,")[1]:imgd)
-							}
-						};
-						geminiparts.push(oaiimg);
-					}
-					for (let i = 0; i < insertAIAudioSounds.length; ++i) {
-						let imgd = insertAIAudioSounds[i];
-						let format = "audio/wav"
-						if(imgd.includes(";base64,"))
-						{
-							let parts = imgd.split(";base64,");
-							imgd = parts[1];
-							format = parts[0].split(":")[1];
-						}
-						let oaiimg = {
-							"inline_data": {
-								"mime_type": format,
-								"data": imgd
-							}
-						};
-						geminiparts.push(oaiimg);
-					}
-				}
-
-				geminiparts.push({"text": submit_payload.prompt});
-
-				let payload = {
-				"contents": [
-					{
-					"parts": geminiparts
-					}
-				],
-				"safetySettings": [
-					{
-					"category": "HARM_CATEGORY_HARASSMENT",
-					"threshold": "OFF"
-					},
-					{
-					"category": "HARM_CATEGORY_HATE_SPEECH",
-					"threshold": "OFF"
-					},
-					{
-					"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-					"threshold": "OFF"
-					},
-					{
-					"category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-					"threshold": "OFF"
-					},
-					{
-					"category":"HARM_CATEGORY_CIVIC_INTEGRITY",
-					"threshold":"OFF"
-					}
-				],
-				"generationConfig": {
-					"temperature":submit_payload.params.temperature,
-					"maxOutputTokens": submit_payload.params.max_length,
-					"topP": submit_payload.params.top_p,
-					"topK": geminitopk,
-					"candidateCount":1,
-					"stopSequences": get_stop_sequences().slice(0, 4)
-				}
-				};
-
-				Object.assign(payload, localsettings.custom_sampler_fields);
-
-				if(document.getElementById("usegeminiweb").checked)
-				{
-					payload["tools"] = [{"google_search": {}}];
-				}
-
-				if((mdlname.includes("gemini-2.5") && !mdlname.includes("image")) || mdlname.includes("gemini-3-"))
-				{
-					if(!document.getElementById("usegeminithink").checked)
-					{
-						//gemini pro cannot fully disable thinking
-						payload["generationConfig"]["thinkingConfig"] = {"includeThoughts": false, "thinkingBudget": (mdlname.includes("gemini-2.5-pro")?128:0)};
-					}
-					else
-					{
-						payload["generationConfig"]["thinkingConfig"] = {"includeThoughts": true};
-					}
-				}
-
-				let sentrole = document.getElementById("geminiroledropdown").value;
-				if(sentrole!="")
-				{
-					payload.contents = [{
-						"role":sentrole,
-						"parts":geminiparts
-					}];
-				}
-				let postfixrole = document.getElementById("gemini_postfix_role").value;
-				let postfixtext = document.getElementById("gemini_postfix_text").value;
-				if(postfixtext!="" && sentrole!="")
-				{
-					payload.contents.push({
-						"role":postfixrole,
-						"parts":[
-							{
-							"text": postfixtext
-							}
-						]
-					});
-				}
-
-				let sysinst = document.getElementById("gemini_system_instruction").value;
-				if(sysinst!="" && (mdlname.includes("gemini-1.5-") || mdlname.includes("gemini-2") || mdlname.includes("gemini-3") || mdlname.includes("gemini-exp-")))
-				{
-					payload["systemInstruction"] = {
-						"role": "system",
-						"parts": [
-						{
-							"text": sysinst
-						}
-						]
-					};
-				}
-
-				last_request_str = JSON.stringify(payload);
-				last_request_timestamp = get_current_timestamp();
-				last_response_obj = null;
-				last_response_streamlog = "";
-
-				let geminiheaders = { 'Content-Type': 'application/json' };
-				if(is_browser_supports_sse() && localsettings.tokenstreammode!=0)
-				{
-					let targetep = default_gemini_base + mdlname + default_gemini_stream_suffix + custom_gemini_key;
-					oai_api_stream_sse(targetep,payload,geminiheaders);
-				}
-				else
-				{
-					let targetep = default_gemini_base + mdlname + default_gemini_suffix + custom_gemini_key;
-					gemini_api_sync_req(targetep,payload,geminiheaders);
-				}
-
 			}
 			else if (custom_cohere_key != "")//handle for Cohere
 			{
@@ -22932,8 +22767,7 @@ Current version indicated by LITEVER below.
 			else
 			{
 				let isoai = (custom_oai_key!="" && document.getElementById("useoaichatcompl").checked);
-				let isgemini = (custom_gemini_key!="");
-				visionstatus = (isoai?`<span class="color_green">OpenAI API (Conditional)</span>`:(isgemini?`<span class="color_green">Gemini API (Conditional)</span>`:`<span class="color_yellow">Unsupported</span>`));
+				visionstatus = (isoai?`<span class="color_green">OpenAI API (Conditional)</span>`:`<span class="color_yellow">Unsupported</span>`);
 			}
 		}
 		else
@@ -23825,7 +23659,7 @@ Current version indicated by LITEVER below.
 					}).catch((error) => {
 						console.log("Generation Error: " + error);
 						delete image_db[key];
-						msgbox("Image Generation Failed!\n\nPlease make sure ComfyUI is running at "+localsettings.saved_comfy_url+" and properly configured!\n\nIt must be launched with the flag --listen --enable-cors-header '*' to enable API access\n");
+						msgbox("Image Generation Failed!\n\nPlease make sure ComfyUI is running at "+localsettings.saved_comfy_url+" and properly configured!\n\nIt must be launched with the flag --listen --enable-cors-header '*' to enable API access\n(If --enable-cors-header '*' does not work, try --enable-cors-header *)\n");
 					});
 				}
 			}
@@ -23856,11 +23690,10 @@ Current version indicated by LITEVER below.
 							let isoaichat = (document.getElementById("useoaichatcompl").checked && custom_oai_key!="");
 							// Exclude images if agent mode is enabled as the agent should pick - it can still be enabled manually, but shouldn't be the default
 							let isAgentModeEnabled = typeof isAgentModeEnabledAndSetCorrectly === "function" && isAgentModeEnabledAndSetCorrectly();
-							let isgeminichat = (custom_gemini_key!="");
 							const imgitm = image_db[key];
 							let desiredvismode = (imgitm.imsource == 1 && (
-								((is_using_kcpp_with_vision() || isoaichat || isgeminichat) && imgitm.type == 0 && !isAgentModeEnabled) ||
-								((is_using_kcpp_with_audio() || isoaichat || isgeminichat) && imgitm.type == 1)
+								((is_using_kcpp_with_vision() || isoaichat) && imgitm.type == 0 && !isAgentModeEnabled) ||
+								((is_using_kcpp_with_audio() || isoaichat) && imgitm.type == 1)
 							)) ? 3 : 0;
 							completed_imgs_meta[metaid] = JSON.parse(JSON.stringify(default_imgs_meta));
 							completed_imgs_meta[metaid].prompt = image_db[key].prompt;
@@ -26105,15 +25938,11 @@ Current version indicated by LITEVER below.
 			}
 			else if(custom_oai_key!="")
 			{
-				whorun = "<br>You're using the OpenAI API";
+				whorun = "<br>You're using an OpenAI Compatible API";
 			}
 			else if(custom_claude_key!="")
 			{
 				whorun = "<br>You're using the Claude API";
-			}
-			else if(custom_gemini_key!="")
-			{
-				whorun = "<br>You're using the Gemini API";
 			}
 			else if(custom_cohere_key!="")
 			{
@@ -27329,6 +27158,9 @@ Current version indicated by LITEVER below.
 			if(custom_oai_endpoint.toLowerCase().includes("openrouter.ai"))
 			{
 				localsettings.prev_custom_endpoint_type = 3;
+			}else if(custom_oai_endpoint.toLowerCase().includes("googleapis.com"))
+			{
+				localsettings.prev_custom_endpoint_type = 5;
 			}else if(custom_oai_endpoint.toLowerCase().includes("api.mistral.ai"))
 			{
 				localsettings.prev_custom_endpoint_type = 7;
@@ -27349,10 +27181,6 @@ Current version indicated by LITEVER below.
 		else if(custom_claude_key!="")
 		{
 			localsettings.prev_custom_endpoint_type = 4;
-		}
-		else if(custom_gemini_key!="")
-		{
-			localsettings.prev_custom_endpoint_type = 5;
 		}
 		else if(custom_cohere_key!="")
 		{
@@ -30914,6 +30742,14 @@ Current version indicated by LITEVER below.
 							<div class="justifyleft">Toggle Fullscreen <span class="helpicon">?<span class="helptext">Attempts to switch to fullscreen mode. This setting cannot be saved.</span></span></div>
 							<button type="button" class="btn btn-primary push-right" onclick="toggle_fullscreen()">Toggle Fullscreen</button>
 						</div>
+						<div class="settinglabel hidden" id="links_to_other_uis">
+							<div class="justifyleft">Extra UIs <span class="helpicon">?<span class="helptext">Launch additional specialized GUIs.</span></span></div>
+							<div class="push-right">
+							<button type="button" class="btn btn-primary bg_purple" onclick="go_to_stableui()">Launch StableUI</button>
+							<button type="button" class="btn btn-primary bg_purple" onclick="go_to_musicui()">Launch MusicUI</button>
+							<button type="button" class="btn btn-primary bg_purple" onclick="go_to_lcppui()">Launch llama.cpp UI</button>
+							</div>
+						</div>
 					</div>
 				</div>
 
@@ -30928,11 +30764,11 @@ Current version indicated by LITEVER below.
 									<input title="Context Size" inputmode="numeric" class="justifyright push-right" id="max_context_length" style="width: 8ch;" oninput="
 									document.getElementById('max_context_length_slide').value = this.value;">
 								</div>
-								<div><input title="Context Size Slider" type="range" min="512" max="8192" step="8" id="max_context_length_slide" oninput="
+								<div><input title="Context Size Slider" type="range" min="512" max="16384" step="8" id="max_context_length_slide" oninput="
 									document.getElementById('max_context_length').value = this.value;"></div>
 								<div class="settingminmax">
 									<div class="justifyleft">512</div>
-									<div class="justifyright" id="max_context_length_slide_label">8192</div>
+									<div class="justifyright" id="max_context_length_slide_label">16384</div>
 								</div>
 								<div id="auto_ctxlen_panel" class="settinglabel">
 									<div class="justifyleft" title="Automatically lowers settings if incompatible with existing workers">Auto-Adjust Limits </div>
@@ -30947,11 +30783,11 @@ Current version indicated by LITEVER below.
 									<input title="Max Output" inputmode="numeric" class="justifyright push-right" id="max_length" oninput="
 									document.getElementById('max_length_slide').value = this.value;">
 								</div>
-								<div><input title="Max Output Slider" type="range" min="16" max="1024" step="2"	id="max_length_slide" oninput="
+								<div><input title="Max Output Slider" type="range" min="16" max="2048" step="2"	id="max_length_slide" oninput="
 									document.getElementById('max_length').value = this.value;"></div>
 								<div class="settingminmax">
 									<div class="justifyleft">16</div>
-									<div class="justifyright" id="max_length_slide_label">1024</div>
+									<div class="justifyright" id="max_length_slide_label">2048</div>
 								</div>
 								<div id="auto_genamt_panel" class="settinglabel">
 									<div class="justifyleft" title="Automatically lowers settings if incompatible with existing workers">Auto-Adjust Limits </div>
@@ -32448,6 +32284,11 @@ Current version indicated by LITEVER below.
 				You are responsibile for your own usage. API keys are used with OpenRouter API directly.<br>Only Temperature, Top-P and Repetition Penalty samplers are used.<br><a class="color_blueurl" onclick="fetch_openrouter_balance()" href="#">Click here to see your credit balance.</a><br><br>
 				<span class="color_green" style="font-weight: bold;">Please input OpenRouter Key.</span><br><br>
 				</div>
+				<div id="geminidesc" class="hidden">
+				Entering your <a class="color_blueurl" target="_blank" href="https://ai.google.dev/gemini-api/docs/api-key">Google Gemini API key</a> will allow you to use KoboldAI Lite with their API.<br><br>
+				You are responsibile for your own usage. API keys are used with Gemini API directly.<br><br>
+				<span class="color_green" style="font-weight: bold;">Please input Gemini API Key.</span><br><br>
+				</div>
 				<div id="mistralaidesc" class="hidden">
 				Entering your <a class="color_blueurl" target="_blank" href="https://docs.mistral.ai/getting-started/quickstart">MistralAI API key</a> will allow you to use KoboldAI Lite with their API.<br><br>
 				You are responsibile for your own usage. API keys are used with MistralAI API directly.<br>Only Temperature and Top-P samplers are used.<br><br>
@@ -32515,6 +32356,27 @@ Current version indicated by LITEVER below.
 					<option value="gryphe/mythomax-l2-13b">gryphe/mythomax-l2-13b</option>
 					<option style="display:none;" class="custom_model_option" value="custom">[Custom]</option>
 				</select>
+				<select title="Gemini AI Model Selection" style="padding:4px; width:calc(100% - 200px); display:inline-block" class="form-control" id="custom_gemini_model" onchange="oai_model_change(true)">
+					<option value="gemini-2.0-flash">gemini-2.0-flash</option>
+					<option value="gemini-2.0-flash-lite">gemini-2.0-flash-lite</option>
+					<option value="gemini-2.5-flash">gemini-2.5-flash</option>
+					<option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite</option>
+					<option value="gemini-2.5-flash-image">gemini-2.5-flash-image</option>
+					<option value="gemini-2.5-pro">gemini-2.5-pro</option>
+					<option value="gemini-3-pro-preview">gemini-3-pro-preview</option>
+					<option value="gemini-3-pro-image-preview">gemini-3-pro-image-preview</option>
+					<option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite</option>
+					<option value="gemini-3.1-flash-image">gemini-3.1-flash-image</option>
+					<option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview</option>
+					<option value="gemini-3.5-flash" selected="selected">gemini-3.5-flash</option>
+					<option value="nano-banana-pro-preview">nano-banana-pro-preview</option>
+					<option value="gemma-3-1b-it">gemma-3-1b-it</option>
+					<option value="gemma-3-4b-it">gemma-3-4b-it</option>
+					<option value="gemma-3-12b-it">gemma-3-12b-it</option>
+					<option value="gemma-3-27b-it">gemma-3-27b-it</option>
+					<option value="gemma-4-26b-a4b-it">gemma-4-26b-a4b-it</option>
+					<option value="gemma-4-31b-it">gemma-4-31b-it</option>
+				</select>
 				<select title="Mistral AI Model Selection" style="padding:4px;display:inline;width:calc(100% - 200px)" class="form-control hidden" id="custom_mistralai_model" onchange="oai_model_change(true)">
 					<option value="open-mistral-7b">open-mistral-7b</option>
 					<option value="open-mistral-nemo">open-mistral-nemo</option>
@@ -32575,6 +32437,10 @@ Current version indicated by LITEVER below.
 				<div class="hidden" id="oaiemulatecompletionsbox">
 					<div><input type="checkbox" id="oaiemulatecompletions" title="Emulate Completions with Prefill">
 					<div class="box-label">Emulate Completions API with Prefill</div></div>
+				</div>
+				<div class="hidden" id="usegeminiwebbox">
+					<input type="checkbox" title="Use Gemini WebSearch" id="usegeminiweb">
+					<div class="box-label">Use WebSearch</div>
 				</div>
 				<div style="display:inline-flex">
 					<div><input type="checkbox" id="useoaichatcompl" title="Use ChatCompletions API" onchange="toggleoaichatcompl()">
@@ -32641,18 +32507,16 @@ Current version indicated by LITEVER below.
 				<input class="form-control" type="password" id="custom_claude_key" placeholder="Claude API Key (Required)" value="" onfocus="focus_api_keys()" onblur="blur_api_keys()"><br>
 				Model Choice:<br>
 				<select title="Claude AI Model Selection" style="padding:4px; width:calc(100% - 110px); display:inline-block" class="form-control" id="custom_claude_model"  onload="toggleclaudemodel()"  onchange="toggleclaudemodel()">
-					<option value="claude-3-opus-20240229">claude-3-opus-20240229</option>
-					<option value="claude-3-sonnet-20240229">claude-3-sonnet-20240229</option>
-					<option value="claude-3-haiku-20240307">claude-3-haiku-20240307</option>
-					<option value="claude-3-5-sonnet-20240620">claude-3-5-sonnet-20240620</option>
-					<option value="claude-3-5-sonnet-20241022">claude-3-5-sonnet-20241022</option>
-					<option value="claude-3-5-sonnet-latest">claude-3-5-sonnet-latest</option>
-					<option value="claude-3-5-haiku-20241022">claude-3-5-haiku-20241022</option>
-					<option value="claude-3-7-sonnet-20250219">claude-3-7-sonnet-20250219</option>
-					<option value="claude-sonnet-4-latest" selected="selected">claude-sonnet-4-latest</option>
-					<option value="claude-opus-4-latest">claude-opus-4-latest</option>
+					<option value="claude-opus-4-8">claude-opus-4-8</option>
+					<option value="claude-opus-4-7">claude-opus-4-7</option>
+					<option value="claude-sonnet-4-6" selected="selected">claude-sonnet-4-6</option>
+					<option value="claude-opus-4-6">claude-opus-4-6</option>
+					<option value="claude-opus-4-5-20251101">claude-opus-4-5-20251101</option>
 					<option value="claude-haiku-4-5-20251001">claude-haiku-4-5-20251001</option>
 					<option value="claude-sonnet-4-5-20250929">claude-sonnet-4-5-20250929</option>
+					<option value="claude-opus-4-1-20250805">claude-opus-4-1-20250805</option>
+					<option value="claude-opus-4-20250514">claude-opus-4-20250514</option>
+					<option value="claude-sonnet-4-20250514">claude-sonnet-4-20250514</option>
 				</select>
 				<button type="button" class="btn btn-primary" style="display:inline;width:105px;" id="claudefetchlist" onclick="claude_fetch_models()">Fetch List</button>
 				<input type="checkbox" title="Add endpoint version" id="claudeaddversion" onchange="" checked>
@@ -32670,69 +32534,11 @@ Current version indicated by LITEVER below.
 				</div>
 
 
-				<div id="claudethinkingbox" class="hidden">
+				<div id="claudethinkingbox">
 				<div class="box-label" title="Enable Thinking">Enable Thinking </div>
 				<input type="checkbox" title="Enable Thinking" style="display:inline;" id="claudethinking">
 				</div>
 
-			</div>
-			<div id="geminicustom" class="menutext hidden">
-				Entering your <a class="color_blueurl" target="_blank" href="https://docs.mistral.ai/getting-started/quickstart">Google Gemini API key</a> will allow you to use KoboldAI Lite with their API.<br><br>
-				You are responsibile for your own usage. API keys are used with Gemini API directly.<br><br>
-				<div>
-				<select title="Gemini AI Model Selection" style="padding:4px; width:calc(100% - 110px); display:inline-block" class="form-control" id="custom_gemini_model" onchange="togglegeminimodel()">
-					<option value="gemini-1.5-flash-latest" selected="selected">gemini-1.5-flash-latest</option>
-					<option value="gemini-1.5-pro-001">gemini-1.5-pro-001</option>
-					<option value="gemini-1.5-pro-002">gemini-1.5-pro-002</option>
-					<option value="gemini-1.5-pro-latest">gemini-1.5-pro-latest</option>
-					<option value="gemini-2.0-flash">gemini-2.0-flash</option>
-					<option value="gemini-2.0-flash-lite">gemini-2.0-flash-lite</option>
-					<option value="gemini-2.0-pro-exp">gemini-2.0-pro-exp</option>
-					<option value="gemini-2.5-flash">gemini-2.5-flash</option>
-					<option value="gemini-2.5-flash-image-preview">gemini-2.5-flash-image-preview</option>
-					<option value="gemini-2.5-pro">gemini-2.5-pro</option>
-					<option value="gemini-3-pro-preview">gemini-3-pro-preview</option>
-					<option value="gemini-3-pro-image-preview">gemini-3-pro-image-preview</option>
-					<option value="nano-banana-pro-preview">nano-banana-pro-preview</option>
-					<option value="gemma-3-1b-it">gemma-3-1b-it</option>
-					<option value="gemma-3-4b-it">gemma-3-4b-it</option>
-					<option value="gemma-3-12b-it">gemma-3-12b-it</option>
-					<option value="gemma-3-27b-it">gemma-3-27b-it</option>
-					<option value="gemma-4-26b-a4b-it">gemma-4-26b-a4b-it</option>
-					<option value="gemma-4-31b-it">gemma-4-31b-it</option>
-				</select>
-				<button type="button" class="btn btn-primary" style="display:inline;width:105px;" id="geminifetchlist" onclick="gemini_fetch_models()">Fetch List</button>
-				</div>
-				<span class="color_green" style="font-weight: bold;">Please input Gemini API Key.</span><br><br>
-				<input class="form-control" type="password" id="custom_gemini_key" placeholder="Gemini API Key (Required)" value="" onfocus="focus_api_keys()" onblur="blur_api_keys()"><br>
-				<div id="gemini_role_options">
-				<div>
-					Main Message Role:
-					<select title="Main Message Role" class="form-control" style="height: 25px; font-size: var(--theme_font_size_medium); margin-bottom: 2px; padding:4px;display:inline;width:100px" onload="togglegeminirole();" onchange="togglegeminirole();" id="geminiroledropdown">
-						<option value="" selected>Default</option>
-						<option value="user">User</option>
-						<option value="model">Model</option>
-					</select>
-				</div>
-				<div id="gemini_role_options2" style="display:flex">
-					<select title="Postfix Message Role" class="form-control" style="height: 25px; font-size: var(--theme_font_size_medium); padding:4px;display:inline;width:100px" id="gemini_postfix_role">
-						<option value="user">User</option>
-						<option value="model" selected>Model</option>
-					</select>
-					<textarea title="Gemini Postfix Prompt" class="form-control" rows="3" style="resize: vertical; line-height:1.1; padding:4px;  display:inline; width: 100%;" id="gemini_postfix_text" placeholder="(Enter Gemini Postfix)"></textarea>
-				</div>
-				</div>
-				<textarea title="Gemini System Prompt" class="form-control" rows="3" style="resize: vertical; line-height:1.1; padding:4px; display:inline; width: 100%" id="gemini_system_instruction" placeholder="(Enter System Instruction)"></textarea><br>
-				<div style="display:inline-flex">
-					<div>
-						<input type="checkbox" title="Use Gemini WebSearch" id="usegeminiweb">
-						<div class="box-label">Use WebSearch</div>
-					</div>
-					<div>
-						<input type="checkbox" title="Allow Gemini Thinking" id="usegeminithink" checked>
-						<div class="box-label">Allow Thinking</div>
-					</div>
-				</div>
 			</div>
 			<div id="coherecustom" class="menutext hidden">
 				Entering your <a class="color_blueurl" target="_blank" href="https://dashboard.cohere.com/api-keys">Cohere API key</a> will allow you to use KoboldAI Lite with their API.<br><br>
