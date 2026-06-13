@@ -19,9 +19,6 @@ render_regular_welcome = () => {
         else if (custom_claude_key != "") {
             whorun = "<br>You're using the Claude API";
         }
-        else if (custom_gemini_key != "") {
-            whorun = "<br>You're using the Gemini API";
-        }
         else if (custom_cohere_key != "") {
             whorun = "<br>You're using the Cohere API";
         }
