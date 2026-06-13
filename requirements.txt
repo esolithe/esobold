@@ -44,3 +44,4 @@ discord.py>=2.7.0
 python-telegram-bot>=22.7.0
 matrix-nio>=0.25.2
 beautifulsoup4>=4.14.2
+ddgs
