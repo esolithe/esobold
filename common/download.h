@@ -2,6 +2,7 @@
 
 #include <string>
 #include <vector>
+#include <stdexcept>
 
 struct common_params_model;
 

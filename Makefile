@@ -4,7 +4,7 @@
 .PHONY: finishedmsg
 
 default: koboldcpp_default koboldcpp_failsafe koboldcpp_noavx2 koboldcpp_vulkan_failsafe koboldcpp_cublas koboldcpp_hipblas koboldcpp_vulkan koboldcpp_vulkan_noavx2 finishedmsg
-tools: quantize_gpt2 quantize_gptj quantize_gguf quantize_neox quantize_mpt ttsmain whispermain sdmain gguf-split
+tools: quantize_gpt2 quantize_gptj quantize_gguf quantize_neox quantize_mpt ttsmain whispermain sdmain gguf-split llamaserver llamaservervk
 
 ifndef UNAME_S
 UNAME_S := $(shell uname -s)
@@ -730,6 +730,10 @@ otherarch/sdcpp/thirdparty/zip.o: otherarch/sdcpp/thirdparty/zip.c
 
 OBJS_SDTYPE := otherarch/sdcpp/sdtype_adapter.o $(OBJS_SDCOMMON)
 
+LLAMASERVER_SRCS := tools/server/main.cpp tools/server/server.cpp tools/server/server-chat.cpp tools/server/server-common.cpp tools/server/server-context.cpp tools/server/server-http.cpp tools/server/server-models.cpp tools/server/server-queue.cpp tools/server/server-task.cpp tools/server/server-tools.cpp
+LLAMASERVER_COMMON_SRCS := common/arg.cpp common/chat.cpp common/preset.cpp common/download.cpp vendor/cpp-httplib/httplib.cpp
+LLAMASERVER_CXXFLAGS := -I./tools/mtmd
+
 
 #whisper objects
 whispercpp_default.o: otherarch/whispercpp/whisper_adapter.cpp
@@ -763,7 +767,7 @@ gpttype_adapter_vulkan_noavx2.o: $(GPTTYPE_ADAPTER)
 	$(CXX) $(CXXFLAGS) $(FAILSAFE_FLAGS) $(VULKAN_FLAGS) -c $< -o $@
 
 clean:
-	rm -vf *.o main ttsmain sdmain whispermain quantize_gguf quantize_gpt2 quantize_gptj quantize_neox quantize_mpt vulkan-shaders-gen vulkan-shaders-gen-noext gguf-split mtmd-cli mainvk fitparams embedding embeddingvk qwen3tts rpcserver rpcserver.exe qwen3tts.exe embeddingvk.exe embedding.exe fitparams.exe mainvk.exe mtmd-cli.exe gguf-split.exe vulkan-shaders-gen.exe vulkan-shaders-gen-noext.exe main.exe ttsmain.exe sdmain.exe whispermain.exe quantize_gguf.exe quantize_gptj.exe quantize_gpt2.exe quantize_neox.exe quantize_mpt.exe koboldcpp_default.dll koboldcpp_failsafe.dll koboldcpp_noavx2.dll koboldcpp_vulkan_failsafe.dll koboldcpp_cublas.dll koboldcpp_hipblas.dll koboldcpp_vulkan.dll koboldcpp_vulkan_noavx2.dll koboldcpp_default.so koboldcpp_failsafe.so koboldcpp_noavx2.so koboldcpp_vulkan_failsafe.so koboldcpp_cublas.so koboldcpp_hipblas.so koboldcpp_vulkan.so koboldcpp_vulkan_noavx2.so ggml/src/ggml-vulkan-shaders.cpp ggml/src/ggml-vulkan-shaders.hpp ggml/src/ggml-vulkan-shaders-noext.cpp ggml/src/ggml-vulkan-shaders-noext.hpp
+	rm -vf *.o main ttsmain sdmain whispermain quantize_gguf quantize_gpt2 quantize_gptj quantize_neox quantize_mpt vulkan-shaders-gen vulkan-shaders-gen-noext gguf-split mtmd-cli mainvk fitparams embedding embeddingvk qwen3tts rpcserver llamaserver llamaservervk rpcserver.exe llamaserver.exe llamaservervk.exe qwen3tts.exe embeddingvk.exe embedding.exe fitparams.exe mainvk.exe mtmd-cli.exe gguf-split.exe vulkan-shaders-gen.exe vulkan-shaders-gen-noext.exe main.exe ttsmain.exe sdmain.exe whispermain.exe quantize_gguf.exe quantize_gptj.exe quantize_gpt2.exe quantize_neox.exe quantize_mpt.exe koboldcpp_default.dll koboldcpp_failsafe.dll koboldcpp_noavx2.dll koboldcpp_vulkan_failsafe.dll koboldcpp_cublas.dll koboldcpp_hipblas.dll koboldcpp_vulkan.dll koboldcpp_vulkan_noavx2.dll koboldcpp_default.so koboldcpp_failsafe.so koboldcpp_noavx2.so koboldcpp_vulkan_failsafe.so koboldcpp_cublas.so koboldcpp_hipblas.so koboldcpp_vulkan.so koboldcpp_vulkan_noavx2.so ggml/src/ggml-vulkan-shaders.cpp ggml/src/ggml-vulkan-shaders.hpp ggml/src/ggml-vulkan-shaders-noext.cpp ggml/src/ggml-vulkan-shaders-noext.hpp
 	rm -vrf ggml/src/ggml-cuda/*.o
 	rm -vrf ggml/src/ggml-cuda/template-instances/*.o
 	rm -vrf llguidance
@@ -796,6 +800,10 @@ qwen3tts: otherarch/qwen3tts/q3ttsmain.cpp otherarch/qwen3tts/qwen3_tts.cpp othe
 	$(CXX) $(CXXFLAGS) $(filter-out %.h,$^) -o $@ $(LDFLAGS)
 rpcserver: tools/rpc/rpc-server.cpp common/arg.cpp common/chat.cpp common/preset.cpp common/download.cpp build-info.h ggml_v4_vulkan.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-unops.o llama.o console.o clip_vulkan.o mtmd.o mtmd-helper.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_vulkan.o ggml-vulkan.o ggml-vulkan-shaders.o ggml-repack.o $(OBJS_FULL) $(OBJS) lib/vulkan-1.lib
 	$(CXX) $(CXXFLAGS) -DGGML_USE_VULKAN -DSD_USE_VULKAN $(filter-out %.h,$^) -o $@ $(LDFLAGS)
+llamaserver: $(LLAMASERVER_SRCS) $(LLAMASERVER_COMMON_SRCS) build-info.h ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-unops.o llama.o console.o clip_default.o mtmd.o mtmd-helper.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
+	$(CXX) $(CXXFLAGS) $(LLAMASERVER_CXXFLAGS) $(filter-out %.h,$^) -o $@ $(LDFLAGS)
+llamaservervk: $(LLAMASERVER_SRCS) $(LLAMASERVER_COMMON_SRCS) build-info.h ggml_v4_vulkan.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-unops.o llama.o console.o clip_vulkan.o mtmd.o mtmd-helper.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_vulkan.o ggml-vulkan.o ggml-vulkan-shaders.o ggml-repack.o $(OBJS_FULL) $(OBJS) lib/vulkan-1.lib
+	$(CXX) $(CXXFLAGS) $(LLAMASERVER_CXXFLAGS) -DGGML_USE_VULKAN -DSD_USE_VULKAN $(filter-out %.h,$^) -o $@ $(LDFLAGS)
 
 ggml/src/ggml-vulkan-shaders.cpp: ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
 ifdef VULKAN_BUILD
