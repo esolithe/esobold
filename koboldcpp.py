@@ -87,7 +87,7 @@ dry_seq_break_max = 128
 extra_images_max = 4 # for kontext/qwen img
 
 # global vars
-KcppVersion = "1.115"
+KcppVersion = "1.115.1"
 showdebug = True
 kcpp_instance = None #global running instance
 global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "currentBaseConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "base_config":"", "swapReqType": None, "autoswapmode": False, "autoswapSettings": {}, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}, "restart_override_base_config": "", "current_model_override": "", "OpenLumara": False}
@@ -414,6 +414,7 @@ class sd_load_model_inputs(ctypes.Structure):
                 ("img_hard_limit", ctypes.c_int),
                 ("img_soft_limit", ctypes.c_int),
                 ("max_vram", ctypes.c_float),
+                ("stream_layers", ctypes.c_bool),
                 ("devices_override", ctypes.c_char_p),
                 ("quiet", ctypes.c_bool),
                 ("debugmode", ctypes.c_int)]
@@ -2521,6 +2522,7 @@ def sd_load_model(model_filename,vae_filename,t5xxl_filename,clip1_filename,clip
     inputs.photomaker_filename = photomaker_filename.encode("UTF-8")
     inputs.upscaler_filename = upscaler_filename.encode("UTF-8")
     inputs.max_vram = (args.sdvramlimit/1024.0) if args.sdvramlimit > 0 else 0
+    inputs.stream_layers = False
 
     lora_filenames, lora_multipliers = prepare_initial_lora_multipliers()
     inputs.lora_len = len(lora_filenames)
@@ -8594,7 +8596,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                 handle.batch_generate_abort(batch_request_id)
             else:
                 handle.abort_generate()
-            await asyncio.sleep(0.2) #short delay
+            await asyncio.sleep(0.1) #short delay
         finally:
             if batch_request_id >= 0:
                 handle.batch_generate_release(batch_request_id)
@@ -8604,7 +8606,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         # flush buffers, sleep a bit to make sure all data sent, and then force close the connection
         self.wfile.flush()
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(0.05)
         self.close_connection = True
         await asyncio.sleep(0.05)
 
@@ -8654,7 +8656,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             print("An ongoing connection was aborted or interrupted!")
             print(cae)
             handle.abort_generate()
-            await asyncio.sleep(0.2) #short delay
+            await asyncio.sleep(0.1) #short delay
         except Exception as e:
             print(e)
         finally:

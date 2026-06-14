@@ -1024,6 +1024,11 @@ int common_download_file_single(const std::string & url,
     throw std::runtime_error("download functionality is not enabled in this build");
 }
 
+std::pair<long, std::vector<char>> common_remote_get_content(const std::string          & url,
+                                                             const common_remote_params & params) {
+    throw std::runtime_error("download functionality is not enabled in this build");
+}
+
 struct gguf_split_info {
     std::string prefix; // tag included
     std::string tag;

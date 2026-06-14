@@ -3352,7 +3352,7 @@ static bool ggml_thread_apply_priority(int32_t prio) {
         t.StateMask   = 0;
 
         if (!SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &t, sizeof(t))) {
-            GGML_LOG_DEBUG("failed to disable process power throttling %d : (%d)\n", prio, (int) GetLastError());
+            // GGML_LOG_DEBUG("failed to disable process power throttling %d : (%d)\n", prio, (int) GetLastError());
             return false;
         }
         #endif

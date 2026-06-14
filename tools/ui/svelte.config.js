@@ -30,9 +30,6 @@ const config = {
 		},
 		alias: {
 			$styles: 'src/styles'
-		},
-		version: {
-			name: 'llama-ui'
 		}
 	},
 

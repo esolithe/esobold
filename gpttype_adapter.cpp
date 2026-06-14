@@ -989,8 +989,13 @@ void sample_top_k(llama_token_data_array * cur_p, int32_t k) {
             constexpr float bucket_scale = nbuckets/(bucket_high - bucket_low);
             constexpr float bucket_inter = -bucket_low * bucket_scale;
 
-            std::vector<int> bucket_idx(cur_p->size);
-            std::vector<int> histo(nbuckets, 0);
+            static thread_local std::vector<int> bucket_idx;
+            static thread_local std::vector<int> histo;
+            static thread_local std::vector<llama_token_data> tmp_tokens;
+            static thread_local std::vector<llama_token_data*> bucket_ptrs;
+
+            bucket_idx.resize(cur_p->size);
+            histo.assign(nbuckets, 0);
 
             for (int i = 0; i < (int)cur_p->size; ++i) {
                 const float val = cur_p->data[i].logit;
@@ -1007,9 +1012,9 @@ void sample_top_k(llama_token_data_array * cur_p, int32_t k) {
                     break;
                 }
             }
-            std::vector<llama_token_data> tmp_tokens(nhave);
+            tmp_tokens.resize(nhave);
             auto * ptr = tmp_tokens.data();
-            std::vector<llama_token_data*> bucket_ptrs;
+            bucket_ptrs.clear();
             bucket_ptrs.reserve(nbuckets - ib);
             for (int j = nbuckets - 1; j >= ib; --j) {
                 bucket_ptrs.push_back(ptr);
@@ -1042,16 +1047,24 @@ void sample_top_k(llama_token_data_array * cur_p, int32_t k) {
 llama_token sample_token(llama_token_data_array * candidates, std::mt19937 & rng)
 {
     sample_softmax(candidates);
-    std::vector<float> probs;
-    probs.reserve(candidates->size);
-    TopPicksData newpick;
 
+    std::uniform_real_distribution<float> dist(0.0f, 1.0f);
+    float roll = dist(rng);
+    int idx = (int)candidates->size - 1;
+    float cum_sum = 0.0f;
     for (size_t i = 0; i < candidates->size; ++i) {
-        probs.push_back(candidates->data[i].p);
+        cum_sum += candidates->data[i].p;
+        if (roll <= cum_sum) {
+            idx = (int)i;
+            break;
+        }
     }
 
-    std::discrete_distribution<> dist(probs.begin(), probs.end());
-    int idx = dist(rng);
+    TopPicksData newpick;
+    newpick.tokens.reserve(std::min((size_t) logprobs_max, candidates->size));
+    newpick.tokenid.reserve(std::min((size_t) logprobs_max, candidates->size));
+    newpick.logprobs.reserve(std::min((size_t) logprobs_max, candidates->size));
+    newpick.p.reserve(std::min((size_t) logprobs_max, candidates->size));
 
     newpick.selected_token = FileFormatTokenizeID(candidates->data[idx].id, file_format, true);
     float rp1 = (candidates->data[idx].p<=0.0001?0.0001f:candidates->data[idx].p);
@@ -1486,11 +1499,47 @@ void sample_rep_pen(int n_ctx, int rep_pen_range, float rep_pen, float rep_pen_s
         return;
     }
 
-    const int64_t t_start_sample_us = ggml_time_us();
+    static thread_local std::vector<uint8_t> token_marks;
+    static thread_local std::vector<llama_token> touched_tokens;
+    if(token_marks.size() < (size_t)n_vocab)
+    {
+        token_marks.resize(n_vocab, 0);
+    }
+    touched_tokens.clear();
 
-    // Create a frequency map to count occurrences of each token in last_tokens
-    std::unordered_set<llama_token> tokens_near(last_tokens + last_n_repeat / 2, last_tokens + last_n_repeat);
-    std::unordered_set<llama_token> tokens_far(last_tokens, last_tokens + last_n_repeat / 2);
+    const size_t split = last_n_repeat / 2;
+    for (size_t i = 0; i < split; ++i) {
+        const llama_token tok = last_tokens[i];
+        if(tok < 0)
+        {
+            continue;
+        }
+        if((size_t)tok >= token_marks.size())
+        {
+            token_marks.resize((size_t)tok + 1, 0);
+        }
+        if(token_marks[tok] == 0)
+        {
+            touched_tokens.push_back(tok);
+        }
+        token_marks[tok] = 1;
+    }
+    for (size_t i = split; i < last_tokens_size; ++i) {
+        const llama_token tok = last_tokens[i];
+        if(tok < 0)
+        {
+            continue;
+        }
+        if((size_t)tok >= token_marks.size())
+        {
+            token_marks.resize((size_t)tok + 1, 0);
+        }
+        if(token_marks[tok] == 0)
+        {
+            touched_tokens.push_back(tok);
+        }
+        token_marks[tok] = 2;
+    }
 
     float rep_pen_reduced = rep_pen;
     if(rep_pen_reduced>1.0f)
@@ -1498,13 +1547,13 @@ void sample_rep_pen(int n_ctx, int rep_pen_range, float rep_pen, float rep_pen_s
        rep_pen_reduced = 1.0f + ((rep_pen-1.0f)*rep_pen_slope);
     }
     for (size_t i = 0; i < candidates->size; ++i) {
-        const bool token_in_near = tokens_near.find(candidates->data[i].id) != tokens_near.end();
-        const bool token_in_far = tokens_far.find(candidates->data[i].id) != tokens_far.end();
-        if (!token_in_near && !token_in_far) {
+        const llama_token tok = candidates->data[i].id;
+        const uint8_t token_mark = tok >= 0 && (size_t)tok < token_marks.size() ? token_marks[tok] : 0;
+        if (token_mark == 0) {
             continue;
         }
 
-        float penalty = (token_in_near?rep_pen:rep_pen_reduced);
+        float penalty = (token_mark == 2 ? rep_pen : rep_pen_reduced);
 
         // The academic publication that described this technique actually just only divided, but that would cause tokens with negative logits to become more likely, which is obviously wrong.
         // This is common fix for this problem, which is to multiply by the penalty instead of dividing.
@@ -1515,6 +1564,11 @@ void sample_rep_pen(int n_ctx, int rep_pen_range, float rep_pen, float rep_pen_s
         }
 
         candidates->data[i].logit -= presence_penalty;
+    }
+
+    for (llama_token tok : touched_tokens)
+    {
+        token_marks[tok] = 0;
     }
 
     candidates->sorted = false;
@@ -1958,12 +2012,12 @@ const std::vector<int> & think_start_seq, const std::vector<int> & think_end_seq
     // printf("SampleLogits called with: n_ctx=%d, n_vocab=%d, rep_pen_range=%d, rep_pen=%f, rep_pen_slope=%f, presence_penalty=%f, top_k=%f, top_a=%f, top_p=%f, min_p=%f, typical_p=%f, tfs=%f, nsigma=%f, temp=%f, mirostat=%d, mirostat_tau=%f, mirostat_eta=%f, dry_multiplier=%f, dry_base=%f, dry_allowed_length=%d, dry_penalty_last_n=%d, xtc_threshold=%f, xtc_probability=%f, sampler_order_size=%zu, dynatemp_range=%f, dynatemp_exponent=%f, smoothing_factor=%f\n",
     // n_ctx, n_vocab, rep_pen_range, rep_pen, rep_pen_slope, presence_penalty, top_k, top_a, top_p, min_p, typical_p, tfs, nsigma, temp, mirostat, mirostat_tau, mirostat_eta, dry_multiplier, dry_base, dry_allowed_length, dry_penalty_last_n, xtc_threshold, xtc_probability, sampler_order.size(), dynatemp_range, dynatemp_exponent, smoothing_factor);
 
-    int id = 0;
-    std::vector<llama_token_data> candidates;
-    candidates.reserve(n_vocab);
+    static thread_local std::vector<llama_token_data> candidates;
+    candidates.resize(n_vocab);
     for (llama_token token_id = 0; token_id < n_vocab; token_id++) {
-        candidates.emplace_back(llama_token_data{token_id, logits[token_id], 0.0f});
+        candidates[token_id] = llama_token_data{token_id, logits[token_id], 0.0f};
     }
+    int id = 0;
 
     for(int i=0;i<logit_biases.size();++i)
     {

@@ -541,7 +541,8 @@ add_library(sdtype_adapter
             otherarch/sdcpp/examples/cli/image_metadata.cpp
             otherarch/sdcpp/src/core/layer_registry.cpp
             otherarch/sdcpp/src/core/layer_registry.h
-            otherarch/sdcpp/src/model.cpp
+            otherarch/sdcpp/src/model_loader.cpp
+            otherarch/sdcpp/src/extensions/photomaker_extension.cpp
             otherarch/sdcpp/src/runtime/sample-cache.cpp
             otherarch/sdcpp/src/core/util.cpp
             otherarch/sdcpp/src/name_conversion.cpp
