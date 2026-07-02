@@ -56,4 +56,5 @@ dependencies:
     - python-telegram-bot
     - matrix-nio
     - beautifulsoup4
+    - httpx
     - ddgs

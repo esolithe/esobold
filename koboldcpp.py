@@ -15107,7 +15107,8 @@ def launch_OpenLumara(launch_args):
                 "--modules.settings.sandboxed_files.sandbox_folder", f"{launch_args.OpenLumara_sandboxfolder if launch_args.OpenLumara_sandboxfolder is not None else 'sandbox'}",
                 "--modules.settings.coder.sandbox_folder", f"{launch_args.OpenLumara_sandboxfolder if launch_args.OpenLumara_sandboxfolder is not None else 'sandbox'}",
                 "--modules.settings.sandboxed_shell.sandbox_path", f"{launch_args.OpenLumara_sandboxfolder if launch_args.OpenLumara_sandboxfolder is not None else 'sandbox'}",
-                "--user_modules.path", f"{userModulesPath}"
+                "--user_modules.path", f"{userModulesPath}",
+                "--disable_auto_installer"
                 ]
 
         if (launch_args.debugmode is not None and launch_args.debugmode >= 1):
