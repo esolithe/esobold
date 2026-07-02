@@ -33,7 +33,7 @@ export const buildOpenlumaraCommands = (ctx) => {
 		await window.promptForOpenLumaraIdentity(async () => {
 			isAuthorized = true
 		}, {
-			baseUrl: ol?.base_url,
+			baseUrl: window.openlumaraClient?.base_url,
 		})
 
 		return isAuthorized
@@ -171,11 +171,14 @@ export const buildOpenlumaraCommands = (ctx) => {
 
                     let displayHandled = false;
                     let lastMessageProcessedFromLumara = localsettings.lastMessageProcessedFromLumara
-                    let messageHistory = (await openlumaraClient.getMessagesSince(lastMessageProcessedFromLumara !== 0 ? lastMessageProcessedFromLumara + 1 : lastMessageProcessedFromLumara))?.messages;
+					let messageHistory = (await openlumaraClient.getMessagesSince(lastMessageProcessedFromLumara !== 0 ? lastMessageProcessedFromLumara + 1 : lastMessageProcessedFromLumara))?.messages;
+					if (!Array.isArray(messageHistory)) {
+						messageHistory = []
+					}
                     if (!!messageHistory) {
-                        let startPoint = messageHistory.reverse().find(msg => msg?.role === "user")?.index;
+						let startPoint = [...messageHistory].reverse().find(msg => msg?.role === "user" && Number.isInteger(msg?.index))?.index;
                         if (startPoint !== null && Number.isInteger(startPoint)) {
-                            let messagesToShow = messageHistory.filter(msg => !!msg?.index && msg.index > startPoint).sort((a, b) => a.index > b.index ? 1 : -1)
+							let messagesToShow = messageHistory.filter(msg => Number.isInteger(msg?.index) && msg.index > startPoint).sort((a, b) => a.index > b.index ? 1 : -1)
                             if (messagesToShow.length > 0) {
                                 messagesToShow.forEach(msg => {
                                     if (!!msg?.content) {
