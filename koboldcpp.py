@@ -12216,6 +12216,7 @@ def show_gui():
     OpenLumara_configfile_var = ctk.StringVar(value="")
     OpenLumara_datadir_var = ctk.StringVar(value="")
     OpenLumara_sandboxfolder_var = ctk.StringVar(value="")
+    OpenLumara_backuppath_var = ctk.StringVar(value="")
     OpenLumara_apiurl_var = ctk.StringVar(value="")
     OpenLumara_TemporaryMode_var = ctk.IntVar(value=0)
     OpenLumara_requirelogin_var = ctk.IntVar(value=1)
@@ -13323,9 +13324,10 @@ def show_gui():
     makefileentry(OpenLumara_tab, "Config File (required):", "Select OpenLumara config file", OpenLumara_configfile_var,3,width=280,filetypes=[("Lumara Config", "*.yaml"), ("Lumara Config", "*.yml")],dialog_type=3,tooltiptxt="Path to the OpenLumara config YAML file.")
     makefileentry(OpenLumara_tab, "Data Directory (required):", "Select OpenLumara data directory", OpenLumara_datadir_var, 5, width=220, dialog_type=2, tooltiptxt="Path to the data directory used by OpenLumara to store configurations and conversation history.")
     makefileentry(OpenLumara_tab, "Sandbox Folder (required):", "Select OpenLumara sandbox folder", OpenLumara_sandboxfolder_var, 7, width=220, dialog_type=2, tooltiptxt="Path to the sandbox directory used by OpenLumara for agent file access.")
-    makelabelentry(OpenLumara_tab, "OAI API URL (optional):", OpenLumara_apiurl_var, 9, 220, tooltip=f"Overrides the API URL in the OpenLumara config.\nLeave blank to use the value already in the config.\nExample: https://localhost:{defaultport}/v1")
-    makecheckbox(OpenLumara_tab, "Temporary Mode", OpenLumara_TemporaryMode_var, 11, tooltiptxt="Enable temporary mode for OpenLumara. Prevents writing through most tools to disk. Does not apply to shell commands.")
-    makecheckbox(OpenLumara_tab, "Require Login", OpenLumara_requirelogin_var, 12, tooltiptxt="Require users to log in before accessing the OpenLumara WebUI. Enabled by default for security. Default credentials are admin:admin, change these in the OpenLumara webui or config file after the first launch.")
+    makefileentry(OpenLumara_tab, "Backup Path (required):", "Select OpenLumara backup directory", OpenLumara_backuppath_var, 9, width=220, dialog_type=2, tooltiptxt="Path to the backup directory where OpenLumara stores auto-backup zip files.")
+    makelabelentry(OpenLumara_tab, "OAI API URL (optional):", OpenLumara_apiurl_var, 11, 220, tooltip=f"Overrides the API URL in the OpenLumara config.\nLeave blank to use the value already in the config.\nExample: https://localhost:{defaultport}/v1")
+    makecheckbox(OpenLumara_tab, "Temporary Mode", OpenLumara_TemporaryMode_var, 13, tooltiptxt="Enable temporary mode for OpenLumara. Prevents writing through most tools to disk. Does not apply to shell commands.")
+    makecheckbox(OpenLumara_tab, "Require Login", OpenLumara_requirelogin_var, 14, tooltiptxt="Require users to log in before accessing the OpenLumara WebUI. Enabled by default for security. Default credentials are admin:admin, change these in the OpenLumara webui or config file after the first launch.")
 
     # refresh
     runopts_var.trace_add("write", changerunmode)
@@ -13619,6 +13621,7 @@ def show_gui():
         args.OpenLumara_configfile = OpenLumara_configfile_var.get()
         args.OpenLumara_datadir = OpenLumara_datadir_var.get()
         args.OpenLumara_sandboxfolder = OpenLumara_sandboxfolder_var.get()
+        args.OpenLumara_backuppath = OpenLumara_backuppath_var.get()
         args.OpenLumara_apiurl = OpenLumara_apiurl_var.get()
         args.OpenLumara_TemporaryMode = (OpenLumara_TemporaryMode_var.get()==1)
         args.OpenLumara_requirelogin = (OpenLumara_requirelogin_var.get()==1)
@@ -13949,6 +13952,7 @@ def show_gui():
         OpenLumara_configfile_var.set(mydict["OpenLumara_configfile"] if ("OpenLumara_configfile" in mydict and mydict["OpenLumara_configfile"]) else "")
         OpenLumara_datadir_var.set(mydict["OpenLumara_datadir"] if ("OpenLumara_datadir" in mydict and mydict["OpenLumara_datadir"]) else "")
         OpenLumara_sandboxfolder_var.set(mydict["OpenLumara_sandboxfolder"] if ("OpenLumara_sandboxfolder" in mydict and mydict["OpenLumara_sandboxfolder"]) else "")
+        OpenLumara_backuppath_var.set(mydict["OpenLumara_backuppath"] if ("OpenLumara_backuppath" in mydict and mydict["OpenLumara_backuppath"]) else "")
         OpenLumara_apiurl_var.set(mydict["OpenLumara_apiurl"] if ("OpenLumara_apiurl" in mydict and mydict["OpenLumara_apiurl"]) else "")
         OpenLumara_TemporaryMode_var.set(1 if "OpenLumara_TemporaryMode" in mydict and mydict["OpenLumara_TemporaryMode"] else 0)
         OpenLumara_requirelogin_var.set(0 if "OpenLumara_requirelogin" in mydict and not mydict["OpenLumara_requirelogin"] else 1)
@@ -15047,7 +15051,7 @@ def launch_OpenLumara(launch_args):
         print(f"Warning: OpenLumara main.py not found at '{OpenLumara_main}'. Is the submodule checked out?")
         return None
     
-    if not (launch_args.OpenLumara_configfile and launch_args.OpenLumara_datadir and launch_args.OpenLumara_sandboxfolder):
+    if not (launch_args.OpenLumara_configfile and launch_args.OpenLumara_datadir and launch_args.OpenLumara_sandboxfolder and launch_args.OpenLumara_backuppath):
         print("Warning: Missing required OpenLumara launch arguments. Skipping.")
         return None
 
@@ -15107,6 +15111,7 @@ def launch_OpenLumara(launch_args):
                 "--modules.settings.sandboxed_files.sandbox_folder", f"{launch_args.OpenLumara_sandboxfolder if launch_args.OpenLumara_sandboxfolder is not None else 'sandbox'}",
                 "--modules.settings.coder.sandbox_folder", f"{launch_args.OpenLumara_sandboxfolder if launch_args.OpenLumara_sandboxfolder is not None else 'sandbox'}",
                 "--modules.settings.sandboxed_shell.sandbox_path", f"{launch_args.OpenLumara_sandboxfolder if launch_args.OpenLumara_sandboxfolder is not None else 'sandbox'}",
+                "--modules.settings.auto_backup.backup_path", f"{launch_args.OpenLumara_backuppath if launch_args.OpenLumara_backuppath is not None else 'data_backups'}",
                 "--user_modules.path", f"{userModulesPath}",
                 "--disable_auto_installer"
                 ]
@@ -16844,6 +16849,7 @@ if __name__ == '__main__':
     OpenLumaragroup.add_argument("--OpenLumara_configfile", metavar=('[filename]'), help="Path to the OpenLumara config YAML file. Generated with defaults if the file is absent.", default="", type=str)
     OpenLumaragroup.add_argument("--OpenLumara_datadir", metavar=('[directory]'), help="Overrides the data_dir field in the OpenLumara config.", default="", type=str)
     OpenLumaragroup.add_argument("--OpenLumara_sandboxfolder", metavar=('[directory]'), help="Overrides the sandbox_folder field in the OpenLumara config.", default="", type=str)
+    OpenLumaragroup.add_argument("--OpenLumara_backuppath", metavar=('[directory]'), help="Overrides the backup_path field in the OpenLumara auto_backup module.", default="", type=str)
     OpenLumaragroup.add_argument("--OpenLumara_apiurl", metavar=('[url]'), help="Overrides the API URL field in the OpenLumara config.", default="", type=str)
     OpenLumaragroup.add_argument("--OpenLumara_requirelogin", help="Require login for the OpenLumara WebUI (default: true). Default credentials are admin:admin, change these in the OpenLumara webui or config file after the first launch.", action='store_true', default=True)
 
