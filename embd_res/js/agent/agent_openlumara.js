@@ -57,81 +57,113 @@ export const buildOpenlumaraCommands = (ctx) => {
 	}
 
 	let streamLumaraResponse = async (message) => {
-		let response = await ol.stream({ role: "user", content: message })
-		if (!response?.body) {
-			throw new Error("stream response did not include a readable body")
-		}
+		let payload = { role: "user", content: message }
 
-		let reader = response.body.getReader()
-		let decoder = new TextDecoder()
-		let buffer = ""
-		let responseText = ""
+		let streamViaSocket = async () => {
+			let ensureOpenSocket = async () => {
+				if (ol.isSocketConnected()) {
+					return ol.connectSocket()
+				}
 
-		let processLine = (line) => {
-			if (!line || !line.startsWith("data:")) {
-				return
+				let socket = ol.connectSocket()
+				await new Promise((resolve, reject) => {
+					let timeout = setTimeout(() => {
+						cleanup()
+						reject(new Error("OpenLumara WebSocket did not open in time"))
+					}, 8000)
+
+					let onOpen = () => {
+						cleanup()
+						resolve()
+					}
+
+					let onClose = () => {
+						cleanup()
+						reject(new Error("OpenLumara WebSocket closed before opening"))
+					}
+
+					let onError = () => {
+						cleanup()
+						reject(new Error("OpenLumara WebSocket failed to open"))
+					}
+
+					let cleanup = () => {
+						clearTimeout(timeout)
+						ol.offSocket("open", onOpen)
+						ol.offSocket("close", onClose)
+						ol.offSocket("error", onError)
+					}
+
+					ol.onSocket("open", onOpen)
+					ol.onSocket("close", onClose)
+					ol.onSocket("error", onError)
+				})
+
+				return socket
 			}
 
-			let payload = line.slice(5).trim()
-			if (!payload) {
-				return
-			}
+			let responseText = ""
+			let socket = await ensureOpenSocket()
 
-			let data = null
-			try {
-				data = JSON.parse(payload)
-			} catch (_err) {
-				return
-			}
+			await new Promise((resolve, reject) => {
+				let timeout = setTimeout(() => {
+					cleanup()
+					reject(new Error("OpenLumara WebSocket stream timed out"))
+				}, 120000)
 
-			if (data.cancelled) {
-				throw new Error("stream cancelled")
-			}
+				let onToken = (socketPayload) => {
+					let token = `${socketPayload?.content || socketPayload?.text || socketPayload?.token || ""}`
+					if (token.length > 0) {
+						responseText += token
+						updateAgentStreamingDisplay(responseText)
+					}
+				}
 
-			if (data.error) {
-				let errorText = data?.error_data?.message || data?.error_data?.error || data.error || "stream error"
-				throw new Error(errorText)
-			}
+				let onComplete = () => {
+					cleanup()
+					resolve()
+				}
 
-			let token = ""
-			if (data.type === "content") {
-				token = `${data.content || data.text || ""}`
-			} else if (!data.type && data.token) {
-				token = `${data.token}`
-			}
+				let onError = (socketPayload) => {
+					cleanup()
+					let errText = socketPayload?.error || socketPayload?.message || "stream error"
+					reject(new Error(errText))
+				}
 
-			if (token.length > 0) {
-				responseText += token
-				updateAgentStreamingDisplay(responseText)
-			}
+				let onClose = () => {
+					cleanup()
+					reject(new Error("OpenLumara WebSocket closed during stream"))
+				}
+
+				let cleanup = () => {
+					clearTimeout(timeout)
+					ol.offSocket("token", onToken)
+					ol.offSocket("stream_complete", onComplete)
+					ol.offSocket("error", onError)
+					ol.offSocket("close", onClose)
+				}
+
+				ol.onSocket("token", onToken)
+				ol.onSocket("stream_complete", onComplete)
+				ol.onSocket("error", onError)
+				ol.onSocket("close", onClose)
+
+				try {
+					socket.send(JSON.stringify({ type: "user_message", content: payload }))
+				} catch (err) {
+					cleanup()
+					reject(err)
+				}
+			})
+
+			return responseText
 		}
 
 		try {
-			while (true) {
-				let { done, value } = await reader.read()
-				if (done) {
-					break
-				}
-
-				buffer += decoder.decode(value, { stream: true })
-				let lines = buffer.split("\n")
-				buffer = lines.pop() || ""
-				for (let line of lines) {
-					processLine(line)
-				}
-			}
-
-			buffer += decoder.decode()
-			if (buffer.length > 0) {
-				for (let line of buffer.split("\n")) {
-					processLine(line)
-				}
-			}
+			return await streamViaSocket()
 		} finally {
 			clearAgentStreamingDisplay()
 		}
-
-		return responseText
 	}
 
 	let ol = window.openlumaraClient
