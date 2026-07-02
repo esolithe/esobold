@@ -11131,7 +11131,7 @@ Change Mode<br>
                                             toolsdata_res[0]["index"] = 0 # need to add an index for OWUI
                                     elif api_format == 7:
                                         toolsdata_res = gendat.get("message", {}).get("tool_calls", [])
-                                elif api_format == 9:
+                                    elif api_format == 9:
                                         # gendat["content"] is a list of Anthropic content blocks; pull out the tool_use ones and reformat to OAI shape for the shared emission code
                                         for block in gendat.get("content", []):
                                             if block.get("type") == "tool_use":
