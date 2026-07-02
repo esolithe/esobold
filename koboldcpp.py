@@ -8439,17 +8439,17 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                 break
                             else:
                                 if (api_format == 4 or api_format == 7 or api_format == 9) and using_openai_tools and tool_segment_tag and not streamDone and not genparams.get("sync_toolcall_potential_triggered", False) and tool_segment_tag not in tokenStr:
-                                tail = ""
-                                for n in range(1, len(tool_segment_tag)):
-                                    prefix = tool_segment_tag[:n]
-                                    if tokenStr.endswith(prefix) and len(prefix) > len(tail):
-                                        tail = prefix
-                                if tail:
-                                    tokenReserve += tail
-                                    tokenStr = tokenStr[:-len(tail)]
-                                    if tokenStr == "":
-                                        await asyncio.sleep(async_sleep_short)
-                                        continue
+                                    tail = ""
+                                    for n in range(1, len(tool_segment_tag)):
+                                        prefix = tool_segment_tag[:n]
+                                        if tokenStr.endswith(prefix) and len(prefix) > len(tail):
+                                            tail = prefix
+                                    if tail:
+                                        tokenReserve += tail
+                                        tokenStr = tokenStr[:-len(tail)]
+                                        if tokenStr == "":
+                                            await asyncio.sleep(async_sleep_short)
+                                            continue
 
                                 # Tool boundary detection for tool-capable chat completions.
                                 # if triggered, stop real streaming, and let the buffered fakestreaming take over
