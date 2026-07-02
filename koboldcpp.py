@@ -15042,7 +15042,7 @@ def execAndWrapError(errorPrefix, func, *args, **kwargs):
     tb = None
     try:
         return func(*args, **kwargs)
-    except Exception:
+    except BaseException:
         tb = traceback.format_exc()
     finally:
         if (tb is not None):
@@ -15066,13 +15066,25 @@ def _run_OpenLumara(*args):
         _lumara_prefixed_stdout._lumara_thread_id = threading.current_thread().ident
         _lumara_prefixed_stderr._lumara_thread_id = threading.current_thread().ident
 
-        spec = importlib.util.spec_from_file_location("OpenLumaraMain", OpenLumara_main)
-        OpenLumaraMain = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(OpenLumaraMain)
-        if hasattr(OpenLumaraMain, "run_from_args"):
-            OpenLumaraMain.run_from_args(list(args))
-        else:
-            print("Warning: OpenLumara main.py does not have a run_from_argv() function.")
+        while True:
+            spec = None
+            OpenLumaraMain = None
+            try:
+                spec = importlib.util.spec_from_file_location("OpenLumaraMain", OpenLumara_main)
+                OpenLumaraMain = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(OpenLumaraMain)
+                if hasattr(OpenLumaraMain, "run_from_args"):
+                    OpenLumaraMain.run_from_args(list(args))
+                else:
+                    print("Warning: OpenLumara main.py does not have a run_from_argv() function.")
+            except BaseException as e:
+                print(f"Error running OpenLumara: {e}")
+            finally:
+                from time import sleep
+                try:
+                    sleep(1)  # Prevent rapid restart in case of continuous errors
+                except BaseException as e:
+                    print(f"Error during OpenLumara restart cooldown: {e}")
 
 def run_OpenLumara(*args):
     execAndWrapError("OpenLumara Execution Error", _run_OpenLumara, *args)
