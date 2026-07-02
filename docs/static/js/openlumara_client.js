@@ -62,6 +62,46 @@ class OpenlumaraClient {
         });
     }
 
+    _extractSocketMessages(payload) {
+        if (!payload) {
+            return [];
+        }
+
+        if (Array.isArray(payload.messages)) {
+            return payload.messages.filter(msg => !!msg && typeof msg === 'object');
+        }
+
+        if (payload.message && typeof payload.message === 'object' && !Array.isArray(payload.message)) {
+            return [payload.message];
+        }
+
+        return [];
+    }
+
+    _emitSocketMessageCompatibilityEvents(payload, event) {
+        let messages = this._extractSocketMessages(payload);
+        if (messages.length === 0) {
+            return;
+        }
+
+        this._emitSocketEvent('message_batch', {
+            type: 'message_batch',
+            messages,
+            source_type: payload?.type || 'unknown',
+            raw: payload,
+        }, event);
+
+        // Alias newer single-message events to legacy consumers listening for message_added.
+        if (messages.length === 1 && payload?.type !== 'message_added') {
+            this._emitSocketEvent('message_added', {
+                type: 'message_added',
+                message: messages[0],
+                source_type: payload?.type || 'unknown',
+                raw: payload,
+            }, event);
+        }
+    }
+
     _buildSocketUrl() {
         const wsUrl = new URL(this.base_url + '/ws');
         wsUrl.protocol = wsUrl.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -471,6 +511,8 @@ class OpenlumaraClient {
             if (payload?.type) {
                 this._emitSocketEvent(payload.type, payload, event);
             }
+
+            this._emitSocketMessageCompatibilityEvents(payload, event);
         };
 
         socket.onerror = (event) => {

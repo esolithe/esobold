@@ -146,6 +146,22 @@ let processLumaraMessages = async (messages) => {
     await window.eso.currentlyProcessingFromLumara
 }
 
+let extractMessagesFromSocketPayload = (payload) => {
+    if (!payload) {
+        return []
+    }
+
+    if (Array.isArray(payload.messages)) {
+        return payload.messages.filter(msg => !!msg)
+    }
+
+    if (!!payload.message && typeof payload.message === "object") {
+        return [payload.message]
+    }
+
+    return []
+}
+
 let bindLumaraSocketHandlers = () => {
     if (window.eso.lumaraSocketBoundHandlers) {
         return
@@ -164,18 +180,19 @@ let bindLumaraSocketHandlers = () => {
             setLumaraSocketStatus("error", "socket error")
             scheduleLumaraSocketReconnectLoop()
         },
-        onMessageAdded: async (payload) => {
-            if (!payload?.message) {
+        onMessageBatch: async (payload) => {
+            let messages = extractMessagesFromSocketPayload(payload)
+            if (messages.length === 0) {
                 return
             }
-            await processLumaraMessages(payload.message)
+            await processLumaraMessages(messages)
         },
     }
 
     openlumaraClient.onSocket("open", window.eso.lumaraSocketBoundHandlers.onOpen)
     openlumaraClient.onSocket("close", window.eso.lumaraSocketBoundHandlers.onClose)
     openlumaraClient.onSocket("error", window.eso.lumaraSocketBoundHandlers.onError)
-    openlumaraClient.onSocket("message_added", window.eso.lumaraSocketBoundHandlers.onMessageAdded)
+    openlumaraClient.onSocket("message_batch", window.eso.lumaraSocketBoundHandlers.onMessageBatch)
 }
 
 let unbindLumaraSocketHandlers = () => {
@@ -186,7 +203,7 @@ let unbindLumaraSocketHandlers = () => {
     openlumaraClient.offSocket("open", window.eso.lumaraSocketBoundHandlers.onOpen)
     openlumaraClient.offSocket("close", window.eso.lumaraSocketBoundHandlers.onClose)
     openlumaraClient.offSocket("error", window.eso.lumaraSocketBoundHandlers.onError)
-    openlumaraClient.offSocket("message_added", window.eso.lumaraSocketBoundHandlers.onMessageAdded)
+    openlumaraClient.offSocket("message_batch", window.eso.lumaraSocketBoundHandlers.onMessageBatch)
     window.eso.lumaraSocketBoundHandlers = null
 }
 
