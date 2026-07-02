@@ -6990,13 +6990,21 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
             time.sleep(interval)
         return False
 
+    # Root-level paths that OpenLumara serves but the browser fetches directly
+    # (e.g. the browser always auto-fetches /favicon.ico regardless of base tag)
+    _OPENLUMARA_ROOT_ASSETS = {"/favicon.ico"}
+
     def _is_OpenLumara_path(self, raw_path):
         try:
             parsed = urllib.parse.urlsplit(raw_path)
             path = parsed.path or "/"
         except Exception:
             path = raw_path or "/"
-        return (path == "/openlumara" or path.startswith("/openlumara/"))
+        if path == "/openlumara" or path.startswith("/openlumara/"):
+            return True
+        if args.OpenLumara and path in self._OPENLUMARA_ROOT_ASSETS:
+            return True
+        return False
 
     def _rewrite_OpenLumara_path(self, raw_path):
         parsed = urllib.parse.urlsplit(raw_path)
@@ -7048,11 +7056,12 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
             "application/x-javascript" in ct
         )
 
-    def _rewrite_OpenLumara_body_text(self, text):
+    def _rewrite_OpenLumara_body_text(self, text, content_type=""):
         # Prefix absolute-root references so OpenLumara works from /openlumara.
         prefixes = [
             "/static/", "/api/", "/messages", "/stream", "/send", "/edit", "/delete", "/cancel", "/upload",
             "/chats", "/chat/", "/settings/", "/storage/", "/server/", "/manifest.json", "/sw.js", "/icon-192.png", "/icon-512.png",
+            "/themes.js",
         ]
         for p in prefixes:
             text = text.replace(f'"{p}', f'"/openlumara{p}')
@@ -7062,16 +7071,25 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
             text = text.replace(f"url('{p}", f"url('/openlumara{p}")
             text = text.replace(f'url("{p}', f'url("/openlumara{p}')
             text = text.replace(f"({p}", f"(/openlumara{p}")
+        # Inject base only for actual HTML responses, not JS/CSS containing HTML-like strings.
+        ct = str(content_type or "").lower()
+        is_html = ("text/html" in ct or "application/xhtml+xml" in ct)
+        if is_html and "<base " not in text.lower():
+            text = re.sub(
+                r'(<head[^>]*>)',
+                r'\1\n    <base href="/openlumara/">',
+                text, count=1, flags=re.IGNORECASE
+            )
         return text
 
-    def _rewrite_OpenLumara_body_bytes(self, body_bytes):
+    def _rewrite_OpenLumara_body_bytes(self, body_bytes, content_type=""):
         try:
             decoded = body_bytes.decode("utf-8")
-            return self._rewrite_OpenLumara_body_text(decoded).encode("utf-8")
+            return self._rewrite_OpenLumara_body_text(decoded, content_type=content_type).encode("utf-8")
         except Exception:
             try:
                 decoded = body_bytes.decode("latin-1")
-                return self._rewrite_OpenLumara_body_text(decoded).encode("latin-1")
+                return self._rewrite_OpenLumara_body_text(decoded, content_type=content_type).encode("latin-1")
             except Exception:
                 return body_bytes
 
@@ -7411,7 +7429,7 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
 
         if rewrite_body:
             try:
-                body_data = self._rewrite_OpenLumara_body_bytes(resp.read())
+                body_data = self._rewrite_OpenLumara_body_bytes(resp.read(), content_type=content_type)
                 self.send_response(resp.status, resp.reason)
                 for k, v in response_headers:
                     lk = k.lower()
@@ -7778,13 +7796,21 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             super().log_message(format, *args)
         pass
 
+    # Root-level paths that OpenLumara serves but the browser fetches directly
+    # (e.g. the browser always auto-fetches /favicon.ico regardless of base tag)
+    _OPENLUMARA_ROOT_ASSETS = {"/favicon.ico"}
+
     def _is_OpenLumara_path(self, raw_path):
         try:
             parsed = urllib.parse.urlsplit(raw_path)
             path = parsed.path or "/"
         except Exception:
             path = raw_path or "/"
-        return (path == "/openlumara" or path.startswith("/openlumara/"))
+        if path == "/openlumara" or path.startswith("/openlumara/"):
+            return True
+        if args.OpenLumara and path in self._OPENLUMARA_ROOT_ASSETS:
+            return True
+        return False
 
     def _OpenLumara_upstream_path(self, raw_path):
         parsed = urllib.parse.urlsplit(raw_path)
@@ -7836,11 +7862,12 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             "application/x-javascript" in ct
         )
 
-    def _rewrite_OpenLumara_body_text(self, text):
+    def _rewrite_OpenLumara_body_text(self, text, content_type=""):
         # Prefix absolute-root references so OpenLumara works from /openlumara.
         prefixes = [
             "/static/", "/api/", "/messages", "/stream", "/send", "/edit", "/delete", "/cancel", "/upload",
             "/chats", "/chat/", "/settings/", "/storage/", "/server/", "/manifest.json", "/sw.js", "/icon-192.png", "/icon-512.png",
+            "/themes.js",
         ]
         for p in prefixes:
             text = text.replace(f'"{p}', f'"/openlumara{p}')
@@ -7850,16 +7877,25 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             text = text.replace(f"url('{p}", f"url('/openlumara{p}")
             text = text.replace(f'url("{p}', f'url("/openlumara{p}')
             text = text.replace(f"({p}", f"(/openlumara{p}")
+        # Inject base only for actual HTML responses, not JS/CSS containing HTML-like strings.
+        ct = str(content_type or "").lower()
+        is_html = ("text/html" in ct or "application/xhtml+xml" in ct)
+        if is_html and "<base " not in text.lower():
+            text = re.sub(
+                r'(<head[^>]*>)',
+                r'\1\n    <base href="/openlumara/">',
+                text, count=1, flags=re.IGNORECASE
+            )
         return text
 
-    def _rewrite_OpenLumara_body_bytes(self, body_bytes):
+    def _rewrite_OpenLumara_body_bytes(self, body_bytes, content_type=""):
         try:
             decoded = body_bytes.decode("utf-8")
-            return self._rewrite_OpenLumara_body_text(decoded).encode("utf-8")
+            return self._rewrite_OpenLumara_body_text(decoded, content_type=content_type).encode("utf-8")
         except Exception:
             try:
                 decoded = body_bytes.decode("latin-1")
-                return self._rewrite_OpenLumara_body_text(decoded).encode("latin-1")
+                return self._rewrite_OpenLumara_body_text(decoded, content_type=content_type).encode("latin-1")
             except Exception:
                 return body_bytes
 
@@ -7898,7 +7934,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         rewrite_body = self._should_rewrite_OpenLumara_body(content_type, content_encoding)
 
         if rewrite_body:
-            body_data = self._rewrite_OpenLumara_body_bytes(resp.read())
+            body_data = self._rewrite_OpenLumara_body_bytes(resp.read(), content_type=content_type)
             self.send_response(resp.status, resp.reason)
             for k, v in response_headers:
                 lk = k.lower()
