@@ -12,13 +12,13 @@
 #include "llama-sampler.cpp"
 #include "llama-kv-cache.cpp"
 #include "llama-kv-cache-dsa.cpp"
+#include "llama-kv-cache-dsv4.cpp"
 #include "llama-kv-cache-iswa.cpp"
 #include "llama-memory-hybrid.cpp"
 #include "llama-memory-hybrid-iswa.cpp"
 #include "llama-memory-recurrent.cpp"
 #include "llama-model-loader.cpp"
 #include "llama-model-saver.cpp"
-#include "llama-model.cpp"
 #include "llama-quant.cpp"
 #include "llama-hparams.cpp"
 #include "llama-graph.cpp"
@@ -45,10 +45,6 @@
 #include <type_traits>
 #include <iostream>
 #include <vector>
-
-#ifdef GGML_USE_CUDA
-#  include "ggml-cuda.h"
-#endif
 
 #if defined(_MSC_VER)
 #pragma warning(disable: 4244 4267) // possible loss of data
@@ -273,7 +269,7 @@ static bool llama_prepare_model_devices(const llama_model_params & params, llama
     }
 
     // if using single GPU mode, remove all except the main GPU
-    if (params.split_mode == LLAMA_SPLIT_MODE_NONE) {
+    if (params.split_mode == LLAMA_SPLIT_MODE_NONE && !model->devices.empty()) {
         if (params.main_gpu < 0) {
             model->devices.clear();
         } else {

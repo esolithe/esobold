@@ -36,7 +36,7 @@ using candidates_memos = std::unordered_map<size_t, llama_grammar_candidates>;
 using stack_memos = std::unordered_map<size_t, candidates_memos>;
 static stack_memos memo_cache;
 
-static void llama_grammar_reset_memos() {
+void llama_grammar_reset_memos() {
     memo_cache.clear();
 }
 

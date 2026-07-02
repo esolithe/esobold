@@ -227,6 +227,7 @@ namespace Anima {
             k4 = k_norm->forward(ctx, k4);
 
             ggml_tensor* attn_out = nullptr;
+            float scale           = (sd_backend_is(ctx->backend, "Vulkan") && ctx->flash_attn_enabled) ? 1.0f / 32.0f : 1.0f;
             if (pe_q != nullptr || pe_k != nullptr) {
                 if (pe_q == nullptr) {
                     pe_q = pe_k;
@@ -244,7 +245,8 @@ namespace Anima {
                                                      num_heads,
                                                      nullptr,
                                                      true,
-                                                     ctx->flash_attn_enabled);
+                                                     ctx->flash_attn_enabled,
+                                                     scale);
             } else {
                 auto q_flat = ggml_reshape_3d(ctx->ggml_ctx, q4, head_dim * num_heads, L_q, N);
                 auto k_flat = ggml_reshape_3d(ctx->ggml_ctx, k4, head_dim * num_heads, L_k, N);
@@ -256,7 +258,8 @@ namespace Anima {
                                                      num_heads,
                                                      nullptr,
                                                      false,
-                                                     ctx->flash_attn_enabled);
+                                                     ctx->flash_attn_enabled,
+                                                     scale);
             }
 
             return out_proj->forward(ctx, attn_out);
@@ -561,10 +564,10 @@ namespace Anima {
         AnimaNet net;
 
         AnimaRunner(ggml_backend_t backend,
-                    ggml_backend_t params_backend,
-                    const String2TensorStorage& tensor_storage_map = {},
-                    const std::string prefix                       = "model.diffusion_model")
-            : DiffusionModelRunner(backend, params_backend, prefix),
+                    const String2TensorStorage& tensor_storage_map      = {},
+                    const std::string prefix                            = "model.diffusion_model",
+                    std::shared_ptr<RunnerWeightManager> weight_manager = nullptr)
+            : DiffusionModelRunner(backend, prefix, weight_manager),
               config(AnimaConfig::detect_from_weights(tensor_storage_map, prefix + ".net")) {
             net = AnimaNet(config);
             net.init(params_ctx, tensor_storage_map, prefix + ".net");
@@ -697,7 +700,7 @@ namespace Anima {
             auto get_graph = [&]() -> ggml_cgraph* {
                 return build_graph(x, timesteps, context, t5_ids, t5_weights);
             };
-            return restore_trailing_singleton_dims(GGMLRunner::compute<float>(get_graph, n_threads, false), x.dim());
+            return restore_trailing_singleton_dims(GGMLRunner::compute<float>(get_graph, n_threads, false, false, false), x.dim());
         }
 
         sd::Tensor<float> compute(int n_threads,

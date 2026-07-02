@@ -63,8 +63,8 @@
 				modelsStore.selectedModelName = conversationModel;
 				modelsStore.selectModelByName(conversationModel);
 			} else {
-				modelsStore.selectedModelName = null;
-				modelsStore.clearSelection();
+				modelsStore.selectedModelId = null;
+				modelsStore.selectedModelName = conversationModel;
 			}
 			lastSyncedConversationModel = conversationModel;
 		} else if (
@@ -141,19 +141,7 @@
 	});
 
 	$effect(() => {
-		if (!isRouter) {
-			isSelectedModelInCache = true;
-		} else if (conversationModel) {
-			isSelectedModelInCache = modelOptions().some((option) => option.model === conversationModel);
-		} else {
-			const currentModelId = selectedModelId();
-
-			if (!currentModelId) {
-				isSelectedModelInCache = false;
-			} else {
-				isSelectedModelInCache = modelOptions().some((option) => option.id === currentModelId);
-			}
-		}
+		isSelectedModelInCache = !isRouter || !!conversationModel || !!selectedModelId();
 	});
 
 	$effect(() => {

@@ -492,6 +492,15 @@ static int code_terminate_id = 151670;
 static int nthreads = 4;
 static int tts_max_len = 4096;
 
+static std::string save_tts_audio_base64(const std::vector<float> & audio, int sample_rate, bool use_mp3)
+{
+    if (!use_mp3) {
+        return save_wav16_base64(audio, sample_rate);
+    }
+
+    return save_mono_mp3_base64(audio, sample_rate);
+}
+
 //ttscpp specific
 static bool is_ttscpp_file = false;
 static generation_configuration * ttscpp_config = nullptr;
@@ -718,7 +727,7 @@ static tts_generation_outputs ttstype_generate_ttscpp(const tts_generation_input
         printf("\nTTS Generated audio in %.2fs.\n",ttstime);
         std::vector<float> wavdat = std::vector(response_data.data, response_data.data + response_data.n_outputs);
         //audio_post_clean(wavdat);
-        last_generated_audio = save_wav16_base64(wavdat, ttscpp_runner->sampling_rate);
+        last_generated_audio = save_tts_audio_base64(wavdat, ttscpp_runner->sampling_rate, inputs.use_mp3);
         output.data = last_generated_audio.c_str();
         output.status = 1;
         last_generation_settings_audio_seed = 0;
@@ -1131,7 +1140,7 @@ static tts_generation_outputs ttstype_generate_outetts(const tts_generation_inpu
             return output;
         }
 
-        last_generated_audio = save_wav16_base64(audio, t_sr);
+        last_generated_audio = save_tts_audio_base64(audio, t_sr, inputs.use_mp3);
         ttstime = timer_check();
 
         printf("\nTTS Generated %d audio tokens in %.2fs.\n",(int) codes.size(),ttstime);
@@ -1239,7 +1248,7 @@ static tts_generation_outputs ttstype_generate_qwen3tts(const tts_generation_inp
 
         ttstime = timer_check();
         printf("\nTTS Generated audio in %.2fs.\n",ttstime);
-        last_generated_audio = save_wav16_base64(result.audio, result.sample_rate);
+        last_generated_audio = save_tts_audio_base64(result.audio, result.sample_rate, inputs.use_mp3);
         output.data = last_generated_audio.c_str();
         output.status = 1;
         last_generation_settings_audio_seed = inputs.audio_seed;

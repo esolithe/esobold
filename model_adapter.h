@@ -84,6 +84,13 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
 generation_outputs gpttype_generate(const generation_inputs inputs);
 bool gpttype_generate_abort();
 std::string gpttype_get_chat_template();
+std::string gpttype_parse_chat_tool_calls(const std::string & generated_text,
+                                          const std::string & tools_json,
+                                          const std::string & chat_template,
+                                          const std::string & chat_template_kwargs_json,
+                                          const std::string & tool_choice,
+                                          bool parallel_tool_calls,
+                                          bool is_partial);
 bool gpttype_batch_generate_enabled();
 int gpttype_batch_generate_submit(const generation_inputs inputs);
 bool gpttype_batch_generate_has_finished(int request_id);

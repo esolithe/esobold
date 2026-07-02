@@ -27,7 +27,7 @@
 // helpers
 //
 
-static bool OldBPETokenizerMode = false;
+bool OldBPETokenizerMode = false;
 
 struct naive_trie {
     naive_trie() : has_value(false), value(0) {
@@ -2516,7 +2516,8 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
                 clean_spaces = false;
                 ignore_merges = true;
             } else if (
-                tokenizer_pre == "tiny_aya") {
+                tokenizer_pre == "tiny_aya" ||
+                tokenizer_pre == "cohere2moe") {
                 pre_type = LLAMA_VOCAB_PRE_TYPE_TINY_AYA;
                 clean_spaces = false;
             } else if (
@@ -3051,12 +3052,18 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
                 attr = LLAMA_TOKEN_ATTR_USER_DEFINED;
             }
 
-            if (t.first == "[THINK]" || t.first == "[/THINK]" || t.first == "<think>" || t.first == "</think>" ||
-                t.first == "[CALL_ID]" || t.first == "[TOOL_CONTENT]" || t.first == "[TOOL_CALLS]" || t.first == "[ARGS]") {
+            //kcpp hack: render these special tokens
+            if (t.first == "<|tool_call_start|>" || t.first == "<|tool_call_end|>"
+                || t.first=="<|START_THINKING|>" || t.first=="<|END_THINKING|>"
+                || t.first=="<|START_ACTION|>" || t.first=="<|END_ACTION|>"
+                || t.first == "[THINK]" || t.first == "[/THINK]"
+                || t.first == "<think>" || t.first == "</think>"
+                || t.first == "[CALL_ID]" || t.first == "[TOOL_CONTENT]" || t.first == "[TOOL_CALLS]" || t.first == "[ARGS]") {
                 LLAMA_LOG_WARN("%s: setting token '%s' (%d) attribute to USER_DEFINED (%u), old attributes: %u\n",
-                               __func__, t.first.c_str(), t.second, LLAMA_TOKEN_ATTR_USER_DEFINED, attr);
+                        __func__, t.first.c_str(), t.second, LLAMA_TOKEN_ATTR_USER_DEFINED, attr);
                 attr = LLAMA_TOKEN_ATTR_USER_DEFINED;
             }
+
         }
 
         // sanity checks

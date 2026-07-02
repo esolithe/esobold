@@ -76,7 +76,7 @@ export function useModelsSelector(opts: UseModelsSelectorOptions): UseModelsSele
 
 	const isCurrentModelInCache = $derived.by(() => {
 		if (!isRouter || !currentModel) return true;
-		return options.some((option) => option.model === currentModel);
+		return true; //kcpp hack to always let the model be treated like in cache even if returned name is wrong
 	});
 
 	let isLoadingModel = $state(false);
@@ -143,7 +143,7 @@ export function useModelsSelector(opts: UseModelsSelectorOptions): UseModelsSele
 					'[data-slot="chat-form"] textarea'
 				);
 
-				textarea?.focus();
+				textarea?.focus({ preventScroll: true });
 			});
 		}
 
@@ -183,7 +183,14 @@ export function useModelsSelector(opts: UseModelsSelectorOptions): UseModelsSele
 				};
 			}
 
-			return options.find((option) => option.model === currentModel);
+			return (
+				options.find((option) => option.model === currentModel) ?? {
+					id: 'current',
+					model: currentModel,
+					name: currentModel.split('/').pop() || currentModel,
+					capabilities: []
+				}
+			);
 		}
 
 		if (activeId) {

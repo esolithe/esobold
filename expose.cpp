@@ -347,6 +347,25 @@ extern "C"
         return chat_template.c_str();
     }
 
+    static std::string parsed_tool_calls = "";
+    const char* parse_chat_tool_calls(const char * generated_text,
+                                      const char * tools_json,
+                                      const char * chat_template,
+                                      const char * chat_template_kwargs_json,
+                                      const char * tool_choice,
+                                      bool parallel_tool_calls,
+                                      bool is_partial) {
+        parsed_tool_calls = gpttype_parse_chat_tool_calls(
+            generated_text ? generated_text : "",
+            tools_json ? tools_json : "",
+            chat_template ? chat_template : "",
+            chat_template_kwargs_json ? chat_template_kwargs_json : "",
+            tool_choice ? tool_choice : "",
+            parallel_tool_calls,
+            is_partial);
+        return parsed_tool_calls.c_str();
+    }
+
     const char* get_pending_output() {
        return gpttype_get_pending_output().c_str();
     }

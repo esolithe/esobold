@@ -132,10 +132,10 @@ const SETTINGS_REGISTRY: Record<string, SettingsSectionEntry> = {
 				key: SETTINGS_KEYS.ENABLE_CONTINUE_GENERATION,
 				label: 'Enable "Continue" button',
 				help: 'Enable "Continue" button for assistant messages, including reasoning models.',
-				defaultValue: false,
+				defaultValue: true,
 				type: SettingsFieldType.CHECKBOX,
 				section: SETTINGS_SECTION_SLUGS.GENERAL,
-				isExperimental: true,
+				isExperimental: false,
 				sync: {
 					serverKey: SETTINGS_KEYS.ENABLE_CONTINUE_GENERATION,
 					paramType: SyncableParameterType.BOOLEAN
@@ -181,7 +181,7 @@ const SETTINGS_REGISTRY: Record<string, SettingsSectionEntry> = {
 				key: SETTINGS_KEYS.TITLE_GENERATION_USE_LLM,
 				label: 'Use LLM to generate conversation title',
 				help: 'Use the LLM to automatically generate conversation titles based on the first message exchange.',
-				defaultValue: false,
+				defaultValue: true,
 				type: SettingsFieldType.CHECKBOX,
 				section: SETTINGS_SECTION_SLUGS.GENERAL,
 				isExperimental: true
@@ -249,7 +249,7 @@ const SETTINGS_REGISTRY: Record<string, SettingsSectionEntry> = {
 				key: SETTINGS_KEYS.KEEP_STATS_VISIBLE,
 				label: 'Keep stats visible after generation',
 				help: 'Keep processing statistics visible after generation finishes.',
-				defaultValue: false,
+				defaultValue: true,
 				type: SettingsFieldType.CHECKBOX,
 				section: SETTINGS_SECTION_SLUGS.DISPLAY,
 				sync: {
@@ -279,6 +279,18 @@ const SETTINGS_REGISTRY: Record<string, SettingsSectionEntry> = {
 				section: SETTINGS_SECTION_SLUGS.DISPLAY,
 				sync: {
 					serverKey: SETTINGS_KEYS.RENDER_USER_CONTENT_AS_MARKDOWN,
+					paramType: SyncableParameterType.BOOLEAN
+				}
+			},
+			{
+				key: SETTINGS_KEYS.RENDER_THINKING_AS_MARKDOWN,
+				label: 'Render thinking as Markdown',
+				help: 'Render the reasoning/thinking block content as formatted Markdown instead of plain text.',
+				defaultValue: true,
+				type: SettingsFieldType.CHECKBOX,
+				section: SETTINGS_SECTION_SLUGS.DISPLAY,
+				sync: {
+					serverKey: SETTINGS_KEYS.RENDER_THINKING_AS_MARKDOWN,
 					paramType: SyncableParameterType.BOOLEAN
 				}
 			},

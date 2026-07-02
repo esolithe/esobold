@@ -307,6 +307,11 @@ select{
     <input title="TTS Instruction" id="tts_instruction" placeholder="e.g. angry shouting loud male">
   </div>
 
+  <div style="margin-top:10px">
+    <label>Save as MP3</label>
+    <input title="Save as MP3" id="tts_use_mp3" type="checkbox" style="max-width:30px">
+  </div>
+
   <div style="margin-top:14px">
     <label>API Base URL (optional)</label>
     <input id="tts_baseUrl" placeholder="http://localhost:5001">
@@ -445,7 +450,8 @@ async function generateTTS(){
 
     const payload = {
       input: document.getElementById("tts_input").value,
-      voice: document.getElementById("tts_voice").value
+      voice: document.getElementById("tts_voice").value,
+      use_mp3: document.getElementById("tts_use_mp3").checked
     };
 
     const instruction = document.getElementById("tts_instruction").value;
@@ -495,6 +501,7 @@ async function generateTTS(){
 function clearTTS(){
   document.getElementById("tts_input").value="";
   document.getElementById("tts_instruction").value="";
+  document.getElementById("tts_use_mp3").checked=false;
 }
 
 //end of tts part

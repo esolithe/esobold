@@ -12,6 +12,9 @@
 #include <optional>
 #include <algorithm>
 
+#ifdef FILENAME
+#undef FILENAME
+#endif
 #define FILENAME "jinja-value"
 
 namespace jinja {
@@ -1107,6 +1110,50 @@ const func_builtins & value_array_t::get_builtins() const {
             std::vector<value> arr = val->as_array(); // copy
             std::reverse(arr.begin(), arr.end());
             return is_val<value_tuple>(val) ? mk_val<value_tuple>(std::move(arr)) : mk_val<value_array>(std::move(arr));
+        }},
+        {"min", [](const func_args & args) -> value {
+            args.ensure_count(1, 4);
+            args.ensure_vals<value_array>();
+            value val_case    = args.get_kwarg_or_pos("case_sensitive", 1);
+            value attribute   = args.get_kwarg_or_pos("attribute",      2);
+            if (!attribute->is_undefined()) {
+                throw not_implemented_exception("min: attribute not implemented");
+            }
+            // FIXME: min is currently always case sensitive
+            (void) val_case;
+            const auto & arr = args.get_pos(0)->as_array();
+            if (arr.empty()) {
+                return mk_val<value_undefined>();
+            }
+            value result = arr[0];
+            for (size_t i = 1; i < arr.size(); ++i) {
+                if (value_compare(arr[i], result, value_compare_op::lt)) {
+                    result = arr[i];
+                }
+            }
+            return result;
+        }},
+        {"max", [](const func_args & args) -> value {
+            args.ensure_count(1, 4);
+            args.ensure_vals<value_array>();
+            value val_case    = args.get_kwarg_or_pos("case_sensitive", 1);
+            value attribute   = args.get_kwarg_or_pos("attribute",      2);
+            if (!attribute->is_undefined()) {
+                throw not_implemented_exception("max: attribute not implemented");
+            }
+            // FIXME: max is currently always case sensitive
+            (void) val_case;
+            const auto & arr = args.get_pos(0)->as_array();
+            if (arr.empty()) {
+                return mk_val<value_undefined>();
+            }
+            value result = arr[0];
+            for (size_t i = 1; i < arr.size(); ++i) {
+                if (value_compare(arr[i], result, value_compare_op::gt)) {
+                    result = arr[i];
+                }
+            }
+            return result;
         }},
         {"unique", array_unique_not_implemented},
     };

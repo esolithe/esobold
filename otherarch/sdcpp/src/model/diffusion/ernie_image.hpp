@@ -162,6 +162,8 @@ namespace ErnieImage {
             int64_t S = x->ne[1];
             int64_t N = x->ne[2];
 
+            float scale = (sd_backend_is(ctx->backend, "Vulkan") && ctx->flash_attn_enabled) ? 1.0f / 32.0f : 1.0f;
+
             auto q = to_q->forward(ctx, x);
             auto k = to_k->forward(ctx, x);
             auto v = to_v->forward(ctx, x);
@@ -182,7 +184,7 @@ namespace ErnieImage {
             k = ggml_cont(ctx->ggml_ctx, ggml_permute(ctx->ggml_ctx, k, 0, 2, 1, 3));  // [N, heads, S, head_dim]
             k = ggml_reshape_3d(ctx->ggml_ctx, k, k->ne[0], k->ne[1], k->ne[2] * k->ne[3]);
 
-            x = ggml_ext_attention_ext(ctx->ggml_ctx, ctx->backend, q, k, v, num_heads, attention_mask, true, ctx->flash_attn_enabled);  // [N, S, hidden_size]
+            x = ggml_ext_attention_ext(ctx->ggml_ctx, ctx->backend, q, k, v, num_heads, attention_mask, true, ctx->flash_attn_enabled, scale);  // [N, S, hidden_size]
             x = to_out_0->forward(ctx, x);
             return x;
         }
@@ -387,10 +389,10 @@ namespace ErnieImage {
         std::vector<float> pe_vec;
 
         ErnieImageRunner(ggml_backend_t backend,
-                         ggml_backend_t params_backend,
-                         const String2TensorStorage& tensor_storage_map = {},
-                         const std::string prefix                       = "")
-            : DiffusionModelRunner(backend, params_backend, prefix),
+                         const String2TensorStorage& tensor_storage_map      = {},
+                         const std::string prefix                            = "",
+                         std::shared_ptr<RunnerWeightManager> weight_manager = nullptr)
+            : DiffusionModelRunner(backend, prefix, weight_manager),
               config(ErnieImageConfig::detect_from_weights(tensor_storage_map, prefix)) {
             ernie_image = ErnieImageModel(config);
             ernie_image.init(params_ctx, tensor_storage_map, prefix);
@@ -440,7 +442,7 @@ namespace ErnieImage {
             auto get_graph = [&]() -> ggml_cgraph* {
                 return build_graph(x, timesteps, context);
             };
-            return restore_trailing_singleton_dims(GGMLRunner::compute<float>(get_graph, n_threads, false), x.dim());
+            return restore_trailing_singleton_dims(GGMLRunner::compute<float>(get_graph, n_threads, false, false, false), x.dim());
         }
 
         sd::Tensor<float> compute(int n_threads,

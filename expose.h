@@ -223,6 +223,7 @@ struct sd_generation_inputs
     const char * negative_prompt = nullptr;
     const char * init_images = "";
     const char * mask = "";
+    const char * audio_data = "";
     const int extra_images_len = 0;
     const char ** extra_images = nullptr;
     const bool reverse_refimg = false;
@@ -319,6 +320,7 @@ struct tts_generation_inputs
     const char * custom_speaker_data = "";
     const char * reference_audio = "";
     const char * speaker_instruction = "";
+    const bool use_mp3 = false;
 };
 struct tts_generation_outputs
 {

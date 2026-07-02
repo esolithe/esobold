@@ -627,6 +627,66 @@ std::string save_stereo_wav16_base64(const std::vector<float> & raw_audio, int T
     return kcpp_base64_encode(wav_data);
 }
 
+std::string save_mono_mp3_base64(const std::vector<float> & raw_audio, int sample_rate) {
+    std::vector<float> limited_audio = raw_audio;
+    float peak = 0.0f;
+    for (float s : limited_audio) {
+        peak = std::max(peak, std::fabs(s));
+    }
+    if (peak > 1e-6f) {
+        const float target_amp = 0.89125094f; // -1.0 dBFS
+        const float gain = peak > target_amp ? target_amp / peak : 1.0f;
+        for (float & s : limited_audio) {
+            s = std::max(-target_amp, std::min(target_amp, s * gain));
+        }
+    }
+
+    const float * enc_audio = limited_audio.data();
+    int enc_T  = (int) limited_audio.size();
+    int enc_sr = sample_rate;
+    std::vector<float> resampled;
+
+    if (sample_rate != 32000 && sample_rate != 44100 && sample_rate != 48000) {
+        resampled = resample_wav(1, limited_audio, sample_rate, 44100);
+        enc_audio = resampled.data();
+        enc_sr    = 44100;
+        enc_T     = (int) resampled.size();
+    }
+
+    if (enc_T <= 0) {
+        return "";
+    }
+
+    mp3enc_t * enc = mp3enc_init(enc_sr, 1, 128);
+    if (!enc) {
+        fprintf(stderr, "[Audio] mp3enc_init failed\n");
+        return "";
+    }
+
+    std::string mp3_data;
+    mp3_data.reserve(enc_T / 4);
+    int chunk_size = enc_sr;
+    std::vector<float> buf((size_t) chunk_size);
+
+    for (int pos = 0; pos < enc_T; pos += chunk_size) {
+        int n = (pos + chunk_size <= enc_T) ? chunk_size : (enc_T - pos);
+        memcpy(buf.data(), enc_audio + pos, (size_t) n * sizeof(float));
+        int out_size = 0;
+        const uint8_t * mp3 = mp3enc_encode(enc, buf.data(), n, &out_size);
+        if (out_size > 0) {
+            mp3_data.append((const char *) mp3, out_size);
+        }
+    }
+
+    int flush_size = 0;
+    const uint8_t * flush_data = mp3enc_flush(enc, &flush_size);
+    if (flush_size > 0) {
+        mp3_data.append((const char *) flush_data, flush_size);
+    }
+    mp3enc_free(enc);
+    return kcpp_base64_encode(mp3_data);
+}
+
 std::string save_stereo_mp3_base64(const std::vector<float> & raw_audio,int T_audio,int sample_rate) {
     const float * enc_audio = raw_audio.data();
     int enc_T  = T_audio;
@@ -947,6 +1007,55 @@ bool kcpp_decode_audio_from_buf(const unsigned char * buf_in, size_t len, int ta
 
     ma_decoder_uninit(&decoder);
     return true;
+}
+
+bool kcpp_decode_audio_file_from_buf(const unsigned char * buf_in, size_t len, int & sample_rate, int & channels, std::vector<float> & pcmf32_interleaved) {
+    sample_rate = 0;
+    channels = 0;
+    pcmf32_interleaved.clear();
+
+    if (!buf_is_audio_file((const char *)buf_in, len))
+    {
+        return false;
+    }
+
+    ma_result result;
+    ma_decoder_config decoder_config = ma_decoder_config_init(ma_format_f32, 0, 0);
+    ma_decoder decoder;
+
+    result = ma_decoder_init_memory(buf_in, len, &decoder_config, &decoder);
+    if (result != MA_SUCCESS) {
+        return false;
+    }
+
+    ma_uint32 decoded_channels = 0;
+    ma_uint32 decoded_sample_rate = 0;
+    result = ma_decoder_get_data_format(&decoder, nullptr, &decoded_channels, &decoded_sample_rate, nullptr, 0);
+    if (result != MA_SUCCESS || decoded_channels == 0 || decoded_sample_rate == 0) {
+        ma_decoder_uninit(&decoder);
+        return false;
+    }
+
+    ma_uint64 frame_count;
+    ma_uint64 frames_read;
+    result = ma_decoder_get_length_in_pcm_frames(&decoder, &frame_count);
+    if (result != MA_SUCCESS) {
+        ma_decoder_uninit(&decoder);
+        return false;
+    }
+
+    pcmf32_interleaved.resize(static_cast<size_t>(frame_count) * static_cast<size_t>(decoded_channels));
+    result = ma_decoder_read_pcm_frames(&decoder, pcmf32_interleaved.data(), frame_count, &frames_read);
+    ma_decoder_uninit(&decoder);
+    if (result != MA_SUCCESS) {
+        pcmf32_interleaved.clear();
+        return false;
+    }
+
+    pcmf32_interleaved.resize(static_cast<size_t>(frames_read) * static_cast<size_t>(decoded_channels));
+    sample_rate = static_cast<int>(decoded_sample_rate);
+    channels = static_cast<int>(decoded_channels);
+    return !pcmf32_interleaved.empty();
 }
 
 //this version is specifically required for ace-step

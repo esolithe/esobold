@@ -20,6 +20,8 @@
 #include <cstdint>
 #include <string>
 #include <cctype>
+#include <cstdlib>
+#include <cfloat>
 #include <locale>
 #include <chrono>
 #include <algorithm>
@@ -31,11 +33,12 @@
 #include "utils.h"
 #include "llmutils.h"
 
-//for easier compilation
-//concat source files into one file for compilation purposes
+#ifdef GGML_USE_CUDA
+#  include "ggml-cuda.h"
+#endif
+
 #include "llama_v2.cpp"
 #include "llama_v3.cpp"
-#include "src/llama.cpp"
 #include "gptj_v1.cpp"
 #include "gptj_v2.cpp"
 #include "gptj_v3.cpp"
@@ -47,13 +50,23 @@
 #include "neox_v2.cpp"
 #include "neox_v3.cpp"
 #include "mpt_v3.cpp"
+
 #include "tools/mtmd/mtmd.h"
 #include "tools/mtmd/mtmd-helper.h"
 #include "common/speculative.h"
+#include "common/chat.h"
+#include "common/log.h"
+#include "llama-grammar.h"
 #include "vendor/stb/stb_image.h"
 #include "otherarch/sdcpp/thirdparty/stb_image_resize.h"
 #include "common/common.h"
+#include "common/fit.h"
 #include "ggml-rpc.h"
+#include "llama-impl.h"
+#include "llama-ext.h"
+#include "llama-model.h"
+#include "llama-vocab.h"
+#include "nlohmann/json.hpp"
 
 #if defined(GGML_USE_HIP)
 // for rocblas_initialize()
@@ -70,7 +83,7 @@ std::string executable_path = "";
 std::string lora_filename = "";
 std::string mmproj_filename = "";
 std::string draftmodel_filename = "";
-int speculative_chunk_amt = 8; //do it in chunks of this many tokens
+int speculative_chunk_amt = 4; //do it in chunks of this many tokens
 bool generation_finished;
 bool audio_multimodal_supported = false;
 bool vision_multimodal_supported = false;
@@ -126,6 +139,7 @@ static llama_context * guidance_ctx = nullptr; //for classifier free guidance, w
 static mtmd_context * mtmd_ctx = nullptr; //for multimodal media
 static std::vector<media_object> media_objects;
 static std::vector<int> last_media_mem; //for storing dummy tokens that will be consumed by mtmd
+static std::vector<int> media_object_token_counts; //per media object dummy token counts for inline placeholders
 static std::string media_composite_image_signature = ""; //for identifying when the media changes, we need to invalidate the cache
 static int current_media_identifier = MEDIA_TOKEN_IDENTIFIER_A;
 static int vision_max_res = 2048;
@@ -182,6 +196,10 @@ static const int smartcache_rnn_lifeboat_percent = 65;
 static const int smartcache_rnn_lifeboat_extra_slot_min_user_slots = 4;
 
 extern bool kcpp_permit_any_repack;
+extern bool kcpp_pipeline_parallelism;
+extern bool OldBPETokenizerMode;
+extern int kcpp_extra_swa_padding;
+extern int kcpp_active_swa_size;
 
 inline int kcpp_cpu_has_blas(void) {
 #if defined(GGML_USE_BLAS) || defined(GGML_USE_CUDA) || defined(GGML_USE_VULKAN) || defined(GGML_USE_SYCL)
@@ -466,6 +484,173 @@ void print_fitted_params(const llama_model_params & mparams, const llama_context
     std::cout << "\n";
 }
 
+static size_t estimate_draft_autofit_tax_mb(
+    const std::string & main_model_filename,
+    const std::string & spec_model_filename,
+    const llama_model_params & base_model_params,
+    const llama_context_params & base_ctx_params,
+    const float * draft_gpusplit,
+    int draft_gpulayers,
+    bool use_mtp)
+{
+    const bool has_draft_model = spec_model_filename != "";
+    if(!has_draft_model && !use_mtp)
+    {
+        return 0;
+    }
+
+    llama_model_params draft_model_params = llama_model_default_params();
+    llama_context_params draft_ctx_params = llama_context_default_params();
+
+    draft_model_params.use_mmap = base_model_params.use_mmap;
+    draft_model_params.use_mlock = base_model_params.use_mlock;
+    draft_model_params.use_direct_io = base_model_params.use_direct_io;
+    draft_model_params.n_gpu_layers = has_draft_model ? draft_gpulayers : 0;
+    draft_model_params.devices = base_model_params.devices;
+    draft_model_params.main_gpu = base_model_params.main_gpu;
+    draft_model_params.split_mode = llama_split_mode::LLAMA_SPLIT_MODE_LAYER;
+
+    draft_ctx_params.n_ctx = base_ctx_params.n_ctx;
+    draft_ctx_params.offload_kqv = base_ctx_params.offload_kqv;
+    draft_ctx_params.kv_unified = base_ctx_params.kv_unified;
+    draft_ctx_params.n_batch = base_ctx_params.n_batch;
+    draft_ctx_params.n_ubatch = base_ctx_params.n_ubatch;
+    draft_ctx_params.n_threads = base_ctx_params.n_threads;
+    draft_ctx_params.n_threads_batch = base_ctx_params.n_threads_batch;
+    draft_ctx_params.flash_attn_type = base_ctx_params.flash_attn_type;
+    draft_ctx_params.type_k = base_ctx_params.type_k;
+    draft_ctx_params.type_v = base_ctx_params.type_v;
+    draft_ctx_params.swa_full = base_ctx_params.swa_full;
+    draft_ctx_params.n_rs_seq = 0;
+
+    #if defined(GGML_USE_CUDA) || defined(GGML_USE_VULKAN)
+    bool ts_all_zero = true;
+    for (int i = 0; i < tensor_split_max; ++i) {
+        if (draft_gpusplit[i] != 0.0f) {
+            ts_all_zero = false;
+            break;
+        }
+    }
+    if(!ts_all_zero)
+    {
+        draft_model_params.tensor_split = draft_gpusplit;
+    }
+    #endif
+
+    const char * estimate_model_path = has_draft_model ? spec_model_filename.c_str() : main_model_filename.c_str();
+    bool measure_model_bytes = true;
+    bool draft_is_mtp_estimate = !has_draft_model && use_mtp;
+
+    //mute logs for the fitting stuff first
+    auto oldverbosity = common_log_get_verbosity_thold();
+    ggml_log_callback currlogger;
+    void * curruserdat;
+    llama_log_get(&currlogger, &curruserdat);
+    llama_log_set(log_callback_off, nullptr);
+    common_log_set_verbosity_thold(GGML_LOG_LEVEL_NONE);
+    bool logs_muted = true;
+
+    if(has_draft_model)
+    {
+        llama_model_params draft_probe_params = draft_model_params;
+        draft_probe_params.no_alloc = true;
+        draft_probe_params.use_mmap = false;
+        draft_probe_params.use_mlock = false;
+
+        llama_model * draft_probe = llama_model_load_from_file(spec_model_filename.c_str(), draft_probe_params);
+        if(draft_probe != nullptr)
+        {
+            draft_is_mtp_estimate = draft_probe->hparams.n_layer_nextn > 0;
+            llama_model_free(draft_probe);
+        }
+    }
+
+    llama_model * ctx_other_model = nullptr;
+    llama_context * ctx_other = nullptr;
+    auto free_ctx_other = [&]() {
+        if(ctx_other != nullptr)
+        {
+            llama_free(ctx_other);
+            ctx_other = nullptr;
+        }
+        if(ctx_other_model != nullptr)
+        {
+            llama_model_free(ctx_other_model);
+            ctx_other_model = nullptr;
+        }
+
+        if(logs_muted)
+        {
+            logs_muted = false;
+            llama_log_set(currlogger, curruserdat);
+            common_log_set_verbosity_thold(oldverbosity);
+        }
+    };
+
+    if(has_draft_model)
+    {
+        llama_model_params ctx_other_model_params = base_model_params;
+        ctx_other_model_params.no_alloc = true;
+        ctx_other_model_params.use_mmap = false;
+        ctx_other_model_params.use_mlock = false;
+
+        ctx_other_model = llama_model_load_from_file(main_model_filename.c_str(), ctx_other_model_params);
+        if(ctx_other_model != nullptr)
+        {
+            ctx_other = llama_init_from_model(ctx_other_model, base_ctx_params);
+            if(ctx_other != nullptr)
+            {
+                draft_ctx_params.ctx_other = ctx_other;
+            }
+            else
+            {
+                llama_model_free(ctx_other_model);
+                ctx_other_model = nullptr;
+            }
+        }
+    }
+
+    if(draft_is_mtp_estimate)
+    {
+        draft_ctx_params.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
+        draft_ctx_params.n_seq_max = base_ctx_params.n_seq_max;
+        draft_ctx_params.n_rs_seq = speculative_chunk_amt;
+        draft_ctx_params.n_outputs_max = std::max<uint32_t>(1, base_ctx_params.n_seq_max); //match the real MTP draft context so the autofit tax doesn't over-reserve the draft compute buffer at n_batch*n_vocab (~2GB on large-vocab models like Gemma)
+        measure_model_bytes = has_draft_model;
+    }
+
+    std::vector<ggml_backend_dev_t> devs;
+    uint32_t hp_ngl = 0;
+    uint32_t hp_n_ctx_train = 0;
+    uint32_t hp_n_expert = 0;
+    common_device_memory_data_vec dmd;
+    try
+    {
+        dmd = common_get_device_memory_data(
+            estimate_model_path,
+            &draft_model_params,
+            &draft_ctx_params,
+            devs,
+            hp_ngl,
+            hp_n_ctx_train,
+            hp_n_expert,
+            GGML_LOG_LEVEL_ERROR);
+    }
+    catch(...)
+    {
+        free_ctx_other();
+        throw;
+    }
+    free_ctx_other();
+
+    size_t total_bytes = 0;
+    for(size_t i = 0; i < devs.size() && i < dmd.size(); ++i)
+    {
+        total_bytes += (measure_model_bytes ? dmd[i].model : 0) + dmd[i].context + dmd[i].compute;
+    }
+    return (total_bytes + 1024*1024 - 1) / (1024*1024);
+}
+
 // Find tokens that completely contain `str`, either as a single token, or as a sequence of tokens.
 // It's important to use a hash map for head tokens because some models have many of them.
 // For example, the Llama 3 tokenizer has 6570 tokens containing the period ('.') character.
@@ -715,7 +900,7 @@ static void mtp_decoding_setup(llama_model * main_model, llama_context * main_ct
     mtp_ctx_params.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
     mtp_ctx_params.ctx_other = main_ctx;
     mtp_ctx_params.n_rs_seq = 0;
-    mtp_ctx_params.n_outputs_max = 1;
+    mtp_ctx_params.n_outputs_max = std::max<uint32_t>(1, mtp_ctx_params.n_seq_max);
 
     printf("\nAttempting to create built-in MTP context from the main model.\n");
     draft_ctx = llama_init_from_model(main_model, mtp_ctx_params);
@@ -727,7 +912,7 @@ static void mtp_decoding_setup(llama_model * main_model, llama_context * main_ct
     }
 
     draft_is_mtp = true;
-    speculative_state_setup(main_ctx, mtp_ctx_params, 0, COMMON_SPECULATIVE_TYPE_DRAFT_MTP);
+    speculative_state_setup(main_ctx, mtp_ctx_params, -1, COMMON_SPECULATIVE_TYPE_DRAFT_MTP);
 }
 
 //loads a model for speculative decoding.
@@ -784,6 +969,7 @@ static void speculative_decoding_setup(std::string spec_model_filename, llama_co
         draft_ctx_params.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
         draft_ctx_params.ctx_other = main_ctx;
         draft_ctx_params.n_rs_seq = speculative_chunk_amt;
+        draft_ctx_params.n_outputs_max = base_ctx_params.n_seq_max; //draft-mtp generates tokens autoregressively (1 output per sequence per decode, looped up to n_max); cap outputs at n_seq instead of letting it default to n_batch, which sized the draft sampling buffer at n_batch*n_vocab (~2GB on large-vocab models like Gemma)
     }
     draft_ctx = llama_init_from_model(draftmodel, draft_ctx_params);
     if(draft_ctx == NULL)
@@ -889,9 +1075,9 @@ static speculative_draft_result speculative_decoding_eval_chunk(llama_context * 
     }
 
     std::vector<llama_token> real_embd;
-    real_embd.reserve(drafted_ids.size());
+    real_embd.reserve(drafted_ids.size() + 1);
     real_embd.push_back(embd[0]);
-    for(size_t i = 0; i + 1 < drafted_ids.size(); ++i)
+    for(size_t i = 0; i < drafted_ids.size(); ++i)
     {
         real_embd.push_back(drafted_ids[i]);
     }
@@ -924,6 +1110,9 @@ static speculative_draft_result speculative_decoding_eval_chunk(llama_context * 
     for(size_t i = 0; i < drafted_ids.size(); ++i)
     {
         results.draftids.push_back(drafted_ids[i]);
+    }
+    for(size_t i = 0; i < real_embd.size(); ++i)
+    {
         results.actual_logits.push_back(llama_get_logits_ith(main_ctx, (int32_t)i));
     }
     results.draft_success = true;
@@ -1878,6 +2067,77 @@ void sample_temperature(llama_token_data_array * candidates_p, float temp, float
     }
 }
 
+static std::pair<std::vector<uint32_t>, llama_partial_utf8> kcpp_decode_utf8(
+        const std::string & src,
+        llama_partial_utf8 partial_start) {
+    static const int lookup[] = { 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 2, 2, 3, 4 };
+    const char * pos = src.c_str();
+    std::vector<uint32_t> code_points;
+
+    code_points.reserve(src.size() + 1);
+    uint32_t value    = partial_start.value;
+    int      n_remain = partial_start.n_remain;
+
+    while (*pos != 0 && n_remain > 0) {
+        uint8_t next_byte = static_cast<uint8_t>(*pos);
+        if ((next_byte >> 6) != 2) {
+            code_points.push_back(0);
+            return std::make_pair(std::move(code_points), llama_partial_utf8{ 0, -1 });
+        }
+        value = (value << 6) + (next_byte & 0x3F);
+        ++pos;
+        --n_remain;
+    }
+
+    if (partial_start.n_remain > 0 && n_remain == 0) {
+        code_points.push_back(value);
+    }
+
+    while (*pos != 0) {
+        uint8_t first_byte = static_cast<uint8_t>(*pos);
+        uint8_t highbits   = first_byte >> 4;
+        n_remain = lookup[highbits] - 1;
+
+        if (n_remain < 0) {
+            code_points.clear();
+            code_points.push_back(0);
+            return std::make_pair(std::move(code_points), llama_partial_utf8{ 0, n_remain });
+        }
+
+        uint8_t mask = (1 << (7 - n_remain)) - 1;
+        value = first_byte & mask;
+
+        ++pos;
+        while (*pos != 0 && n_remain > 0) {
+            value = (value << 6) + (static_cast<uint8_t>(*pos) & 0x3F);
+            ++pos;
+            --n_remain;
+        }
+        if (n_remain == 0) {
+            code_points.push_back(value);
+        }
+    }
+    code_points.push_back(0);
+
+    return std::make_pair(std::move(code_points), llama_partial_utf8{ value, n_remain });
+}
+
+static llama_grammar_candidates kcpp_llama_grammar_reject_candidates(
+        const llama_grammar_rules      & rules,
+        const llama_grammar_stacks     & stacks,
+        const llama_grammar_candidates & candidates) {
+    if (stacks.empty()) {
+        return {};
+    }
+
+    auto rejects = llama_grammar_reject_candidates_for_stack(rules, stacks.front(), candidates);
+    for (size_t i = 1, size = stacks.size(); i < size; ++i) {
+        rejects = llama_grammar_reject_candidates_for_stack(rules, stacks[i], rejects);
+    }
+
+    return rejects;
+}
+
 void sample_grammar(FileFormat file_format, int32_t n_vocab, llama_token_data_array * candidates, const struct llama_grammar * grammar) {
 
     const int64_t t_start_sample_us = ggml_time_us();
@@ -1910,12 +2170,12 @@ void sample_grammar(FileFormat file_format, int32_t n_vocab, llama_token_data_ar
         } else if (piece.empty() || piece[0] == 0) {
             rejects[i] = true;
         } else {
-            candidates_decoded.push_back(decode_utf8(piece.c_str(), grammar->partial_utf8));
+            candidates_decoded.push_back(kcpp_decode_utf8(piece, grammar->partial_utf8));
             candidates_grammar.push_back({ i, candidates_decoded.back().first.data(), candidates_decoded.back().second });
         }
     }
 
-    for (auto reject: llama_grammar_reject_candidates(grammar->rules, grammar->stacks, candidates_grammar)) {
+    for (auto reject: kcpp_llama_grammar_reject_candidates(grammar->rules, grammar->stacks, candidates_grammar)) {
         rejects[reject.index] = true;
     }
 
@@ -2149,7 +2409,7 @@ static void grammar_accept_token(FileFormat file_format, int32_t n_vocab, struct
     const std::string piece = FileFormatTokenizeID(token,file_format);
 
     // Note terminating 0 in decoded string
-    const auto   decoded     = decode_utf8(piece.c_str(), grammar->partial_utf8);
+    const auto   decoded     = kcpp_decode_utf8(piece, grammar->partial_utf8);
     const auto & code_points = decoded.first;
     for (auto it = code_points.begin(), end = code_points.end() - 1; it != end; ++it) {
         llama_grammar_accept(grammar, *it);
@@ -2223,6 +2483,201 @@ static bool mtmd_text_chunk_has_invalid_tokens(const mtmd_input_chunk * mtmdchun
     return false;
 }
 
+static bool kcpp_is_media_token(int token)
+{
+    return token <= MEDIA_TOKEN_IDENTIFIER_A && token > MEDIA_TOKEN_IDENTIFIER_A - 4096;
+}
+
+static int kcpp_media_token_for_index(int media_index)
+{
+    return current_media_identifier - (media_index * 2);
+}
+
+static int kcpp_media_index_from_token(int token)
+{
+    if(!kcpp_is_media_token(token))
+    {
+        return -1;
+    }
+    const int diff = current_media_identifier - token;
+    if(diff < 0 || (diff % 2) != 0)
+    {
+        return -1;
+    }
+    return diff / 2;
+}
+
+static bool kcpp_parse_attached_media_placeholder(
+    const std::string & prompt,
+    size_t pos,
+    int image_count,
+    int audio_count,
+    int & media_index,
+    size_t & placeholder_len)
+{
+    const std::string image_prefix = "(Attached Image ";
+    const std::string audio_prefix = "(Attached Audio ";
+    bool is_audio = false;
+    size_t prefix_len = 0;
+
+    if(prompt.compare(pos, image_prefix.size(), image_prefix) == 0)
+    {
+        prefix_len = image_prefix.size();
+    }
+    else if(prompt.compare(pos, audio_prefix.size(), audio_prefix) == 0)
+    {
+        is_audio = true;
+        prefix_len = audio_prefix.size();
+    }
+    else
+    {
+        return false;
+    }
+
+    size_t number_pos = pos + prefix_len;
+    size_t end_pos = number_pos;
+    while(end_pos < prompt.size() && std::isdigit((unsigned char) prompt[end_pos]))
+    {
+        ++end_pos;
+    }
+    if(end_pos == number_pos || end_pos >= prompt.size() || prompt[end_pos] != ')')
+    {
+        return false;
+    }
+
+    int number = std::atoi(prompt.substr(number_pos, end_pos - number_pos).c_str());
+    if(number <= 0)
+    {
+        return false;
+    }
+
+    int candidate = -1;
+    if(is_audio)
+    {
+        if(number <= audio_count)
+        {
+            candidate = image_count + number - 1;
+        }
+        else if(number <= (int) media_objects.size() && media_objects[number - 1].is_audio)
+        {
+            candidate = number - 1;
+        }
+    }
+    else
+    {
+        if(number <= image_count)
+        {
+            candidate = number - 1;
+        }
+        else if(number <= (int) media_objects.size() && !media_objects[number - 1].is_audio)
+        {
+            candidate = number - 1;
+        }
+    }
+
+    if(candidate < 0 || candidate >= (int) media_objects.size())
+    {
+        return false;
+    }
+    media_index = candidate;
+    placeholder_len = end_pos - pos + 1;
+    return true;
+}
+
+static void kcpp_append_media_placeholder_tokens(std::vector<int> & tokens, int media_index)
+{
+    if(media_index < 0 || media_index >= (int) media_object_token_counts.size())
+    {
+        return;
+    }
+    const int token_count = media_object_token_counts[media_index];
+    const int media_token = kcpp_media_token_for_index(media_index);
+    for(int i = 0; i < token_count; ++i)
+    {
+        tokens.push_back(media_token);
+    }
+}
+
+static bool kcpp_tokenize_prompt_with_inline_media(
+    const std::string & prompt,
+    std::vector<int> & output_tokens,
+    FileFormat file_format,
+    bool add_bos,
+    int image_count,
+    int audio_count)
+{
+    output_tokens.clear();
+    bool inserted_media = false;
+    bool emitted_anything = false;
+    size_t text_start = 0;
+
+    auto append_text = [&](size_t start, size_t end)
+    {
+        if(end <= start)
+        {
+            return;
+        }
+        std::vector<int> text_tokens;
+        TokenizeString(prompt.substr(start, end - start), text_tokens, file_format, add_bos && !emitted_anything);
+        output_tokens.insert(output_tokens.end(), text_tokens.begin(), text_tokens.end());
+        emitted_anything = true;
+    };
+
+    for(size_t pos = 0; pos < prompt.size(); ++pos)
+    {
+        int media_index = -1;
+        size_t placeholder_len = 0;
+        if(kcpp_parse_attached_media_placeholder(prompt, pos, image_count, audio_count, media_index, placeholder_len))
+        {
+            append_text(text_start, pos);
+            if(add_bos && !emitted_anything)
+            {
+                std::vector<int> bos;
+                TokenizeString("", bos, file_format, true);
+                output_tokens.insert(output_tokens.end(), bos.begin(), bos.end());
+            }
+            kcpp_append_media_placeholder_tokens(output_tokens, media_index);
+            emitted_anything = true;
+            inserted_media = true;
+            pos += placeholder_len - 1;
+            text_start = pos + 1;
+        }
+    }
+
+    append_text(text_start, prompt.size());
+    if(!inserted_media)
+    {
+        output_tokens.clear();
+    }
+    return inserted_media;
+}
+
+static int kcpp_adjust_media_truncation_start(const std::vector<int> & tokens, int offset)
+{
+    if(offset <= 0 || offset >= (int) tokens.size())
+    {
+        return offset;
+    }
+    const int token = tokens[offset];
+    if(kcpp_is_media_token(token) && tokens[offset - 1] == token)
+    {
+        while(offset < (int) tokens.size() && tokens[offset] == token)
+        {
+            ++offset;
+        }
+    }
+    return offset;
+}
+
+static bool kcpp_media_span_boundary_ok(const std::vector<int> & tokens, int pos)
+{
+    if(pos <= 0 || pos >= (int) tokens.size())
+    {
+        return true;
+    }
+    return !(kcpp_is_media_token(tokens[pos]) && tokens[pos - 1] == tokens[pos]);
+}
+
 //given an old GGUF context and a new context that has some middle portion removed,
 //find and remove the middle portion from the old context from the KV. Does not fast forward after this destructive action
 //returns true if contextshift is doable, executes it if dryrun is false
@@ -2243,6 +2698,11 @@ bool DoContextShifting(llama_context * ctx, llama_context * draft_ctx, std::vect
 
     for (int i = 0; i < current_context_tokens.size(); ++i)
     {
+        if(i >= new_tokens_len)
+        {
+            purgeneeded = false;
+            break;
+        }
         if (current_context_tokens[i] == new_context_tokens[i])
         {
             trimstart += 1;
@@ -2277,6 +2737,14 @@ bool DoContextShifting(llama_context * ctx, llama_context * draft_ctx, std::vect
         int found = ArrFindIndexOf(current_context_tokens,shared);
         if(found>=0 && found > trimstart)
         {
+            if(!kcpp_media_span_boundary_ok(current_context_tokens, trimstart) || !kcpp_media_span_boundary_ok(current_context_tokens, found))
+            {
+                if(debugmode==1 && !is_quiet)
+                {
+                    printf("\n[Context Shifting skipped: refusing to split a multimodal span]");
+                }
+                return false;
+            }
             bool ok = true;
             if(!dryrun)
             {
@@ -2760,6 +3228,11 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
 
         llama_ctx_params.offload_kqv = !inputs.low_vram;
         llama_ctx_params.kv_unified = true;
+        if((inputs.use_mtp || draftmodel_filename != "") && inputs.draft_amount > 0)
+        {
+            // Match llama-server's target rollback slots for speculative verification.
+            llama_ctx_params.n_rs_seq = inputs.draft_amount;
+        }
         model_params.use_mmap = inputs.use_mmap;
         model_params.use_mlock = inputs.use_mlock;
         model_params.use_direct_io = false; //no direct io for now until stable
@@ -2960,6 +3433,29 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
 
             common_params temp_params;
             size_t taxmb = inputs.autofit_tax_mb + totalmmprojtax;
+            if(file_format==FileFormat::GGUF_GENERIC && (draftmodel_filename != "" || inputs.use_mtp))
+            {
+                try
+                {
+                    size_t drafttax = estimate_draft_autofit_tax_mb(
+                        kcpp_data->model_filename,
+                        draftmodel_filename,
+                        model_params,
+                        llama_ctx_params,
+                        inputs.draft_gpusplit,
+                        inputs.draft_gpulayers,
+                        inputs.use_mtp);
+                    if(drafttax > 0)
+                    {
+                        taxmb += drafttax;
+                        printf("\nDraft Autofit Usage: %zu MB", drafttax);
+                    }
+                }
+                catch(const std::exception & e)
+                {
+                    printf("\nWarning: failed to estimate draft model autofit usage: %s\n", e.what());
+                }
+            }
             printf("\nAttempting to use llama.cpp's automating fitting code. This will override all your layer configs, may or may not work!\n");
             //zero out any customizations made
             tenos.clear();
@@ -3169,25 +3665,24 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
         {
             if(mtmd_ctx!=nullptr)
             {
-                printf("Error: Speculative decoding and MTP cannot be used with multimodal projectors!\n");
+                printf("Warning: Speculative decoding and MTP may not work well with multimodal projectors!\n");
+            }
+
+            speculative_chunk_amt = inputs.draft_amount;
+            if(draftmodel_filename != "")
+            {
+                if(inputs.use_mtp)
+                {
+                    printf("\nBoth --draftmodel and --usemtp were provided. The draft model will be used for speculative decoding.\n");
+                }
+                printf("\nAttempting to load draft model for speculative decoding. It will be fully offloaded if possible. Vocab must match the main model.\n");
+                speculative_decoding_setup(draftmodel_filename, llama_ctx_v4, model_params, llama_ctx_params, n_vocab, inputs.draft_gpusplit, inputs.draft_gpulayers);
             }
             else
             {
-                speculative_chunk_amt = inputs.draft_amount;
-                if(draftmodel_filename != "")
-                {
-                    if(inputs.use_mtp)
-                    {
-                        printf("\nBoth --draftmodel and --usemtp were provided. The draft model will be used for speculative decoding.\n");
-                    }
-                    printf("\nAttempting to load draft model for speculative decoding. It will be fully offloaded if possible. Vocab must match the main model.\n");
-                    speculative_decoding_setup(draftmodel_filename, llama_ctx_v4, model_params, llama_ctx_params, n_vocab, inputs.draft_gpusplit, inputs.draft_gpulayers);
-                }
-                else
-                {
-                    mtp_decoding_setup(llamamodel, llama_ctx_v4, llama_ctx_params);
-                }
+                mtp_decoding_setup(llamamodel, llama_ctx_v4, llama_ctx_params);
             }
+
         }
         if(draft_is_mtp && draft_spec)
         {
@@ -3857,7 +4352,7 @@ public:
         std::unique_lock<std::mutex> lock(batch_mutex);
         batch_legacy_waiting++;
         batch_cv.notify_all();
-        batch_cv.wait(lock, [](){ return !batch_has_live_locked(); });
+        batch_cv.wait(lock, [](){ return !batch_legacy_active && !batch_has_live_locked(); });
         batch_legacy_waiting--;
         batch_invalidate_legacy_context_locked();
         batch_legacy_active = true;
@@ -4353,7 +4848,7 @@ static void batch_start_worker_locked()
 
 bool gpttype_batch_generate_enabled()
 {
-    return continuous_batching_slots > 1 && file_format == FileFormat::GGUF_GENERIC && llama_ctx_v4 && kcpp_data;
+    return continuous_batching_slots > 1 && file_format == FileFormat::GGUF_GENERIC && llama_ctx_v4 && kcpp_data && !draft_ctx && !guidance_ctx;
 }
 
 int gpttype_batch_generate_submit(const generation_inputs inputs)
@@ -4525,6 +5020,95 @@ std::string gpttype_get_chat_template()
     std::vector<char> model_template(res + 1, 0);
     llama_model_meta_val_str(llama_get_model(llama_ctx_v4), template_key.c_str(), model_template.data(), model_template.size());
     return std::string(model_template.data(), model_template.size() - 1);
+}
+
+std::string gpttype_parse_chat_tool_calls(const std::string & generated_text,
+                                          const std::string & tools_json,
+                                          const std::string & chat_template,
+                                          const std::string & chat_template_kwargs_json,
+                                          const std::string & tool_choice,
+                                          bool parallel_tool_calls,
+                                          bool is_partial)
+{
+    try
+    {
+        if(generated_text.empty() || tools_json.empty())
+        {
+            return "";
+        }
+
+        json tools = json::parse(tools_json);
+        if(!tools.is_array() || tools.empty())
+        {
+            return "";
+        }
+
+        std::string tmpl_src = chat_template.empty() ? gpttype_get_chat_template() : chat_template;
+        if(tmpl_src.empty())
+        {
+            return "";
+        }
+
+        auto tmpls = common_chat_templates_init(nullptr, tmpl_src);
+
+        common_chat_msg msg;
+        msg.role = "user";
+        msg.content = "tool parser warmup";
+
+        common_chat_templates_inputs inputs;
+        inputs.use_jinja = true;
+        inputs.messages = { msg };
+        inputs.tools = common_chat_tools_parse_oaicompat(tools);
+        inputs.tool_choice = common_chat_tool_choice_parse_oaicompat(tool_choice.empty() ? "auto" : tool_choice);
+        inputs.parallel_tool_calls = parallel_tool_calls;
+        inputs.add_generation_prompt = true;
+
+        if(!chat_template_kwargs_json.empty())
+        {
+            json kwargs = json::parse(chat_template_kwargs_json);
+            if(kwargs.is_object())
+            {
+                for(const auto & item : kwargs.items())
+                {
+                    inputs.chat_template_kwargs[item.key()] = item.value().dump();
+                }
+            }
+        }
+
+        common_chat_params chat_params = common_chat_templates_apply(tmpls.get(), inputs);
+        if(chat_params.parser.empty())
+        {
+            return "";
+        }
+
+        common_chat_parser_params parser_params(chat_params);
+        parser_params.parse_tool_calls = true;
+        parser_params.parser.load(chat_params.parser);
+
+        common_chat_msg parsed = common_chat_parse(generated_text, is_partial, parser_params);
+        if(parsed.tool_calls.empty())
+        {
+            return "";
+        }
+
+        json tool_calls = parsed.to_json_oaicompat().value("tool_calls", json::array());
+        return tool_calls.dump();
+    }
+    catch(const std::exception & e)
+    {
+        if(debugmode == 1 && !is_quiet)
+        {
+            printf("\nNative tool parser failed: %s\n", e.what());
+        }
+    }
+    catch(...)
+    {
+        if(debugmode == 1 && !is_quiet)
+        {
+            printf("\nNative tool parser failed with unknown error.\n");
+        }
+    }
+    return "";
 }
 
 std::vector<int> gpttype_get_token_arr(const std::string & input, bool addbos)
@@ -4706,6 +5290,7 @@ static void PrepareMediaEmbds(const int nctx, const std::vector<int> & media_int
         int introsize = media_intro.size();
         int outrosize = media_outro.size();
         last_media_mem.clear();
+        media_object_token_counts.clear();
 
         for(int i=0;i<media_objects.size();++i)
         {
@@ -4716,6 +5301,7 @@ static void PrepareMediaEmbds(const int nctx, const std::vector<int> & media_int
                 : kcpp_mtmd_bitmap_init_image_from_buf(media_data_buffer.data(), media_data_buffer.size(), vision_max_res));
             if(!bitmap.ptr)
             {
+                media_object_token_counts.push_back(0);
                 printf("\nError: MTMD media %d failed to load!",i);
                 continue;
             }
@@ -4729,6 +5315,7 @@ static void PrepareMediaEmbds(const int nctx, const std::vector<int> & media_int
             int32_t tokenized = mtmd_tokenize(mtmd_ctx, chunks.ptr.get(), &inp_txt, bitmaps.data(), bitmaps.size());
             if(tokenized != 0)
             {
+                media_object_token_counts.push_back(0);
                 media_composite_image_signature = ""; //force invalidate
                 printf("\nError: MTMD media %d failed to tokenize! (status %d)",i, tokenized);
                 continue;
@@ -4791,18 +5378,21 @@ static void PrepareMediaEmbds(const int nctx, const std::vector<int> & media_int
             }
             if(mediatokensneeded>0 && mediatokensneeded < nctx)
             {
+                media_object_token_counts.push_back(mediatokensneeded);
                 int tokcnt = mediatokensneeded;
                 if(i==0)
                 {
                     tokcnt += introsize + outrosize;
                 }
+                const int media_token = kcpp_media_token_for_index(i);
                 for(int n=0;n<tokcnt;++n)
                 {
-                    last_media_mem.push_back(current_media_identifier);
+                    last_media_mem.push_back(media_token);
                 }
             }
             else
             {
+                media_object_token_counts.push_back(0);
                 media_composite_image_signature = ""; //force invalidate
                 printf("\nWarning: Media excluded - Context size too low or not enough mtmd tokens! (needed %d)\nMedia will be IGNORED! You probably want to relaunch with a larger context size!\n",mediatokensneeded);
             }
@@ -5055,11 +5645,11 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
     std::vector<int> media_intro; //added before media list
     std::vector<int> media_outro; //added before media list
     std::string intro = "\nAttached Media:\n";
-    if(mtmd_ctx && kcpp_mtmd_is_gemma4uv(mtmd_ctx)) //ugly fix for gemma4uv vision coherency
-    {
-        intro = "\n<|channel><channel|>" + intro;
-    }
-    TokenizeString(intro, media_intro, file_format, true);
+    // if(mtmd_ctx && kcpp_mtmd_is_gemma4uv(mtmd_ctx)) //ugly fix for gemma4uv vision coherency
+    // {
+    //     intro = "\n<|channel><channel|>" + intro;
+    // }
+    TokenizeString(intro, media_intro, file_format, false);
 
     //clear previous run media memory, just-in-time free
     for(int i=0;i<media_objects.size();++i)
@@ -5221,28 +5811,42 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
     std::string chat_template = "";
     if (file_format == FileFormat::GGUF_GENERIC) {
         chat_template = gpttype_get_chat_template();
-        if (file_format_meta.model_architecture == llm_arch::LLM_ARCH_GEMMA4) {
-            TokenizeString("<|channel>thought",thinking_start_sequence,file_format,false);
-            TokenizeString("<channel|>",thinking_end_sequence,file_format,false);
-            TokenizeString("\n(Reasoning Budget Exceeded)\n<channel|>",thinking_end_phrase_toksleft,file_format,false);
-            //sanity check, start is 2 tokens and end is 1
-            if(thinking_start_sequence.size()!=2 || thinking_end_sequence.size()!=1)
-            {
-                thinking_start_sequence.clear();
-                thinking_end_sequence.clear();
-                thinking_end_phrase_toksleft.clear();
-            }
-        } else {
-            TokenizeString("<think>",thinking_start_sequence,file_format,false);
-            TokenizeString("</think>",thinking_end_sequence,file_format,false);
-            TokenizeString("\n(Reasoning Budget Exceeded)\n</think>",thinking_end_phrase_toksleft,file_format,false);
-            //sanity check, start is 1 tokens and end is 1
-            if(thinking_start_sequence.size()!=1 || thinking_end_sequence.size()!=1)
-            {
-                thinking_start_sequence.clear();
-                thinking_end_sequence.clear();
-                thinking_end_phrase_toksleft.clear();
-            }
+
+        std::string start = "<think>";
+        std::string end = "</think>";
+        std::string  budget_exceeded = "\n(Reasoning budget exceeded)\nTime to respond now.\n</think>";
+        size_t expected_start_tokens = 1;
+        size_t expected_end_tokens = 1;
+
+        switch (file_format_meta.model_architecture) {
+            case llm_arch::LLM_ARCH_GEMMA4:
+                start = "<|channel>thought";
+                end = "<channel|>";
+                budget_exceeded = "\n(Reasoning budget exceeded)\nTime to respond now.\n<channel|>";
+                expected_start_tokens = 2;
+                break;
+            case llm_arch::LLM_ARCH_SEED_OSS:
+                start = "<seed:think>";
+                end = "</seed:think>";
+                budget_exceeded = "\n(Reasoning budget exceeded)\n<seed:cot_budget_reflect>The current thinking budget is 0, so I will directly start answering the question.</seed:cot_budget_reflect>\nTime to respond now.\n</seed:think>";
+                break;
+            case llm_arch::LLM_ARCH_COHERE2MOE:
+                start = "<|START_THINKING|>";
+                end = "<|END_THINKING|>";
+                 budget_exceeded = "\n(Reasoning budget exceeded)\nTime to respond now.\n<|END_THINKING|>";
+                break;
+            default:
+                break;
+        }
+
+        TokenizeString(start, thinking_start_sequence, file_format, false);
+        TokenizeString(end, thinking_end_sequence, file_format, false);
+        TokenizeString(budget_exceeded, thinking_end_phrase_toksleft, file_format, false);
+        if (thinking_start_sequence.size() != expected_start_tokens || thinking_end_sequence.size() != expected_end_tokens)
+        {
+            thinking_start_sequence.clear();
+            thinking_end_sequence.clear();
+            thinking_end_phrase_toksleft.clear();
         }
     }
 
@@ -5298,6 +5902,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
     if(media_composite_image_signature=="")
     {
         last_media_mem.clear();
+        media_object_token_counts.clear();
     }
     if(media_data_changed)
     {
@@ -5305,7 +5910,21 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
         media_embds_built = true;
     }
 
-    TokenizeString(kcpp_data->prompt, embd_inp, file_format, add_bos_token);
+    bool media_inserted_inline = false;
+    if(last_media_mem.size()>0)
+    {
+        media_inserted_inline = kcpp_tokenize_prompt_with_inline_media(
+            kcpp_data->prompt,
+            embd_inp,
+            file_format,
+            add_bos_token,
+            inputs.images_len,
+            inputs.audio_len);
+    }
+    if(!media_inserted_inline)
+    {
+        TokenizeString(kcpp_data->prompt, embd_inp, file_format, add_bos_token);
+    }
     if(addedmemory!="")
     {
         TokenizeString(addedmemory, embd_inp_mem, file_format, add_bos_token);
@@ -5318,6 +5937,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
         std::vector<int> bos;
         TokenizeString("", bos, file_format, add_bos_token);
         int offset = embd_inp.size() - nctx + kcpp_data->n_predict;
+        offset = kcpp_adjust_media_truncation_start(embd_inp, offset);
         embd_inp = std::vector<int>(embd_inp.begin() + offset, embd_inp.end());
         //replace bos into front if exists
         if(bos.size()>0 && embd_inp.size()>0)
@@ -5326,7 +5946,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
         }
     }
 
-    if(last_media_mem.size()>0) //stick the media placeholders before the added mem
+    if(last_media_mem.size()>0 && !media_inserted_inline) //stick the media placeholders before the added mem if no inline placeholders were found
     {
         if(last_media_mem.size() + kcpp_data->n_predict + 4 > nctx)
         {
@@ -6068,7 +6688,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
             int draft_accepted_this_round = 0;
             if(draft_used)
             {
-                logits_to_sample = draft_results.drafted_amount;
+                logits_to_sample = draft_results.drafted_amount + 1;
             }
             while(logits_sampled<logits_to_sample && remaining_tokens>0 && !abort_draft && !early_abort)
             {
@@ -6194,20 +6814,28 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
 
                 if(draft_used)
                 {
-                    int32_t draftedid = draft_results.draftids[logits_sampled];
-                    if(debugmode==1 && !is_quiet)
+                    if(logits_sampled < draft_results.drafted_amount)
                     {
-                        std::string drafttok = FileFormatTokenizeID(draftedid, file_format, true);
-                        std::string realtok = FileFormatTokenizeID(id, file_format, true);
-                        printf("(Draft %d/%d): Predicted=%d (%s), Actual=%d (%s) [%s]\n",(logits_sampled+1),logits_to_sample,draftedid,drafttok.c_str(),id,realtok.c_str(),(draftedid==id?"PASS":"FAIL"));
+                        int32_t draftedid = draft_results.draftids[logits_sampled];
+                        if(debugmode==1 && !is_quiet)
+                        {
+                            std::string drafttok = FileFormatTokenizeID(draftedid, file_format, true);
+                            std::string realtok = FileFormatTokenizeID(id, file_format, true);
+                            printf("(Draft %d/%d): Predicted=%d (%s), Actual=%d (%s) [%s]\n",(logits_sampled+1),draft_results.drafted_amount,draftedid,drafttok.c_str(),id,realtok.c_str(),(draftedid==id?"PASS":"FAIL"));
+                        }
+                        if(draftedid!=id) //draft mismatch, abort
+                        {
+                            draft_failures += 1;
+                            abort_draft = true;
+                        } else {
+                            draft_successes += 1;
+                            draft_accepted_this_round += 1;
+                        }
                     }
-                    if(draftedid!=id) //draft mismatch, abort
+                    else if(debugmode==1 && !is_quiet)
                     {
-                        draft_failures += 1;
-                        abort_draft = true;
-                    } else {
-                        draft_successes += 1;
-                        draft_accepted_this_round += 1;
+                        std::string realtok = FileFormatTokenizeID(id, file_format, true);
+                        printf("(Draft Bonus): Actual=%d (%s)\n",id,realtok.c_str());
                     }
                 }
 
@@ -6447,7 +7075,8 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
             while ((int)embd_inp.size() > input_consumed)
             {
                 int currtoken = embd_inp[input_consumed];
-                if(currtoken==MEDIA_TOKEN_IDENTIFIER_A || currtoken==MEDIA_TOKEN_IDENTIFIER_B) //special media token hit
+                int curr_media_index = kcpp_media_index_from_token(currtoken);
+                if(curr_media_index >= 0) //special media token hit
                 {
                     if(!media_embds_built) //this should never happen! however, handle it anyway
                     {
@@ -6468,7 +7097,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                         int mediatokensevaled = 0;
                         int introsize = media_intro.size();
                         int outrosize = media_outro.size();
-                        while(input_consumed < embd_inp.size() && (embd_inp[input_consumed]==MEDIA_TOKEN_IDENTIFIER_A || embd_inp[input_consumed]==MEDIA_TOKEN_IDENTIFIER_B))
+                        while(input_consumed < embd_inp.size() && embd_inp[input_consumed]==currtoken)
                         {
                             if (!last_n_tokens.empty())
                             {
@@ -6479,10 +7108,15 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                             ++input_consumed;
                             ++mediatokenscounted;
                         }
-                        for(int i=0;i<media_objects.size();++i)
+                        bool include_media_header = false;
+                        if(curr_media_index == 0 && curr_media_index < (int) media_object_token_counts.size())
+                        {
+                            include_media_header = (mediatokenscounted == media_object_token_counts[curr_media_index] + introsize + outrosize);
+                        }
+                        if(curr_media_index < (int) media_objects.size())
                         {
                             //note: no handling for draft_ctx as we don't support vision for it
-                            if(introsize>0 && i==0)
+                            if(include_media_header && introsize>0)
                             {
                                 //added at the start of everything
                                 kcpp_embd_batch batch = kcpp_embd_batch(media_intro, n_past, use_mrope, false);
@@ -6499,10 +7133,10 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                                 mediatokensevaled += introsize;
                             }
 
-                            int start_size = media_objects[i].chunk_start_seq.size();
+                            int start_size = media_objects[curr_media_index].chunk_start_seq.size();
                             if (start_size > 0) {
                                 //add a separator between each image
-                                kcpp_embd_batch batch = kcpp_embd_batch(media_objects[i].chunk_start_seq, n_past, use_mrope, false);
+                                kcpp_embd_batch batch = kcpp_embd_batch(media_objects[curr_media_index].chunk_start_seq, n_past, use_mrope, false);
                                 auto evr = llama_decode(llama_ctx_v4, batch.batch);
                                 if(evr!=0)
                                 {
@@ -6516,12 +7150,12 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                                 mediatokensevaled += start_size;
                             }
 
-                            for(int j=0;j<media_objects[i].mediachunks.size();++j)
+                            for(int j=0;j<media_objects[curr_media_index].mediachunks.size();++j)
                             {
-                                media_chunk chunk = media_objects[i].mediachunks[j];
+                                media_chunk chunk = media_objects[curr_media_index].mediachunks[j];
                                 if(allow_regular_prints)
                                 {
-                                    printf("\rProcessing Media Embedding %d (%d tokens)",(i+1), chunk.clp_image_tokens);
+                                    printf("\rProcessing Media Embedding %d (%d tokens)",(curr_media_index+1), chunk.clp_image_tokens);
                                 }
                                 bool err = kcpp_eval_media(llama_ctx_v4,chunk,kcpp_data->n_batch,&n_past);
                                 mediatokensevaled += chunk.clp_image_tokens;
@@ -6539,10 +7173,10 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                                 }
                             }
 
-                            int end_size = media_objects[i].chunk_end_seq.size();
+                            int end_size = media_objects[curr_media_index].chunk_end_seq.size();
                             if (end_size > 0) {
                                 //add a separator between each image
-                                kcpp_embd_batch batch = kcpp_embd_batch(media_objects[i].chunk_end_seq, n_past, use_mrope, false);
+                                kcpp_embd_batch batch = kcpp_embd_batch(media_objects[curr_media_index].chunk_end_seq, n_past, use_mrope, false);
                                 auto evr = llama_decode(llama_ctx_v4, batch.batch);
                                 if(evr!=0)
                                 {
@@ -6556,7 +7190,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                                 mediatokensevaled += end_size;
                             }
                         }
-                        if(media_objects.size()>0 && outrosize>0)
+                        if(include_media_header && media_objects.size()>0 && outrosize>0)
                         {
                             //added after all media but before prompt
                             kcpp_embd_batch batch = kcpp_embd_batch(media_outro, n_past, use_mrope, false);
@@ -6792,6 +7426,12 @@ bool gpttype_load_state_kv(int slot)
         if (savestates[slot].current_savestate_buffer.empty()) {
             return false;
         }
+        if(draft_ctx && savestates[slot].current_draft_savestate_size>0)
+        {
+            llama_memory_clear(llama_get_memory(draft_ctx),true);
+            auto res2 = llama_state_set_data(draft_ctx, savestates[slot].current_draft_savestate_buffer.data(), savestates[slot].current_draft_savestate_size);
+            printf("\nKV Load DraftSaveState %d: Restored KV with %zu tokens.\n", slot,current_context_tokens.size());
+        }
         llama_memory_clear(llama_get_memory(llama_ctx_v4),true);
         auto res = llama_state_set_data(llama_ctx_v4, savestates[slot].current_savestate_buffer.data(), savestates[slot].current_savestate_size);
         if(res > 0)
@@ -6799,12 +7439,6 @@ bool gpttype_load_state_kv(int slot)
             current_context_tokens = savestates[slot].savestate_context_tokens;
             loaded_latest_logits = savestates[slot].latest_logits;
             printf("\nKV Load SaveState %d: Restored KV with %zu tokens.\n", slot,current_context_tokens.size());
-            if(draft_ctx && savestates[slot].current_draft_savestate_size>0)
-            {
-                llama_memory_clear(llama_get_memory(draft_ctx),true);
-                auto res2 = llama_state_set_data(draft_ctx, savestates[slot].current_draft_savestate_buffer.data(), savestates[slot].current_draft_savestate_size);
-                printf("\nKV Load DraftSaveState %d: Restored KV with %zu tokens.\n", slot,current_context_tokens.size());
-            }
             touch_slot(slot);
         }
         return (res > 0);

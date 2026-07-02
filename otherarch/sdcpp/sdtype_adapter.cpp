@@ -124,8 +124,6 @@ struct SDParams {
     bool diffusion_conv_direct    = false;
     bool vae_conv_direct          = false;
 
-    bool chroma_use_dit_mask     = true;
-
     LoraMap lora_map;
     bool lora_dynamic = false;
 
@@ -414,8 +412,10 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
     } else if (inputs.use_mmap) {
         printf("Using mmap for I/O\n");
     }
+    std::string max_vram;
     if(inputs.max_vram != 0.f) {
         printf("Using max VRAM = %0.2f GB\n", inputs.max_vram);
+        max_vram = std::to_string(inputs.max_vram);
     }
     if(inputs.quant > 0)
     {
@@ -472,8 +472,6 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
     params.taesd_path = sd_params->taesd_path.c_str();
     params.photo_maker_path = sd_params->stacked_id_embeddings_path.c_str();
 
-    params.vae_decode_only = false;
-    params.free_params_immediately = false;
     params.rng_type = CUDA_RNG;
 
     params.n_threads = sd_params->n_threads;
@@ -481,17 +479,13 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
     params.diffusion_flash_attn = sd_params->diffusion_flash_attn;
     params.diffusion_conv_direct = sd_params->diffusion_conv_direct;
     params.vae_conv_direct = sd_params->vae_conv_direct;
-    params.chroma_use_dit_mask = sd_params->chroma_use_dit_mask;
-    params.max_vram = inputs.max_vram;
+    params.chroma_use_dit_mask = true;
+    params.max_vram = max_vram.c_str();
     params.stream_layers = inputs.stream_layers;
+    params.eager_load = true; //kcpp should preload everything
     params.enable_mmap = inputs.use_mmap;
-    // the _cpu flags are only used if the backend string is empty, but
-    // we always set both for consistency
-    params.offload_params_to_cpu = inputs.offload_cpu;
     params.params_backend = inputs.offload_cpu ? "CPU" : "";
-    params.keep_vae_on_cpu = (inputs.kcpp_vae_device <= -2);
     backends += get_device_override(inputs.kcpp_vae_device, "VAE");
-    params.keep_clip_on_cpu = (inputs.kcpp_clip_device <= -2);
     backends += get_device_override(inputs.kcpp_clip_device, "CLIP");
     if (backends.rfind(",", 0) == 0) {
         backends = "auto" + backends;
@@ -504,11 +498,6 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
 
     // also switches flash attn for the vae and conditioner
     params.flash_attn = params.diffusion_flash_attn;
-
-    if (params.chroma_use_dit_mask && params.diffusion_flash_attn) {
-        // note we don't know yet if it's a Chroma model
-        params.chroma_use_dit_mask = false;
-    }
 
     if(inputs.debugmode==1)
     {
@@ -528,14 +517,6 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
     }
 
     auto info = get_model_info(sd_ctx);
-
-    if (!sd_is_quiet) {
-        if (info.is_chroma && sd_params->diffusion_flash_attn && sd_params->chroma_use_dit_mask)
-        {
-            printf("Chroma: flash attention is on, disabling DiT mask (this will lower image quality)\n");
-            // disabled before loading
-        }
-    }
 
     if (info.is_wan || info.is_ltx)
     {
@@ -559,7 +540,6 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
     if (upscaler_filename!="") {
         const int upscale_tile_size = 128;
         upscaler_ctx = new_upscaler_ctx(upscaler_filename.c_str(),
-                                        params.offload_params_to_cpu,
                                         params.diffusion_conv_direct,
                                         params.n_threads,
                                         upscale_tile_size,
@@ -960,9 +940,40 @@ static std::string raw_image_to_png_base64(const sd_image_t& img, std::string pa
     return result;
 }
 
+static sd_audio_t load_audio_from_b64(const std::string& b64audio) {
+    sd_audio_t audio = {0, 0, 0, nullptr};
+    if (b64audio.empty()) {
+        return audio;
+    }
+
+    std::vector<uint8_t> audio_data = kcpp_base64_decode(b64audio);
+    std::vector<float> decoded_samples;
+    int sample_rate = 0;
+    int channels = 0;
+    if (!kcpp_decode_audio_file_from_buf(audio_data.data(), audio_data.size(), sample_rate, channels, decoded_samples)) {
+        printf("KCPP SD: failed to decode input audio\n");
+        return audio;
+    }
+
+    uint64_t sample_count = static_cast<uint64_t>(decoded_samples.size() / static_cast<size_t>(channels));
+    size_t float_count = decoded_samples.size();
+    float* samples = (float*)malloc(float_count * sizeof(float));
+    if (samples == nullptr || sample_count == 0) {
+        free(samples);
+        return audio;
+    }
+
+    std::memcpy(samples, decoded_samples.data(), float_count * sizeof(float));
+    audio.sample_rate = static_cast<uint32_t>(sample_rate);
+    audio.channels = static_cast<uint32_t>(channels);
+    audio.sample_count = sample_count;
+    audio.data = samples;
+    return audio;
+}
+
 bool supports_reference_images(kcpp_sd::model_info info)
 {
-    bool supported = (info.is_wan || info.is_ltx || info.is_qwenimg || info.is_flux2 || info.is_kontext || photomaker_enabled);
+    bool supported = (info.is_wan || info.is_ltx || info.supports_ref_image || info.is_kontext || photomaker_enabled);
     return supported;
 }
 
@@ -976,6 +987,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
 
     std::string img2img_data = std::string(inputs.init_images);
     std::string img2img_mask = std::string(inputs.mask);
+    std::string input_audio_data = std::string(inputs.audio_data ? inputs.audio_data : "");
     std::vector<std::string> extra_image_data;
     for(int i=0;i<inputs.extra_images_len;++i)
     {
@@ -1150,7 +1162,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
                         wan_imgs.push_back(extraimage_reference);
                     }
                 }
-                else if(info.is_qwenimg || info.is_flux2)
+                else if(info.supports_ref_image)
                 {
                     uint8_t * loaded = load_image_from_b64(extra_image_data[i],nx2,ny2);
                     if(loaded)
@@ -1304,6 +1316,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
      //special case, is img2img and denoise strength is 0 and steps is 1, do a passthru
     bool is_passthrough = (sd_params->sample_steps<=1 && sd_params->strength<=0 && is_img2img && vid_req_frames<=1 && extra_image_data.size()==0);
     sd_audio_t* generated_audio = nullptr;
+    sd_audio_t input_audio = {0, 0, 0, nullptr};
 
     if(is_vid_model)
     {
@@ -1323,6 +1336,13 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
         vid_gen_params.video_frames = vid_req_frames;
         vid_gen_params.fps = vid_fps;
         vid_gen_params.vae_tiling_params = params.vae_tiling_params;
+        if (!input_audio_data.empty()) {
+            input_audio = load_audio_from_b64(input_audio_data);
+            if (input_audio.data == nullptr) {
+                return sd_generation.error("KCPP SD: load audio from base64 failed!");
+            }
+            vid_gen_params.input_audio = &input_audio;
+        }
         if (wan_imgs.size() > 0) {
             if (wan_imgs.size() >= 2) {
                 vid_gen_params.init_image = wan_imgs[0];
@@ -1348,6 +1368,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
             << "\nFRAMES:"   << vid_gen_params.video_frames
             << "\nCTRL_FRM:" << vid_gen_params.control_frames_size
             << "\nINIT_IMGS:" << wan_imgs.size()
+            << "\nINPUT_AUDIO:" << (vid_gen_params.input_audio ? "true" : "false")
             << "\n\n";
             printf("%s", ss.str().c_str());
         }
@@ -1450,6 +1471,10 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
     }
 
     if (!is_passthrough && results == NULL) {
+        if (input_audio.data) {
+            free(input_audio.data);
+            input_audio.data = nullptr;
+        }
         return sd_generation.error("KCPP SD generate failed!");
     }
 
@@ -1596,6 +1621,10 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
     if (generated_audio) {
         free_sd_audio(generated_audio);
         generated_audio = nullptr;
+    }
+    if (input_audio.data) {
+        free(input_audio.data);
+        input_audio.data = nullptr;
     }
 
     free(results);

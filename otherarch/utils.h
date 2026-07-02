@@ -61,6 +61,7 @@ int32_t kcpp_quick_sample(float * logits, const int n_logits, const std::vector<
 
 std::vector<std::string> split_string(const std::string& input, const std::string& separator);
 bool kcpp_decode_audio_from_buf(const unsigned char * buf_in, size_t len, int target_sampler_rate, std::vector<float> & pcmf32_mono);
+bool kcpp_decode_audio_file_from_buf(const unsigned char * buf_in, size_t len, int & sample_rate, int & channels, std::vector<float> & pcmf32_interleaved);
 bool kcpp_decode_audio_to_f32_stereo_48k(const uint8_t * data, size_t data_size, std::vector<float> & pcm, int & T_audio);
 
 typedef struct ggml_backend_device * ggml_backend_dev_t;
@@ -113,3 +114,4 @@ std::string save_ulaw_wav8_base64(const std::vector<float> &data, int sample_rat
 std::string save_wav16_base64(const std::vector<float> &data, int sample_rate);
 std::string save_stereo_wav16_base64(const std::vector<float> & raw_audio, int T_audio, int sample_rate);
 std::string save_stereo_mp3_base64(const std::vector<float> & raw_audio,int T_audio,int sample_rate);
+std::string save_mono_mp3_base64(const std::vector<float> & raw_audio, int sample_rate);

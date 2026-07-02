@@ -8,6 +8,9 @@
 #include <string>
 #include <vector>
 
+#ifdef FILENAME
+#undef FILENAME
+#endif
 #define FILENAME "jinja-parser"
 
 namespace jinja {

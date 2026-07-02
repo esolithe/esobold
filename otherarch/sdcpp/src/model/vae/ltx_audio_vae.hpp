@@ -1,6 +1,7 @@
-#ifndef __SD_MODEL_VAE_LTX_AUDIO_VAE_HPP__
+﻿#ifndef __SD_MODEL_VAE_LTX_AUDIO_VAE_HPP__
 #define __SD_MODEL_VAE_LTX_AUDIO_VAE_HPP__
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <numeric>
@@ -9,6 +10,7 @@
 
 #include "core/ggml_extend.hpp"
 #include "model_loader.h"
+#include "model_manager.h"
 
 namespace LTXV {
 
@@ -20,6 +22,10 @@ namespace LTXV {
         int latent_channels                                        = 8;
         int latent_frequency_bins                                  = 16;
         int audio_channels                                         = 2;
+        bool has_encoder                                           = false;
+        int encoder_channels                                       = 128;
+        std::vector<int> encoder_channel_multipliers               = {1, 2, 4};
+        int encoder_num_res_blocks                                 = 2;
         int decoder_channels                                       = 128;
         std::vector<int> decoder_channel_multipliers               = {1, 2, 4};
         int decoder_num_res_blocks                                 = 2;
@@ -73,6 +79,7 @@ namespace LTXV {
 
             const TensorStorage* decoder_conv_in   = require("audio_vae.decoder.conv_in.conv.weight");
             const TensorStorage* decoder_conv_out  = require("audio_vae.decoder.conv_out.conv.weight");
+            const TensorStorage* encoder_conv_in   = require("audio_vae.encoder.conv_in.conv.weight");
             const TensorStorage* latent_std        = require("audio_vae.per_channel_statistics.std-of-means");
             const TensorStorage* vocoder_conv_pre  = require("vocoder.vocoder.conv_pre.weight");
             const TensorStorage* vocoder_conv_post = require("vocoder.vocoder.conv_post.weight");
@@ -95,6 +102,40 @@ namespace LTXV {
 
             if (latent_std->ne[0] % std::max<int64_t>(1, decoder_conv_in->ne[2]) != 0) {
                 return config;
+            }
+
+            if (encoder_conv_in != nullptr) {
+                config.has_encoder      = true;
+                config.audio_channels   = static_cast<int>(encoder_conv_in->ne[2]);
+                config.encoder_channels = static_cast<int>(encoder_conv_in->ne[3]);
+
+                std::vector<std::pair<int, int>> encoder_level_channels;
+                for (const auto& pair : tensor_storage_map) {
+                    const std::string& name  = pair.first;
+                    const std::string prefix = "audio_vae.encoder.down.";
+                    const std::string suffix = ".block.0.conv1.conv.weight";
+                    if (!starts_with(name, prefix) || !ends_with(name, suffix)) {
+                        continue;
+                    }
+                    std::string level_str = name.substr(prefix.size(), name.size() - prefix.size() - suffix.size());
+                    int level             = std::stoi(level_str);
+                    encoder_level_channels.push_back({level, static_cast<int>(pair.second.ne[3])});
+                }
+                std::sort(encoder_level_channels.begin(), encoder_level_channels.end());
+                if (!encoder_level_channels.empty()) {
+                    config.encoder_channel_multipliers.clear();
+                    for (const auto& level_channel : encoder_level_channels) {
+                        config.encoder_channel_multipliers.push_back(level_channel.second / std::max(1, config.encoder_channels));
+                    }
+                }
+
+                int encoder_block_count = 0;
+                while (tensor_storage_map.find("audio_vae.encoder.down.0.block." + std::to_string(encoder_block_count) + ".conv1.conv.weight") != tensor_storage_map.end()) {
+                    ++encoder_block_count;
+                }
+                if (encoder_block_count > 0) {
+                    config.encoder_num_res_blocks = encoder_block_count;
+                }
             }
 
             std::vector<std::pair<int, int>> level_channels;
@@ -170,15 +211,88 @@ namespace LTXV {
             if (config.audio_channels != 2 || config.latent_channels != 8 || config.mel_bins != 64) {
                 return config;
             }
-            LOG_DEBUG("ltx_audio_vae: sample_rate = %d, mel_bins = %d, latent_channels = %d, latent_frequency_bins = %d, has_bwe = %s",
+            LOG_DEBUG("ltx_audio_vae: sample_rate = %d, mel_bins = %d, latent_channels = %d, latent_frequency_bins = %d, has_encoder = %s, has_bwe = %s",
                       config.sample_rate,
                       config.mel_bins,
                       config.latent_channels,
                       config.latent_frequency_bins,
+                      config.has_encoder ? "true" : "false",
                       config.has_bwe ? "true" : "false");
             return config;
         }
     };
+
+    static double ltx_audio_hz_to_mel(double freq) {
+        constexpr double min_log_hz  = 1000.0;
+        constexpr double min_log_mel = 15.0;
+        constexpr double logstep     = 0.06875177742094912;  // log(6.4) / 27
+        constexpr double f_sp        = 200.0 / 3.0;
+        if (freq < min_log_hz) {
+            return freq / f_sp;
+        }
+        return min_log_mel + std::log(freq / min_log_hz) / logstep;
+    }
+
+    static double ltx_audio_mel_to_hz(double mel) {
+        constexpr double min_log_hz  = 1000.0;
+        constexpr double min_log_mel = 15.0;
+        constexpr double logstep     = 0.06875177742094912;  // log(6.4) / 27
+        constexpr double f_sp        = 200.0 / 3.0;
+        if (mel < min_log_mel) {
+            return mel * f_sp;
+        }
+        return min_log_hz * std::exp(logstep * (mel - min_log_mel));
+    }
+
+    static sd::Tensor<float> build_encoder_stft_basis(int n_fft) {
+        constexpr double kPi = 3.14159265358979323846;
+        const int n_freqs    = n_fft / 2 + 1;
+        sd::Tensor<float> basis({n_fft, 1, n_freqs * 2});
+        for (int k = 0; k < n_freqs; ++k) {
+            for (int n = 0; n < n_fft; ++n) {
+                double window                  = 0.5 - 0.5 * std::cos(2.0 * kPi * n / static_cast<double>(n_fft));
+                double phase                   = 2.0 * kPi * k * n / static_cast<double>(n_fft);
+                basis.index(n, 0, k)           = static_cast<float>(std::cos(phase) * window);
+                basis.index(n, 0, k + n_freqs) = static_cast<float>(-std::sin(phase) * window);
+            }
+        }
+        return basis;
+    }
+
+    static sd::Tensor<float> build_encoder_mel_basis(int sample_rate, int n_fft, int n_mels) {
+        const int n_freqs = n_fft / 2 + 1;
+        sd::Tensor<float> basis({n_freqs, n_mels});
+        std::vector<double> fft_freqs(n_freqs);
+        for (int i = 0; i < n_freqs; ++i) {
+            fft_freqs[i] = (static_cast<double>(sample_rate) * 0.5) * static_cast<double>(i) / static_cast<double>(n_freqs - 1);
+        }
+
+        std::vector<double> mel_f(n_mels + 2);
+        const double min_mel = ltx_audio_hz_to_mel(0.0);
+        const double max_mel = ltx_audio_hz_to_mel(static_cast<double>(sample_rate) * 0.5);
+        for (int i = 0; i < n_mels + 2; ++i) {
+            double mel = min_mel + (max_mel - min_mel) * static_cast<double>(i) / static_cast<double>(n_mels + 1);
+            mel_f[i]   = ltx_audio_mel_to_hz(mel);
+        }
+
+        for (int m = 0; m < n_mels; ++m) {
+            double lower  = mel_f[m];
+            double center = mel_f[m + 1];
+            double upper  = mel_f[m + 2];
+            double enorm  = 2.0 / std::max(upper - lower, 1e-12);
+            for (int f = 0; f < n_freqs; ++f) {
+                double freq  = fft_freqs[f];
+                double value = 0.0;
+                if (freq > lower && freq <= center) {
+                    value = (freq - lower) / std::max(center - lower, 1e-12);
+                } else if (freq > center && freq < upper) {
+                    value = (upper - freq) / std::max(upper - center, 1e-12);
+                }
+                basis.index(f, m) = static_cast<float>(value * enorm);
+            }
+        }
+        return basis;
+    }
 
     static ggml_tensor* compute_log_mel_spectrogram(GGMLRunnerContext* runner_ctx,
                                                     ggml_tensor* waveform,
@@ -477,6 +591,31 @@ namespace LTXV {
         }
     };
 
+    struct AudioDownsample2D : public GGMLBlock {
+        AudioDownsample2D(int64_t channels) {
+            blocks["conv"] = std::make_shared<Conv2d>(channels,
+                                                      channels,
+                                                      std::pair<int, int>{3, 3},
+                                                      std::pair<int, int>{2, 2},
+                                                      std::pair<int, int>{0, 0});
+        }
+
+        ggml_tensor* forward(GGMLRunnerContext* ctx, ggml_tensor* x) {
+            auto conv = std::dynamic_pointer_cast<Conv2d>(blocks["conv"]);
+            x         = ggml_ext_pad_ext(ctx->ggml_ctx,
+                                         x,
+                                         0,
+                                         1,
+                                         2,
+                                         0,
+                                         0,
+                                         0,
+                                         0,
+                                         0);
+            return conv->forward(ctx, x);
+        }
+    };
+
     struct AudioResnetBlock2D : public GGMLBlock {
         int64_t in_channels;
         int64_t out_channels;
@@ -510,6 +649,86 @@ namespace LTXV {
                 x             = shortcut->forward(ctx, x);
             }
             return ggml_add(ctx->ggml_ctx, x, h);
+        }
+    };
+
+    struct AudioEncoder : public GGMLBlock {
+        LTXAudioVAEConfig config;
+
+        explicit AudioEncoder(const LTXAudioVAEConfig& config)
+            : config(config) {
+            int block_in      = config.encoder_channels;
+            blocks["conv_in"] = std::make_shared<HeightCausalConv2D>(config.audio_channels, block_in, std::pair<int, int>{3, 3});
+
+            for (int level = 0; level < static_cast<int>(config.encoder_channel_multipliers.size()); ++level) {
+                int block_out = config.encoder_channels * config.encoder_channel_multipliers[level];
+                for (int block_idx = 0; block_idx < config.encoder_num_res_blocks; ++block_idx) {
+                    blocks["down." + std::to_string(level) + ".block." + std::to_string(block_idx)] =
+                        std::make_shared<AudioResnetBlock2D>(block_in, block_out);
+                    block_in = block_out;
+                }
+                if (level != static_cast<int>(config.encoder_channel_multipliers.size()) - 1) {
+                    blocks["down." + std::to_string(level) + ".downsample"] = std::make_shared<AudioDownsample2D>(block_in);
+                }
+            }
+
+            blocks["mid.block_1"] = std::make_shared<AudioResnetBlock2D>(block_in, block_in);
+            blocks["mid.block_2"] = std::make_shared<AudioResnetBlock2D>(block_in, block_in);
+            blocks["norm_out"]    = std::make_shared<PixelNorm2D>();
+            blocks["conv_out"]    = std::make_shared<HeightCausalConv2D>(block_in, config.latent_channels * 2, std::pair<int, int>{3, 3});
+        }
+
+        ggml_tensor* normalize_latent(GGMLRunnerContext* ctx,
+                                      ggml_tensor* latent,
+                                      ggml_tensor* mean,
+                                      ggml_tensor* stddev) {
+            latent = ggml_ext_slice(ctx->ggml_ctx, latent, 2, 0, config.latent_channels);
+            latent = ggml_permute(ctx->ggml_ctx, latent, 0, 2, 1, 3);
+            latent = ggml_cont(ctx->ggml_ctx, latent);
+            latent = ggml_reshape_4d(ctx->ggml_ctx, latent, config.latent_frequency_bins * config.latent_channels, latent->ne[2], 1, latent->ne[3]);
+
+            mean   = ggml_reshape_4d(ctx->ggml_ctx, mean, mean->ne[0], 1, 1, 1);
+            stddev = ggml_reshape_4d(ctx->ggml_ctx, stddev, stddev->ne[0], 1, 1, 1);
+            latent = ggml_div(ctx->ggml_ctx, ggml_sub(ctx->ggml_ctx, latent, mean), stddev);
+
+            latent = ggml_reshape_4d(ctx->ggml_ctx,
+                                     latent,
+                                     config.latent_frequency_bins,
+                                     config.latent_channels,
+                                     latent->ne[1],
+                                     latent->ne[3]);
+            latent = ggml_cont(ctx->ggml_ctx, ggml_permute(ctx->ggml_ctx, latent, 0, 2, 1, 3));
+            return latent;
+        }
+
+        ggml_tensor* forward(GGMLRunnerContext* ctx,
+                             ggml_tensor* spectrogram,
+                             ggml_tensor* mean,
+                             ggml_tensor* stddev) {
+            auto conv_in     = std::dynamic_pointer_cast<HeightCausalConv2D>(blocks["conv_in"]);
+            auto mid_block_1 = std::dynamic_pointer_cast<AudioResnetBlock2D>(blocks["mid.block_1"]);
+            auto mid_block_2 = std::dynamic_pointer_cast<AudioResnetBlock2D>(blocks["mid.block_2"]);
+            auto norm_out    = std::dynamic_pointer_cast<PixelNorm2D>(blocks["norm_out"]);
+            auto conv_out    = std::dynamic_pointer_cast<HeightCausalConv2D>(blocks["conv_out"]);
+
+            auto x = conv_in->forward(ctx, spectrogram);
+            for (int level = 0; level < static_cast<int>(config.encoder_channel_multipliers.size()); ++level) {
+                for (int block_idx = 0; block_idx < config.encoder_num_res_blocks; ++block_idx) {
+                    auto block = std::dynamic_pointer_cast<AudioResnetBlock2D>(blocks["down." + std::to_string(level) + ".block." + std::to_string(block_idx)]);
+                    x          = block->forward(ctx, x);
+                }
+                if (level != static_cast<int>(config.encoder_channel_multipliers.size()) - 1) {
+                    auto downsample = std::dynamic_pointer_cast<AudioDownsample2D>(blocks["down." + std::to_string(level) + ".downsample"]);
+                    x               = downsample->forward(ctx, x);
+                }
+            }
+
+            x = mid_block_1->forward(ctx, x);
+            x = mid_block_2->forward(ctx, x);
+            x = norm_out->forward(ctx, x);
+            x = ggml_silu_inplace(ctx->ggml_ctx, x);
+            x = conv_out->forward(ctx, x);
+            return normalize_latent(ctx, x, mean, stddev);
         }
     };
 
@@ -913,6 +1132,9 @@ namespace LTXV {
 
         explicit LTXAudioVAE(const LTXAudioVAEConfig& config)
             : config(config) {
+            if (config.has_encoder) {
+                blocks["audio_vae.encoder"] = std::make_shared<AudioEncoder>(config);
+            }
             blocks["audio_vae.decoder"] = std::make_shared<AudioDecoder>(config);
             blocks["vocoder.vocoder"]   = std::make_shared<Vocoder>(config);
             if (config.has_bwe) {
@@ -992,18 +1214,34 @@ namespace LTXV {
 
             return waveform;
         }
+
+        ggml_tensor* encode(GGMLRunnerContext* ctx,
+                            ggml_tensor* waveform,
+                            ggml_tensor* stft_basis,
+                            ggml_tensor* mel_basis) {
+            GGML_ASSERT(config.has_encoder);
+            auto encoder = std::dynamic_pointer_cast<AudioEncoder>(blocks["audio_vae.encoder"]);
+            auto mean    = params["audio_vae.per_channel_statistics.mean-of-means"];
+            auto stddev  = params["audio_vae.per_channel_statistics.std-of-means"];
+            auto mel     = compute_log_mel_spectrogram(ctx, waveform, stft_basis, mel_basis, config.mel_hop_length);
+            return encoder->forward(ctx, mel, mean, stddev);
+        }
     };
 
     struct LTXAudioVAERunner : public GGMLRunner {
         LTXAudioVAEConfig config;
         LTXAudioVAE model;
+        std::string weight_prefix;
         sd::Tensor<float> bwe_skip_filter_tensor;
+        sd::Tensor<float> encoder_stft_basis_tensor;
+        sd::Tensor<float> encoder_mel_basis_tensor;
 
         LTXAudioVAERunner(ggml_backend_t backend,
-                          ggml_backend_t params_backend,
                           const String2TensorStorage& tensor_storage_map,
-                          const std::string& prefix = "")
-            : GGMLRunner(backend, params_backend),
+                          const std::string& prefix                           = "",
+                          std::shared_ptr<RunnerWeightManager> weight_manager = nullptr)
+            : GGMLRunner(backend, weight_manager),
+              weight_prefix(prefix),
               config(LTXAudioVAEConfig::detect_from_weights(tensor_storage_map)),
               model(config) {
             model.init(params_ctx, tensor_storage_map, prefix);
@@ -1011,13 +1249,17 @@ namespace LTXV {
                 const int bwe_ratio    = config.bwe_output_sample_rate / config.bwe_input_sample_rate;
                 bwe_skip_filter_tensor = sd::Tensor<float>::from_vector(build_hann_resample_filter(bwe_ratio));
             }
+            if (config.has_encoder) {
+                encoder_stft_basis_tensor = build_encoder_stft_basis(config.n_fft);
+                encoder_mel_basis_tensor  = build_encoder_mel_basis(config.sample_rate, config.n_fft, config.mel_bins);
+            }
         }
 
-        void get_param_tensors(std::map<std::string, ggml_tensor*>& tensors, const std::string prefix) {
-            model.get_param_tensors(tensors, prefix);
+        void get_param_tensors(std::map<std::string, ggml_tensor*>& tensors) {
+            model.get_param_tensors(tensors, weight_prefix);
         }
 
-        size_t get_params_buffer_size() {
+        size_t get_params_mem_size() {
             return model.get_params_mem_size();
         }
 
@@ -1037,9 +1279,32 @@ namespace LTXV {
                 ggml_build_forward_expand(gf, waveform);
                 return gf;
             };
-            auto result = restore_trailing_singleton_dims(GGMLRunner::compute<float>(get_graph, n_threads, false), 4);
+            auto result = restore_trailing_singleton_dims(GGMLRunner::compute<float>(get_graph, n_threads, false, false, false), 4);
             int64_t t1  = ggml_time_ms();
             LOG_INFO("ltx audio vae decode completed, taking %.2fs", (t1 - t0) * 1.0f / 1000);
+            return result;
+        }
+
+        sd::Tensor<float> encode(int n_threads,
+                                 const sd::Tensor<float>& waveform_tensor) {
+            if (!config.has_encoder || waveform_tensor.empty() ||
+                encoder_stft_basis_tensor.empty() || encoder_mel_basis_tensor.empty()) {
+                return {};
+            }
+            int64_t t0     = ggml_time_ms();
+            auto get_graph = [&]() -> ggml_cgraph* {
+                auto waveform   = make_input(waveform_tensor);
+                auto stft_basis = make_input(encoder_stft_basis_tensor);
+                auto mel_basis  = make_input(encoder_mel_basis_tensor);
+                ggml_cgraph* gf = new_graph_custom(655360);
+                auto runner_ctx = GGMLRunner::get_context();
+                auto latent     = model.encode(&runner_ctx, waveform, stft_basis, mel_basis);
+                ggml_build_forward_expand(gf, latent);
+                return gf;
+            };
+            auto result = restore_trailing_singleton_dims(GGMLRunner::compute<float>(get_graph, n_threads, false, false, false), 4);
+            int64_t t1  = ggml_time_ms();
+            LOG_INFO("ltx audio vae encode completed, taking %.2fs", (t1 - t0) * 1.0f / 1000);
             return result;
         }
 
@@ -1064,7 +1329,8 @@ namespace LTXV {
             // ggml_backend_t backend = ggml_backend_cuda_init(0);
             LOG_INFO("loading ltx audio vae from '%s'", model_path.c_str());
 
-            ModelLoader model_loader;
+            auto model_manager        = std::make_shared<ModelManager>();
+            ModelLoader& model_loader = model_manager->loader();
             if (!model_loader.init_from_file(model_path)) {
                 LOG_ERROR("init model loader from file failed: '%s'", model_path.c_str());
                 return;
@@ -1072,20 +1338,17 @@ namespace LTXV {
 
             auto& tensor_storage_map = model_loader.get_tensor_storage_map();
             auto ltx_audio_vae       = std::make_shared<LTXAudioVAERunner>(backend,
-                                                                     backend,
                                                                      tensor_storage_map,
-                                                                     prefix);
+                                                                     prefix,
+                                                                     model_manager);
 
-            if (!ltx_audio_vae->alloc_params_buffer()) {
-                LOG_ERROR("ltx audio vae buffer allocation failed");
-                return;
-            }
-
-            std::map<std::string, ggml_tensor*> tensors;
-            ltx_audio_vae->get_param_tensors(tensors, "");
-
-            if (!model_loader.load_tensors(tensors)) {
-                LOG_ERROR("load tensors from model loader failed");
+            if (!model_manager->register_runner_params("LTX audio VAE test",
+                                                       *ltx_audio_vae,
+                                                       ModelManager::ResidencyMode::ParamBackend,
+                                                       backend,
+                                                       backend) ||
+                !model_manager->validate_registered_tensors()) {
+                LOG_ERROR("register ltx audio vae tensors with model manager failed");
                 return;
             }
 

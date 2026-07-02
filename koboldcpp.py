@@ -60,7 +60,7 @@ audio_max = 16
 bias_min_value = -100.0
 bias_max_value = 100.0
 logprobs_max = 10
-default_draft_amount = 8
+default_draft_amount = 4
 default_ttsmaxlen = 4096
 default_embeddingsmaxctx = 4096
 default_visionmaxres = 1024
@@ -71,13 +71,14 @@ default_vae_tile_threshold = 640
 default_sdvaedevice = 'main'
 default_sdclipdevice = 'CPU'
 default_native_ctx = 16384
-default_genlen = 2048
+default_genlen = 1536
 overridekv_max = 16
 default_autofit_padding = 1024
 lora_filenames_max = 4
 multiuser_concurrent_limit = 10
 swa_padding_default = 0
 default_reqtimeout = 600 # 10 min default
+default_maxctx = 12288
 
 # abuse prevention
 stop_token_max = 256
@@ -87,7 +88,7 @@ dry_seq_break_max = 128
 extra_images_max = 4 # for kontext/qwen img
 
 # global vars
-KcppVersion = "1.115.1"
+KcppVersion = "1.117"
 showdebug = True
 kcpp_instance = None #global running instance
 global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "currentBaseConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "base_config":"", "swapReqType": None, "autoswapmode": False, "autoswapSettings": {}, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}, "restart_override_base_config": "", "current_model_override": "", "OpenLumara": False}
@@ -123,7 +124,7 @@ imglora_bypath = {}    # len(imglora_bypath) == 0 <==> static loras
 imglora_name2path = {}
 imglora_cached = True
 imglora_initial_fixed = True
-maxctx = 16384
+maxctx = default_maxctx
 maxhordectx = 0 #set to whatever maxctx is if 0
 maxhordelen = 1024
 modelbusy = threading.Lock()
@@ -196,15 +197,19 @@ default_rpc_port = 5551
 thinkformats = [{"start":"<|channel|>analysis<|message|>","end":"<|start|>assistant<|channel|>final<|message|>"},
                 {"start":"<think>","end":"</think>"},
                 {"start":"<seed:think>","end":"</seed:think>"},
+                {"start":"<|START_THINKING|>","end":"<|END_THINKING|>"},
                 {"start":"<|channel>thought","end":"<channel|>"}]
-tool_call_pairs = [ #third element is whether its stream-handleable
-    ("<tool_call>", "</tool_call>", True),
-    ("<seed:tool_call>", "</seed:tool_call>", True),
-    ("<|tool_call_begin|>", "<|tool_call_end|>", True),
-    ("<｜tool▁call▁begin｜>", "<｜tool▁call▁end｜>", True),
-    ("<minimax:tool_call>", "</minimax:tool_call>", True),
-    ("<|tool_call>", "<tool_call|>", True),
-    ("<|end|><|start|>assistant<|channel|>commentary to=", "", False),
+tool_call_pairs = [ #third element is optional str to match in chat template before we use this pair, fourth element is whether its stream-handleable
+    ("<tool_call>", "</tool_call>", None, True), #qwen, glm
+    ("<seed:tool_call>", "</seed:tool_call>", None, True), #seed oss
+    ("<|tool_call_begin|>", "<|tool_call_end|>", None, True), #kimi
+    ("<｜tool▁call▁begin｜>", "<｜tool▁call▁end｜>", None, True), #deepseek
+    ("<minimax:tool_call>", "</minimax:tool_call>", None, True), #minimax
+    ("<|tool_call>", "<tool_call|>", None, True), #gemma4
+    ("<|end|><|start|>assistant<|channel|>commentary to=", "", None, False), #gpt-oss
+    ("<|tool_call_start|>", "<|tool_call_end|>", "CONTINUE_FINAL_MESSAGE_TAG", True), #lfm2.5
+    ("<tool_calls>", "</tool_calls>", "[BEGIN FINAL RESPONSE]", True), #apriel
+    ("<|START_ACTION|>", "<|END_ACTION|>", "<|START_OF_TURN_TOKEN|>", True), #cohere
 ]
 deprecated_keys = {
     "hordeconfig",
@@ -424,6 +429,7 @@ class sd_generation_inputs(ctypes.Structure):
                 ("negative_prompt", ctypes.c_char_p),
                 ("init_images", ctypes.c_char_p),
                 ("mask", ctypes.c_char_p),
+                ("audio_data", ctypes.c_char_p),
                 ("extra_images_len", ctypes.c_int),
                 ("extra_images", ctypes.POINTER(ctypes.c_char_p)),
                 ("reverse_refimg", ctypes.c_bool),
@@ -509,7 +515,8 @@ class tts_generation_inputs(ctypes.Structure):
                 ("custom_speaker_text", ctypes.c_char_p),
                 ("custom_speaker_data", ctypes.c_char_p),
                 ("reference_audio", ctypes.c_char_p),
-                ("speaker_instruction", ctypes.c_char_p)]
+                ("speaker_instruction", ctypes.c_char_p),
+                ("use_mp3", ctypes.c_bool)]
 
 class tts_generation_outputs(ctypes.Structure):
     _fields_ = [("status", ctypes.c_int),
@@ -584,15 +591,24 @@ class StdoutRedirector:
         self.terminal.flush()
 
 class MCPStdioClient:
-    def resolve_command(self, command):
+    def resolve_command(self, command, cwd=None):
         resolved = shutil.which(command)
         if resolved:
             return resolved
+        if cwd and isinstance(command, str) and not os.path.isabs(command):
+            if os.path.dirname(command):
+                relative_cmd = os.path.abspath(os.path.join(cwd, command))
+                if os.path.exists(relative_cmd):
+                    return relative_cmd
+            else:
+                resolved = shutil.which(command, path=cwd)
+                if resolved:
+                    return resolved
         return command # fallback
 
     def __init__(self,command,largs,env=None,cwd=None):
         if isinstance(command, str):
-            command = self.resolve_command(command)
+            command = self.resolve_command(command, cwd)
             cmd = [command]
         else:
             cmd = list(command)
@@ -969,6 +985,9 @@ def init_library():
     handle.token_count.restype = token_count_outputs
     handle.get_pending_output.restype = ctypes.c_char_p
     handle.get_chat_template.restype = ctypes.c_char_p
+    handle.parse_chat_tool_calls.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_bool, ctypes.c_bool]
+    handle.parse_chat_tool_calls.restype = ctypes.c_char_p
+
     handle.calc_new_state_kv.restype = ctypes.c_size_t
     handle.calc_new_state_tokencount.restype = ctypes.c_size_t
     handle.calc_old_state_kv.argtypes = [ctypes.c_int]
@@ -1114,9 +1133,21 @@ def is_incomplete_utf8_sequence(byte_seq): #note, this will only flag INCOMPLETE
 def strip_base64_prefix(encoded_data):
     if not encoded_data:
         return ""
-    if encoded_data.startswith("data:image"):
+    if encoded_data.startswith("data:image") or encoded_data.startswith("data:audio"):
         encoded_data = encoded_data.split(',', 1)[-1]
     return encoded_data
+
+def get_audio_response_format(genparams, audio_data):
+    if audio_data.startswith(b"ID3") or audio_data[:2] == b"\xff\xfb" or audio_data[:2] == b"\xff\xf3" or audio_data[:2] == b"\xff\xf2":
+        return "mp3", "audio/mpeg"
+    if audio_data.startswith(b"RIFF") and audio_data[8:12] == b"WAVE":
+        return "wav", "audio/wav"
+    use_mp3 = genparams.get("use_mp3", False)
+    if isinstance(use_mp3, str):
+        use_mp3 = use_mp3.lower() in ("1", "true", "yes", "on")
+    if genparams.get("response_format") == "mp3" or use_mp3:
+        return "mp3", "audio/mpeg"
+    return "wav", "audio/wav"
 
 def fix_unquoted_keys(s: str) -> str:
     """
@@ -1735,8 +1766,8 @@ def autoset_gpu_layers(ctxsize, sdquanted, bbs, musiclowvram): #shitty algo to d
                 calulated_gpu_overhead += max(350*1024*1024,modelfile_extracted_meta[4]*1.5)
             if modelfile_extracted_meta[5] > 1024*1024*10: #mmproj tax (now internal to kcpp)
                 unsubmitted_overhead += max(350*1024*1024,modelfile_extracted_meta[5]*1.5)
-            if modelfile_extracted_meta[6] > 1024*1024*10: #draft model tax
-                calulated_gpu_overhead += (modelfile_extracted_meta[6] * 1.5)
+            if modelfile_extracted_meta[6] > 1024*1024*10: #draft model tax (now internal to kcpp)
+                unsubmitted_overhead += (modelfile_extracted_meta[6] * 1.6) + (150*1024*1024)
             if modelfile_extracted_meta[7] > 1024*1024*10: #tts model tax
                 if modelfile_extracted_meta[7] < 1024*1024*1024: #less than 1gb probably means outetts, which needs more vram
                     calulated_gpu_overhead += max(600*1024*1024, modelfile_extracted_meta[7] * 3)
@@ -1977,7 +2008,7 @@ def load_model(model_filename):
     if args.lora:
         inputs.lora_filename = args.lora[0].encode("UTF-8")
 
-    inputs.draftmodel_filename = args.draftmodel.encode("UTF-8") if args.draftmodel else "".encode("UTF-8")
+    inputs.draftmodel_filename = args.draftmodel.encode("UTF-8") if (args.draftmodel and args.draftamount>0) else "".encode("UTF-8")
     inputs.draft_amount = args.draftamount
     inputs.draft_gpulayers = args.draftgpulayers
     for n in range(tensor_split_max):
@@ -2202,6 +2233,9 @@ def generate(genparams, stream_flag=False):
     else:
         pass #unrestricted
 
+    if reasoning_budget==-1 and genparams.get('thinking_budget_tokens',-1)!=-1: #lcpp compat thinking budget
+        reasoning_budget = genparams.get('thinking_budget_tokens',-1)
+
     inputs.max_context_length = max_context_length   # this will resize the context buffer if changed
     inputs.max_length = max_length
     inputs.temperature = temperature
@@ -2357,7 +2391,7 @@ def continuous_batching_python_eligible(genparams, api_format):
     if model_path and not model_path.endswith(".gguf"):
         utfprint("Batching disabled due to file format",2)
         return False
-    if not getattr(args, "noshift", False) or getattr(args, "smartcontext", False) or getattr(args, "draftmodel", "") or getattr(args, "enableguidance", False):
+    if not getattr(args, "noshift", False) or getattr(args, "smartcontext", False) or getattr(args, "draftmodel", "") or getattr(args, "usemtp", False) or getattr(args, "enableguidance", False):
         utfprint("Batching disabled due to loaded settings",2)
         return False
     if genparams.get("negative_prompt") or genparams.get("images") or genparams.get("audio"):
@@ -2807,7 +2841,7 @@ def sd_generate(genparams):
     negative_prompt = genparams.get("negative_prompt", "")
     def build_prompt(prompt, forced):
         # truncate before the forced prompt to ensure it can't be "pushed away" by long inputs
-        prompt = prompt.encode('utf-8')[:2048].decode("UTF-8", errors='ignore')
+        prompt = prompt.encode('utf-8')[:3000].decode("UTF-8", errors='ignore') #for now, limit sd image gen prompts to 3000 chars
         return ", ".join([prompt, forced])
     prompt = build_prompt(prompt, forced_posprompt)
     negative_prompt = build_prompt(negative_prompt, forced_negprompt)
@@ -2840,6 +2874,11 @@ def sd_generate(genparams):
     extra_images_arr = genparams.get("extra_images", [])
     extra_images_arr = ([] if not extra_images_arr else extra_images_arr)
     extra_images_arr = [img for img in extra_images_arr if img not in (None, "")]
+
+    audio_data = next((img for img in extra_images_arr if img.startswith("data:audio")), None)
+    extra_images_arr = [img for img in extra_images_arr if not img.startswith("data:audio")]
+    audio_data = strip_base64_prefix(audio_data)
+
     extra_images_arr = extra_images_arr[:extra_images_max]
     lora_filenames, lora_multipliers = prepare_lora_multipliers(genparams.get("lora", []))
 
@@ -2857,8 +2896,8 @@ def sd_generate(genparams):
 
     swap_refimg = (True if tryparseint(genparams.get("send_as_refimg", 0),0) else False)
     reverse_refimg = (True if tryparseint(genparams.get("reverse_refimg", 0),0) else False)
-    if len(extra_images_arr)==0 and swap_refimg and init_images and init_images!="" and not mask:
-        extra_images_arr = [init_images]
+    if swap_refimg and init_images and init_images != "" and not mask:
+        extra_images_arr = [init_images] + extra_images_arr
         init_images = ""
 
     inputs = sd_generation_inputs()
@@ -2866,6 +2905,7 @@ def sd_generate(genparams):
     inputs.negative_prompt = negative_prompt.encode("UTF-8")
     inputs.init_images = init_images.encode("UTF-8")
     inputs.mask = "".encode("UTF-8") if not mask else mask.encode("UTF-8")
+    inputs.audio_data = "".encode("UTF-8") if not audio_data else audio_data.encode("UTF-8")
     inputs.extra_images_len = len(extra_images_arr)
     inputs.extra_images = (ctypes.c_char_p * inputs.extra_images_len)()
     for n, estr in enumerate(extra_images_arr):
@@ -3586,6 +3626,8 @@ def tts_generate(genparams):
     if not genparams.get("instruction", ""):
         prompt, ttsinstruction = tts_extract_instruction(prompt)
     inputs.speaker_instruction = ttsinstruction.encode("UTF-8")
+    response_format_mp3 = True if (genparams.get("response_format")=="mp3") else False
+    inputs.use_mp3 = genparams.get("use_mp3", response_format_mp3)
     inputs.prompt = prompt.encode("UTF-8")
     inputs.speaker_seed = voice
     aseed = -1
@@ -3674,7 +3716,8 @@ def music_generate_codes(genparams):
     inputs = music_generation_inputs()
     inputs.is_planner_mode = True
     inputs.stereo = genparams.get('stereo', True)
-    inputs.use_mp3 = genparams.get('use_mp3', False)
+    response_format_mp3 = True if (genparams.get("response_format")=="mp3") else False
+    inputs.use_mp3 = genparams.get("use_mp3", response_format_mp3)
     inputs.gen_codes =  genparams.get('gen_codes', False)
     inputs.rewrite_caption =  genparams.get('rewrite_caption', True)
     inputs.input_json = input_json.encode("UTF-8")
@@ -3692,7 +3735,8 @@ def music_generate_audio(genparams):
     inputs = music_generation_inputs()
     inputs.is_planner_mode = False
     inputs.stereo = genparams.get('stereo', True)
-    inputs.use_mp3 = genparams.get('use_mp3', False)
+    response_format_mp3 = True if (genparams.get("response_format")=="mp3") else False
+    inputs.use_mp3 = genparams.get("use_mp3", response_format_mp3)
     inputs.gen_codes =  genparams.get('gen_codes', False)
     inputs.rewrite_caption =  genparams.get('rewrite_caption', True)
     inputs.input_json = input_json.encode("UTF-8")
@@ -4038,7 +4082,8 @@ def coerce_tool_argtypes(tool_calls: list, tool_list: list) -> list:
 
     return result
 
-def toolcall_to_normalized_json(text,start_tag,end_tag): #convert weird formats into standard tool call json
+def toolcall_to_normalized_json(text,start_tag,end_tag,required_match_txt): #convert weird formats into standard tool call json
+    global cached_chat_template
     text = text.strip()
     def parse_qwen35(text: str) -> str:
         fn_match = re.search(r"<function=(.*?)>", text)
@@ -4150,9 +4195,63 @@ def toolcall_to_normalized_json(text,start_tag,end_tag): #convert weird formats 
             return text
         return json.dumps({"name": fn_name, "arguments": args})
 
+    def parse_lfm25(text: str) -> str:
+        text = text.replace('<|tool_call_start|>', '')
+        text = text.replace('<|tool_call_end|>', '')
+        text = text.strip()
+        try:
+            import ast
+            node = ast.parse(text, mode="eval").body
+            calls = node.elts if isinstance(node, ast.List) else [node]
+            results = []
+            for call in calls:
+                if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Name):
+                    return text
+                args = {
+                    kw.arg: ast.literal_eval(kw.value)
+                    for kw in call.keywords
+                    if kw.arg is not None
+                }
+                results.append({"name": call.func.id, "arguments": args})
+            return json.dumps(results if len(results) > 1 else results[0])
+        except Exception:
+            return text
+
+    def parse_cohere2moe(text: str) -> str:
+        text = text.strip()
+        try:
+            calls = json.loads(text)
+        except Exception:
+            return text
+        if isinstance(calls, dict):
+            calls = [calls]
+        if not isinstance(calls, list):
+            return text
+        results = []
+        for call in calls:
+            if not isinstance(call, dict):
+                continue
+            fn_name = call.get("tool_name") or call.get("name")
+            args = call.get("parameters", call.get("arguments", {}))
+            if not fn_name:
+                continue
+            results.append({"name": fn_name,"arguments": args if isinstance(args, dict) else {}})
+        if not results:
+            return text
+        return json.dumps(results) if len(results) > 1 else json.dumps(results[0])
+
     # gemma4 takes precedence, since it can contain valid json fragments
     if end_tag=="<tool_call|>":
         return parse_gemma4(text)
+
+    if start_tag=="<|tool_call_start|>" and end_tag=="<|tool_call_end|>" and cached_chat_template and (required_match_txt is None or required_match_txt in cached_chat_template):
+        return parse_lfm25(text)
+
+    if start_tag=="<|START_ACTION|>" and end_tag=="<|END_ACTION|>" and cached_chat_template and (required_match_txt is None or required_match_txt in cached_chat_template):
+        return parse_cohere2moe(text)
+
+    if start_tag=="<tool_calls>" and end_tag=="</tool_calls>" and cached_chat_template and (required_match_txt is None or required_match_txt in cached_chat_template):
+        return extract_json_from_string(text, True) #apriel is json
 
     #if we are already valid JSON, return
     check_ok = extract_json_from_string(text, True)
@@ -4179,6 +4278,47 @@ def toolcall_to_normalized_json(text,start_tag,end_tag): #convert weird formats 
 
     return text #fallback
 
+def native_parse_toolcall_tags(text: str, genparams: dict) -> list:
+    global cached_chat_template, cached_jinja_kwargs
+    if not text or not genparams.get('using_openai_tools', False):
+        return []
+    tools = genparams.get('tools', [])
+    if not tools:
+        return []
+    try:
+        kwargs = dict(cached_jinja_kwargs or {})
+        user_kwargs = genparams.get("chat_template_kwargs")
+        if isinstance(user_kwargs, dict):
+            kwargs.update(user_kwargs)
+        if "reasoning_effort" in genparams and genparams["reasoning_effort"] is not None:
+            kwargs["reasoning_effort"] = genparams["reasoning_effort"]
+
+        tool_choice = genparams.get("tool_choice", "auto")
+        if isinstance(tool_choice, dict):
+            tool_choice = "required"
+        elif tool_choice is None:
+            tool_choice = "auto"
+        else:
+            tool_choice = str(tool_choice)
+
+        raw = handle.parse_chat_tool_calls(
+            text.encode("UTF-8"),
+            json.dumps(tools).encode("UTF-8"),
+            (cached_chat_template or "").encode("UTF-8"),
+            json.dumps(kwargs).encode("UTF-8"),
+            tool_choice.encode("UTF-8"),
+            True,
+            False)
+        if not raw:
+            return []
+        parsed = json.loads(ctypes.string_at(raw).decode("UTF-8", "ignore"))
+        if not isinstance(parsed, list):
+            return []
+        parsed = [normalize_tool_call_resp(obj) for obj in parsed if isinstance(obj, dict)]
+        return coerce_tool_argtypes(parsed, tools)
+    except Exception:
+        return []
+
 def repack_toolcall_tags(text: str, original_tools:list):
     global thinkformats, tool_call_pairs
     tool_calls = []
@@ -4189,7 +4329,9 @@ def repack_toolcall_tags(text: str, original_tools:list):
         text = re.sub(pattern, '', text, flags=re.DOTALL)
     text = text.strip()
     found = False
-    for start, end, streamhandled in tool_call_pairs:
+    for start, end, required_match_txt, streamhandled in tool_call_pairs:
+        if required_match_txt and cached_chat_template and required_match_txt not in cached_chat_template:
+            continue
         pattern=""
         if end:
             pattern = re.escape(start) + r"(.*?)" + re.escape(end)
@@ -4199,7 +4341,7 @@ def repack_toolcall_tags(text: str, original_tools:list):
         if matches:
             found = True
             for match in matches:
-                normalizedtc = toolcall_to_normalized_json(match.strip(),start,end)
+                normalizedtc = toolcall_to_normalized_json(match.strip(),start,end,required_match_txt)
                 sub_tool_calls = extract_json_from_string(normalizedtc)
                 tool_calls.extend(sub_tool_calls)
             break
@@ -4219,8 +4361,14 @@ def format_jinja(messages_orig, tools, chat_template_kwargs=None):
             print(f"Warning: Jinja template raised an exception: {msg}")
             return ""
         global cached_chat_template
+        from jinja2.ext import Extension, loopcontrols
+        class IgnoreGenerationTags(Extension):
+            tags = {"generation"}
+            def parse(self, parser):
+                parser.stream.skip(1)
+                return parser.parse_statements( ("name:endgeneration",), drop_needle=True)
         from jinja2.sandbox import ImmutableSandboxedEnvironment
-        jinja_env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True)
+        jinja_env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True,  extensions=[IgnoreGenerationTags,loopcontrols])
         # sanitize messages to remove none types
         messages = json.loads(json.dumps(messages_orig))
         for m in messages:
@@ -4232,22 +4380,17 @@ def format_jinja(messages_orig, tools, chat_template_kwargs=None):
             if isinstance(m.get("content"), list):
                 normalized = []
                 turn_text = ""
-                media_text = ""
                 for item in m["content"]:
                     if item.get("type")=="text":
                         turn_text += item.get("text","")
-                for item in m["content"]:
-                    if item.get("type")=="text":
-                        pass
                     elif item.get("type")=="image_url" or item.get("type")=="image":
-                        media_text += f"\n(Attached Image {mediacount})\n"
+                        turn_text += f"\n(Attached Image {mediacount})\n"
                         mediacount += 1
                     elif item.get("type")=="input_audio":
-                        media_text += f"\n(Attached Audio {mediacount})\n"
+                        turn_text += f"\n(Attached Audio {mediacount})\n"
                         mediacount += 1
                     else:
                         normalized.append(item)
-                turn_text = media_text + turn_text
                 if turn_text:
                     normalized.append({"type": "text","text": turn_text})
                 m["content"] = normalized
@@ -4341,6 +4484,29 @@ def normalize_tool_call_resp(obj): # Normalize various tool call formats to Open
             }
 
     return obj
+
+def convert_tool_calls_to_ollama(tool_calls):
+    ollama_tool_calls = []
+    for idx, tool_call in enumerate(tool_calls or []):
+        try:
+            func = tool_call.get("function", {})
+            args = func.get("arguments", {})
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except Exception:
+                    args = {}
+            ollama_tool_calls.append({
+                "type": "function",
+                "function": {
+                    "index": idx,
+                    "name": func.get("name", ""),
+                    "arguments": args
+                }
+            })
+        except Exception:
+            pass
+    return ollama_tool_calls
 
 # Used to parse json for openai tool calls
 def extract_json_from_string(input_string, check_strict=False):
@@ -7074,7 +7240,7 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
         is_chat_completions_path = (clean_path.endswith('/v1/chat/completions') or clean_path=='/chat/completions')
 
         #any requests to the following endpoints is capable of waking the server
-        wake_requests = ["/api/extra/generate/stream","/api/extra/tokencount","/api/v1/generate","/sdapi/v1/interrogate","/v1/completions","/v1/chat/completions","/v1/responses","/completions","/chat/completions","/responses","/api/extra/transcribe","/v1/audio/transcriptions","/api/extra/tts","/v1/audio/speech","/api/extra/embeddings","/v1/embeddings","/api/extra/music/prepare","/api/extra/music/generate","/sdapi/v1/txt2img","/sdapi/v1/img2img","/sdapi/v1/upscale"]
+        wake_requests = ["/api/extra/generate/stream","/api/extra/tokencount","/api/v1/generate","/sdapi/v1/interrogate","/v1/completions","/v1/chat/completions","/v1/responses","/completions","/chat/completions","/responses","/api/extra/transcribe","/v1/audio/transcriptions","/api/extra/tts","/v1/audio/speech","/api/extra/embeddings","/v1/embeddings","/api/embed","/api/extra/music/prepare","/api/extra/music/generate","/sdapi/v1/txt2img","/sdapi/v1/img2img","/sdapi/v1/upscale"]
         is_wake_request = clean_path in wake_requests
 
         autoswapEnabled = global_memory["autoswapmode"] is not None and global_memory["autoswapmode"]
@@ -7127,7 +7293,7 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                     textReqs = ["/api/extra/generate/stream","/api/extra/tokencount","/api/v1/generate","/sdapi/v1/interrogate","/v1/completions","/v1/chat/completions","/v1/responses","/completions","/chat/completions","/responses"]
                     sttReqs = ["/api/extra/transcribe","/v1/audio/transcriptions"]
                     ttsReqs = ["/api/extra/tts", "/v1/audio/speech"]
-                    embedReqs = ["/api/extra/embeddings", "/v1/embeddings", "/api/extra/fs/semantic_search", "/api/extra/fs/search_all_documents"]
+                    embedReqs = ["/api/extra/embeddings", "/v1/embeddings", "/api/embed", "/api/extra/fs/semantic_search", "/api/extra/fs/search_all_documents"]
                     musicReqs = ["/api/extra/music/prepare","/api/extra/music/generate"]
                     imageReqs = ["/sdapi/v1/txt2img", "/sdapi/v1/img2img", "/sdapi/v1/upscale"] # "/sdapi/v1/sd-models", "/sdapi/v1/options", "/sdapi/v1/samplers"
 
@@ -7911,13 +8077,35 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         utfprint("\nOutput: " + recvtxt,1)
 
+        #handle potential think tags, but only chat completions will return them. the others just drop them
+        reasoningtxt = ""
+        if api_format==4 or api_format==8 or api_format==9: #chat completions, responses and anthropic messages, but only chat has reasoning returned
+            if recvtxt:
+                for pair in thinkformats:
+                    starter = pair['start']
+                    ender = pair['end']
+                    start_idx = recvtxt.find(starter)
+                    end_idx = recvtxt.find(ender, start_idx + len(starter))
+                    if start_idx != -1 and end_idx != -1 and start_idx < end_idx:
+                        reasoningtxt = recvtxt[start_idx + len(starter):end_idx]
+                        recvtxt = recvtxt[:start_idx] + recvtxt[end_idx + len(ender):]
+                        break
+                    elif starter not in recvtxt and ender in recvtxt:
+                        parts = recvtxt.split(ender, 1)
+                        reasoningtxt = parts[0]
+                        recvtxt = parts[1]
+                        break
+
         #tool calls resolution
         tool_calls = []
-        if api_format == 4 or api_format == 2 or api_format == 8 or api_format == 9:
+        if api_format == 4 or api_format == 2 or api_format == 7 or api_format == 8 or api_format == 9:
             using_openai_tools = genparams.get('using_openai_tools', False)
             if using_openai_tools:
-                # first, check and potentially segment multiple tags for multi-tool calls
-                tool_calls = repack_toolcall_tags(recvtxt,genparams.get('tools', []))
+                # first, let llama.cpp's chat parser handle known template-specific tool formats
+                tool_calls = native_parse_toolcall_tags(recvtxt, genparams)
+                # fallback: check and potentially segment multiple tags for multi-tool calls
+                if not tool_calls:
+                    tool_calls = repack_toolcall_tags(recvtxt,genparams.get('tools', []))
                 if tool_calls and len(tool_calls)>0:
                     flat = []
                     for obj in tool_calls:
@@ -7938,25 +8126,6 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         modelNameToReturn = friendlymodelname
         if autoswapmode and textName is not None:
             modelNameToReturn = textName
-
-        #handle potential think tags, but only chat completions will return them. the others just drop them
-        reasoningtxt = ""
-        if api_format==4 or api_format==8 or api_format==9: #chat completions, responses and anthropic messages, but only chat has reasoning returned
-            if recvtxt:
-                for pair in thinkformats:
-                    starter = pair['start']
-                    ender = pair['end']
-                    start_idx = recvtxt.find(starter)
-                    end_idx = recvtxt.find(ender, start_idx + len(starter))
-                    if start_idx != -1 and end_idx != -1 and start_idx < end_idx:
-                        reasoningtxt = recvtxt[start_idx + len(starter):end_idx]
-                        recvtxt = recvtxt[:start_idx] + recvtxt[end_idx + len(ender):]
-                        break
-                    elif starter not in recvtxt and ender in recvtxt:
-                        parts = recvtxt.split(ender, 1)
-                        reasoningtxt = parts[0]
-                        recvtxt = parts[1]
-                        break
         if api_format == 1:
             res = {"data": {"seqs": [recvtxt]}}
         elif api_format == 3:
@@ -7979,7 +8148,11 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             tokarr = tokenize_ids(oldprompt+recvtxt,False)
             res = {"model": modelNameToReturn,"created_at": str(datetime.now(timezone.utc).isoformat()),"response":recvtxt,"done": True,"done_reason":currfinishreason,"context": tokarr,"total_duration": 1,"load_duration": 1,"prompt_eval_count": prompttokens,"prompt_eval_duration": 1,"eval_count": comptokens,"eval_duration": 1}
         elif api_format == 7:
-            res = {"model": modelNameToReturn,"created_at": str(datetime.now(timezone.utc).isoformat()),"message":{"role":"assistant","content":recvtxt},"done": True,"done_reason":currfinishreason,"total_duration": 1,"load_duration": 1,"prompt_eval_count": prompttokens,"prompt_eval_duration": 1,"eval_count": comptokens,"eval_duration": 1}
+            ccmsg = {"role":"assistant","content":recvtxt or ""}
+            ollama_tool_calls = convert_tool_calls_to_ollama(tool_calls)
+            if ollama_tool_calls:
+                ccmsg["tool_calls"] = ollama_tool_calls
+            res = {"model": modelNameToReturn,"created_at": str(datetime.now(timezone.utc).isoformat()),"message":ccmsg,"done": True,"done_reason":currfinishreason,"total_duration": 1,"load_duration": 1,"prompt_eval_count": prompttokens,"prompt_eval_duration": 1,"eval_count": comptokens,"eval_duration": 1}
         elif api_format == 8: #oai-responses
             resp_id = f"resp-A{genparams.get('oai_uniqueid', 1)}"
             output_item_id = f"msg_0{genparams.get('oai_uniqueid', 1)}"
@@ -8100,6 +8273,10 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         )
         return rendered
     
+    async def send_ollama_stream_event(self, data):
+        self.wfile.write(f'{data}\n'.encode())
+        self.wfile.flush()
+
     async def handle_sse_stream(self, genparams, api_format):
         global friendlymodelname, currfinishreason, thinkformats, tool_call_pairs, cached_chat_template
         global autoswapmode, textName, sttName, ttsName, embedName, musicName, imageName, mmprojName
@@ -8122,12 +8299,15 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         self.send_header("X-Accel-Buffering", "no")
         self.send_header("cache-control", "no-cache")
         self.send_header("connection", "keep-alive")
-        self.end_headers(content_type='text/event-stream')
+        stream_content_type = 'application/x-ndjson' if api_format == 6 or api_format == 7 else 'text/event-stream'
+        self.end_headers(content_type=stream_content_type)
 
         # if tools, do not send anything else - OAI tool calls will be handled with fakestreaming!
         # only exception is if we know the exact toolcall tag to segment!
         tool_segment_tag = ""
-        for start, end, streamhandled in tool_call_pairs:
+        for start, end, required_match_txt, streamhandled in tool_call_pairs:
+            if required_match_txt and cached_chat_template and required_match_txt not in cached_chat_template:
+                continue
             if streamhandled and cached_chat_template and start in cached_chat_template:
                 tool_segment_tag = start
                 break
@@ -8147,7 +8327,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                 if args.developerMode and args.debugmode >= 1:
                     print(f"[TC] Dynamically extracted tool_segment_tag from rendered output: {tool_segment_tag!r}")
         jinjatools = (args.jinja and args.jinja_tools)
-        if (api_format == 4 or api_format == 9) and using_openai_tools:
+        if (api_format == 4 or api_format == 7 or api_format == 9) and using_openai_tools:
             if not jinjatools or not tool_segment_tag:
                 genparams['sync_toolcall_stream_ineligible'] = True
                 return
@@ -8258,9 +8438,22 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                 # Set boolean flag to trigger final message with just finish reason and no content, since some clients require a final message to know the finish reason
                                 break
                             else:
+                                if (api_format == 4 or api_format == 7 or api_format == 9) and using_openai_tools and tool_segment_tag and not streamDone and not genparams.get("sync_toolcall_potential_triggered", False) and tool_segment_tag not in tokenStr:
+                                tail = ""
+                                for n in range(1, len(tool_segment_tag)):
+                                    prefix = tool_segment_tag[:n]
+                                    if tokenStr.endswith(prefix) and len(prefix) > len(tail):
+                                        tail = prefix
+                                if tail:
+                                    tokenReserve += tail
+                                    tokenStr = tokenStr[:-len(tail)]
+                                    if tokenStr == "":
+                                        await asyncio.sleep(async_sleep_short)
+                                        continue
+
                                 # Tool boundary detection for tool-capable chat completions.
                                 # if triggered, stop real streaming, and let the buffered fakestreaming take over
-                                if (api_format == 4 or api_format == 9) and using_openai_tools:
+                                if (api_format == 4 or api_format == 7 or api_format == 9) and using_openai_tools:
                                     tokenStr = tokenReserve + tokenStr
                                     tokenReserve = ""
                                     # FIND ME
@@ -8442,6 +8635,16 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                 elif api_format == 3:  # non chat completions
                                     event_str = json.dumps({"id":cmpl_id,"object":"text_completion","created":int(time.time()),"model":modelNameToReturn,"choices":[{"index":0,"finish_reason":None,"text":tokenStr}]})
                                     await self.send_oai_sse_event(event_str)
+                                elif api_format == 6 or api_format == 7:
+                                    created_at = str(datetime.now(timezone.utc).isoformat())
+                                    ollama_content = ""
+                                    if api_format == 6:
+                                        event_str = json.dumps({"model":modelNameToReturn,"created_at":created_at,"response":tokenStr,"done":False})
+                                    else:
+                                        ollama_content = delta.get("content", tokenStr) if delta else tokenStr
+                                        event_str = json.dumps({"model":modelNameToReturn,"created_at":created_at,"message":{"role":"assistant","content":ollama_content},"done":False})
+                                    if api_format == 6 or ollama_content:
+                                        await self.send_ollama_stream_event(event_str)
                                 elif api_format == 9:
                                     if anthropic_first_loop:
                                         await self.send_anthropic_sse_event("message_start", json.dumps({"type":"message_start","message":{"type":"message","id":f"msg_A{req_id_suffix}","role":"assistant","model":modelNameToReturn,"usage":{"input_tokens":prompttokens,"output_tokens":0}}}))
@@ -8485,6 +8688,28 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                     await self.send_oai_sse_event(addonstr)
                                 event_str = json.dumps({"id":cmpl_id,"object":"text_completion","created":int(time.time()),"model":modelNameToReturn,"choices":[{"index":0,"finish_reason":currfinishreason,"text":tokenStr}]})
                                 await self.send_oai_sse_event(event_str)
+                            elif api_format == 6 or api_format == 7: # Ollama newline-delimited JSON streaming
+                                created_at = str(datetime.now(timezone.utc).isoformat())
+                                ollama_content = delta.get("content", tokenStr) if api_format == 7 and delta else tokenStr
+                                if tokenStr and (api_format == 6 or ollama_content):
+                                    if api_format == 6:
+                                        event_str = json.dumps({"model":modelNameToReturn,"created_at":created_at,"response":tokenStr,"done":False})
+                                    else:
+                                        event_str = json.dumps({"model":modelNameToReturn,"created_at":created_at,"message":{"role":"assistant","content":ollama_content},"done":False})
+                                    await self.send_ollama_stream_event(event_str)
+                                if streamDone:
+                                    prompttokens = batch_final_result.prompt_tokens if using_batch_stream else handle.get_last_input_count()
+                                    completion_tokens = current_token
+                                    final_chunk = {"model":modelNameToReturn,"created_at":created_at,"done":True,"done_reason":currfinishreason,"total_duration":1,"load_duration":1,"prompt_eval_count":prompttokens,"prompt_eval_duration":1,"eval_count":completion_tokens,"eval_duration":1}
+                                    if api_format == 6:
+                                        finalraw = handle.batch_generate_pending_output(batch_request_id) if using_batch_stream else handle.get_pending_output()
+                                        finaltxt = finalraw.decode("UTF-8", "ignore")
+                                        oldprompt = genparams.get('ollamabodyprompt', "")
+                                        final_chunk["response"] = ""
+                                        final_chunk["context"] = tokenize_ids(oldprompt+finaltxt,False)
+                                    else:
+                                        final_chunk["message"] = {"role":"assistant","content":""}
+                                    await self.send_ollama_stream_event(json.dumps(final_chunk))
                             elif api_format == 8: #oai-responses
                                 resp_id = f"resp-A{genparams.get('oai_uniqueid', 1)}"
                                 item_id = f"msg_0{genparams.get('oai_uniqueid', 1)}"
@@ -8937,6 +9162,13 @@ Change Mode<br>
             return None
 
         clean_path = clean_path.rstrip('/')
+        if clean_path=="/mcp":
+            self.send_response(405)
+            self.send_header('allow', 'POST')
+            self.send_header('content-length', '0')
+            self.end_headers(content_type='application/json')
+            return
+
         response_body = None
         response_code = 200
         content_type = 'application/json'
@@ -9348,11 +9580,11 @@ Change Mode<br>
             if autoswapmode and textName is not None:
                 modelNameToReturn = textName
 
-            mlist = [{"id":modelNameToReturn,"object":"model","created":int(time.time()),"owned_by":"koboldcpp","permission":[],"root":"koboldcpp"}]
+            mlist = [{"id":modelNameToReturn,"object":"model","created":int(time.time()),"owned_by":"koboldcpp","status":{"value":"loaded"},"permission":[],"root":"koboldcpp"}]
             if args.routermode:
                 alist = get_current_admindir_list()
                 for itm in alist:
-                    mlist.append({"id":itm,"object":"model","created":int(time.time()),"owned_by":"koboldcpp","permission":[],"root":"koboldcpp"})
+                    mlist.append({"id":itm,"object":"model","created":int(time.time()),"owned_by":"koboldcpp","status":{"value":"loaded"},"permission":[],"root":"koboldcpp"})
             response_body = (json.dumps({"object":"list","data":mlist}).encode())
 
         elif clean_path.endswith('/sdapi/v1/loras'):
@@ -9422,7 +9654,7 @@ Change Mode<br>
             modelNameToReturn = friendlymodelname
             if autoswapmode and textName is not None:
                 modelNameToReturn = textName
-            response_body = (json.dumps({"models":[{"name":"koboldcpp","model":f"{modelNameToReturn}:latest","modified_at":"2024-07-19T15:26:55.6122841+08:00","expires_at": "2055-06-04T19:06:25.5433636+08:00","size":394998579,"size_vram":394998579,"digest":"b5dc5e784f2a3ee1582373093acf69a2f4e2ac1710b253a001712b86a61f88bb","details":{"parent_model":"","format":"gguf","family":"koboldcpp","families":["koboldcpp"],"parameter_size":"128M","quantization_level":"Q4_0"}},{"name":"koboldcpp","model":modelNameToReturn,"modified_at":"2025-01-01T01:00:00.0000000+00:00","expires_at": "2069-01-01T01:00:00.0000000+00:00","size":394998579,"size_vram":394998579,"digest":"b5dc5e784f2a3ee1582373093acf69a2f4e2ac1710b253a001712b86a61f88bb","details":{"parent_model":"","format":"gguf","family":"koboldcpp","families":["koboldcpp"],"parameter_size":"128M","quantization_level":"Q4_0"}}]}).encode())
+            response_body = (json.dumps({"models":[{"name":f"{modelNameToReturn}","model":f"{modelNameToReturn}:latest","modified_at":"2024-07-19T15:26:55.6122841+08:00","expires_at": "2055-06-04T19:06:25.5433636+08:00","size":394998579,"size_vram":394998579,"digest":"b5dc5e784f2a3ee1582373093acf69a2f4e2ac1710b253a001712b86a61f88bb","details":{"parent_model":"","format":"gguf","family":"koboldcpp","families":["koboldcpp"],"parameter_size":"128M","quantization_level":"Q4_0"}},{"name":modelNameToReturn,"model":modelNameToReturn,"modified_at":"2025-01-01T01:00:00.0000000+00:00","expires_at": "2069-01-01T01:00:00.0000000+00:00","size":394998579,"size_vram":394998579,"digest":"b5dc5e784f2a3ee1582373093acf69a2f4e2ac1710b253a001712b86a61f88bb","details":{"parent_model":"","format":"gguf","family":"koboldcpp","families":["koboldcpp"],"parameter_size":"128M","quantization_level":"Q4_0"}}]}).encode())
         elif clean_path.endswith('/api/version'): #ollama compatible, NOT the kcpp version
             response_body = (json.dumps({"version":"0.7.0"}).encode())
         elif clean_path=='/ping':
@@ -9489,7 +9721,7 @@ Change Mode<br>
             mmprojOverride = False
             if autoswapmode and mmprojName is not None:
                 mmprojOverride = True
-            response_body = (json.dumps({
+            props_obj = {
                 "chat_template": cached_chat_template,
                 "id": 0,
 		        "id_task": -1,
@@ -9503,7 +9735,10 @@ Change Mode<br>
                 "default_generation_settings": {
                     "n_ctx": maxctx,
                 },
-            }).encode())
+            }
+            if args.routermode:
+                props_obj["role"] = "router"
+            response_body = (json.dumps(props_obj).encode())
 
         elif clean_path=="/slots":
             self.send_response(501)
@@ -10521,13 +10756,18 @@ Change Mode<br>
                 return
             try:
                 tempbody = json.loads(body)
+                request_id = tempbody.get("id", None)
                 method = tempbody.get("method","")
-                if method == "initialize":
+                if request_id is None: # notifications do not get a JSON-RPC response
+                    response_code = 202
+                    response_body = b''
+                elif method == "initialize":
+                    requested_version = tempbody.get("params", {}).get("protocolVersion", "2024-11-05")
                     reply = {
                         "jsonrpc": "2.0",
-                        "id": random.randint(100000, 999999),
+                        "id": request_id,
                         "result": {
-                            "protocolVersion": "2024-11-05",
+                            "protocolVersion": requested_version if requested_version else "2024-11-05",
                             "capabilities": {"tools": {"listChanged": False}},
                             "serverInfo": {"name": "mcp-koboldcpp", "version": "1.0.0"},
                         },
@@ -10536,7 +10776,7 @@ Change Mode<br>
                 elif method == "tools/list":
                     reply = {
                         "jsonrpc": "2.0",
-                        "id": random.randint(100000, 999999),
+                        "id": request_id,
                         "result": {"tools": []},
                     }
                     with mcp_lock:
@@ -10560,14 +10800,13 @@ Change Mode<br>
                                     response_body = (json.dumps(mcpresp).encode())
                                     break
                     if not foundtool:
-                        response_code = 400
-                        response_body = (json.dumps({"error": {"code": -32700, "message": "Tool not found"}}).encode())
-                else: #probably a notify, send empty response
-                    response_body = (json.dumps({}).encode())
+                        response_body = (json.dumps({"jsonrpc": "2.0", "id": request_id, "error": {"code": -32602, "message": "Tool not found"}}).encode())
+                else:
+                    response_body = (json.dumps({"jsonrpc": "2.0", "id": request_id, "error": {"code": -32601, "message": "Method not found"}}).encode())
             except Exception as e:
                 print(f"MCP Call Error: {e}")
                 response_code = 400
-                response_body = (json.dumps({"error": {"code": -32700, "message": "Parse error"}}).encode())
+                response_body = (json.dumps({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}}).encode())
 
         elif clean_path=="/api/extra/shutdown":
             # if args.singleinstance:
@@ -10645,6 +10884,7 @@ Change Mode<br>
             is_extract_text = False
             is_tts = False
             is_embeddings = False
+            is_ollama_embeddings = False
             is_music_codes = False
             is_music_audio = False
             response_body = None
@@ -10752,8 +10992,9 @@ Change Mode<br>
                 is_transcribe = True
             elif clean_path.endswith('/api/extra/tts') or clean_path.endswith('/v1/audio/speech') or clean_path=="/audio/speech" or clean_path.endswith('/tts_to_audio'):
                 is_tts = True
-            elif clean_path.endswith('/api/extra/embeddings') or clean_path.endswith('/v1/embeddings'):
+            elif clean_path.endswith('/api/extra/embeddings') or clean_path.endswith('/v1/embeddings') or clean_path=="/api/embed":
                 is_embeddings = True
+                is_ollama_embeddings = (clean_path=="/api/embed")
             elif clean_path.endswith('/api/extra/music/prepare'):
                 is_music_codes = True
             elif clean_path.endswith('/api/extra/music/generate'):
@@ -10852,6 +11093,8 @@ Change Mode<br>
                     # Check if streaming chat completions, if so, set stream mode to true
                     if (api_format == 4 or api_format == 3 or api_format == 8 or api_format == 9) and "stream" in genparams and genparams["stream"]:
                         sse_stream_flag = True
+                    if (api_format == 6 or api_format == 7) and genparams.get('stream', True):
+                        sse_stream_flag = True
                     if continuous_batching_python_eligible(genparams, api_format):
                         genparams['_batch_expected'] = True
                         modelbusy.release()
@@ -10866,41 +11109,13 @@ Change Mode<br>
                         if autoswapmode and textName is not None:
                             modelNameToReturn = textName
                         # Headers are already sent when streaming
-                        if (api_format == 6 or api_format == 7) and genparams.get('stream', True):
-                            #ollama fake streaming
-                            self.send_response(200)
-                            self.send_header("X-Accel-Buffering", "no")
-                            self.send_header("cache-control", "no-cache")
-                            self.send_header("connection", "keep-alive")
-                            self.end_headers(content_type='text/event-stream')
-                            if api_format == 6:
-                                bodytxt = gendat.get("response","") # extract and erase the AI response from the sync payload.
-                                gendat["response"] = ""
-                                pl = {"model":modelNameToReturn,"created_at":str(datetime.now(timezone.utc).isoformat()),"response":bodytxt,"done":False}
-                                self.wfile.write(f'{json.dumps(pl)}\n'.encode())
-                                self.wfile.flush()
-                                time.sleep(0.05) #short delay
-                                self.wfile.write(f'{json.dumps(gendat)}\n'.encode()) # note: gendat already contains done=true and empty response
-                                self.wfile.flush()
-                                time.sleep(0.05) #short delay
-                            else:
-                                bodytxt = gendat.get("message",{}).get("content","") # extract and erase the AI response from the sync payload.
-                                gendat["message"] = {"role":"assistant","content":""}
-                                pl = {"model":modelNameToReturn,"created_at":str(datetime.now(timezone.utc).isoformat()),"message":{"role":"assistant","content":bodytxt},"done":False}
-                                self.wfile.write(f'{json.dumps(pl)}\n'.encode())
-                                self.wfile.flush()
-                                time.sleep(0.05) #short delay
-                                self.wfile.write(f'{json.dumps(gendat)}\n'.encode()) # note: gendat already contains done=true and empty response
-                                self.wfile.flush()
-                                time.sleep(0.05) #short delay
-                            self.close_connection = True
-                        elif not sse_stream_flag:
+                        if not sse_stream_flag:
                             self.send_response(200)
                             genresp = (json.dumps(gendat).encode())
                             self.send_header('content-length', str(len(genresp)))
                             self.end_headers(content_type='application/json')
                             self.wfile.write(genresp)
-                        elif (api_format == 4 or api_format == 9) and genparams.get('using_openai_tools', False): #special case, fake streaming for openai tool calls
+                        elif (api_format == 4 or api_format == 7 or api_format == 9) and genparams.get('using_openai_tools', False): #special case, fake streaming for tool calls
                             if genparams.get('tc_true_streamed', False):
                                 # True streaming already sent all chunks (meta, args, finish_reason, [DONE]) in handle_sse_stream
                                 self.close_connection = True
@@ -10914,7 +11129,9 @@ Change Mode<br>
                                         toolsdata_res = gendat['choices'][0]['message']['tool_calls']
                                         if toolsdata_res and len(toolsdata_res)>0:
                                             toolsdata_res[0]["index"] = 0 # need to add an index for OWUI
-                                    elif api_format == 9:
+                                    elif api_format == 7:
+                                        toolsdata_res = gendat.get("message", {}).get("tool_calls", [])
+                                elif api_format == 9:
                                         # gendat["content"] is a list of Anthropic content blocks; pull out the tool_use ones and reformat to OAI shape for the shared emission code
                                         for block in gendat.get("content", []):
                                             if block.get("type") == "tool_use":
@@ -10929,7 +11146,23 @@ Change Mode<br>
                                 except Exception:
                                     toolsdata_res = []
 
-                            if api_format == 9: # Anthropic fake-stream for tool calls
+                            if api_format == 7: # Ollama fake-stream for tool calls
+                                created_at = str(datetime.now(timezone.utc).isoformat())
+                                if not content_text and genparams.get('sync_toolcall_stream_ineligible', False):
+                                    content_text = gendat.get("message", {}).get("content", "")
+                                if content_text or toolsdata_res:
+                                    chunk_msg = {"role":"assistant","content":"" if toolsdata_res else (content_text or "")}
+                                    if toolsdata_res:
+                                        chunk_msg["tool_calls"] = toolsdata_res
+                                    chunk = {"model":modelNameToReturn,"created_at":created_at,"message":chunk_msg,"done":False}
+                                    self.wfile.write(f'{json.dumps(chunk)}\n'.encode())
+                                    self.wfile.flush()
+                                final_msg = {"role":"assistant","content":""}
+                                final_chunk = {"model":modelNameToReturn,"created_at":created_at,"message":final_msg,"done":True,"done_reason":gendat.get("done_reason", currfinishreason),"total_duration":gendat.get("total_duration", 1),"load_duration":gendat.get("load_duration", 1),"prompt_eval_count":gendat.get("prompt_eval_count", handle.get_last_input_count()),"prompt_eval_duration":gendat.get("prompt_eval_duration", 1),"eval_count":gendat.get("eval_count", handle.get_last_token_count()),"eval_duration":gendat.get("eval_duration", 1)}
+                                self.wfile.write(f'{json.dumps(final_chunk)}\n'.encode())
+                                self.wfile.flush()
+
+                            elif api_format == 9: # Anthropic fake-stream for tool calls
                                 req_id_suffix = genparams.get('oai_uniqueid', 1)
                                 start_msg = {"type": "message", "id": f"msg_A{req_id_suffix}", "role": "assistant", "model": modelNameToReturn, "usage": {"input_tokens": 0, "output_tokens": 0}}
                                 self.wfile.write(f'event: message_start\ndata: {json.dumps({"type":"message_start","message":start_msg})}\n\n'.encode())
@@ -11210,14 +11443,15 @@ Change Mode<br>
                 elif is_tts:
                     try:
                         gendat = tts_generate(genparams)
-                        wav_data = b''
+                        audio_data = b''
                         if gendat:
-                            wav_data = base64.b64decode(gendat) # Decode the Base64 string into binary data
+                            audio_data = base64.b64decode(gendat) # Decode the Base64 string into binary data
+                        audio_ext, audio_content_type = get_audio_response_format(genparams, audio_data)
                         self.send_response(200)
-                        self.send_header('content-length', str(len(wav_data)))  # Set content length
-                        self.send_header('Content-Disposition', 'attachment; filename="output.wav"')
-                        self.end_headers(content_type='audio/wav')
-                        self.wfile.write(wav_data) # Write the binary WAV data to the response
+                        self.send_header('content-length', str(len(audio_data)))  # Set content length
+                        self.send_header('Content-Disposition', f'attachment; filename="output.{audio_ext}"')
+                        self.end_headers(content_type=audio_content_type)
+                        self.wfile.write(audio_data) # Write the binary audio data to the response
                     except Exception as ex:
                         utfprint(ex,1)
                         print("TTS: The response could not be sent, maybe connection was terminated?")
@@ -11229,17 +11463,20 @@ Change Mode<br>
                         if autoswapmode and embedName is not None:
                             modelNameToReturn = embedName
                         gendat = embeddings_generate(genparams)
-                        outdatas = []
-                        odidx = 0
-                        for od in gendat["data"]:
-                            if genparams.get("encoding_format", "")=="base64":
-                                binary_data = struct.pack('<' + 'f' * len(od), *od)
-                                b64_string = base64.b64encode(binary_data).decode('utf-8')
-                                outdatas.append({"object":"embedding","index":odidx,"embedding":b64_string})
-                            else:
-                                outdatas.append({"object":"embedding","index":odidx,"embedding":od})
-                            odidx += 1
-                        genresp = (json.dumps({"object":"list","data":outdatas,"model":modelNameToReturn,"usage":{"prompt_tokens":gendat["count"],"total_tokens":gendat["count"]}}).encode())
+                        if is_ollama_embeddings:
+                            genresp = (json.dumps({"model":modelNameToReturn,"embeddings":gendat["data"],"total_duration":1,"load_duration":1,"prompt_eval_count":gendat["count"]}).encode())
+                        else:
+                            outdatas = []
+                            odidx = 0
+                            for od in gendat["data"]:
+                                if genparams.get("encoding_format", "")=="base64":
+                                    binary_data = struct.pack('<' + 'f' * len(od), *od)
+                                    b64_string = base64.b64encode(binary_data).decode('utf-8')
+                                    outdatas.append({"object":"embedding","index":odidx,"embedding":b64_string})
+                                else:
+                                    outdatas.append({"object":"embedding","index":odidx,"embedding":od})
+                                odidx += 1
+                            genresp = (json.dumps({"object":"list","data":outdatas,"model":modelNameToReturn,"usage":{"prompt_tokens":gendat["count"],"total_tokens":gendat["count"]}}).encode())
                         self.send_response(200)
                         self.send_header('content-length', str(len(genresp)))
                         self.end_headers(content_type='application/json')
@@ -11267,14 +11504,15 @@ Change Mode<br>
                 elif is_music_audio:
                     try:
                         gendat = music_generate_audio(genparams)
-                        wav_data = b''
+                        audio_data = b''
                         if gendat:
-                            wav_data = base64.b64decode(gendat) # Decode the Base64 string into binary data
+                            audio_data = base64.b64decode(gendat) # Decode the Base64 string into binary data
+                        audio_ext, audio_content_type = get_audio_response_format(genparams, audio_data)
                         self.send_response(200)
-                        self.send_header('content-length', str(len(wav_data)))  # Set content length
-                        self.send_header('Content-Disposition', 'attachment; filename="output.wav"')
-                        self.end_headers(content_type='audio/wav')
-                        self.wfile.write(wav_data) # Write the binary WAV data to the response
+                        self.send_header('content-length', str(len(audio_data)))  # Set content length
+                        self.send_header('Content-Disposition', f'attachment; filename="output.{audio_ext}"')
+                        self.end_headers(content_type=audio_content_type)
+                        self.wfile.write(audio_data) # Write the binary audio data to the response
                     except Exception as ex:
                         utfprint(ex,1)
                         print("Music Gen Audio: The response could not be sent, maybe connection was terminated?")
@@ -11303,9 +11541,16 @@ Change Mode<br>
         self.end_headers(content_type='text/html')
 
     def end_headers(self, content_type=None):
-        self.send_header('access-control-allow-origin', '*')
+        origin = self.headers.get('Origin')
+        if origin:
+            self.send_header('access-control-allow-origin', origin)
+            self.send_header('access-control-allow-credentials', 'true')
+            self.send_header('vary', 'Origin')
+        else:
+            self.send_header('access-control-allow-origin', '*')
         self.send_header('access-control-allow-methods', '*')
         self.send_header('access-control-allow-headers', '*, Accept, Content-Type, Content-Length, Cache-Control, Accept-Encoding, X-CSRF-Token, Client-Agent, X-Fields, Content-Type, Authorization, X-Requested-With, X-HTTP-Method-Override, apikey, genkey')
+        self.send_header('access-control-allow-private-network', 'true')
         self.send_header("cache-control", "no-store")
         if content_type is not None:
             self.send_header('content-type', content_type)
@@ -11542,7 +11787,7 @@ def save_config_dict(filename, savdict, template):
         filenamestr += ".kcpps"
     if not filenamestr.endswith(".kcppt") and template:
         filenamestr += ".kcppt"
-    do_not_save = {'analyze', 'config', 'exportconfig', 'exporttemplate', 'testmemory', 'unpack', 'version'}
+    do_not_save = {'allow_config_onready', 'analyze', 'config', 'exportconfig', 'exporttemplate', 'testmemory', 'unpack', 'version'}
     filtered = {k: v for k, v in savdict.items() if k not in do_not_save}
     if 'gendefaults' in filtered:
         gendefaults = parse_json_object(filtered['gendefaults'], 'gendefaults')
@@ -12235,49 +12480,52 @@ def show_gui():
     # run in new thread so it doesnt block. does not return anything, instead overwrites specific values and redraws GUI
     def auto_set_backend_gui(manual_select=False):
         global exitcounter, runmode_untouched
-        if manual_select:
-            print("\nA .kcppt template was selected from GUI - automatically selecting your backend...")
-            runmode_untouched = True
-        fetch_gpu_properties(True,True)
-        found_new_backend = False
+        try:
+            if manual_select:
+                print("\nA .kcppt template was selected from GUI - automatically selecting your backend...")
+                runmode_untouched = True
+            fetch_gpu_properties(True,True)
+            found_new_backend = False
 
-        # check for avx2 and avx support
-        is_oldpc_ver = "Use CPU" not in runopts #on oldcpu ver, default lib does not exist
-        cpusupport = old_cpu_check() # 0 if has avx2, 1 if has avx, 2 if has nothing
-        eligible_cuda = (cpusupport<1 and not is_oldpc_ver) or (cpusupport<2 and is_oldpc_ver)
+            # check for avx2 and avx support
+            is_oldpc_ver = "Use CPU" not in runopts #on oldcpu ver, default lib does not exist
+            cpusupport = old_cpu_check() # 0 if has avx2, 1 if has avx, 2 if has nothing
+            eligible_cuda = (cpusupport<1 and not is_oldpc_ver) or (cpusupport<2 and is_oldpc_ver)
 
-        #autopick cublas if suitable, requires at least 3.5GB VRAM to auto pick
-        #we do not want to autoselect hip/cublas if the user has already changed their desired backend!
-        if eligible_cuda and exitcounter < 100 and MaxMemory[0]>3500000000 and runmode_untouched and (("Use CUDA" in runopts and CUDevicesNames[0]!="") or "Use hipBLAS (ROCm)" in runopts) and (any(CUDevicesNames)):
-            if "Use CUDA" in runopts:
-                runopts_var.set("Use CUDA")
-                gpu_choice_var.set("0")
-                print(f"Auto Selected CUDA Backend (flag={cpusupport})\n")
-                found_new_backend = True
-            elif "Use hipBLAS (ROCm)" in runopts:
-                runopts_var.set("Use hipBLAS (ROCm)")
-                gpu_choice_var.set("0")
-                print(f"Auto Selected HIP Backend (flag={cpusupport})\n")
-                found_new_backend = True
-        elif exitcounter < 100 and (1 in VKIsDGPU) and runmode_untouched and ("Use Vulkan" in runopts or "Use Vulkan (Old CPU)" in runopts):
-            for i in range(0,len(VKIsDGPU)):
-                if VKIsDGPU[i]==1:
-                    if cpusupport<1 and "Use Vulkan" in runopts:
-                        runopts_var.set("Use Vulkan")
-                    else:
-                        runopts_var.set("Use Vulkan (Old CPU)")
-                    gpu_choice_var.set(str(i))
-                    print(f"Auto Selected Vulkan Backend (flag={cpusupport})\n")
+            #autopick cublas if suitable, requires at least 3.5GB VRAM to auto pick
+            #we do not want to autoselect hip/cublas if the user has already changed their desired backend!
+            if eligible_cuda and exitcounter < 100 and MaxMemory[0]>3500000000 and runmode_untouched and (("Use CUDA" in runopts and CUDevicesNames[0]!="") or "Use hipBLAS (ROCm)" in runopts) and (any(CUDevicesNames)):
+                if "Use CUDA" in runopts:
+                    runopts_var.set("Use CUDA")
+                    gpu_choice_var.set("0")
+                    print(f"Auto Selected CUDA Backend (flag={cpusupport})\n")
                     found_new_backend = True
-                    break
-        else:
-            if runopts_var.get()=="Use CPU" and cpusupport==1 and "Use CPU (Old CPU)" in runopts:
-                runopts_var.set("Use CPU (Old CPU)")
-            elif runopts_var.get()=="Use CPU" and cpusupport==2 and "Failsafe Mode (Older CPU)" in runopts:
-                runopts_var.set("Failsafe Mode (Older CPU)")
-        if not found_new_backend:
-            print(f"Auto Selected Default Backend (flag={cpusupport})\n")
-        changed_gpu_choice_var()
+                elif "Use hipBLAS (ROCm)" in runopts:
+                    runopts_var.set("Use hipBLAS (ROCm)")
+                    gpu_choice_var.set("0")
+                    print(f"Auto Selected HIP Backend (flag={cpusupport})\n")
+                    found_new_backend = True
+            elif exitcounter < 100 and (1 in VKIsDGPU) and runmode_untouched and ("Use Vulkan" in runopts or "Use Vulkan (Old CPU)" in runopts):
+                for i in range(0,len(VKIsDGPU)):
+                    if VKIsDGPU[i]==1:
+                        if cpusupport<1 and "Use Vulkan" in runopts:
+                            runopts_var.set("Use Vulkan")
+                        else:
+                            runopts_var.set("Use Vulkan (Old CPU)")
+                        gpu_choice_var.set(str(i))
+                        print(f"Auto Selected Vulkan Backend (flag={cpusupport})\n")
+                        found_new_backend = True
+                        break
+            else:
+                if runopts_var.get()=="Use CPU" and cpusupport==1 and "Use CPU (Old CPU)" in runopts:
+                    runopts_var.set("Use CPU (Old CPU)")
+                elif runopts_var.get()=="Use CPU" and cpusupport==2 and "Failsafe Mode (Older CPU)" in runopts:
+                    runopts_var.set("Failsafe Mode (Older CPU)")
+            if not found_new_backend:
+                print(f"Auto Selected Default Backend (flag={cpusupport})\n")
+            changed_gpu_choice_var()
+        except Exception:
+            pass
 
     def on_picked_model_file(filepath):
         if filepath and (filepath.lower().endswith('.kcpps') or filepath.lower().endswith('.kcppt')):
@@ -12518,14 +12766,15 @@ def show_gui():
         "Remote Tunnel": [remotetunnel_var,  "Creates a trycloudflare tunnel.\nAllows you to access koboldcpp from other devices over an internet URL."],
         "Use FlashAttention": [flashattention_var, "Enable flash attention for GGUF models."],
         "Force AutoFit": [autofit_var, "Automatically attempt to fit the model in the best possible way. Overrides everything else.\nNot recommended for multi model setups. Experimental."],
-        "Quiet Mode": [quietmode, "Prevents all generation related terminal output from being displayed."]
+        "Quiet Mode": [quietmode, "Prevents all generation related terminal output from being displayed."],
+        "Use Jinja": [jinja_var, "Enables using jinja chat template formatting for chat completions endpoint. Other endpoints are unaffected."]
     }
 
     for idx, (name, properties) in enumerate(quick_boxes.items()):
         makecheckbox(quick_tab, name, properties[0], int(idx/2) + 20, idx % 2, tooltiptxt=properties[1])
 
     # context size
-    makeslider(quick_tab, "Context Size:", contextsize_text, context_var, 40, width=280, set=17, tooltip="What is the maximum context size to support. Model specific. You cannot exceed it.\nLarger contexts require more memory, and not all models support it.")
+    makeslider(quick_tab, "Context Size:", contextsize_text, context_var, 40, width=280, set=13, tooltip="What is the maximum context size to support. Model specific. You cannot exceed it.\nLarger contexts require more memory, and not all models support it.")
 
     # load model
     makefileentry(quick_tab, "GGUF Text Model:", "Select GGUF or GGML Model File", model_var, 50, 280, onchoosefile=on_picked_model_file,tooltiptxt="Select a GGUF or GGML model file on disk to be loaded.")
@@ -12602,7 +12851,7 @@ def show_gui():
     makelabelentry(context_tab, "CacheSlots:", smartcacheslots_var, row=5, padx=(300), singleline=True, tooltip="Number of slots for smartcache",labelpadx=(220))
 
     # context size
-    makeslider(context_tab, "Context Size:",contextsize_text, context_var, 18, width=280, set=17,tooltip="What is the maximum context size to support. Model specific. You cannot exceed it.\nLarger contexts require more memory, and not all models support it.")
+    makeslider(context_tab, "Context Size:",contextsize_text, context_var, 18, width=280, set=13,tooltip="What is the maximum context size to support. Model specific. You cannot exceed it.\nLarger contexts require more memory, and not all models support it.")
     context_var.trace_add("write", changed_gpulayers_estimate)
     makelabelentry(context_tab, "Default Gen Amt:", defaultgenamt_var, row=20, padx=(120), singleline=True, tooltip="How many tokens to generate by default, if not specified. Must be smaller than context size. Usually, your frontend GUI will override this.")
     makelabelentry(context_tab, "Prompt Limit:", genlimit_var, row=20, padx=(300), singleline=True, tooltip="If set, restricts max output tokens to this limit regardless of API request. Set to 0 to disable.",labelpadx=(210))
@@ -12962,7 +13211,7 @@ def show_gui():
     makecheckbox(admin_tab, "Enable Model Administration", admin_var, 1, 0, command=toggleadmin,tooltiptxt="Enable a admin server, allowing you to remotely relaunch and swap models and configs.")
     makelabelentry(admin_tab, "Admin Password:" , admin_password_var, 3, 150,padx=(120),singleline=True,tooltip="Require a password to access admin functions. You are strongly advised to use one for publically accessible instances!")
     makefileentry(admin_tab, "Config Directory (Required):", "Select directory containing .gguf or .kcpps files to relaunch from", admin_dir_var, 5, width=280, dialog_type=2, tooltiptxt="Specify a directory to look for .kcpps configs in, which can be used to swap models.")
-    makefileentry(admin_tab, "Base config .kcpps (For reloading):", "", baseconfig_var, 7, width=280, dialog_type=0, tooltiptxt="Specify a base .kcpps config to apply, if no custom base config is selected during a model swap.")
+    makefileentry(admin_tab, "Base config .kcpps (Optional, for reloading):", "", baseconfig_var, 7, width=280, dialog_type=0, tooltiptxt="Specify a base .kcpps config to apply, if no custom base config is selected during a model swap.")
     makelabelentry(admin_tab, "Auto Unload Timeout:" , admin_unload_timeout_var, 9, 70,padx=(150),singleline=True,tooltip="Set an idle timeout in seconds after which KoboldCpp will automatically unload the current model.")
     makefileentry(admin_tab, "Model Directory:", "Select directory containing .gguf text model files to allow overriding configs with", admin_text_model_dir_var, 11, width=280, dialog_type=2, tooltiptxt="Specify a directory to look for .gguf text model files in, which can be used to swap models within a config.")
     makefileentry(admin_tab, "Data Directory:", "Select directory which will be used to store user data if desired", admin_data_dir_var, 13, width=280, dialog_type=2, tooltiptxt="Specify a directory to store user data in.")
@@ -14277,8 +14526,12 @@ def reload_from_new_args(newargs):
     try:
         args.istemplate = False
         newargs = convert_invalid_args(newargs)
+        protected_args = ["remotetunnel","showgui","port","host","port_param","admin","adminpassword","password","adminunloadtimeout","routermode","admindir","ssl","nocertify","benchmark","prompt","config","baseconfig","downloaddir","rpcmode","rpchost","rpcport","rpcdevice","allow_config_onready"]
+        protected_args += ["admintextmodelsdir","admindatadir","admindocsdir","adminallowhf","developerMode","fsmaxsize","fsdir","fsdirect","OpenLumara", "OpenLumara_configfile", "OpenLumara_datadir", "OpenLumara_sandboxfolder", "OpenLumara_apiurl", "OpenLumara_requirelogin"]
         for key, value in newargs.items(): #do not overwrite certain values
-            if key not in ["remotetunnel","showgui","port","host","port_param","admin","adminpassword","password","adminunloadtimeout","routermode","admindir","admintextmodelsdir","admindatadir","admindocsdir","adminallowhf","developerMode","fsmaxsize","fsdir","fsdirect","OpenLumara", "OpenLumara_configfile", "OpenLumara_datadir", "OpenLumara_sandboxfolder", "OpenLumara_apiurl", "OpenLumara_requirelogin","ssl","nocertify","benchmark","prompt","config","baseconfig","downloaddir","onready","rpcmode","rpchost","rpcport","rpcdevice"]:
+            if key == "onready" and getattr(args, "allow_config_onready", False):
+                setattr(args, key, value)
+            elif key not in protected_args and key != "onready":
                 setattr(args, key, value)
         setattr(args,"showgui",False)
         setattr(args,"benchmark",False)
@@ -14308,8 +14561,10 @@ def load_config_cli(filename):
     with open(filename, 'r', encoding='utf-8', errors='ignore') as f:
         config = json.load(f)
         config = convert_invalid_args(config)
-        if "onready" in config:
+        if "onready" in config and not getattr(args, "allow_config_onready", False):
             config["onready"] = "" #do not allow onready commands from config
+        if "allow_config_onready" in config:
+            del config["allow_config_onready"] #do not allow configs to opt into onready commands
         args.istemplate = False
         raw_args = (sys.argv[1:]) #a lousy hack to allow for overriding kcpps
         # special: overriding model applies to model_param too
@@ -14396,6 +14651,40 @@ def sanitize_string(input_string):
     sanitized_string = re.sub( r'[^\w\d\.\-_]', '', input_string)
     return sanitized_string
 
+def resolve_huggingface_xet_url(input_url):
+    global nocertify
+    if "https://huggingface.co/" not in input_url or "/resolve/" not in input_url:
+        return input_url
+
+    ssl_cert_dir = os.environ.get('SSL_CERT_DIR')
+    if not ssl_cert_dir and not nocertify and os.name != 'nt':
+        os.environ['SSL_CERT_DIR'] = '/etc/ssl/certs'
+
+    def resolve_with_context(ssl_context=None):
+        req = urllib.request.Request(input_url, headers={'User-Agent': 'Mozilla/5.0'}, method="HEAD")
+        try:
+            with urllib.request.urlopen(req, timeout=10, context=ssl_context) as response:
+                return response.geturl()
+        except Exception:
+            req = urllib.request.Request(input_url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=10, context=ssl_context) as response:
+                return response.geturl()
+
+    try:
+        resolved_url = resolve_with_context()
+    except Exception as first_error:
+        try:
+            import ssl
+            resolved_url = resolve_with_context(ssl._create_unverified_context())
+        except Exception as e:
+            print(f"Could not pre-resolve Hugging Face URL, using original URL: {first_error}; {e}")
+            return input_url
+    # resolved_host = urllib.parse.urlparse(resolved_url).netloc.lower()
+    if ("xet-bridge" in resolved_url) and resolved_url != input_url:
+        utfprint(f"Resolved Hugging Face xet URL to {resolved_url}", 0)
+        return resolved_url
+    return input_url
+
 def downloader_internal(input_url, output_filename, capture_output, min_file_size=64): # 64 bytes required by default
     print(f"Download directory argument: {args.downloaddir}")
     download_dir_path = args.downloaddir
@@ -14434,38 +14723,35 @@ def downloader_internal(input_url, output_filename, capture_output, min_file_siz
     dl_success = False
     out_dir = os.path.dirname(os.path.abspath(output_filename)) or os.getcwd()
     out_name = os.path.basename(output_filename)
-    try:
-        if os.name == 'nt':
-            basepath = os.path.abspath(os.path.dirname(__file__))
-            a2cexe = os.path.join(basepath, "aria2c-win.exe")
-            if os.path.exists(a2cexe):  # on windows try using embedded aria2c
-                rc = subprocess.run([
-                        a2cexe, "-x", "16", "-s", "16",
-                        "--summary-interval=15", "--console-log-level=error", "--log-level=error",
-                        "--download-result=default", "--continue=true", "--allow-overwrite=true",
-                        "--file-allocation=none", "--max-tries=3",
-                        "-d", out_dir, "-o", out_name, input_url
-                    ], capture_output=capture_output, text=True, check=True, encoding='utf-8')
-                dl_success = (rc.returncode == 0 and os.path.exists(output_filename) and os.path.getsize(output_filename) > min_file_size)
-    except subprocess.CalledProcessError as e:
-        print(f"aria2c-win failed: {e}")
-
-    try:
-        if not dl_success and shutil.which("aria2c") is not None:
-            rc = subprocess.run([
-                    "aria2c", "-x", "16", "-s", "16",
-                    "--summary-interval=15", "--console-log-level=error", "--log-level=error",
-                    "--download-result=default", "--allow-overwrite=true",
-                    "--file-allocation=none", "--max-tries=3",
-                    "-d", out_dir, "-o", out_name, input_url
-                ], capture_output=capture_output, text=True, check=True, encoding='utf-8')
+    download_url = resolve_huggingface_xet_url(input_url)
+    aria2_candidates = []
+    if os.name == 'nt':
+        basepath = os.path.abspath(os.path.dirname(__file__))
+        a2cexe = os.path.join(basepath, "aria2c-win.exe")
+        if os.path.exists(a2cexe):  # on windows try using embedded aria2c
+            aria2_candidates.append((a2cexe, "aria2c-win"))
+    if shutil.which("aria2c") is not None:
+        aria2_candidates.append(("aria2c", "aria2c"))
+    aria2_args = [
+        "-x", "16", "-s", "16",
+        "--summary-interval=10", "--console-log-level=error", "--log-level=error",
+        "--download-result=default", "--continue=true", "--allow-overwrite=true",
+        "--file-allocation=none", "--max-tries=3", "--retry-wait=5",
+        "-d", out_dir, "-o", out_name, download_url
+    ]
+    for aria2_exe, aria2_name in aria2_candidates:
+        if dl_success:
+            break
+        try:
+            rc = subprocess.run([aria2_exe, *aria2_args],
+                capture_output=capture_output, text=True, check=True, encoding='utf-8')
             dl_success = (rc.returncode == 0 and os.path.exists(output_filename) and os.path.getsize(output_filename) > min_file_size)
-    except subprocess.CalledProcessError as e:
-        print(f"aria2c failed: {e}")
+        except subprocess.CalledProcessError as e:
+            print(f"{aria2_name} failed: {e}")
 
     try:
         if not dl_success and shutil.which("curl") is not None:
-            rc = subprocess.run(["curl", "-fLo", output_filename, input_url],
+            rc = subprocess.run(["curl", "-fLo", output_filename, download_url],
                 capture_output=capture_output, text=True, check=True, encoding="utf-8")
             dl_success = (rc.returncode == 0 and os.path.exists(output_filename) and os.path.getsize(output_filename) > min_file_size)
     except subprocess.CalledProcessError as e:
@@ -14473,7 +14759,7 @@ def downloader_internal(input_url, output_filename, capture_output, min_file_siz
 
     try:
         if not dl_success and shutil.which("wget") is not None:
-            rc = subprocess.run(["wget", "-O", output_filename, input_url],
+            rc = subprocess.run(["wget", "-O", output_filename, download_url],
                 capture_output=capture_output, text=True, check=True, encoding="utf-8")
             dl_success = (rc.returncode == 0 and os.path.exists(output_filename) and os.path.getsize(output_filename) > min_file_size)
     except subprocess.CalledProcessError as e:
@@ -14570,6 +14856,7 @@ def load_mcp_async(args):
     if not filepath.lower().endswith(".json"):
         filepath += ".json"
         args.mcpfile += ".json"
+    mcp_config_dir = os.path.dirname(filepath) or os.getcwd()
     try:
         print(f"MCP start loading json file at '{filepath}'...")
         with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
@@ -14593,7 +14880,7 @@ def load_mcp_async(args):
                     if mcpcmd and not mcpurl:
                         mcpargs = cfg.get("args", [])
                         mcpenv = cfg.get("env", {})
-                        client = MCPStdioClient(command=mcpcmd,largs=mcpargs,env=mcpenv)
+                        client = MCPStdioClient(command=mcpcmd,largs=mcpargs,env=mcpenv,cwd=mcp_config_dir)
                     elif mcpurl:
                         mcp_ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36'
                         headers = cfg.get("headers", {})
@@ -16357,7 +16644,7 @@ if __name__ == '__main__':
     modelgroup.add_argument("--model","-m", metavar=('[filenames]'), help="Model file to load. Accepts multiple values if they are URLs.", type=str, nargs='+', default=[])
     modelgroup.add_argument("model_param", help="Model file to load (positional)", nargs="?")
     parser.add_argument("--config", metavar=('[filename]'), help="Load settings from a .kcpps file. Other arguments will be ignored", type=str, nargs=1)
-    parser.add_argument("--contextsize","--ctx-size", "-c", help="Controls the memory allocated for maximum context size, only change if you need more RAM for big contexts. (default 16384).",metavar=('[256 to 262144]'), type=check_range(int,256,262144), default=16384)
+    parser.add_argument("--contextsize","--ctx-size", "-c", help=f"Controls the memory allocated for maximum context size, only change if you need more RAM for big contexts. (default {default_maxctx}).",metavar=('[256 to 524288]'), type=check_range(int,256,524288), default=default_maxctx)
     parser.add_argument("--gpulayers","--gpu-layers","--n-gpu-layers","-ngl", help="Set number of layers to offload to GPU (when using GPU). Set to -1 to enable autofit (default), set to 0 to disable GPU offload.",metavar=('[GPU layers]'), nargs='?', const=1, type=int, default=-1)
     parser.add_argument("--host", metavar=('[ipaddr]'), help="Host IP to listen on. If this flag is not set, all routable interfaces are accepted.", default="")
     parser.add_argument("--launch", help="Launches a web browser when load is completed.", action='store_true')
@@ -16382,7 +16669,7 @@ if __name__ == '__main__':
     advparser.add_argument("--defaultgenamt", help="How many tokens to generate by default, if not specified. Must be smaller than context size. Usually, your frontend GUI will override this.", type=check_range(int,64,16384), default=default_genlen)
     advparser.add_argument("--device", "-dev", metavar=('<dev1,dev2,..>'), help="Set llama.cpp compatible device selection override. Comma separated. Overrides normal device choices.", default="")
     advparser.add_argument("--downloaddir", metavar=('[directory]'), help="Specify a directory that models will be downloaded to or searched from, if unset uses the working directory.", default="")
-    advparser.add_argument("--draftamount","--draft-max","--draft-n", metavar=('[tokens]'), help="How many tokens to draft per chunk before verifying results", type=int, default=default_draft_amount)
+    advparser.add_argument("--draftamount","--draft-max","--draft-n","--spec-draft-n-max", metavar=('[tokens]'), help="How many tokens to draft per chunk before verifying results", type=int, default=default_draft_amount)
     advparser.add_argument("--draftgpulayers","--gpu-layers-draft","--n-gpu-layers-draft","-ngld", metavar=('[layers]'), help="How many layers to offload to GPU for the draft model (default=full offload)", type=int, default=999)
     advparser.add_argument("--draftgpusplit", help="GPU layer distribution ratio for draft model (default=same as main). Only works if multi-GPUs selected for MAIN model and tensor_split is set!", metavar=('[Ratios]'), type=float, nargs='+')
     advparser.add_argument("--draftmodel","--model-draft","-md", metavar=('[filename]'), help="Load a small draft model for speculative decoding. It will be fully offloaded. Vocab must match the main model.", default="")
@@ -16425,6 +16712,7 @@ if __name__ == '__main__':
     advparser.add_argument("--noshift","--no-context-shift", help="If set, do not attempt to Trim and Shift the GGUF context.", action='store_true')
     advparser.add_argument("--noswa","--swa-full", help="If set, uses full-size SWA KV Cache. Otherwise, SWA will be enabled automatically on models that support it. SWA saves memory but cannot be used with context shifting.", action='store_true')
     advparser.add_argument("--onready", help="An optional shell command to execute after the model has been loaded.", metavar=('[shell command]'), type=str, default="")
+    advparser.add_argument("--allow-config-onready", help="Allow .kcpps config files loaded after launch to set --onready commands. Only use with trusted configs.", action='store_true')
     advparser.add_argument("--fsmaxsize", "--tmpfsmaxsize", dest="fsmaxsize", metavar=('[size in MB]'), help="Enable managed filesystem endpoints when > 0. In memory mode this is a hard size limit; in direct disk mode this is currently enable-gating only (not a disk quota).", type=int, default=0)
     advparser.add_argument("--fsdir", "--tmpfsdir", dest="fsdir", metavar=('[directory]'), help="Filesystem root directory. In memory mode it preloads files from disk; in direct mode it is the sandbox root.", default="")
     advparser.add_argument("--fsdirect", "--tmpfsdirect", dest="fsdirect", help="Use direct on-disk filesystem mode sandboxed to --fsdir instead of in-memory storage. Requires --fsmaxsize > 0 to enable filesystem endpoints.", action='store_true')

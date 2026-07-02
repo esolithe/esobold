@@ -184,6 +184,27 @@ std::string convert_cond_stage_model_name(std::string name, std::string prefix) 
     return name;
 }
 
+std::string convert_qwen3_vl_vision_name(std::string name) {
+    static const std::vector<std::pair<std::string, std::string>> qwen3_vl_vision_name_map{
+        {"mm.0.", "merger.linear_fc1."},
+        {"mm.2.", "merger.linear_fc2."},
+        {"v.post_ln.", "merger.norm."},
+        {"v.position_embd.weight", "pos_embed.weight"},
+        {"v.patch_embd.weight.1", "patch_embed.proj.1.weight"},
+        {"v.patch_embd.weight", "patch_embed.proj.0.weight"},
+        {"v.patch_embd.bias", "patch_embed.bias"},
+        {"v.blk.", "blocks."},
+        {"attn_qkv.", "attn.qkv."},
+        {"attn_out.", "attn.proj."},
+        {"ffn_up.", "mlp.linear_fc1."},
+        {"ffn_down.", "mlp.linear_fc2."},
+        {"ln1.", "norm1."},
+        {"ln2.", "norm2."},
+    };
+    replace_with_name_map(name, qwen3_vl_vision_name_map);
+    return name;
+}
+
 // ref: https://github.com/huggingface/diffusers/blob/main/scripts/convert_diffusers_to_original_stable_diffusion.py
 std::string convert_diffusers_unet_to_original_sd1(std::string name) {
     // (stable-diffusion, HF Diffusers)
@@ -683,6 +704,38 @@ std::string convert_other_dit_to_original_anima(std::string name) {
     return name;
 }
 
+std::string convert_diffusers_dit_to_original_krea2(std::string name) {
+    static const std::vector<std::pair<std::string, std::string>> prefix_map = {
+        {"img_in.", "first."},
+        {"time_embed.linear_1.", "tmlp.0."},
+        {"time_embed.linear_2.", "tmlp.2."},
+        {"time_mod_proj.", "tproj.1."},
+        {"txt_in.linear_1.", "txtmlp.1."},
+        {"txt_in.linear_2.", "txtmlp.3."},
+        {"text_fusion.", "txtfusion."},
+        {"transformer_blocks.", "blocks."},
+        {"final_layer.", "last."},
+    };
+    static const std::vector<std::pair<std::string, std::string>> name_map = {
+        {"attn.to_out.0.", "attn.wo."},
+        {"attn.to_out.", "attn.wo."},
+        {"attn.to_gate.", "attn.gate."},
+        {"attn.to_q.", "attn.wq."},
+        {"attn.to_k.", "attn.wk."},
+        {"attn.to_v.", "attn.wv."},
+        {"ff.gate.", "mlp.gate."},
+        {"ff.up.", "mlp.up."},
+        {"ff.down.", "mlp.down."},
+        {"txt_in.norm.", "txtmlp.0."},
+        {"last.norm.weight", "last.norm.scale"},
+        {"last.modulation.weight", "last.modulation.lin"},
+    };
+
+    replace_with_prefix_map(name, prefix_map);
+    replace_with_name_map(name, name_map);
+    return name;
+}
+
 std::string convert_diffusion_model_name(std::string name, std::string prefix, SDVersion version) {
     if (sd_version_is_sd1(version) || sd_version_is_sd2(version)) {
         name = convert_diffusers_unet_to_original_sd1(name);
@@ -696,6 +749,8 @@ std::string convert_diffusion_model_name(std::string name, std::string prefix, S
         name = convert_diffusers_dit_to_original_lumina2(name);
     } else if (sd_version_is_anima(version)) {
         name = convert_other_dit_to_original_anima(name);
+    } else if (sd_version_is_krea2(version)) {
+        name = convert_diffusers_dit_to_original_krea2(name);
     }
     return name;
 }
@@ -990,7 +1045,46 @@ bool is_first_stage_model_name(const std::string& name) {
     return false;
 }
 
+static std::string convert_esrgan_tensor_name(std::string name) {
+    static std::unordered_map<std::string, std::string> esrgan_name_map;
+
+    if (esrgan_name_map.empty()) {
+        esrgan_name_map["model.0."] = "conv_first.";
+
+        constexpr int max_num_blocks = 64;
+        for (int i = 0; i < max_num_blocks; i++) {
+            std::string block_prefix = "model.1.sub." + std::to_string(i) + ".";
+            for (int rdb = 1; rdb <= 3; rdb++) {
+                for (int conv = 1; conv <= 5; conv++) {
+                    esrgan_name_map[block_prefix + "RDB" + std::to_string(rdb) + ".conv" + std::to_string(conv) + ".0."] =
+                        "body." + std::to_string(i) + ".rdb" + std::to_string(rdb) + ".conv" + std::to_string(conv) + ".";
+                }
+            }
+            esrgan_name_map[block_prefix + "weight"] = "conv_body.weight";
+            esrgan_name_map[block_prefix + "bias"]   = "conv_body.bias";
+        }
+
+        // RealESRGAN stores only the learned layers in a Sequential. These indices
+        // cover the common x1, x2 and x4 layouts.
+        esrgan_name_map["model.2."]  = "conv_hr.";
+        esrgan_name_map["model.3."]  = "conv_up1.";
+        esrgan_name_map["model.4."]  = "conv_last.";
+        esrgan_name_map["model.5."]  = "conv_hr.";
+        esrgan_name_map["model.6."]  = "conv_up2.";
+        esrgan_name_map["model.7."]  = "conv_last.";
+        esrgan_name_map["model.8."]  = "conv_hr.";
+        esrgan_name_map["model.10."] = "conv_last.";
+    }
+
+    replace_with_prefix_map(name, esrgan_name_map);
+    return name;
+}
+
 std::string convert_tensor_name(std::string name, SDVersion version) {
+    if (version == VERSION_ESRGAN) {
+        return convert_esrgan_tensor_name(std::move(name));
+    }
+
     bool is_lora                             = false;
     bool is_lycoris_underline                = false;
     bool is_underline                        = false;
@@ -1114,6 +1208,10 @@ std::string convert_tensor_name(std::string name, SDVersion version) {
     }
 
     replace_with_prefix_map(name, prefix_map);
+
+    if ((sd_version_is_boogu_image(version) || sd_version_is_krea2(version)) && starts_with(name, "text_encoders.llm.visual.")) {
+        name = convert_qwen3_vl_vision_name(std::move(name));
+    }
 
     // diffusion model
     {

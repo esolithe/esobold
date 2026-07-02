@@ -201,7 +201,7 @@
     }
 }, {
     "search": ["<|START_OF_TURN_TOKEN|>"],
-    "name": "Cohere (Aya Expanse 32B based)",
+    "name": "Cohere",
     "adapter": {
         "system_start": "<|START_OF_TURN_TOKEN|><|SYSTEM_TOKEN|>",
         "system_end": "<|END_OF_TURN_TOKEN|>",
@@ -299,6 +299,29 @@
         "user_end": "<|im_end|>\n",
         "assistant_start": "<|im_start|>assistant\n",
         "assistant_end": "<|im_end|>\n"
+    }
+}, {
+    "search": ["[BEGIN FINAL RESPONSE]", "<|begin_user|>"],
+    "name": "Apriel 1.6",
+    "adapter": {
+        "system_start": "<|begin_system|>\n",
+        "system_end": "\n",
+        "user_start": "<|begin_user|>\n",
+        "user_end": "\n",
+        "assistant_start": "<|begin_assistant|>\n",
+        "assistant_end": "\n",
+        "assistant_gen": "<|begin_assistant|>\nWe can respond now.\n[BEGIN FINAL RESPONSE]\n"
+    }
+}, {
+    "search": ["<|developer_end|>", "<|assistant_start|>","<|system_start|>"],
+    "name": "Apertus",
+    "adapter": {
+        "system_start": "<|system_start|>",
+        "system_end": "<|system_end|>",
+        "user_start": "<|user_start|>",
+        "user_end": "<|user_end|>",
+        "assistant_start": "<|assistant_start|>",
+        "assistant_end": "<|assistant_end|>"
     }
 }, {
     "search": ["[e~[","]~b]user"],

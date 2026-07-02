@@ -486,6 +486,16 @@ bool useSmartContext, const bool requireFullSubset, const int minimum_to_proceed
 
     for (int i = 0; i < cur_ctx_len; ++i)
     {
+        if (i >= embd_inp_len)
+        {
+            if(requireFullSubset)
+            {
+                last_n_tokens.erase(last_n_tokens.end() - n_past, last_n_tokens.end());
+                n_past = 0;
+                fastforwardok = false;
+            }
+            break;
+        }
         if (current_context_tokens[i] == embd_inp[i])
         {
             n_past += 1;

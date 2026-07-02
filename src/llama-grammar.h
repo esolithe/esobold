@@ -78,6 +78,8 @@ const llama_grammar_rules  & llama_grammar_get_rules (const struct llama_grammar
 // positions
 void llama_grammar_accept(struct llama_grammar * grammar, uint32_t chr);
 
+void llama_grammar_reset_memos();
+
 std::vector<llama_grammar_candidate> llama_grammar_reject_candidates_for_stack(
         const llama_grammar_rules      & rules,
         const llama_grammar_stack      & stack,

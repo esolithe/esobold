@@ -77,6 +77,9 @@ if (MSVC)
     add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:/utf-8>")
     add_compile_options("$<$<COMPILE_LANGUAGE:C>:/bigobj>")
     add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:/bigobj>")
+else()
+    add_compile_options("$<$<COMPILE_LANGUAGE:C>:-Wno-unused-value>")
+    add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-Wno-unused-value>")
 endif()
 
 file(GLOB GGML_SOURCES_CUDA "ggml/src/ggml-cuda/*.cu")
@@ -419,6 +422,16 @@ if (MINGW)
     add_compile_definitions(_WIN32_WINNT=0x602)
 endif()
 
+# Standalone libmtmd build without pulling in the rest of the tools/ tree.
+# Useful when packaging just the mtmd library for language bindings (e.g. an
+# Apple XCFramework, or a WASM build). When the full tools build is enabled,
+# mtmd is already built by the tools/ subdirectory above; this hook only fires
+# when LLAMA_BUILD_TOOLS is OFF to avoid double-adding the target.
+option(LLAMA_BUILD_MTMD "llama: build tools/mtmd library standalone" OFF)
+if (LLAMA_BUILD_MTMD AND NOT (LLAMA_BUILD_COMMON AND LLAMA_BUILD_TOOLS))
+    add_subdirectory(tools/mtmd)
+endif()
+
 #
 # Build libraries
 #
@@ -539,8 +552,9 @@ add_library(sdtype_adapter
             otherarch/sdcpp/src/core/ggml_graph_cut.cpp
             otherarch/sdcpp/src/core/ggml_graph_cut.h
             otherarch/sdcpp/examples/cli/image_metadata.cpp
-            otherarch/sdcpp/src/core/layer_registry.cpp
-            otherarch/sdcpp/src/core/layer_registry.h
+            otherarch/sdcpp/src/model_manager.cpp
+            otherarch/sdcpp/src/model_manager.h
+            otherarch/sdcpp/src/extensions/pulid_extension.cpp
             otherarch/sdcpp/src/model_loader.cpp
             otherarch/sdcpp/src/extensions/photomaker_extension.cpp
             otherarch/sdcpp/src/runtime/sample-cache.cpp
@@ -600,7 +614,10 @@ target_link_libraries(embeddings_adapter PRIVATE common2 ggml ${LLAMA_EXTRA_LIBS
 set_target_properties(embeddings_adapter PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 add_library(gpttype_adapter
-            gpttype_adapter.cpp)
+            gpttype_adapter.cpp
+            src/llama.cpp
+            common/chat.cpp
+            src/llama-model.cpp)
 target_include_directories(gpttype_adapter PUBLIC . ./src ./ggml/include ./ggml/src ./ggml/src/ggml-cpu ./include ./otherarch ./otherarch/tools ./vendor/stb ./vendor/nlohmann ./vendor ./otherarch/sdcpp ./otherarch/sdcpp/thirdparty ./tools ./common)
 target_compile_features(gpttype_adapter PUBLIC cxx_std_17) # don't bump
 target_link_libraries(gpttype_adapter PRIVATE common2 ggml ggml_v1 ggml_v2 ggml_v3 ${LLAMA_EXTRA_LIBS})
