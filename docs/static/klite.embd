@@ -12,7 +12,7 @@ Current version indicated by LITEVER below.
 -->
 <head>
 	<script id="init-config">
-	const LITEVER = 337;
+	const LITEVER = 338;
 	const urlParams = new URLSearchParams(window.location.search);
 	var localflag = urlParams.get('local'); //this will be replaced automatically in embedded kcpp
 	const STORAGE_PREFIX = (localflag?"e_":"")+"kaihordewebui_";
@@ -3182,7 +3182,7 @@ Current version indicated by LITEVER below.
 	// whitelisted auto selected horde model names
 	const defaultmodels = ["gpt4all","supercot","pygmalion-6","pygmalion-v8","pygmalion-2","hermes","airoboros","chrono","wizard","mantis","vicuna","manticore","alpaca","myth","xwin","spicyboros","mlewd","mxlewd","westlake","anubis","skyfall","llama2","llama3","llama-2","llama-3-","llama-3.","mistral","maid","mixtral","estopia","fighter","fimbul","euryale","nemo","gemma","lunaris","stheno","magnum","cydonia","qwen2.5-32b","behemoth","exaone","glm4","glm-4","tutu","deepseek","tlacuilo","rocinante","-14B","-32B","-27B","-35B"];
 	const ignoredmodels = ["tinyllama","debug-","-1b","-270m"]; //blacklisted model names
-	const hardcoded_think_closers = ["</think>","<channel|>"];
+	const hardcoded_think_closers = ["</think>","<channel|>","</seed:think>","<|END_THINKING|>"];
 
 	const instructstartplaceholder = "\n{{[INPUT]}}\n";
 	const instructendplaceholder = "\n{{[OUTPUT]}}\n";
@@ -4148,8 +4148,8 @@ Current version indicated by LITEVER below.
 		websearch_template: "",
 		wordsearch_enabled: false,
 
-		max_context_length: (localflag?16384:6144),
-		max_length: (localflag?2048:768),
+		max_context_length: (localflag?12288:6144),
+		max_length: (localflag?1536:768),
 		last_maxctx: 0,
 		auto_ctxlen: true,
 		auto_genamt: true,
@@ -7031,6 +7031,7 @@ Current version indicated by LITEVER below.
 				else if (dch.message) {
 					synchro_polled_response = dch.message.content;
 					let reasoningtxt = "";
+					let has_called_tools = (dch.message.tool_calls && dch.message.tool_calls.length>0);
 					if(dch.message.reasoning_content!=null && dch.message.reasoning_content!="") //vllm compat
 					{
 						reasoningtxt = dch.message.reasoning_content;
@@ -7041,17 +7042,17 @@ Current version indicated by LITEVER below.
 					}
 					if(reasoningtxt!="")
 					{
-						if(dch.message.content==null)
+						if(dch.message.content==null && !has_called_tools)
 						{
 							synchro_polled_response = reasoningtxt;
 						}
 						else
 						{
-							synchro_polled_response = `${localsettings.start_thinking_tag}${reasoningtxt}${localsettings.stop_thinking_tag}${dch.message.content}`;
+							synchro_polled_response = `${localsettings.start_thinking_tag}${reasoningtxt}${localsettings.stop_thinking_tag}${dch.message.content?dch.message.content:''}`;
 						}
 					}
 
-					if(dch.message.tool_calls && dch.message.tool_calls.length>0)
+					if(has_called_tools)
 					{
 						synchro_polled_resptoolcalls = dch.message.tool_calls;
 						if(!synchro_polled_response)
@@ -14238,17 +14239,12 @@ Current version indicated by LITEVER below.
 											document.getElementById("max_context_length_slide").max = ep_maxctx;
 											document.getElementById("max_context_length_slide_label").innerText = ep_maxctx;
 										}
-										if(ep_maxctx && ep_maxctx>=16384 && document.getElementById("max_length_slide").max<4096)
+										if(ep_maxctx && ep_maxctx>=12288 && document.getElementById("max_length_slide").max < Math.floor(ep_maxctx/4))
 										{
-											document.getElementById("max_length_slide").max = 4096;
-											document.getElementById("max_length_slide_label").innerText = 4096;
+											document.getElementById("max_length_slide").max = Math.floor(ep_maxctx/4);
+											document.getElementById("max_length_slide_label").innerText = Math.floor(ep_maxctx/4);
 										}
-										if(ep_maxctx && ep_maxctx>=32768 && document.getElementById("max_length_slide").max<8192)
-										{
-											document.getElementById("max_length_slide").max = 8192;
-											document.getElementById("max_length_slide_label").innerText = 8192;
-										}
-										if(localflag && ep_maxctx>=16384 && localsettings.max_context_length<ep_maxctx && (localsettings.last_maxctx!=ep_maxctx || localsettings.max_context_length==defaultsettings.max_context_length))
+										if(localflag && ep_maxctx>=12288 && localsettings.max_context_length<ep_maxctx && (localsettings.last_maxctx!=ep_maxctx || localsettings.max_context_length==defaultsettings.max_context_length))
 										{
 											localsettings.max_context_length = ep_maxctx;
 											localsettings.last_maxctx = ep_maxctx;
@@ -20128,6 +20124,10 @@ Current version indicated by LITEVER below.
 
 	function prepare_submit_generation() //wrap websearch into this
 	{
+		if(is_corpo_ui() && corpo_editing_turn != -1)
+		{
+			corpo_edit_chunk_save();
+		}
 		let senttext = document.getElementById("input_text").value;
 		document.getElementById("input_text").value = "";
 		PerformWebsearch(senttext,(res)=>{
@@ -20305,6 +20305,11 @@ Current version indicated by LITEVER below.
 					{
 						maxgenamt = Math.min(curr.max_length,maxgenamt);
 					}
+				}
+				if(localsettings.auto_genamt && localsettings.my_api_key == "0000000000")
+				{
+					//anon horde key limits genamt to 512
+					maxgenamt = Math.min(512,maxgenamt);
 				}
 			}
 
@@ -30764,11 +30769,11 @@ Current version indicated by LITEVER below.
 									<input title="Context Size" inputmode="numeric" class="justifyright push-right" id="max_context_length" style="width: 8ch;" oninput="
 									document.getElementById('max_context_length_slide').value = this.value;">
 								</div>
-								<div><input title="Context Size Slider" type="range" min="512" max="16384" step="8" id="max_context_length_slide" oninput="
+								<div><input title="Context Size Slider" type="range" min="512" max="12288" step="8" id="max_context_length_slide" oninput="
 									document.getElementById('max_context_length').value = this.value;"></div>
 								<div class="settingminmax">
 									<div class="justifyleft">512</div>
-									<div class="justifyright" id="max_context_length_slide_label">16384</div>
+									<div class="justifyright" id="max_context_length_slide_label">12288</div>
 								</div>
 								<div id="auto_ctxlen_panel" class="settinglabel">
 									<div class="justifyleft" title="Automatically lowers settings if incompatible with existing workers">Auto-Adjust Limits </div>
@@ -30783,11 +30788,11 @@ Current version indicated by LITEVER below.
 									<input title="Max Output" inputmode="numeric" class="justifyright push-right" id="max_length" oninput="
 									document.getElementById('max_length_slide').value = this.value;">
 								</div>
-								<div><input title="Max Output Slider" type="range" min="16" max="2048" step="2"	id="max_length_slide" oninput="
+								<div><input title="Max Output Slider" type="range" min="16" max="1536" step="2"	id="max_length_slide" oninput="
 									document.getElementById('max_length').value = this.value;"></div>
 								<div class="settingminmax">
 									<div class="justifyleft">16</div>
-									<div class="justifyright" id="max_length_slide_label">2048</div>
+									<div class="justifyright" id="max_length_slide_label">1536</div>
 								</div>
 								<div id="auto_genamt_panel" class="settinglabel">
 									<div class="justifyleft" title="Automatically lowers settings if incompatible with existing workers">Auto-Adjust Limits </div>
