@@ -61,6 +61,22 @@ export const buildOpenlumaraCommands = (ctx) => {
 
 			let extractStreamToken = (socketPayload) => {
 				let source = socketPayload?.message && typeof socketPayload.message === "object" ? socketPayload.message : socketPayload
+				
+				// Handle tool call deltas
+				if (source?.type === "tool_call_delta" && Array.isArray(source?.tool_calls) && source.tool_calls.length > 0) {
+					let parts = []
+					source.tool_calls.forEach(tc => {
+						if (tc?.function?.name) {
+							parts.push(`[${tc.function.name}]`)
+						}
+						if (tc?.function?.arguments) {
+							parts.push(`${tc.function.arguments}`)
+						}
+					})
+					return parts.join(" ")
+				}
+				
+				// Handle regular content
 				return `${source?.content || source?.text || source?.token || ""}`
 			}
 

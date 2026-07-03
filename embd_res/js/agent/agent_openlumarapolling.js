@@ -32,6 +32,22 @@ let clearLumaraVisualStream = () => {
 
 let extractLumaraTokenFromSocketPayload = (payload) => {
     let source = payload?.message && typeof payload.message === "object" ? payload.message : payload
+    
+    // Handle tool call deltas
+    if (source?.type === "tool_call_delta" && Array.isArray(source?.tool_calls) && source.tool_calls.length > 0) {
+        let parts = []
+        source.tool_calls.forEach(tc => {
+            if (tc?.function?.name) {
+                parts.push(`[${tc.function.name}]`)
+            }
+            if (tc?.function?.arguments) {
+                parts.push(`${tc.function.arguments}`)
+            }
+        })
+        return parts.join(" ")
+    }
+    
+    // Handle regular content
     return `${source?.content || source?.text || source?.token || ""}`
 }
 
