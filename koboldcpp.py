@@ -15053,6 +15053,7 @@ def execAndWrapError(errorPrefix, func, *args, **kwargs):
 
 def _run_OpenLumara(*args):
     import importlib.util
+    import traceback
     with OpenLumara_launch_lock:
         OpenLumara_dir = get_OpenLumara_dir()
         if OpenLumara_dir not in sys.path:
@@ -15069,6 +15070,7 @@ def _run_OpenLumara(*args):
         while True:
             spec = None
             OpenLumaraMain = None
+            should_restart = True
             try:
                 spec = importlib.util.spec_from_file_location("OpenLumaraMain", OpenLumara_main)
                 OpenLumaraMain = importlib.util.module_from_spec(spec)
@@ -15077,14 +15079,24 @@ def _run_OpenLumara(*args):
                     OpenLumaraMain.run_from_args(list(args))
                 else:
                     print("Warning: OpenLumara main.py does not have a run_from_argv() function.")
+            except (KeyboardInterrupt, SystemExit) as e:
+                # Normal shutdown path: don't auto-restart.
+                should_restart = False
+                code = getattr(e, "code", None)
+                if code not in (None, 0):
+                    print(f"OpenLumara exited with code: {code}")
             except BaseException as e:
                 print(f"Error running OpenLumara: {e}")
+                print(traceback.format_exc())
             finally:
                 from time import sleep
                 try:
                     sleep(1)  # Prevent rapid restart in case of continuous errors
                 except BaseException as e:
                     print(f"Error during OpenLumara restart cooldown: {e}")
+
+            if not should_restart:
+                break
 
 def run_OpenLumara(*args):
     execAndWrapError("OpenLumara Execution Error", _run_OpenLumara, *args)
@@ -15156,7 +15168,6 @@ def launch_OpenLumara(launch_args):
                 "--channels.settings.webui.port", f"{OpenLumara_default_webui_port}",
                 "--channels.settings.webui.require_login", "true" if (launch_args.OpenLumara_requirelogin is None or launch_args.OpenLumara_requirelogin) else "false",
                 "--core.data_folder", f"{launch_args.OpenLumara_datadir if launch_args.OpenLumara_datadir is not None else 'data'}",
-                "--modules.settings.sandboxed_files.sandbox_folder", f"{launch_args.OpenLumara_sandboxfolder if launch_args.OpenLumara_sandboxfolder is not None else 'sandbox'}",
                 "--modules.settings.coder.sandbox_folder", f"{launch_args.OpenLumara_sandboxfolder if launch_args.OpenLumara_sandboxfolder is not None else 'sandbox'}",
                 "--modules.settings.sandboxed_shell.sandbox_path", f"{launch_args.OpenLumara_sandboxfolder if launch_args.OpenLumara_sandboxfolder is not None else 'sandbox'}",
                 "--modules.settings.auto_backup.backup_path", f"{launch_args.OpenLumara_backuppath if launch_args.OpenLumara_backuppath is not None else 'data_backups'}",
