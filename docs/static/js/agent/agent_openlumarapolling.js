@@ -51,9 +51,22 @@ let extractLumaraTokenFromSocketPayload = (payload) => {
     return `${source?.content || source?.text || source?.token || ""}`
 }
 
+let stripDuplicatedPrefix = (existingText, incomingText) => {
+    let existing = `${existingText || ""}`
+    let incoming = `${incomingText || ""}`
+    if (!incoming) {
+        return ""
+    }
+    if (existing.length > 0 && incoming.startsWith(existing)) {
+        return incoming.substring(existing.length)
+    }
+    return incoming
+}
+
 let appendLumaraVisualToken = (payload) => {
     let token = extractLumaraTokenFromSocketPayload(payload)
-    if (!token) {
+    let delta = stripDuplicatedPrefix(window.eso.lumaraActiveStreamText, token)
+    if (!delta) {
         return
     }
     if (!window.eso.lumaraActiveStreamStartedAt) {
@@ -62,7 +75,7 @@ let appendLumaraVisualToken = (payload) => {
             setLumaraSocketStatus("connected", "streaming")
         }
     }
-    window.eso.lumaraActiveStreamText += token
+    window.eso.lumaraActiveStreamText += delta
     if (typeof window.updateAgentStreamingDisplay === "function") {
         window.updateAgentStreamingDisplay(window.eso.lumaraActiveStreamText)
     }
@@ -138,7 +151,11 @@ let scheduleLumaraSocketReconnectLoop = () => {
 }
 
 let processLumaraMessages = async (messages) => {
-    let formatLumaraMessage = (message) => `Lumara response: ${`${message || ""}`.trim()}`
+    let formatLumaraMessage = (message) => {
+		let body = (message || "").trim();
+		return `Lumara response: \n\n\`\`\`\n${body}\n\`\`\`\n\n`
+		
+	}
     let collapseMessagesByIndex = (messageList) => {
         let byIndex = new Map()
         let noIndex = []
