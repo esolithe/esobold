@@ -216,7 +216,7 @@ export const buildOpenlumaraCommands = (ctx) => {
 			"executor": async (action) => {
 				let result = await runAndReport("getStatus", () => ol.getStatus())
 				if (!result) return
-				if (result.connected) {
+				if (result?.server_ok) {
 					addThought(currentChainOfThought, createSysPrompt,
 						formatLumaraMessage(`status: connected. Model: ${result.model || "unknown"}.`))
 				} else {
