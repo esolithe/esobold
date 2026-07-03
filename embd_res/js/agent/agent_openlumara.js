@@ -200,6 +200,21 @@ export const buildOpenlumaraCommands = (ctx) => {
 			"outputVisibleToUser": true,
 			"executor": async (action) => {
                 const getMessagesSinceLastUserMessageAndShow = async () => {
+					let collapseMessagesByIndex = (messageList) => {
+						let byIndex = new Map()
+						let noIndex = []
+						;(Array.isArray(messageList) ? messageList : [messageList]).forEach(msg => {
+							if (!msg) {
+								return
+							}
+							if (Number.isInteger(msg?.index)) {
+								byIndex.set(msg.index, msg)
+							} else {
+								noIndex.push(msg)
+							}
+						})
+						return [...byIndex.values(), ...noIndex]
+					}
 
                     let displayHandled = false;
                     let lastMessageProcessedFromLumara = localsettings.lastMessageProcessedFromLumara
@@ -207,6 +222,7 @@ export const buildOpenlumaraCommands = (ctx) => {
 					if (!Array.isArray(messageHistory)) {
 						messageHistory = []
 					}
+					messageHistory = collapseMessagesByIndex(messageHistory)
                     if (!!messageHistory) {
 						let startPoint = [...messageHistory].reverse().find(msg => msg?.role === "user" && Number.isInteger(msg?.index))?.index;
                         if (startPoint !== null && Number.isInteger(startPoint)) {

@@ -7,12 +7,59 @@ window.eso.lumaraSocketBoundHandlers = null;
 window.eso.lumaraSocketReconnectEveryMs = 60000;
 window.eso.lumaraSocketStatus = "disabled";
 window.eso.lumaraSocketStatusDetail = "";
+window.eso.lumaraActiveStreamText = "";
+window.eso.lumaraActiveStreamStartedAt = 0;
 
 let setLumaraSocketStatus = (status, detail = "") => {
     window.eso.lumaraSocketStatus = status
     window.eso.lumaraSocketStatusDetail = `${detail || ""}`
     if (typeof window.updateLumaraListenerStatusIndicator === "function") {
         window.updateLumaraListenerStatusIndicator()
+    }
+}
+
+let clearLumaraVisualStream = () => {
+    window.eso.lumaraActiveStreamText = ""
+    window.eso.lumaraActiveStreamStartedAt = 0
+    if (typeof window.clearAgentStreamingDisplay === "function") {
+        window.clearAgentStreamingDisplay()
+        return
+    }
+    if (typeof window.updateAgentStreamingDisplay === "function") {
+        window.updateAgentStreamingDisplay("")
+    }
+}
+
+let extractLumaraTokenFromSocketPayload = (payload) => {
+    return `${payload?.content || payload?.text || payload?.token || ""}`
+}
+
+let appendLumaraVisualToken = (payload) => {
+    let token = extractLumaraTokenFromSocketPayload(payload)
+    if (!token) {
+        return
+    }
+    if (!window.eso.lumaraActiveStreamStartedAt) {
+        window.eso.lumaraActiveStreamStartedAt = Date.now()
+        if (window.eso.lumaraSocketEnabled) {
+            setLumaraSocketStatus("connected", "streaming")
+        }
+    }
+    window.eso.lumaraActiveStreamText += token
+    if (typeof window.updateAgentStreamingDisplay === "function") {
+        window.updateAgentStreamingDisplay(window.eso.lumaraActiveStreamText)
+    }
+}
+
+let finalizeLumaraVisualStream = (statusDetail = "") => {
+    if (!window.eso.lumaraActiveStreamStartedAt && !window.eso.lumaraActiveStreamText) {
+        return
+    }
+
+    clearLumaraVisualStream()
+
+    if (window.eso.lumaraSocketEnabled && openlumaraClient?.isSocketConnected()) {
+        setLumaraSocketStatus("connected", statusDetail)
     }
 }
 
@@ -75,7 +122,24 @@ let scheduleLumaraSocketReconnectLoop = () => {
 
 let processLumaraMessages = async (messages) => {
     let formatLumaraMessage = (message) => `Lumara response: ${`${message || ""}`.trim()}`
-    let normalizedMessages = (Array.isArray(messages) ? messages : [messages]).filter(message => !!message)
+    let collapseMessagesByIndex = (messageList) => {
+        let byIndex = new Map()
+        let noIndex = []
+        ;(Array.isArray(messageList) ? messageList : [messageList]).forEach(msg => {
+            if (!msg) {
+                return
+            }
+            if (Number.isInteger(msg?.index)) {
+                // Keep latest snapshot for each index to avoid replaying delta spam permanently.
+                byIndex.set(msg.index, msg)
+            } else {
+                noIndex.push(msg)
+            }
+        })
+        return [...byIndex.values(), ...noIndex]
+    }
+
+    let normalizedMessages = collapseMessagesByIndex(messages)
     if (normalizedMessages.length === 0) {
         return
     }
@@ -162,6 +226,21 @@ let extractMessagesFromSocketPayload = (payload) => {
     return []
 }
 
+let isLumaraDeltaBatchPayload = (payload) => {
+    let sourceType = `${payload?.source_type || ""}`.toLowerCase()
+    if (sourceType === "token" || sourceType.includes("delta") || sourceType.includes("reasoning") || sourceType.includes("content")) {
+        return true
+    }
+
+    let rawType = `${payload?.raw?.type || ""}`.toLowerCase()
+    if (rawType === "token" || rawType.includes("delta") || rawType.includes("reasoning") || rawType.includes("content")) {
+        return true
+    }
+
+    let metaType = `${payload?.raw?._meta?.type || ""}`.toLowerCase()
+    return metaType === "delta"
+}
+
 let bindLumaraSocketHandlers = () => {
     if (window.eso.lumaraSocketBoundHandlers) {
         return
@@ -173,17 +252,45 @@ let bindLumaraSocketHandlers = () => {
             clearLumaraSocketReconnectTimer()
         },
         onClose: () => {
+            finalizeLumaraVisualStream()
             setLumaraSocketStatus("reconnecting", "socket closed")
             scheduleLumaraSocketReconnectLoop()
         },
         onError: () => {
+            finalizeLumaraVisualStream()
             setLumaraSocketStatus("error", "socket error")
             scheduleLumaraSocketReconnectLoop()
         },
+        onToken: (payload) => {
+            let streamPayload = payload?.message && typeof payload.message === "object" ? payload.message : payload
+            appendLumaraVisualToken(streamPayload)
+        },
+        onStreamComplete: async () => {
+            finalizeLumaraVisualStream()
+            try {
+                let lastProcessed = localsettings.lastMessageProcessedFromLumara || 0
+                let nextIndex = lastProcessed > 0 ? lastProcessed + 1 : 0
+                let history = await openlumaraClient.getMessagesSince(nextIndex)
+                let messages = Array.isArray(history?.messages) ? history.messages : []
+                if (messages.length > 0) {
+                    await processLumaraMessages(messages)
+                }
+            } catch (err) {
+                console.error("Error finalizing Lumara stream from history sync:", err)
+            }
+        },
         onMessageBatch: async (payload) => {
+            if (isLumaraDeltaBatchPayload(payload)) {
+                // Token/delta payloads must remain temporary visual stream only.
+                return
+            }
             let messages = extractMessagesFromSocketPayload(payload)
             if (messages.length === 0) {
                 return
+            }
+            // If completion arrives as a message batch before stream_complete, finalize now.
+            if (window.eso.lumaraActiveStreamStartedAt || window.eso.lumaraActiveStreamText) {
+                finalizeLumaraVisualStream()
             }
             await processLumaraMessages(messages)
         },
@@ -192,6 +299,8 @@ let bindLumaraSocketHandlers = () => {
     openlumaraClient.onSocket("open", window.eso.lumaraSocketBoundHandlers.onOpen)
     openlumaraClient.onSocket("close", window.eso.lumaraSocketBoundHandlers.onClose)
     openlumaraClient.onSocket("error", window.eso.lumaraSocketBoundHandlers.onError)
+    openlumaraClient.onSocket("token", window.eso.lumaraSocketBoundHandlers.onToken)
+    openlumaraClient.onSocket("stream_complete", window.eso.lumaraSocketBoundHandlers.onStreamComplete)
     openlumaraClient.onSocket("message_batch", window.eso.lumaraSocketBoundHandlers.onMessageBatch)
 }
 
@@ -203,6 +312,8 @@ let unbindLumaraSocketHandlers = () => {
     openlumaraClient.offSocket("open", window.eso.lumaraSocketBoundHandlers.onOpen)
     openlumaraClient.offSocket("close", window.eso.lumaraSocketBoundHandlers.onClose)
     openlumaraClient.offSocket("error", window.eso.lumaraSocketBoundHandlers.onError)
+    openlumaraClient.offSocket("token", window.eso.lumaraSocketBoundHandlers.onToken)
+    openlumaraClient.offSocket("stream_complete", window.eso.lumaraSocketBoundHandlers.onStreamComplete)
     openlumaraClient.offSocket("message_batch", window.eso.lumaraSocketBoundHandlers.onMessageBatch)
     window.eso.lumaraSocketBoundHandlers = null
 }
@@ -251,6 +362,7 @@ connectLumaraSocketListener = async () => {
 
 startLumaraSocketListener = async () => {
     window.eso.currentlyProcessingFromLumara = Promise.resolve()
+    clearLumaraVisualStream()
     window.eso.lumaraSocketEnabled = true
     setLumaraSocketStatus("connecting")
     bindLumaraSocketHandlers()
@@ -261,6 +373,7 @@ startLumaraSocketListener = async () => {
 }
 
 stopLumaraSocketListener = () => {
+    clearLumaraVisualStream()
     window.eso.lumaraSocketEnabled = false
     clearLumaraSocketReconnectTimer()
     window.eso.lumaraSocketConnectInFlight = null
