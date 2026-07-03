@@ -53,4 +53,3 @@ dependencies:
     - beautifulsoup4
     - httpx
     - ddgs
-    - libp2p
