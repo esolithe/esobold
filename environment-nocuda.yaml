@@ -48,7 +48,12 @@ dependencies:
     - python-ulid
     - requests
     - fastapi
+    - starlette
+    - pydantic
+    - anyio
     - uvicorn
+    - regex
+    - trio
     - itsdangerous
     - websockets
     - python-multipart
@@ -58,3 +63,4 @@ dependencies:
     - beautifulsoup4
     - httpx
     - ddgs
+    - libp2p

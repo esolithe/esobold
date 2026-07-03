@@ -15011,6 +15011,9 @@ def get_OpenLumara_dir():
 def prepare_OpenLumara_config(launch_args):
     # Determine config file path
     configfile = (launch_args.OpenLumara_configfile or "").strip()
+    if configfile:
+        # Convert to absolute path to ensure consistency in frozen vs non-frozen environments
+        configfile = os.path.abspath(os.path.expanduser(configfile))
     return configfile
 
 class _LumaraPrefixedStream:
