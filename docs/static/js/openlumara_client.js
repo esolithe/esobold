@@ -115,6 +115,120 @@ class OpenlumaraClient {
         return wsUrl.toString();
     }
 
+    _waitForSocketOpen(timeoutMs = 8000) {
+        if (this.isSocketConnected()) {
+            return Promise.resolve(this._socket);
+        }
+
+        const socket = this.connectSocket();
+        return new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                cleanup();
+                reject(new Error('OpenLumara WebSocket did not open in time'));
+            }, timeoutMs);
+
+            const onOpen = () => {
+                cleanup();
+                resolve(socket);
+            };
+
+            const onClose = () => {
+                cleanup();
+                reject(new Error('OpenLumara WebSocket closed before opening'));
+            };
+
+            const onError = () => {
+                cleanup();
+                reject(new Error('OpenLumara WebSocket failed to open'));
+            };
+
+            const cleanup = () => {
+                clearTimeout(timeout);
+                this.offSocket('open', onOpen);
+                this.offSocket('close', onClose);
+                this.offSocket('error', onError);
+            };
+
+            this.onSocket('open', onOpen);
+            this.onSocket('close', onClose);
+            this.onSocket('error', onError);
+        });
+    }
+
+    async _sendMessageOverSocket(data, timeoutMs = 120000) {
+        const payload = data && typeof data === 'object' ? data : { role: 'user', content: `${data ?? ''}` };
+        if (!payload.role) {
+            payload.role = 'user';
+        }
+
+        const preState = await this.getMessages().catch(() => ({ messages: [], count: 0 }));
+        const previousCount = Number.isInteger(preState?.count)
+            ? preState.count
+            : (Array.isArray(preState?.messages) ? preState.messages.length : 0);
+
+        const socket = await this._waitForSocketOpen();
+
+        await new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => {
+                cleanup();
+                reject(new Error('OpenLumara WebSocket send timed out'));
+            }, timeoutMs);
+
+            const onComplete = () => {
+                cleanup();
+                resolve();
+            };
+
+            const onErrorPayload = (socketPayload) => {
+                cleanup();
+                const err = socketPayload?.error || socketPayload?.message || 'unknown error';
+                reject(new Error(`OpenLumara WebSocket error: ${err}`));
+            };
+
+            const onClose = () => {
+                cleanup();
+                reject(new Error('OpenLumara WebSocket closed before completion'));
+            };
+
+            const cleanup = () => {
+                clearTimeout(timeout);
+                this.offSocket('stream_complete', onComplete);
+                this.offSocket('error', onErrorPayload);
+                this.offSocket('close', onClose);
+            };
+
+            this.onSocket('stream_complete', onComplete);
+            this.onSocket('error', onErrorPayload);
+            this.onSocket('close', onClose);
+
+            try {
+                socket.send(JSON.stringify({ type: 'user_message', content: payload }));
+            } catch (err) {
+                cleanup();
+                reject(err);
+            }
+        });
+
+        const postState = await this.getMessages();
+        const messages = Array.isArray(postState?.messages) ? postState.messages : [];
+        const newMessages = messages.slice(previousCount);
+        const assistantMessage = [...newMessages].reverse().find(msg => msg?.role === 'assistant')
+            || [...messages].reverse().find(msg => msg?.role === 'assistant')
+            || null;
+
+        const currentChat = await this.getCurrentChat().catch(() => ({}));
+        const activeChat = currentChat?.chat || {};
+
+        return {
+            response: assistantMessage,
+            total: Number.isInteger(postState?.count) ? postState.count : messages.length,
+            current_chat: {
+                id: activeChat?.id || postState?.current_chat_id || null,
+                title: activeChat?.title || postState?.current_chat_title || '',
+            },
+        };
+    }
+
     async _get(path, params) {
         const resp = await fetch(this._url(path, params), {
             headers: this._authHeaders(),
@@ -213,12 +327,12 @@ class OpenlumaraClient {
     }
 
     /**
-     * Send a message and wait for the full AI response.
+     * Send a message and wait for the full AI response over WebSocket.
      * @param {object} data - Message data forwarded to the backend (at minimum `{role, content}`).
      * @returns {Promise<{response:object, total:number, current_chat:{id:string, title:string}}>}
      */
     async sendMessage(data) {
-        return this._post('/send', data);
+        return this._sendMessageOverSocket(data);
     }
 
     /**
