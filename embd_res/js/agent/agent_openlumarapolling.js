@@ -31,7 +31,8 @@ let clearLumaraVisualStream = () => {
 }
 
 let extractLumaraTokenFromSocketPayload = (payload) => {
-    return `${payload?.content || payload?.text || payload?.token || ""}`
+    let source = payload?.message && typeof payload.message === "object" ? payload.message : payload
+    return `${source?.content || source?.text || source?.token || ""}`
 }
 
 let appendLumaraVisualToken = (payload) => {

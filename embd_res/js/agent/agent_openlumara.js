@@ -59,6 +59,11 @@ export const buildOpenlumaraCommands = (ctx) => {
 	let streamLumaraResponse = async (message) => {
 		let payload = { role: "user", content: message }
 
+			let extractStreamToken = (socketPayload) => {
+				let source = socketPayload?.message && typeof socketPayload.message === "object" ? socketPayload.message : socketPayload
+				return `${source?.content || source?.text || source?.token || ""}`
+			}
+
 		let streamViaSocket = async () => {
 			let ensureOpenSocket = async () => {
 				if (ol.isSocketConnected()) {
@@ -112,7 +117,7 @@ export const buildOpenlumaraCommands = (ctx) => {
 				}, 120000)
 
 				let onToken = (socketPayload) => {
-					let token = `${socketPayload?.content || socketPayload?.text || socketPayload?.token || ""}`
+					let token = extractStreamToken(socketPayload)
 					if (token.length > 0) {
 						responseText += token
 						updateAgentStreamingDisplay(responseText)

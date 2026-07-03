@@ -2219,6 +2219,9 @@ let clearAgentStreamingDisplay = () => {
     updateAgentStreamingDisplay("")
 }
 
+window.updateAgentStreamingDisplay = updateAgentStreamingDisplay
+window.clearAgentStreamingDisplay = clearAgentStreamingDisplay
+
 let removeChoiceContainer = () => {
     if (document.getElementById("choiceContainer")) {
         document.getElementById("choiceContainer").remove()
