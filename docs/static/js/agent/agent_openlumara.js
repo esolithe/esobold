@@ -59,6 +59,27 @@ export const buildOpenlumaraCommands = (ctx) => {
 	let streamLumaraResponse = async (message) => {
 		let payload = { role: "user", content: message }
 
+			let extractStreamToken = (socketPayload) => {
+				let source = socketPayload?.message && typeof socketPayload.message === "object" ? socketPayload.message : socketPayload
+				
+				// Handle tool call deltas
+				if (source?.type === "tool_call_delta" && Array.isArray(source?.tool_calls) && source.tool_calls.length > 0) {
+					let parts = []
+					source.tool_calls.forEach(tc => {
+						if (tc?.function?.name) {
+							parts.push(`[${tc.function.name}]`)
+						}
+						if (tc?.function?.arguments) {
+							parts.push(`${tc.function.arguments}`)
+						}
+					})
+					return parts.join(" ")
+				}
+				
+				// Handle regular content
+				return `${source?.content || source?.text || source?.token || ""}`
+			}
+
 		let streamViaSocket = async () => {
 			let ensureOpenSocket = async () => {
 				if (ol.isSocketConnected()) {
@@ -112,7 +133,7 @@ export const buildOpenlumaraCommands = (ctx) => {
 				}, 120000)
 
 				let onToken = (socketPayload) => {
-					let token = `${socketPayload?.content || socketPayload?.text || socketPayload?.token || ""}`
+					let token = extractStreamToken(socketPayload)
 					if (token.length > 0) {
 						responseText += token
 						updateAgentStreamingDisplay(responseText)
@@ -200,6 +221,21 @@ export const buildOpenlumaraCommands = (ctx) => {
 			"outputVisibleToUser": true,
 			"executor": async (action) => {
                 const getMessagesSinceLastUserMessageAndShow = async () => {
+					let collapseMessagesByIndex = (messageList) => {
+						let byIndex = new Map()
+						let noIndex = []
+						;(Array.isArray(messageList) ? messageList : [messageList]).forEach(msg => {
+							if (!msg) {
+								return
+							}
+							if (Number.isInteger(msg?.index)) {
+								byIndex.set(msg.index, msg)
+							} else {
+								noIndex.push(msg)
+							}
+						})
+						return [...byIndex.values(), ...noIndex]
+					}
 
                     let displayHandled = false;
                     let lastMessageProcessedFromLumara = localsettings.lastMessageProcessedFromLumara
@@ -207,6 +243,7 @@ export const buildOpenlumaraCommands = (ctx) => {
 					if (!Array.isArray(messageHistory)) {
 						messageHistory = []
 					}
+					messageHistory = collapseMessagesByIndex(messageHistory)
                     if (!!messageHistory) {
 						let startPoint = [...messageHistory].reverse().find(msg => msg?.role === "user" && Number.isInteger(msg?.index))?.index;
                         if (startPoint !== null && Number.isInteger(startPoint)) {
