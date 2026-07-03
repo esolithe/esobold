@@ -5452,7 +5452,9 @@ Current version indicated by LITEVER below.
 	setInterval(poll_multiplayer, poll_interval_multiplayer); //a basic update loop for idle responses
 	setInterval(poll_chunked_tts, poll_interval_chunked_tts);
 
-	attempt_connect(false);
+	window.addEventListener("load", () => {
+		attempt_connect(false);
+	})
 
 	//fetch for news updates, for local mode, we don't fetch any news info. They can find updates themselves.
 	if(!localflag)
