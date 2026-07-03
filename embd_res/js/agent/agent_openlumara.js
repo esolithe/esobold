@@ -7,7 +7,11 @@ export const buildOpenlumaraCommands = (ctx) => {
 		objToText,
 	} = ctx
 
-	let formatLumaraMessage = (message) => `Lumara response: ${`${message || ""}`.trim()}`
+	let formatLumaraMessage = (message) => {
+		let body = (message || "").trim();
+		return `Lumara response: \n\n\`\`\`\n${body}\n\`\`\`\n\n`
+		
+	}
 
 	let updateAgentStreamingDisplay = (text) => {
 		document.querySelectorAll(".agentStreamingDisplay").forEach(elem => {
@@ -58,6 +62,18 @@ export const buildOpenlumaraCommands = (ctx) => {
 
 	let streamLumaraResponse = async (message) => {
 		let payload = { role: "user", content: message }
+
+		let stripDuplicatedPrefix = (existingText, incomingText) => {
+			let existing = `${existingText || ""}`
+			let incoming = `${incomingText || ""}`
+			if (!incoming) {
+				return ""
+			}
+			if (existing.length > 0 && incoming.startsWith(existing)) {
+				return incoming.substring(existing.length)
+			}
+			return incoming
+		}
 
 			let extractStreamToken = (socketPayload) => {
 				let source = socketPayload?.message && typeof socketPayload.message === "object" ? socketPayload.message : socketPayload
@@ -134,8 +150,9 @@ export const buildOpenlumaraCommands = (ctx) => {
 
 				let onToken = (socketPayload) => {
 					let token = extractStreamToken(socketPayload)
-					if (token.length > 0) {
-						responseText += token
+					let delta = stripDuplicatedPrefix(responseText, token)
+					if (delta.length > 0) {
+						responseText += delta
 						updateAgentStreamingDisplay(responseText)
 					}
 				}

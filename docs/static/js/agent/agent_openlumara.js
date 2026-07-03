@@ -7,7 +7,11 @@ export const buildOpenlumaraCommands = (ctx) => {
 		objToText,
 	} = ctx
 
-	let formatLumaraMessage = (message) => `Lumara response: ${`${message || ""}`.trim()}`
+	let formatLumaraMessage = (message) => {
+		let body = (message || "").trim();
+		return `Lumara response: \n\n\`\`\`\n${body}\n\`\`\`\n\n`
+		
+	}
 
 	let updateAgentStreamingDisplay = (text) => {
 		document.querySelectorAll(".agentStreamingDisplay").forEach(elem => {
