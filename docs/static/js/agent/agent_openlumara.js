@@ -75,26 +75,28 @@ export const buildOpenlumaraCommands = (ctx) => {
 			return incoming
 		}
 
-			let extractStreamToken = (socketPayload) => {
-				let source = socketPayload?.message && typeof socketPayload.message === "object" ? socketPayload.message : socketPayload
-				
-				// Handle tool call deltas
-				if (source?.type === "tool_call_delta" && Array.isArray(source?.tool_calls) && source.tool_calls.length > 0) {
-					let parts = []
-					source.tool_calls.forEach(tc => {
-						if (tc?.function?.name) {
-							parts.push(`[${tc.function.name}]`)
-						}
-						if (tc?.function?.arguments) {
-							parts.push(`${tc.function.arguments}`)
-						}
-					})
-					return parts.join(" ")
-				}
-				
-				// Handle regular content
-				return `${source?.content || source?.text || source?.token || ""}`
+		let extractStreamToken = (socketPayload) => {
+			let source = socketPayload?.message && typeof socketPayload.message === "object" ? socketPayload.message : socketPayload
+			
+			// Handle tool call deltas
+			if (source?.type === "tool_call_delta" && Array.isArray(source?.tool_calls) && source.tool_calls.length > 0) {
+				console.log("extractStreamToken: tool_call_delta detected, extracting function names and arguments", source.tool_calls)
+				let parts = []
+				source.tool_calls.forEach(tc => {
+					if (tc?.function?.name) {
+						parts.push(`[${tc.function.name}]`)
+					}
+					if (tc?.function?.arguments) {
+						console.log("extractStreamToken: tool_call_delta arguments detected", tc.function.arguments)
+						parts.push(`${tc.function.arguments}`)
+					}
+				})
+				return parts.join(" ")
 			}
+			
+			// Handle regular content
+			return `${source?.content || source?.text || source?.token || ""}`
+		}
 
 		let streamViaSocket = async () => {
 			let ensureOpenSocket = async () => {
@@ -139,7 +141,7 @@ export const buildOpenlumaraCommands = (ctx) => {
 				return socket
 			}
 
-			let responseText = ""
+			let responseText = "", lastToken = ""
 			let socket = await ensureOpenSocket()
 
 			await new Promise((resolve, reject) => {
@@ -150,11 +152,12 @@ export const buildOpenlumaraCommands = (ctx) => {
 
 				let onToken = (socketPayload) => {
 					let token = extractStreamToken(socketPayload)
-					let delta = stripDuplicatedPrefix(responseText, token)
+					let delta = stripDuplicatedPrefix(lastToken, token)
 					if (delta.length > 0) {
 						responseText += delta
 						updateAgentStreamingDisplay(responseText)
 					}
+					lastToken = token
 				}
 
 				let onComplete = () => {
