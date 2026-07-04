@@ -80,14 +80,12 @@ export const buildOpenlumaraCommands = (ctx) => {
 			
 			// Handle tool call deltas
 			if (source?.type === "tool_call_delta" && Array.isArray(source?.tool_calls) && source.tool_calls.length > 0) {
-				console.log("extractStreamToken: tool_call_delta detected, extracting function names and arguments", source.tool_calls)
 				let parts = []
 				source.tool_calls.forEach(tc => {
 					if (tc?.function?.name) {
 						parts.push(`[${tc.function.name}]`)
 					}
 					if (tc?.function?.arguments) {
-						console.log("extractStreamToken: tool_call_delta arguments detected", tc.function.arguments)
 						parts.push(`${tc.function.arguments}`)
 					}
 				})
