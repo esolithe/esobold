@@ -4,7 +4,10 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstring>
 #include <functional>
+#include <limits>
+#include <map>
 #include <string>
 #include <utility>
 
@@ -302,6 +305,137 @@ struct KarrasScheduler : SigmaScheduler {
     }
 };
 
+struct BetaScheduler : SigmaScheduler {
+    static constexpr double alpha = 0.6;
+    static constexpr double beta  = 0.6;
+
+    static double log_beta(double a, double b) {
+        return std::lgamma(a) + std::lgamma(b) - std::lgamma(a + b);
+    }
+
+    static double incbeta(double x, double a, double b) {
+        if (x <= 0.0) {
+            return 0.0;
+        }
+        if (x >= 1.0) {
+            return 1.0;
+        }
+
+        // Continued fraction approximation using Lentz's method.
+        const int max_iter   = 200;
+        const double epsilon = 3.0e-7;
+        const double tiny    = 1e-30;
+
+        const double qab = a + b;
+        const double qap = a + 1.0;
+        const double qam = a - 1.0;
+
+        double c = 1.0;
+        double d = 1.0 - qab * x / qap;
+        if (std::abs(d) < tiny) {
+            d = tiny;
+        }
+        d        = 1.0 / d;
+        double h = d;
+
+        for (int m = 1; m <= max_iter; m++) {
+            const int m2 = 2 * m;
+
+            double aa = m * (b - m) * x / ((qam + m2) * (a + m2));
+            d         = 1.0 + aa * d;
+            if (std::abs(d) < tiny) {
+                d = tiny;
+            }
+            c = 1.0 + aa / c;
+            if (std::abs(c) < tiny) {
+                c = tiny;
+            }
+            d = 1.0 / d;
+            h *= d * c;
+
+            aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2));
+            d  = 1.0 + aa * d;
+            if (std::abs(d) < tiny) {
+                d = tiny;
+            }
+            c = 1.0 + aa / c;
+            if (std::abs(c) < tiny) {
+                c = tiny;
+            }
+            d                = 1.0 / d;
+            const double del = d * c;
+            h *= del;
+
+            if (std::abs(del - 1.0) < epsilon) {
+                break;
+            }
+        }
+
+        return std::exp(a * std::log(x) + b * std::log(1.0 - x) - log_beta(a, b)) / a * h;
+    }
+
+    static double beta_cdf(double x, double a, double b) {
+        if (x == 0.0) {
+            return 0.0;
+        }
+        if (x == 1.0) {
+            return 1.0;
+        }
+        if (x < (a + 1.0) / (a + b + 2.0)) {
+            return incbeta(x, a, b);
+        }
+        return 1.0 - incbeta(1.0 - x, b, a);
+    }
+
+    static double beta_ppf(double u, double a, double b, int max_iter = 30) {
+        double x = 0.5;
+        for (int i = 0; i < max_iter; i++) {
+            const double f = beta_cdf(x, a, b) - u;
+            if (std::abs(f) < 1e-10) {
+                break;
+            }
+            const double df = std::exp((a - 1.0) * std::log(x) + (b - 1.0) * std::log(1.0 - x) - log_beta(a, b));
+            x -= f / df;
+            if (x <= 0.0) {
+                x = 1e-10;
+            }
+            if (x >= 1.0) {
+                x = 1.0 - 1e-10;
+            }
+        }
+        return x;
+    }
+
+    std::vector<float> get_sigmas(uint32_t n, float /*sigma_min*/, float /*sigma_max*/, t_to_sigma_t t_to_sigma) override {
+        std::vector<float> result;
+        result.reserve(n + 1);
+
+        const int t_max = TIMESTEPS - 1;
+        if (n == 0) {
+            return result;
+        } else if (n == 1) {
+            result.push_back(t_to_sigma(static_cast<float>(t_max)));
+            result.push_back(0.f);
+            return result;
+        }
+
+        int last_t = -1;
+        for (uint32_t i = 0; i < n; i++) {
+            const double u      = 1.0 - static_cast<double>(i) / static_cast<double>(n);
+            const double t_cont = beta_ppf(u, alpha, beta) * t_max;
+            const int t         = static_cast<int>(std::lround(t_cont));
+
+            if (t != last_t) {
+                result.push_back(t_to_sigma(static_cast<float>(t)));
+                last_t = t;
+            }
+        }
+
+        result.push_back(0.f);
+        return result;
+    }
+};
+
 struct SimpleScheduler : SigmaScheduler {
     std::vector<float> get_sigmas(uint32_t n, float sigma_min, float sigma_max, t_to_sigma_t t_to_sigma) override {
         std::vector<float> result_sigmas;
@@ -559,6 +693,122 @@ struct LTX2Scheduler : SigmaScheduler {
     }
 };
 
+inline float flux_time_shift(float mu, float sigma, float t) {
+    return ::expf(mu) / (::expf(mu) + ::powf((1.0f / t - 1.0f), sigma));
+}
+
+// https://github.com/black-forest-labs/flux/blob/main/src/flux/sampling.py#L289
+struct FluxScheduler : SigmaScheduler {
+    int image_seq_len = 0;
+    float base_shift  = 0.5f;
+    float max_shift   = 1.15f;
+
+    explicit FluxScheduler(int image_seq_len, const char* extra_sample_args = nullptr)
+        : image_seq_len(image_seq_len) {
+        parse_extra_sample_args(extra_sample_args);
+    }
+
+    void parse_extra_sample_args(const char* extra_sample_args) {
+        for (const auto& [key, value] : parse_key_value_args(extra_sample_args, "flux scheduler arg")) {
+            if (key == "base_shift") {
+                if (!parse_strict_float(value, base_shift)) {
+                    LOG_WARN("ignoring invalid flux scheduler arg '%s=%s'", key.c_str(), value.c_str());
+                }
+            } else if (key == "max_shift") {
+                if (!parse_strict_float(value, max_shift)) {
+                    LOG_WARN("ignoring invalid flux scheduler arg '%s=%s'", key.c_str(), value.c_str());
+                }
+            }
+        }
+    }
+
+    float compute_mu() const {
+        constexpr float base_shift_anchor = 256.0f;
+        constexpr float max_shift_anchor  = 4096.0f;
+        float m                           = (max_shift - base_shift) / (max_shift_anchor - base_shift_anchor);
+        float b                           = base_shift - m * base_shift_anchor;
+        return static_cast<float>(image_seq_len) * m + b;
+    }
+
+    std::vector<float> get_sigmas(uint32_t n, float /*sigma_min*/, float /*sigma_max*/, t_to_sigma_t /*t_to_sigma*/) override {
+        std::vector<float> sigmas;
+        sigmas.reserve(n + 1);
+
+        float mu = compute_mu();
+        LOG_DEBUG("Flux scheduler: image_seq_len=%d, steps=%u, mu=%.3f", image_seq_len, n, mu);
+
+        if (n == 0) {
+            sigmas.push_back(1.0f);
+            return sigmas;
+        }
+
+        for (uint32_t i = 0; i <= n; ++i) {
+            float t = 1.0f - static_cast<float>(i) / static_cast<float>(n);
+            if (t <= 0.0f) {
+                sigmas.push_back(0.0f);
+            } else {
+                sigmas.push_back(flux_time_shift(mu, 1.0f, t));
+            }
+        }
+
+        sigmas[n] = 0.0f;
+        return sigmas;
+    }
+};
+
+// https://github.com/black-forest-labs/flux2/blob/main/src/flux2/sampling.py#L244
+struct Flux2Scheduler : SigmaScheduler {
+    int image_seq_len = 0;
+
+    explicit Flux2Scheduler(int image_seq_len)
+        : image_seq_len(image_seq_len) {}
+
+    static float compute_empirical_mu(int image_seq_len, uint32_t num_steps) {
+        const float a1 = 8.73809524e-05f;
+        const float b1 = 1.89833333f;
+        const float a2 = 0.00016927f;
+        const float b2 = 0.45666666f;
+
+        if (image_seq_len > 4300) {
+            return a2 * image_seq_len + b2;
+        }
+
+        float m_200 = a2 * image_seq_len + b2;
+        float m_10  = a1 * image_seq_len + b1;
+
+        float a = (m_200 - m_10) / 190.0f;
+        float b = m_200 - 200.0f * a;
+        return a * num_steps + b;
+    }
+
+    std::vector<float> get_sigmas(uint32_t n, float /*sigma_min*/, float /*sigma_max*/, t_to_sigma_t /*t_to_sigma*/) override {
+        std::vector<float> sigmas;
+        sigmas.reserve(n + 1);
+
+        float mu = compute_empirical_mu(image_seq_len, n);
+        LOG_DEBUG("Flux2 scheduler: image_seq_len=%d, steps=%u, mu=%.3f", image_seq_len, n, mu);
+
+        if (n == 0) {
+            sigmas.push_back(1.0f);
+            return sigmas;
+        }
+
+        for (uint32_t i = 0; i <= n; ++i) {
+            float t = 1.0f - static_cast<float>(i) / static_cast<float>(n);
+            if (t <= 0.0f) {
+                sigmas.push_back(0.0f);
+            } else if (t >= 1.0f) {
+                sigmas.push_back(1.0f);
+            } else {
+                sigmas.push_back(flux_time_shift(mu, 1.0f, t));
+            }
+        }
+
+        sigmas[n] = 0.0f;
+        return sigmas;
+    }
+};
+
 /*
  * Logit-Normal Scheduler
  * Based on: https://github.com/ideogram-oss/ideogram4/blob/main/src/ideogram4/scheduler.py
@@ -602,7 +852,7 @@ struct LogitNormalScheduler : SigmaScheduler {
             }
         }
         if (image_seq_len > 0 && resolution_aware) {
-            mean += 0.5 * std::log(static_cast<float>(image_seq_len) / static_cast<float>(known_seq_len));
+            mean += 0.5f * std::log(static_cast<float>(image_seq_len) / static_cast<float>(known_seq_len));
         }
     }
 
@@ -616,7 +866,6 @@ struct LogitNormalScheduler : SigmaScheduler {
         one_minus_t_min = sigmoid(0.5f * logsnr_max);
         // t_max = 1.0f / (1.0f + std::exp(0.5f * logsnr_min));
         one_minus_t_max = sigmoid(0.5f * logsnr_min);
-
     }
 
     LogitNormalScheduler(int image_seq_len = 0, const char* extra_sample_args = nullptr) {
@@ -736,7 +985,7 @@ struct LogitNormalScheduler : SigmaScheduler {
             float t = static_cast<float>(i) / static_cast<float>(n);
 
             // ndtri(1-t) == -ndtri(t)
-            float z = -ndtri(t);
+            float z = static_cast<float>(-ndtri(t));
 
             float y = mean + std * z;
 
@@ -767,6 +1016,7 @@ struct Denoiser {
                                             const sd::Tensor<float>& latent)         = 0;
     virtual sd::Tensor<float> inverse_noise_scaling(float sigma,
                                                     const sd::Tensor<float>& latent) = 0;
+    virtual float noise_level_to_sigma(float noise_level)                            = 0;
 
     virtual std::vector<float> get_sigmas(uint32_t n, int image_seq_len, scheduler_t scheduler_type, SDVersion version, const char* extra_sample_args = nullptr) {
         auto bound_t_to_sigma = std::bind(&Denoiser::t_to_sigma, this, std::placeholders::_1);
@@ -779,6 +1029,10 @@ struct Denoiser {
             case KARRAS_SCHEDULER:
                 LOG_INFO("get_sigmas with Karras scheduler");
                 scheduler = std::make_shared<KarrasScheduler>();
+                break;
+            case BETA_SCHEDULER:
+                LOG_INFO("get_sigmas with Beta scheduler");
+                scheduler = std::make_shared<BetaScheduler>();
                 break;
             case EXPONENTIAL_SCHEDULER:
                 LOG_INFO("get_sigmas exponential scheduler");
@@ -823,6 +1077,16 @@ struct Denoiser {
             case LOGIT_NORMAL_SCHEDULER: {
                 LOG_INFO("get_sigmas with Logit-Normal scheduler");
                 scheduler = std::make_shared<LogitNormalScheduler>(image_seq_len, extra_sample_args);
+                break;
+            }
+            case FLUX2_SCHEDULER: {
+                LOG_INFO("get_sigmas with Flux2 scheduler");
+                scheduler = std::make_shared<Flux2Scheduler>(image_seq_len);
+                break;
+            }
+            case FLUX_SCHEDULER: {
+                LOG_INFO("get_sigmas with Flux scheduler");
+                scheduler = std::make_shared<FluxScheduler>(image_seq_len, extra_sample_args);
                 break;
             }
             default:
@@ -889,9 +1153,9 @@ struct CompVisDenoiser : public Denoiser {
         return {c_skip, c_out, c_in};
     }
 
-    virtual sd::Tensor<float> noise_scaling(float sigma,
-                                            const sd::Tensor<float>& noise,
-                                            const sd::Tensor<float>& latent) override {
+    sd::Tensor<float> noise_scaling(float sigma,
+                                    const sd::Tensor<float>& noise,
+                                    const sd::Tensor<float>& latent) override {
         GGML_ASSERT(noise.numel() == latent.numel());
         return latent + noise * sigma;
     }
@@ -899,6 +1163,10 @@ struct CompVisDenoiser : public Denoiser {
     sd::Tensor<float> inverse_noise_scaling(float sigma, const sd::Tensor<float>& latent) override {
         SD_UNUSED(sigma);
         return latent;
+    }
+
+    float noise_level_to_sigma(float noise_level) override {
+        return noise_level / (1.0f - noise_level);
     }
 };
 
@@ -987,11 +1255,11 @@ struct DiscreteFlowDenoiser : public Denoiser {
     sd::Tensor<float> inverse_noise_scaling(float sigma, const sd::Tensor<float>& latent) override {
         return latent * (1.0f / (1.0f - sigma));
     }
-};
 
-inline float flux_time_shift(float mu, float sigma, float t) {
-    return ::expf(mu) / (::expf(mu) + ::powf((1.0f / t - 1.0f), sigma));
-}
+    float noise_level_to_sigma(float noise_level) override {
+        return noise_level;
+    }
+};
 
 struct FluxFlowDenoiser : public DiscreteFlowDenoiser {
     FluxFlowDenoiser() = default;
@@ -1006,35 +1274,146 @@ struct FluxFlowDenoiser : public DiscreteFlowDenoiser {
     }
 };
 
-struct Flux2FlowDenoiser : public FluxFlowDenoiser {
-    Flux2FlowDenoiser() = default;
+struct SefiFlowDenoiser;
 
-    float compute_empirical_mu(uint32_t n, int image_seq_len) {
-        const float a1 = 8.73809524e-05f;
-        const float b1 = 1.89833333f;
-        const float a2 = 0.00016927f;
-        const float b2 = 0.45666666f;
+struct SefiFlowDenoiser : public FluxFlowDenoiser {
+    static constexpr int kNumTrainTimesteps = 1000;
+    static constexpr int kSemChannels       = 16;
+    static constexpr int kTotalChannels     = 144;
 
-        if (image_seq_len > 4300) {
-            float mu = a2 * image_seq_len + b2;
-            return mu;
+    float delta_t              = 0.1f;
+    float timestep_shift_alpha = 1.0f;
+
+    std::vector<float> sem_sigmas;
+    std::vector<float> tex_sigmas;
+    std::vector<float> sem_timesteps;
+    std::vector<float> tex_timesteps;
+
+    SefiFlowDenoiser() = default;
+
+    static float apply_alpha_shift(float u_unit, float alpha) {
+        if (alpha == 1.0f) {
+            return u_unit;
+        }
+        float denom = 1.0f + (alpha - 1.0f) * u_unit;
+        return (alpha * u_unit) / denom;
+    }
+
+    std::vector<float> get_sigmas(uint32_t n,
+                                  int image_seq_len,
+                                  scheduler_t scheduler_type,
+                                  SDVersion version,
+                                  const char* extra_sample_args = nullptr) override {
+        sem_sigmas.clear();
+        tex_sigmas.clear();
+        sem_timesteps.clear();
+        tex_timesteps.clear();
+
+        for (const auto& [key, value] : parse_key_value_args(extra_sample_args, "sefi scheduler arg")) {
+            if (key == "sefi_alpha") {
+                if (!parse_strict_float(value, timestep_shift_alpha)) {
+                    LOG_WARN("ignoring invalid sefi scheduler arg '%s=%s'", key.c_str(), value.c_str());
+                }
+            } else if (key == "sefi_delta_t") {
+                if (!parse_strict_float(value, delta_t)) {
+                    LOG_WARN("ignoring invalid sefi scheduler arg '%s=%s'", key.c_str(), value.c_str());
+                }
+            }
         }
 
-        float m_200 = a2 * image_seq_len + b2;
-        float m_10  = a1 * image_seq_len + b1;
+        for (uint32_t i = 0; i <= n; ++i) {
+            float u_base    = static_cast<float>(i) / static_cast<float>(n);
+            float u_shifted = apply_alpha_shift(u_base, timestep_shift_alpha);
+            float u_sem_raw = u_shifted * (1.0f + delta_t);
 
-        float a  = (m_200 - m_10) / 190.0f;
-        float b  = m_200 - 200.0f * a;
-        float mu = a * n + b;
+            float u_sem = std::min(u_sem_raw, 1.0f);
+            float u_tex = std::max(0.0f, std::min(u_sem_raw - delta_t, 1.0f));
 
-        return mu;
+            int idx_sem = std::min(kNumTrainTimesteps - 1,
+                                   std::max(0, static_cast<int>(u_sem * (kNumTrainTimesteps - 1))));
+            int idx_tex = std::min(kNumTrainTimesteps - 1,
+                                   std::max(0, static_cast<int>(u_tex * (kNumTrainTimesteps - 1))));
+
+            float t_sem     = static_cast<float>(kNumTrainTimesteps - idx_sem);
+            float t_tex     = static_cast<float>(kNumTrainTimesteps - idx_tex);
+            float sigma_sem = t_sem / static_cast<float>(kNumTrainTimesteps);
+            float sigma_tex = t_tex / static_cast<float>(kNumTrainTimesteps);
+
+            sem_timesteps.push_back(t_sem);
+            tex_timesteps.push_back(t_tex);
+            sem_sigmas.push_back(sigma_sem);
+            tex_sigmas.push_back(sigma_tex);
+        }
+        LOG_DEBUG("SefiFlowDenoiser: built %u-step dual schedule (alpha=%.2f delta_t=%.2f)",
+                  n, timestep_shift_alpha, delta_t);
+        return tex_sigmas;
+    }
+};
+
+// MiniT2I predicts x0 directly and integrates a linear flow ODE:
+//   x_{t+dt} = x_t + (x0 - x_t)/(1 - t) * dt,  t in [0, 1), x0 = start = noise * 2.
+// Mapping sigma = 1 - t makes the generic Euler update
+//   x += (x - denoised)/sigma * (sigma_next - sigma)
+// exactly reproduce that step when denoised == x0. To make the generic
+// `denoised = pred * c_out + x * c_skip` yield x0 from the model's raw x0
+// prediction we use c_skip = 0, c_out = 1, c_in = 1. Sigmas run linearly 1 -> 0.
+struct MiniT2IFlowDenoiser : public Denoiser {
+    float sigma_min() override {
+        return 0.0f;
+    }
+
+    float sigma_max() override {
+        return 1.0f;
+    }
+
+    float sigma_to_t(float sigma) override {
+        return 1.0f - sigma;
+    }
+
+    float t_to_sigma(float t) override {
+        return 1.0f - t;
+    }
+
+    std::vector<float> get_scalings(float sigma) override {
+        SD_UNUSED(sigma);
+        float c_skip = 0.0f;
+        float c_out  = 1.0f;
+        float c_in   = 1.0f;
+        return {c_skip, c_out, c_in};
+    }
+
+    sd::Tensor<float> noise_scaling(float sigma,
+                                    const sd::Tensor<float>& noise,
+                                    const sd::Tensor<float>& latent) override {
+        SD_UNUSED(sigma);
+        SD_UNUSED(latent);
+        // Sampling starts from x0_init = noise * 2 (see MiniT2I reference).
+        return noise * 2.0f;
+    }
+
+    sd::Tensor<float> inverse_noise_scaling(float sigma, const sd::Tensor<float>& latent) override {
+        SD_UNUSED(sigma);
+        return latent;
+    }
+
+    float noise_level_to_sigma(float noise_level) override {
+        SD_UNUSED(noise_level);
+        return 1.0f;
     }
 
     std::vector<float> get_sigmas(uint32_t n, int image_seq_len, scheduler_t scheduler_type, SDVersion version, const char* extra_sample_args = nullptr) override {
-        float mu = compute_empirical_mu(n, image_seq_len);
-        LOG_DEBUG("Flux2FlowDenoiser: set shift to %.3f", mu);
-        set_shift(mu);
-        return Denoiser::get_sigmas(n, image_seq_len, scheduler_type, version, extra_sample_args);
+        SD_UNUSED(image_seq_len);
+        SD_UNUSED(scheduler_type);
+        SD_UNUSED(version);
+        SD_UNUSED(extra_sample_args);
+        // Uniform t schedule 0 -> 1 => sigma 1 -> 0, matching the reference loop.
+        std::vector<float> sigmas;
+        sigmas.reserve(n + 1);
+        for (uint32_t i = 0; i < n; ++i) {
+            sigmas.push_back(1.0f - static_cast<float>(i) / static_cast<float>(n));
+        }
+        sigmas.push_back(0.0f);
+        return sigmas;
     }
 };
 
@@ -1137,6 +1516,40 @@ static sd::Tensor<float> sample_euler_ancestral(denoise_cb_t model,
                 x += sd::Tensor<float>::randn_like(x, rng) * sigma_up;
             }
         }
+    }
+    return x;
+}
+
+static sd::Tensor<float> sample_sefi_euler(SefiFlowDenoiser* sefi,
+                                           denoise_cb_t model,
+                                           sd::Tensor<float> x) {
+    const std::vector<float>& sigma_tex_vec = sefi->tex_sigmas;
+    const std::vector<float>& sigma_sem_vec = sefi->sem_sigmas;
+    int steps                               = static_cast<int>(sigma_tex_vec.size()) - 1;
+    for (int i = 0; i < steps; i++) {
+        float sigma_tex_cur  = sigma_tex_vec[i];
+        float sigma_tex_next = sigma_tex_vec[i + 1];
+        float sigma_sem_cur  = sigma_sem_vec[i];
+        float sigma_sem_next = sigma_sem_vec[i + 1];
+        if (sigma_tex_cur <= 1e-9f) {
+            continue;
+        }
+        auto denoised_opt = model(x, sigma_tex_cur, i + 1);
+        if (denoised_opt.pred.empty()) {
+            return {};
+        }
+        sd::Tensor<float> denoised = std::move(denoised_opt.pred);
+        sd::Tensor<float> velocity = (x - denoised) / sigma_tex_cur;
+
+        auto x_sem      = sd::ops::slice(x, 2, 0, SefiFlowDenoiser::kSemChannels);
+        auto x_tex      = sd::ops::slice(x, 2, SefiFlowDenoiser::kSemChannels, SefiFlowDenoiser::kTotalChannels);
+        auto vel_sem    = sd::ops::slice(velocity, 2, 0, SefiFlowDenoiser::kSemChannels);
+        auto vel_tex    = sd::ops::slice(velocity, 2, SefiFlowDenoiser::kSemChannels, SefiFlowDenoiser::kTotalChannels);
+        auto x_sem_next = x_sem + vel_sem * (sigma_sem_next - sigma_sem_cur);
+        auto x_tex_next = x_tex + vel_tex * (sigma_tex_next - sigma_tex_cur);
+
+        sd::ops::slice_assign(&x, 2, 0, SefiFlowDenoiser::kSemChannels, x_sem_next);
+        sd::ops::slice_assign(&x, 2, SefiFlowDenoiser::kSemChannels, SefiFlowDenoiser::kTotalChannels, x_tex_next);
     }
     return x;
 }
@@ -1414,6 +1827,204 @@ static sd::Tensor<float> sample_dpmpp_2m_v2(denoise_cb_t model,
             x                            = a * x - b * denoised_d;
         }
         old_denoised = denoised;
+    }
+    return x;
+}
+
+// DPM-Solver++(2M) SDE, midpoint variant. Ref: Lu et al. arXiv:2211.01095;
+// k-diffusion sample_dpmpp_2m_sde.
+static sd::Tensor<float> sample_dpmpp_2m_sde(denoise_cb_t model,
+                                             sd::Tensor<float> x,
+                                             const std::vector<float>& sigmas,
+                                             std::shared_ptr<RNG> rng,
+                                             float eta) {
+    sd::Tensor<float> old_denoised;
+    bool have_old_denoised = false;
+    float h_last           = 0.f;
+
+    int steps = static_cast<int>(sigmas.size()) - 1;
+    for (int i = 0; i < steps; i++) {
+        auto denoised_opt = model(x, sigmas[i], i + 1);
+        if (denoised_opt.pred.empty()) {
+            return {};
+        }
+        sd::Tensor<float> denoised = std::move(denoised_opt.pred);
+
+        if (sigmas[i + 1] == 0.f) {
+            x = denoised;
+        } else {
+            float t     = -std::log(sigmas[i]);
+            float s     = -std::log(sigmas[i + 1]);
+            float h     = s - t;
+            float eta_h = eta * h;
+            float a     = sigmas[i + 1] / sigmas[i] * std::exp(-eta_h);
+            float b     = -std::expm1(-h - eta_h);
+
+            x = a * x + b * denoised;
+
+            if (have_old_denoised) {
+                float r = h_last / h;
+                x += (0.5f * b / r) * (denoised - old_denoised);
+            }
+            if (eta > 0.f) {
+                x += sd::Tensor<float>::randn_like(x, rng) * (sigmas[i + 1] * std::sqrt(-std::expm1(-2.f * eta_h)));
+            }
+            h_last = h;
+        }
+        old_denoised      = denoised;
+        have_old_denoised = true;
+    }
+    return x;
+}
+
+// Seeded Brownian tree providing deterministic, step-count-stable Gaussian
+// increments for stochastic samplers. Constructed once per generation; each
+// call returns unit-variance noise for interval [sigma_a, sigma_b].
+// Reference: torchsde BrownianTree; k-diffusion BatchedBrownianTree.
+class BrownianTreeNoiseSampler {
+public:
+    BrownianTreeNoiseSampler(const sd::Tensor<float>& x_template,
+                             double sigma_min,
+                             double sigma_max,
+                             uint64_t seed)
+        : t_min_(sigma_min),
+          t_max_(sigma_max),
+          shape_(x_template.shape()),
+          root_seed_(mix64(seed, 0x9E3779B97F4A7C15ULL)) {
+        auto rng = std::make_shared<STDDefaultRNG>();
+        rng->manual_seed(mix64(seed, 0xBF58476D1CE4E5B9ULL));
+        w_at_tmax_ = sd::Tensor<float>::randn(shape_, rng) * std::sqrt(static_cast<float>(t_max_ - t_min_));
+    }
+
+    sd::Tensor<float> operator()(double sigma_a, double sigma_b) {
+        double a   = clamp(std::min(sigma_a, sigma_b));
+        double b   = clamp(std::max(sigma_a, sigma_b));
+        auto dW    = w(b) - w(a);
+        float span = static_cast<float>(std::max(std::abs(sigma_b - sigma_a), 1e-12));
+        return dW * (1.0f / std::sqrt(span));
+    }
+
+private:
+    static constexpr int kMaxDepth = 24;
+
+    static uint64_t mix64(uint64_t v, uint64_t salt) {
+        uint64_t z = v + salt;
+        z          = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+        z          = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+        return z ^ (z >> 31);
+    }
+
+    double clamp(double t) const {
+        return std::min(std::max(t, t_min_), t_max_);
+    }
+
+    sd::Tensor<float> w(double t) {
+        auto it = cache_.find(t);
+        if (it != cache_.end()) {
+            return it->second;
+        }
+        sd::Tensor<float> zero = sd::Tensor<float>::zeros(shape_);
+        sd::Tensor<float> out  = bridge(t_min_, t_max_, zero, w_at_tmax_, t, root_seed_, kMaxDepth);
+        cache_.emplace(t, out);
+        return out;
+    }
+
+    sd::Tensor<float> bridge(double a,
+                             double c,
+                             const sd::Tensor<float>& w_a,
+                             const sd::Tensor<float>& w_c,
+                             double t,
+                             uint64_t node_seed,
+                             int depth) {
+        if (depth <= 0 || c - a < 1e-9) {
+            float alpha = (c > a) ? static_cast<float>((t - a) / (c - a)) : 0.5f;
+            return (1.0f - alpha) * w_a + alpha * w_c;
+        }
+        double m       = 0.5 * (a + c);
+        double std_dev = std::sqrt((c - m) * (m - a) / (c - a));
+        auto rng       = std::make_shared<STDDefaultRNG>();
+        rng->manual_seed(node_seed);
+        auto z   = sd::Tensor<float>::randn(shape_, rng);
+        auto w_m = 0.5f * (w_a + w_c) + static_cast<float>(std_dev) * z;
+        if (t == m) {
+            return w_m;
+        }
+        if (t < m) {
+            return bridge(a, m, w_a, w_m, t, mix64(node_seed, 1), depth - 1);
+        }
+        return bridge(m, c, w_m, w_c, t, mix64(node_seed, 2), depth - 1);
+    }
+
+    double t_min_;
+    double t_max_;
+    std::vector<int64_t> shape_;
+    uint64_t root_seed_;
+    sd::Tensor<float> w_at_tmax_;
+    std::map<double, sd::Tensor<float>> cache_;
+};
+
+// DPM-Solver++(2M) SDE, midpoint variant, with step-count-stable Brownian-tree
+// noise. Same trajectory shape at any step count for a given seed. Aliased in
+// k-diffusion / ComfyUI as sample_dpmpp_2m_sde_gpu.
+// Ref: Lu et al. arXiv:2211.01095; torchsde BrownianTree.
+static sd::Tensor<float> sample_dpmpp_2m_sde_bt(denoise_cb_t model,
+                                                sd::Tensor<float> x,
+                                                const std::vector<float>& sigmas,
+                                                std::shared_ptr<RNG> rng,
+                                                float eta) {
+    double sigma_max = 0.0;
+    double sigma_min = std::numeric_limits<double>::infinity();
+    for (float s : sigmas) {
+        if (s > 0.0f) {
+            sigma_max = std::max(sigma_max, static_cast<double>(s));
+            sigma_min = std::min(sigma_min, static_cast<double>(s));
+        }
+    }
+    if (sigma_max <= sigma_min) {
+        return x;
+    }
+    uint64_t tree_seed = 0;
+    {
+        auto draw = rng->randn(2);
+        std::memcpy(&tree_seed, draw.data(), sizeof(tree_seed));
+    }
+    BrownianTreeNoiseSampler noise_sampler(x, sigma_min, sigma_max, tree_seed);
+
+    sd::Tensor<float> old_denoised;
+    bool have_old_denoised = false;
+    float h_last           = 0.f;
+
+    int steps = static_cast<int>(sigmas.size()) - 1;
+    for (int i = 0; i < steps; i++) {
+        auto denoised_opt = model(x, sigmas[i], i + 1);
+        if (denoised_opt.pred.empty()) {
+            return {};
+        }
+        sd::Tensor<float> denoised = std::move(denoised_opt.pred);
+
+        if (sigmas[i + 1] == 0.f) {
+            x = denoised;
+        } else {
+            float t     = -std::log(sigmas[i]);
+            float s     = -std::log(sigmas[i + 1]);
+            float h     = s - t;
+            float eta_h = eta * h;
+            float a     = sigmas[i + 1] / sigmas[i] * std::exp(-eta_h);
+            float b     = -std::expm1(-h - eta_h);
+
+            x = a * x + b * denoised;
+
+            if (have_old_denoised) {
+                float r = h_last / h;
+                x += (0.5f * b / r) * (denoised - old_denoised);
+            }
+            if (eta > 0.f) {
+                x += noise_sampler(sigmas[i], sigmas[i + 1]) * (sigmas[i + 1] * std::sqrt(-std::expm1(-2.f * eta_h)));
+            }
+            h_last = h;
+        }
+        old_denoised      = denoised;
+        have_old_denoised = true;
     }
     return x;
 }
@@ -2056,7 +2667,13 @@ static sd::Tensor<float> sample_k_diffusion(sample_method_t method,
                                             std::shared_ptr<RNG> rng,
                                             float eta,
                                             bool is_flow_denoiser,
-                                            const char* extra_sample_args) {
+                                            const char* extra_sample_args,
+                                            std::shared_ptr<Denoiser> denoiser_for_dispatch = nullptr) {
+    if (denoiser_for_dispatch) {
+        if (auto sefi = std::dynamic_pointer_cast<SefiFlowDenoiser>(denoiser_for_dispatch)) {
+            return sample_sefi_euler(sefi.get(), model, std::move(x));
+        }
+    }
     SamplerExtraArgs extra_args = parse_key_value_args(extra_sample_args, "extra sample arg");
     switch (method) {
         case EULER_A_SAMPLE_METHOD:
@@ -2088,6 +2705,10 @@ static sd::Tensor<float> sample_k_diffusion(sample_method_t method,
             return sample_res_2s(model, std::move(x), sigmas, rng, is_flow_denoiser, eta);
         case ER_SDE_SAMPLE_METHOD:
             return sample_er_sde(model, std::move(x), sigmas, rng, is_flow_denoiser, eta);
+        case DPMPP2M_SDE_SAMPLE_METHOD:
+            return sample_dpmpp_2m_sde(model, std::move(x), sigmas, rng, eta);
+        case DPMPP2M_SDE_BT_SAMPLE_METHOD:
+            return sample_dpmpp_2m_sde_bt(model, std::move(x), sigmas, rng, eta);
         case DDIM_TRAILING_SAMPLE_METHOD:
             // DDIM is equivalent to Euler Ancestral with the Simple scheduler
             return sample_euler_ancestral(model, std::move(x), sigmas, rng, is_flow_denoiser, eta);

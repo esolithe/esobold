@@ -31,6 +31,8 @@ namespace fs = std::filesystem;
 
 // all RPC structures must be packed
 #pragma pack(push, 1)
+static constexpr size_t RPC_TENSOR_NAME_SIZE = 64;
+
 // ggml_tensor is serialized into rpc_tensor
 struct rpc_tensor {
     uint64_t id;
@@ -45,11 +47,12 @@ struct rpc_tensor {
     uint64_t view_src;
     uint64_t view_offs;
     uint64_t data;
-    char name[GGML_MAX_NAME];
+    char name[RPC_TENSOR_NAME_SIZE];
 
     char padding[4];
 };
 
+static_assert(RPC_TENSOR_NAME_SIZE == 64, "rpc_tensor name size must match the upstream RPC wire ABI");
 static_assert(sizeof(rpc_tensor) % 8 == 0, "rpc_tensor size must be multiple of 8");
 
 // RPC commands
@@ -441,7 +444,7 @@ static rpc_tensor serialize_tensor(const ggml_tensor * tensor) {
     memset(result.name, 0, sizeof(result.name));
     memset(result.padding, 0, sizeof(result.padding));
 
-    snprintf(result.name, GGML_MAX_NAME, "%s", tensor->name);
+    snprintf(result.name, sizeof(result.name), "%s", tensor->name);
     return result;
 }
 

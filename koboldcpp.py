@@ -53,6 +53,7 @@ import logging
 import io
 
 # constants
+num_server_threads = 40
 sampler_order_max = 7
 tensor_split_max = 16
 images_max = 16
@@ -88,7 +89,7 @@ dry_seq_break_max = 128
 extra_images_max = 4 # for kontext/qwen img
 
 # global vars
-KcppVersion = "1.117"
+KcppVersion = "1.118"
 showdebug = True
 kcpp_instance = None #global running instance
 global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "currentBaseConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "base_config":"", "swapReqType": None, "autoswapmode": False, "autoswapSettings": {}, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}, "restart_override_base_config": "", "current_model_override": "", "OpenLumara": False}
@@ -111,6 +112,8 @@ musicName = None
 imageName = None
 mmprojName = None
 lastgeneratedcomfyimg = b''
+lastgeneratedcachedimg = b''
+lastgeneratedcachedimgkey = b''
 lastuploadedcomfyimg = b''
 fullsdmodelpath = ""  #if empty, it's not initialized
 password = "" #if empty, no auth key required
@@ -393,14 +396,12 @@ class generation_outputs(ctypes.Structure):
 class sd_load_model_inputs(ctypes.Structure):
     _fields_ = [("model_filename", ctypes.c_char_p),
                 ("executable_path", ctypes.c_char_p),
-                ("kcpp_main_device", ctypes.c_int),
+                ("backend", ctypes.c_char_p),
                 ("threads", ctypes.c_int),
                 ("quant", ctypes.c_int),
                 ("flash_attention", ctypes.c_bool),
-                ("offload_cpu", ctypes.c_bool),
+                ("params_backend", ctypes.c_char_p),
                 ("use_mmap", ctypes.c_bool),
-                ("kcpp_vae_device", ctypes.c_int),
-                ("kcpp_clip_device", ctypes.c_int),
                 ("diffusion_conv_direct", ctypes.c_bool),
                 ("vae_conv_direct", ctypes.c_bool),
                 ("taesd", ctypes.c_bool),
@@ -418,8 +419,10 @@ class sd_load_model_inputs(ctypes.Structure):
                 ("upscaler_filename", ctypes.c_char_p),
                 ("img_hard_limit", ctypes.c_int),
                 ("img_soft_limit", ctypes.c_int),
-                ("max_vram", ctypes.c_float),
+                ("max_vram", ctypes.c_char_p),
+                ("split_mode", ctypes.c_char_p),
                 ("stream_layers", ctypes.c_bool),
+                ("auto_fit", ctypes.c_bool),
                 ("devices_override", ctypes.c_char_p),
                 ("quiet", ctypes.c_bool),
                 ("debugmode", ctypes.c_int)]
@@ -446,6 +449,8 @@ class sd_generation_inputs(ctypes.Structure):
                 ("sample_method", ctypes.c_char_p),
                 ("scheduler", ctypes.c_char_p),
                 ("eta", ctypes.c_float),
+                ("extra_sample_args", ctypes.c_char_p),
+                ("ref_image_args", ctypes.c_char_p),
                 ("clip_skip", ctypes.c_int),
                 ("vid_req_frames", ctypes.c_int),
                 ("vid_fps", ctypes.c_int),
@@ -1007,6 +1012,8 @@ def init_library():
     handle.sd_upscale.restype = sd_generation_outputs
     handle.sd_get_info.argtypes = []
     handle.sd_get_info.restype = sd_info_outputs
+    handle.sd_abort_generation.argtypes = []
+    handle.sd_abort_generation.restype = None
     handle.whisper_load_model.argtypes = [whisper_load_model_inputs]
     handle.whisper_load_model.restype = ctypes.c_bool
     handle.whisper_generate.argtypes = [whisper_generation_inputs]
@@ -2112,6 +2119,23 @@ def load_model(model_filename):
     ret = handle.load_model(inputs)
     return ret
 
+def coerce_ban_list(value):
+    # banned tokens/strings are consumed as a list of substrings. A bare string satisfies
+    # every operation there, but iterates character by character, banning single letters.
+    if not value:
+        return []
+    if not isinstance(value, str):
+        return value
+    stripped = value.strip()
+    if stripped.startswith('[') and stripped.endswith(']'): # a JSON array sent as a string, e.g. through gendefaults
+        try:
+            parsed = json.loads(stripped)
+            if isinstance(parsed, list):
+                return [str(item) for item in parsed]
+        except json.JSONDecodeError:
+            pass
+    return [value]
+
 def generate(genparams, stream_flag=False):
     global maxctx, args, currentusergenkey, totalgens, pendingabortkey
     default_adapter = {} if chatcompl_adapter is None else chatcompl_adapter
@@ -2176,8 +2200,8 @@ def generate(genparams, stream_flag=False):
         min_p = 0.002
     logit_biases = genparams.get('logit_bias', {})
     render_special = genparams.get('render_special', False)
-    banned_strings = genparams.get('banned_strings', []) # SillyTavern uses that name
-    banned_tokens = genparams.get('banned_tokens', banned_strings)
+    banned_strings = coerce_ban_list(genparams.get('banned_strings', [])) # SillyTavern uses that name
+    banned_tokens = coerce_ban_list(genparams.get('banned_tokens', banned_strings))
     bypass_eos_token = genparams.get('bypass_eos', False)
     tool_call_fix = genparams.get('using_openai_tools', False)
     custom_token_bans = genparams.get('custom_token_bans', '')
@@ -2525,9 +2549,26 @@ def sd_resolve_device(name, default_=-1):
         name = str(max(name, -2))
     return sd_get_device_number(name)
 
+def sd_get_device_override(deviceid, module=''):
+    '''formats a device id and a module name in sd.cpp --backend syntax'''
+    global cached_sd_info
+    devices = cached_sd_info.get('devices', [])
+    device_name = ''
+    if deviceid <= -2:
+        device_name = "CPU"
+    elif deviceid >= 0 and deviceid < len(devices):
+        device_name = devices[deviceid]['name']
+    if device_name and module:
+        result = module + '=' + device_name
+    else:
+        result = device_name
+    return result
+
 def sd_load_model(model_filename,vae_filename,t5xxl_filename,clip1_filename,clip2_filename,photomaker_filename,upscaler_filename,audio_vae_filename):
-    global args
+    global args, cached_sd_info
     inputs = sd_load_model_inputs()
+    inputs = set_backend_props(inputs)
+    cached_sd_info = sd_get_info()
     inputs.model_filename = model_filename.encode("UTF-8")
     thds = args.threads
 
@@ -2539,10 +2580,14 @@ def sd_load_model(model_filename,vae_filename,t5xxl_filename,clip1_filename,clip
     inputs.threads = thds
     inputs.quant = args.sdquant
     inputs.flash_attention = args.sdflashattention
-    inputs.offload_cpu = args.sdoffloadcpu
+    inputs.params_backend = b'CPU' if args.sdoffloadcpu else b''
     inputs.use_mmap = args.usemmap
-    inputs.kcpp_vae_device = sd_resolve_device(args.sdvaedevice, default_sdvaedevice)
-    inputs.kcpp_clip_device = sd_resolve_device(args.sdclipdevice, default_sdclipdevice)
+    backends = [
+        sd_get_device_override(sd_resolve_device(args.sdmaingpu, 'main')),
+        sd_get_device_override(sd_resolve_device(args.sdclipdevice, default_sdclipdevice), 'CLIP'),
+        sd_get_device_override(sd_resolve_device(args.sdvaedevice, default_sdvaedevice), 'VAE'),
+    ]
+    inputs.backend = ','.join([b for b in backends if b]).encode("UTF-8")
     sdconvdirect = sd_convdirect_option(args.sdconvdirect)
     inputs.diffusion_conv_direct = sdconvdirect == 'full'
     inputs.vae_conv_direct = sdconvdirect in ['vaeonly', 'full']
@@ -2555,7 +2600,7 @@ def sd_load_model(model_filename,vae_filename,t5xxl_filename,clip1_filename,clip
     inputs.clip2_filename = clip2_filename.encode("UTF-8")
     inputs.photomaker_filename = photomaker_filename.encode("UTF-8")
     inputs.upscaler_filename = upscaler_filename.encode("UTF-8")
-    inputs.max_vram = (args.sdvramlimit/1024.0) if args.sdvramlimit > 0 else 0
+    inputs.max_vram = str((args.sdvramlimit/1024.0) if args.sdvramlimit > 0 else '').encode('UTF-8')
     inputs.stream_layers = False
 
     lora_filenames, lora_multipliers = prepare_initial_lora_multipliers()
@@ -2572,8 +2617,6 @@ def sd_load_model(model_filename,vae_filename,t5xxl_filename,clip1_filename,clip
 
     inputs.img_hard_limit = args.sdclamped
     inputs.img_soft_limit = args.sdclampedsoft
-    inputs = set_backend_props(inputs)
-    inputs.kcpp_main_device = sd_resolve_device(args.sdmaingpu, 'main')
     ret = handle.sd_load_model(inputs)
     return ret
 
@@ -2695,6 +2738,8 @@ def gendefaults_parse_meta_field(value):
         # match sd.cpp flag
         'cache-option': 'cache_options',
         'cache_option': 'cache_options',
+        'extra-sample-args': 'extra_sample_args',
+        'ref-image-args': 'ref_image_args',
     }
     parsed = parse_json_object(value, 'gendefaults') or {}
     result = {}
@@ -2863,6 +2908,8 @@ def sd_generate(genparams):
         seed = random.randint(100000, 999999)
     sample_method = (genparams.get("sampler_name") or "default")
     scheduler = (genparams.get("scheduler") or "default").lower()
+    extra_sample_args = str(genparams.get("extra_sample_args") or "")
+    ref_image_args = str(genparams.get("ref_image_args") or "").strip()
     clip_skip = tryparseint(genparams.get("clip_skip", -1),-1)
     eta = tryparsefloat(genparams.get("eta", None), None)
     vid_req_frames = tryparseint(genparams.get("frames", 1),1)
@@ -2928,11 +2975,13 @@ def sd_generate(genparams):
     inputs.sample_method = sd_sampler_canonical_name(sample_method).encode("UTF-8")
     inputs.scheduler = scheduler.encode("UTF-8")
     inputs.eta = -1.0 if eta is None else eta
+    inputs.extra_sample_args = extra_sample_args.encode("UTF-8")
     inputs.clip_skip = clip_skip
     inputs.vid_req_frames = vid_req_frames
     inputs.vid_fps = vid_fps
     inputs.video_output_type = video_output_type
     inputs.remove_limits = allow_remove_limits
+    inputs.ref_image_args = ref_image_args.encode("UTF-8")
     inputs.circular_x = tryparseint(adapter_obj.get("circular_x", genparams.get("circular_x",0)),0)
     inputs.circular_y = tryparseint(adapter_obj.get("circular_y", genparams.get("circular_y",0)),0)
     inputs.cache_mode = cache_mode.encode("UTF-8")
@@ -3609,6 +3658,7 @@ def tts_generate(genparams):
     speaker_json = tts_prepare_voice_json(genparams.get("speaker_json","")) #handle custom json voices
     voicestr = genparams.get("voice", genparams.get("speaker_wav", ""))
     oai_voicemap = ["alloy","onyx","echo","nova","shimmer"] # map to kcpp defaults
+    q3tts_voicemap = ["aiden","serena","ono_anna","ryan","sohee","eric","dylan","vivian","uncle_fu"]
     voice_mapping = voicelist
     normalized_voice = voicestr.strip().lower() if voicestr else ""
     if normalized_voice.endswith(".wav"):
@@ -3617,6 +3667,8 @@ def tts_generate(genparams):
         voice = voice_mapping.index(normalized_voice) + 1
     elif normalized_voice in oai_voicemap:
         voice = oai_voicemap.index(normalized_voice) + 1
+    elif normalized_voice in q3tts_voicemap:
+        voice = q3tts_voicemap.index(normalized_voice) + 1
     else:
         voice = simple_lcg_hash(voicestr.strip()) if voicestr else 1
     inputs = tts_generation_inputs()
@@ -3785,13 +3837,13 @@ def websearch(query):
         return []
     query = query[:300] # only search first 300 chars, due to search engine limits
     if query==websearch_lastquery:
-        print("Returning cached websearch...")
+        print("\nReturning cached websearch...")
         return websearch_lastresponse
     import difflib
     from html.parser import HTMLParser
     num_results = 3
     searchresults = []
-    utfprint("Performing new websearch...",1)
+    utfprint("\nPerforming new websearch...",1)
 
     def fetch_searched_webpage(url, random_agent=False):
         from urllib.parse import quote, urlsplit, urlunsplit
@@ -8095,6 +8147,8 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             genout = run_blocking()
 
         recvtxt = genout['text']
+        if recvtxt is not None and not isinstance(recvtxt, str):
+            recvtxt = recvtxt.decode("UTF-8", "ignore") if isinstance(recvtxt, bytes) else str(recvtxt)
         prompttokens = genout['prompt_tokens'] if genout['prompt_tokens'] > 0 else 0
         comptokens = genout['completion_tokens'] if genout['completion_tokens'] > 0 else 0
         currfinishreason = "error" if (genout['stopreason'] == -2) else ("length" if (genout['stopreason'] != 1) else "stop")
@@ -8146,10 +8200,12 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                     flat = []
                     for obj in tool_calls:
                         if isinstance(obj, list):
-                            flat.extend(obj)
-                        else:
+                            flat.extend(item for item in obj if isinstance(item, dict))
+                        elif isinstance(obj, dict):
                             flat.append(obj)
                     tool_calls = [normalize_tool_call_resp(obj) for obj in flat]
+                    tool_calls = [tc for tc in tool_calls if isinstance(tc, dict) and isinstance(tc.get("function", None), dict) and tc["function"].get("name")]
+                if tool_calls and len(tool_calls)>0:
                     for tc in tool_calls:
                         tcarg = tc.get("function",{}).get("arguments",None)
                         tc["id"] = f"call_{random.randint(10000, 99999)}"
@@ -8871,7 +8927,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         self.close_connection = True
         await asyncio.sleep(0.05)
 
-    async def monitor_connection(self): #Poll the socket to detect client disconnection during prompt processing
+    async def monitor_connection(self, cancel_fn): #Poll the socket to detect client disconnection
         import select
         loop = asyncio.get_event_loop()
         def check_connection_closed():
@@ -8881,7 +8937,8 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                 if exceptional:
                     return True
                 if readable:
-                    data = sock.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT)
+                    dontwait = getattr(socket, "MSG_DONTWAIT", 0)
+                    data = sock.recv(1, socket.MSG_PEEK | dontwait)
                     if len(data) == 0:
                         return True
                 return False
@@ -8894,7 +8951,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                 if disconnected:
                     if args.debugmode:
                         print("\nClient disconnected unexpectedly, aborting...")
-                    handle.abort_generate()
+                    cancel_fn()
                     return
             except Exception:
                 return
@@ -8909,7 +8966,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             generate_task = asyncio.create_task(self.generate_text(genparams, api_format, stream_flag))
             tasks.append(generate_task)
             if stream_flag:
-                monitor_task = asyncio.create_task(self.monitor_connection())
+                monitor_task = asyncio.create_task(self.monitor_connection(handle.abort_generate))
             await asyncio.gather(*tasks)
             generate_result = generate_task.result()
             return generate_result
@@ -8920,6 +8977,31 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             await asyncio.sleep(0.1) #short delay
         except Exception as e:
             print(e)
+        finally:
+            if monitor_task and not monitor_task.done():
+                monitor_task.cancel()
+                try:
+                    await monitor_task
+                except asyncio.CancelledError:
+                    pass
+
+    async def handle_image_request(self, generate_fn, param, cancel_fn):
+        monitor_task = None
+        try:
+            if cancel_fn:
+                monitor_task = asyncio.create_task(self.monitor_connection(cancel_fn))
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, generate_fn, param)
+            return result
+        except (BrokenPipeError, ConnectionAbortedError) as cae: # attempt to abort if connection lost
+            print("An ongoing connection was aborted or interrupted!")
+            print(cae)
+            if cancel_fn:
+                cancel_fn()
+            await asyncio.sleep(0.1) #short delay
+        except Exception as e:
+            print(e)
+            raise
         finally:
             if monitor_task and not monitor_task.done():
                 monitor_task.cancel()
@@ -9183,7 +9265,7 @@ Change Mode<br>
     def do_GET(self):
         global embedded_kailite, embedded_kcpp_docs, embedded_kcpp_sdui, embedded_kailite_gz, embedded_kcpp_docs_gz, embedded_kcpp_sdui_gz, embedded_lcpp_ui_gz, embedded_musicui, embedded_musicui_gz
         global last_req_time, start_time, cached_chat_template, cached_sd_info, has_vision_support, has_audio_support, has_whisper, friendlymodelname
-        global savedata_obj, has_multiplayer, multiplayer_turn_major, multiplayer_turn_minor, multiplayer_story_data_compressed, multiplayer_dataformat, multiplayer_lastactive, maxctx, maxhordelen, friendlymodelname, lastuploadedcomfyimg, lastgeneratedcomfyimg, KcppVersion, totalgens, preloaded_story, exitcounter, currentusergenkey, friendlysdmodelname, fullsdmodelpath, password, friendlyembeddingsmodelname, voicelist
+        global savedata_obj, has_multiplayer, multiplayer_turn_major, multiplayer_turn_minor, multiplayer_story_data_compressed, multiplayer_dataformat, multiplayer_lastactive, maxctx, maxhordelen, friendlymodelname, lastuploadedcomfyimg, lastgeneratedcomfyimg, lastgeneratedcachedimg, lastgeneratedcachedimgkey, KcppVersion, totalgens, preloaded_story, exitcounter, currentusergenkey, friendlysdmodelname, fullsdmodelpath, password, friendlyembeddingsmodelname, voicelist
         global autoswapmode, textName, sttName, ttsName, embedName, musicName, imageName, mmprojName
 
         if self.proxy_OpenLumara("GET"):
@@ -9656,8 +9738,6 @@ Change Mode<br>
                 response_body = (json.dumps([{"name":name,"label":name} for name in cached_sd_info.get('available_schedulers', [])]).encode())
         elif clean_path.endswith('/sdapi/v1/latent-upscale-modes'):
            response_body = (json.dumps([]).encode())
-        elif clean_path.endswith('/sdapi/v1/upscalers'):
-           response_body = (json.dumps([]).encode())
 
         #vits compatible
         elif clean_path=='/voice/check':
@@ -9716,6 +9796,15 @@ Change Mode<br>
         elif clean_path=='/view' or clean_path=='/view.png' or clean_path=='/api/view' or clean_path.startswith('/view_image'): #emulate comfyui
             content_type = 'image/png'
             response_body = lastgeneratedcomfyimg
+        elif clean_path.startswith('/sdapi/v1/get_last.png'):
+            parsed_url = urllib.parse.urlparse(self.path)
+            parsed_dict = urllib.parse.parse_qs(parsed_url.query)
+            genkey = parsed_dict.get('genkey', [''])[0]
+            if genkey and genkey==lastgeneratedcachedimgkey and lastgeneratedcachedimg:
+                content_type = 'image/png'
+                response_body = lastgeneratedcachedimg
+            else:
+                response_body = None
         elif clean_path=='/history' or clean_path=='/api/history' or clean_path.startswith('/api/history/') or clean_path.startswith('/history/'): #emulate comfyui
             modelNameToReturn = friendlysdmodelname
             if autoswapmode and imageName is not None:
@@ -9880,7 +9969,7 @@ Change Mode<br>
 
     def do_POST(self):
         global thinkformats
-        global modelbusy, batched_request_runner_count, requestsinqueue, currentusergenkey, totalgens, pendingabortkey, lastuploadedcomfyimg, lastgeneratedcomfyimg, multiplayer_turn_major, multiplayer_turn_minor, multiplayer_story_data_compressed, multiplayer_dataformat, multiplayer_lastactive, net_save_slots, has_vision_support, savestate_limit, mcp_lock
+        global modelbusy, batched_request_runner_count, requestsinqueue, currentusergenkey, totalgens, pendingabortkey, lastuploadedcomfyimg, lastgeneratedcomfyimg, lastgeneratedcachedimg, lastgeneratedcachedimgkey, multiplayer_turn_major, multiplayer_turn_minor, multiplayer_story_data_compressed, multiplayer_dataformat, multiplayer_lastactive, net_save_slots, has_vision_support, savestate_limit, mcp_lock
         global autoswapmode, textName, sttName, ttsName, embedName, musicName, imageName, mmprojName
         post_path = self.path.rstrip('/')
         if self.is_fs_protected_path(post_path):
@@ -11392,6 +11481,8 @@ Change Mode<br>
                     return
                 elif is_imggen: #image gen
                     try:
+                        lastgeneratedcachedimg = b''
+                        lastgeneratedcachedimgkey = ''
                         if is_comfyui_imggen:
                             lastgeneratedcomfyimg = b''
                             genparams = sd_comfyui_tranform_params(genparams)
@@ -11403,13 +11494,22 @@ Change Mode<br>
                             if loras:
                                 genparams['prompt'] = prompt
                                 genparams['lora'] = lora_map_name_to_path(loras)
-                        gen = sd_generate(genparams)
+                        abort_gen = handle.sd_abort_generation
+                        override_abort_gen = genparams.get('kcpp_extra_args', {}).get('keep_image_gen_on_disconnect', gendefaults.get('keep_image_gen_on_disconnect'))
+                        if override_abort_gen is not None and tryparseint(override_abort_gen, 1):
+                            abort_gen = None
+                        gen = asyncio.run(self.handle_image_request(sd_generate, genparams, abort_gen))
                         gendat = gen["data"]
                         genanim = gen["animated"]
                         gendatextra = gen["data_extra"]
                         genfinalframe = gen["final_frame"]
                         geninfo = json.dumps(gen["info"]) # sdapi really expects a stringified JSON
                         genresp = None
+                        if gendat:
+                            lastgeneratedcachedimg = base64.b64decode(gendat)
+                            lastgeneratedcachedimgkey = genparams.get('genkey', '')
+                        else:
+                            lastgeneratedcachedimg = b''
                         if is_comfyui_imggen:
                             if gendat:
                                 lastgeneratedcomfyimg = base64.b64decode(gendat)
@@ -11593,7 +11693,7 @@ Change Mode<br>
         return super(KcppServerRequestHandler, self).end_headers()
 
 def RunServerMultiThreaded(addr, port, server_handler):
-    global exitcounter, sslvalid, global_memory
+    global exitcounter, sslvalid, global_memory, num_server_threads
     if is_port_in_use(port):
         print(f"Warning: Port {port} already appears to be in use by another program.")
 
@@ -11615,10 +11715,9 @@ def RunServerMultiThreaded(addr, port, server_handler):
         if ipv6_sock:
             ipv6_sock = context.wrap_socket(ipv6_sock, server_side=True)
 
-    numThreads = 24
     try:
         ipv4_sock.bind((addr, port))
-        ipv4_sock.listen(numThreads)
+        ipv4_sock.listen(num_server_threads)
     except Exception:
         ipv4_sock = None
         print("IPv4 Socket Failed to Bind.")
@@ -11626,7 +11725,7 @@ def RunServerMultiThreaded(addr, port, server_handler):
     if ipv6_sock:
         try:
             ipv6_sock.bind((addr, port))
-            ipv6_sock.listen(numThreads)
+            ipv6_sock.listen(num_server_threads)
         except Exception:
             ipv6_sock = None
             print("IPv6 Socket Failed to Bind. IPv6 will be unavailable.")
@@ -11644,7 +11743,7 @@ def RunServerMultiThreaded(addr, port, server_handler):
             with http.server.HTTPServer((addr, port), handler, False) as self.httpd:
                 try:
                     if ipv4_sock and ipv6_sock:
-                        self.httpd.socket = ipv4_sock if self.i < 16 else ipv6_sock
+                        self.httpd.socket = ipv4_sock if self.i < (num_server_threads/2) else ipv6_sock
                     elif ipv6_sock:
                         self.httpd.socket = ipv6_sock
                     elif ipv4_sock:
@@ -11669,7 +11768,7 @@ def RunServerMultiThreaded(addr, port, server_handler):
             self.httpd.server_close()
 
     threadArr = []
-    for i in range(numThreads):
+    for i in range(num_server_threads):
         threadArr.append(Thread(i))
     while 1:
         try:
@@ -11677,7 +11776,7 @@ def RunServerMultiThreaded(addr, port, server_handler):
         except (KeyboardInterrupt,SystemExit):
             global exitcounter
             exitcounter = 999
-            for i in range(numThreads):
+            for i in range(num_server_threads):
                 try:
                     threadArr[i].stop()
                 except Exception:
@@ -11839,7 +11938,8 @@ def splitmode_choices_to_int(value): #layer=1, row=2, tensor=3
     if value=='layer':
         return 1
     elif value=='row':
-        return 2
+        print("!!!\nWARNING: split mode row was removed! Using tensor split instead!\n!!!")
+        return 3
     elif value=='tensor':
         return 3
     return 1
@@ -11964,8 +12064,13 @@ def show_gui():
         resizing = False
         resizing_id1 = None
     def actually_resize(windowwidth,windowheight,lastpos,smallratio):
+        nonlocal gtooltip_box, gtooltip_label
         root.geometry(str(windowwidth) + "x" + str(windowheight) + str(lastpos))
         ctk.set_widget_scaling(smallratio)
+        if gtooltip_box:
+            gtooltip_box.destroy()
+            gtooltip_box = None
+            gtooltip_label = None
         update_runmode_gui()
         togglerope(1,1,1)
         toggleflashattn(1,1,1)
@@ -13919,7 +14024,7 @@ def show_gui():
         sd_photomaker_var.set(mydict["sdphotomaker"] if ("sdphotomaker" in mydict and mydict["sdphotomaker"]) else "")
         sd_upscaler_var.set(mydict["sdupscaler"] if ("sdupscaler" in mydict and mydict["sdupscaler"]) else "")
         sd_vaeauto_var.set(1 if ("sdvaeauto" in mydict and mydict["sdvaeauto"]) else 0)
-        sd_tiled_vae_var.set(str(mydict["sdtiledvae"]) if ("sdtiledvae" in mydict and mydict["sdtiledvae"]) else str(default_vae_tile_threshold))
+        sd_tiled_vae_var.set(str(mydict["sdtiledvae"]) if "sdtiledvae" in mydict else str(default_vae_tile_threshold))
         sdl_sanitized = sanitize_lora_list(mydict.get('sdlora'))
         sd_lora_var.set("|".join(sdl_sanitized))
         sd_loramult_var.set(" ".join(f"{n:.3f}".rstrip('0').rstrip('.') for n in mydict.get("sdloramult", [])))
@@ -14448,6 +14553,22 @@ def convert_invalid_args(args):
         dict["sdclip2"] = dict["sdclipg"]
     if "jinja_tools" in dict and dict["jinja_tools"]:
         dict["jinja"] = True
+    if "jinjathink" in dict and dict["jinjathink"] and dict["jinjathink"]!="default":
+        dict["jinja"] = True
+        jinja_kwargs = None
+        if "jinja_kwargs" in dict and dict["jinja_kwargs"]:
+            try:
+                if isinstance(dict["jinja_kwargs"], str):
+                    jinja_kwargs = json.loads(dict["jinja_kwargs"])
+                elif isinstance(dict["jinja_kwargs"], type({})):
+                    jinja_kwargs = dict["jinja_kwargs"]
+            except Exception:
+                jinja_kwargs = None
+        else:
+            jinja_kwargs = {}
+        if isinstance(jinja_kwargs, type({})):
+            jinja_kwargs["enable_thinking"] = dict["jinjathink"]=="true"
+            dict["jinja_kwargs"] = json.dumps(jinja_kwargs)
     if "jinja_stream_toolcall" in dict and dict["jinja_stream_toolcall"]:
         dict["jinja"] = True
         dict["jinja_tools"] = True
@@ -16006,7 +16127,7 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
         global maxctx
         maxctx = args.contextsize
 
-    args.defaultgenamt = max(64, min(args.defaultgenamt, 16384))
+    args.defaultgenamt = max(64, min(args.defaultgenamt, 32768))
     args.defaultgenamt = min(args.defaultgenamt, maxctx / 2)
 
     #this uses the true port instead of the displayport, because we dont want to shut down a router
@@ -16256,7 +16377,6 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
             friendlysdmodelname = os.path.splitext(friendlysdmodelname)[0]
             friendlysdmodelname = sanitize_string(friendlysdmodelname)
             loadok = sd_load_model(imgmodel,imgvae,imgt5xxl,imgclip1,imgclip2,imgphotomaker,imgupscaler,imgaudiovae)
-            cached_sd_info = sd_get_info()
             print("Load Image Model OK: " + str(loadok))
             if not loadok:
                 exitcounter = 999
@@ -16734,7 +16854,7 @@ if __name__ == '__main__':
     advparser.add_argument("--chatcompletionsadapter", metavar=('[filename]'), help="Select an optional ChatCompletions Adapter JSON file to force custom instruct tags.", default="AutoGuess")
     advparser.add_argument("--cli", help="Does not launch KoboldCpp HTTP server. Instead, enables KoboldCpp from the command line, accepting interactive console input and displaying responses to the terminal.", action='store_true')
     advparser.add_argument("--debugmode", help="Shows additional debug info in the terminal. Levels: -1 (Horde-quiet, suppresses non-essential prints; auto-applied when Horde args are set), 0 (default, normal output), 1 (verbose: extra slot/cache info, larger print buffers, retains horde-debug prefix). Passing the flag without a value implies 1.", nargs='?', const=1, type=int, default=0)
-    advparser.add_argument("--defaultgenamt", help="How many tokens to generate by default, if not specified. Must be smaller than context size. Usually, your frontend GUI will override this.", type=check_range(int,64,16384), default=default_genlen)
+    advparser.add_argument("--defaultgenamt", help="How many tokens to generate by default, if not specified. Must be smaller than context size. Usually, your frontend GUI will override this.", type=check_range(int,64,32768), default=default_genlen)
     advparser.add_argument("--device", "-dev", metavar=('<dev1,dev2,..>'), help="Set llama.cpp compatible device selection override. Comma separated. Overrides normal device choices.", default="")
     advparser.add_argument("--downloaddir", metavar=('[directory]'), help="Specify a directory that models will be downloaded to or searched from, if unset uses the working directory.", default="")
     advparser.add_argument("--draftamount","--draft-max","--draft-n","--spec-draft-n-max", metavar=('[tokens]'), help="How many tokens to draft per chunk before verifying results", type=int, default=default_draft_amount)

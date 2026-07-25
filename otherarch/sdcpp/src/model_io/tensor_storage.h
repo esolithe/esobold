@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -12,6 +13,10 @@
 #include "ggml.h"
 
 #define SD_MAX_DIMS 5
+
+namespace kcpp_safetensors_quant {
+struct TensorStorageExt;
+}
 
 struct TensorStorage {
     std::string name;
@@ -23,6 +28,7 @@ struct TensorStorage {
     bool is_i64             = false;
     int64_t ne[SD_MAX_DIMS] = {1, 1, 1, 1, 1};
     int n_dims              = 0;
+    std::shared_ptr<kcpp_safetensors_quant::TensorStorageExt> kcpp_ext;
 
     std::string storage_key;
     size_t file_index = 0;
@@ -53,6 +59,8 @@ struct TensorStorage {
     int64_t nbytes_to_read() const {
         if (is_f8_e4m3 || is_f8_e5m2) {
             return nbytes() / 2;
+        } else if (kcpp_ext) {
+            return nelements();
         } else if (is_f64 || is_i64) {
             return nbytes() * 2;
         } else {
@@ -107,6 +115,8 @@ struct TensorStorage {
             type_name = "f64";
         } else if (is_i64) {
             type_name = "i64";
+        } else if (kcpp_ext) {
+            type_name = "kcpp_quant";
         }
         ss << name << " | " << type_name << " | ";
         ss << n_dims << " [";
@@ -125,6 +135,25 @@ struct TensorWriteInfo {
     int64_t ne[SD_MAX_DIMS] = {1, 1, 1, 1, 1};
     int n_dims              = 0;
     ggml_tensor* tensor     = nullptr;
+};
+
+struct TensorWritePlan {
+    std::string name;
+    ggml_type type          = GGML_TYPE_F32;
+    int64_t ne[SD_MAX_DIMS] = {1, 1, 1, 1, 1};
+    int n_dims              = 0;
+
+    int64_t nelements() const {
+        int64_t n = 1;
+        for (int i = 0; i < SD_MAX_DIMS; i++) {
+            n *= ne[i];
+        }
+        return n;
+    }
+
+    uint64_t nbytes() const {
+        return nelements() * ggml_type_size(type) / ggml_blck_size(type);
+    }
 };
 
 typedef std::function<bool(const TensorStorage&, ggml_tensor**)> on_new_tensor_cb_t;

@@ -1,4 +1,4 @@
-﻿#ifndef __SD_MODEL_VAE_LTX_AUDIO_VAE_HPP__
+#ifndef __SD_MODEL_VAE_LTX_AUDIO_VAE_HPP__
 #define __SD_MODEL_VAE_LTX_AUDIO_VAE_HPP__
 
 #include <algorithm>
@@ -327,7 +327,7 @@ namespace LTXV {
 
         auto x = ggml_reshape_3d(ctx, waveform, time, 1, channels * batch);
         if (left_pad > 0) {
-            x = ggml_pad_ext(ctx, x, static_cast<int>(left_pad), 0, 0, 0, 0, 0, 0, 0);
+            x = ggml_ext_pad_ext(ctx, runner_ctx->backend, x, static_cast<int>(left_pad), 0, 0, 0, 0, 0, 0, 0);
         }
 
         auto frames = ggml_conv_1d(ctx, forward_basis, x, hop_length, 0, 1);
@@ -564,6 +564,7 @@ namespace LTXV {
             int pad_h = kernel_size.first - 1;
             int pad_w = kernel_size.second - 1;
             x         = ggml_ext_pad_ext(ctx->ggml_ctx,
+                                         ctx->backend,
                                          x,
                                          pad_w / 2,
                                          pad_w - pad_w / 2,
@@ -603,6 +604,7 @@ namespace LTXV {
         ggml_tensor* forward(GGMLRunnerContext* ctx, ggml_tensor* x) {
             auto conv = std::dynamic_pointer_cast<Conv2d>(blocks["conv"]);
             x         = ggml_ext_pad_ext(ctx->ggml_ctx,
+                                         ctx->backend,
                                          x,
                                          0,
                                          1,

@@ -53,7 +53,7 @@ jobs:
             -e KCPP_CUDA="rocm" \
             -e KCPP_PYTHON_VERSION="${{ env.KCPP_PYTHON_VERSION }}" \
             -e BRANCH_NAME="${{ github.head_ref || github.ref_name }}" \
-            rocm/dev-ubuntu-22.04:7.1-complete \
+            rocm/dev-ubuntu-22.04:7.14.0-full \
             bash -c "
               apt update &&
               DEBIAN_FRONTEND=noninteractive apt install -y git curl bzip2 python3-tk tcl tk &&

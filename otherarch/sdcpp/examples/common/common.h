@@ -16,10 +16,11 @@
 #define BOOL_STR(b) ((b) ? "true" : "false")
 
 extern const char* const modes_str[];
-#define SD_ALL_MODES_STR "img_gen, vid_gen, convert, upscale, metadata"
+#define SD_ALL_MODES_STR "img_gen, adetailer, vid_gen, convert, upscale, metadata"
 
 enum SDMode {
     IMG_GEN,
+    ADETAILER,
     VID_GEN,
     CONVERT,
     UPSCALE,
@@ -132,6 +133,8 @@ struct SDContextParams {
     std::string taesd_path;
     std::string esrgan_path;
     std::string control_net_path;
+    std::string ip_adapter_path;
+    std::string motion_module_path;
     std::string embedding_dir;
     std::string photo_maker_path;
     std::string pulid_weights_path;
@@ -151,6 +154,9 @@ struct SDContextParams {
     bool eager_load             = false;
     std::string backend;
     std::string params_backend;
+    std::string split_mode;
+    std::string model_args;
+    bool auto_fit = false;
     std::string rpc_servers;
     std::string effective_backend;
     std::string effective_params_backend;
@@ -162,16 +168,6 @@ struct SDContextParams {
     bool diffusion_flash_attn  = false;
     bool diffusion_conv_direct = false;
     bool vae_conv_direct       = false;
-
-    bool circular   = false;
-    bool circular_x = false;
-    bool circular_y = false;
-
-    bool chroma_use_dit_mask = true;
-    bool chroma_use_t5_mask  = false;
-    int chroma_t5_mask_pad   = 1;
-
-    bool qwen_image_zero_cond_t = false;
 
     prediction_t prediction           = PREDICTION_COUNT;
     lora_apply_mode_t lora_apply_mode = LORA_APPLY_AUTO;
@@ -193,13 +189,19 @@ struct SDGenerationParams {
     // User-facing input fields.
     std::string prompt;
     std::string negative_prompt;
+    std::string ad_model_path;
+    std::string ad_prompt;
+    std::string ad_negative_prompt;
+    std::string extra_ad_args;
     int clip_skip              = -1;  // <= 0 represents unspecified
     int width                  = -1;
     int height                 = -1;
     int batch_count            = 1;
+    int qwen_image_layers      = 3;
     int64_t seed               = 42;
     float strength             = 0.75f;
     float control_strength     = 0.9f;
+    float ip_adapter_strength  = 1.0f;
     bool auto_resize_ref_image = true;
     bool increase_ref_index    = false;
     bool embed_image_metadata  = true;
@@ -208,6 +210,7 @@ struct SDGenerationParams {
     std::string end_image_path;
     std::string mask_image_path;
     std::string control_image_path;
+    std::string ip_adapter_image_path;
     std::vector<std::string> ref_image_paths;
     std::string control_video_path;
 
@@ -233,6 +236,8 @@ struct SDGenerationParams {
     sd_tiling_params_t vae_tiling_params = {false, false, 0, 0, 0.5f, 0.0f, 0.0f, nullptr};
     std::string extra_tiling_args;
 
+    std::string ref_image_args;
+
     std::string pm_id_images_dir;
     std::string pm_id_embed_path;
     float pm_style_strength = 20.f;
@@ -242,6 +247,10 @@ struct SDGenerationParams {
 
     int upscale_repeats   = 1;
     int upscale_tile_size = 128;
+
+    bool circular   = false;
+    bool circular_x = false;
+    bool circular_y = false;
 
     bool hires_enabled         = false;
     std::string hires_upscaler = "Latent";
@@ -268,6 +277,7 @@ struct SDGenerationParams {
     std::vector<SDImageOwner> ref_images;
     SDImageOwner mask_image;
     SDImageOwner control_image;
+    SDImageOwner ip_adapter_image;
     std::vector<SDImageOwner> pm_id_images;
     std::vector<SDImageOwner> control_frames;
 

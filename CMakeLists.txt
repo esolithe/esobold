@@ -563,6 +563,8 @@ add_library(sdtype_adapter
             otherarch/sdcpp/src/upscaler.cpp
             otherarch/sdcpp/src/runtime/guidance.cpp
             otherarch/sdcpp/src/runtime/guidance.h
+            otherarch/sdcpp/src/runtime/imatrix.cpp
+            otherarch/sdcpp/src/runtime/imatrix.h
             otherarch/sdcpp/src/stable-diffusion.cpp
             otherarch/sdcpp/thirdparty/zip.c
             otherarch/sdcpp/src/model_io/gguf_io.cpp
@@ -579,6 +581,8 @@ add_library(sdtype_adapter
             otherarch/sdcpp/src/tokenizers/gpt_oss_tokenizer.cpp
             otherarch/sdcpp/src/tokenizers/tokenizer.cpp
             otherarch/sdcpp/src/tokenizers/tokenize_util.cpp
+            otherarch/sdcpp/src/core/backend_fit.cpp
+            otherarch/sdcpp/src/core/layer_split_partition.cpp
             otherarch/sdcpp/src/core/ggml_extend_backend.cpp)
 target_include_directories(sdtype_adapter PUBLIC . ./ggml/include ./ggml/src ./ggml/src/ggml-cpu ./include ./otherarch ./otherarch/tools ./vendor/stb ./vendor/nlohmann ./vendor ./otherarch/sdcpp ./otherarch/sdcpp/include ./otherarch/sdcpp/src ./otherarch/sdcpp/examples ./tools ./common)
 target_compile_features(sdtype_adapter PUBLIC cxx_std_17) # don't bump

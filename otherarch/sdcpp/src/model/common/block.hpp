@@ -294,7 +294,7 @@ public:
 
         auto net_0 = std::dynamic_pointer_cast<UnaryBlock>(blocks["net.0"]);
         auto net_2 = std::dynamic_pointer_cast<Linear>(blocks["net.2"]);
-        if (sd_backend_is(ctx->backend, "Vulkan")) {
+        if (sd_backend_is(ctx->backend, "Vulkan") || sd_backend_is(ctx->backend, "ROCm")) {
             net_2->set_force_prec_f32(true);
         }
 
@@ -310,17 +310,33 @@ protected:
     int64_t context_dim;
     int64_t n_head;
     int64_t d_head;
-    bool xtra_dim = false;
+    bool xtra_dim  = false;
+    bool enable_ip = false;
+    bool has_ip    = false;
+
+    void init_params(ggml_context* ctx, const String2TensorStorage& tensor_storage_map = {}, const std::string prefix = "") override {
+        GGMLBlock::init_params(ctx, tensor_storage_map, prefix);
+        if (enable_ip &&
+            tensor_storage_map.find(prefix + "to_k_ip.weight") != tensor_storage_map.end()) {
+            has_ip            = true;
+            int64_t inner_dim = d_head * n_head;
+            int64_t ip_dim    = tensor_storage_map.at(prefix + "to_k_ip.weight").ne[0];
+            blocks["to_k_ip"] = std::shared_ptr<GGMLBlock>(new Linear(ip_dim, inner_dim, false));
+            blocks["to_v_ip"] = std::shared_ptr<GGMLBlock>(new Linear(ip_dim, inner_dim, false));
+        }
+    }
 
 public:
     CrossAttention(int64_t query_dim,
                    int64_t context_dim,
                    int64_t n_head,
-                   int64_t d_head)
+                   int64_t d_head,
+                   bool enable_ip = false)
         : n_head(n_head),
           d_head(d_head),
           query_dim(query_dim),
-          context_dim(context_dim) {
+          context_dim(context_dim),
+          enable_ip(enable_ip) {
         int64_t inner_dim = d_head * n_head;
         if (context_dim == 320 && d_head == 320) {
             // LOG_DEBUG("CrossAttention: temp set dim to 1024 for sdxs_09");
@@ -363,6 +379,15 @@ public:
         }
         x = ggml_ext_attention_ext(ctx->ggml_ctx, ctx->backend, q, k, v, n_head, nullptr, false, ctx->flash_attn_enabled);  // [N, n_token, inner_dim]
 
+        if (has_ip && ctx->ip_context != nullptr && ctx->ip_scale != 0.0f) {
+            auto to_k_ip = std::dynamic_pointer_cast<Linear>(blocks["to_k_ip"]);
+            auto to_v_ip = std::dynamic_pointer_cast<Linear>(blocks["to_v_ip"]);
+            auto k_ip    = to_k_ip->forward(ctx, ctx->ip_context);
+            auto v_ip    = to_v_ip->forward(ctx, ctx->ip_context);
+            auto x_ip    = ggml_ext_attention_ext(ctx->ggml_ctx, ctx->backend, q, k_ip, v_ip, n_head, nullptr, false, ctx->flash_attn_enabled);
+            x            = ggml_add(ctx->ggml_ctx, x, ggml_scale(ctx->ggml_ctx, x_ip, ctx->ip_scale));
+        }
+
         x = to_out_0->forward(ctx, x);  // [N, n_token, query_dim]
         return x;
     }
@@ -387,7 +412,7 @@ public:
         // inner_dim is always None or equal to dim
         // gated_ff is always True
         blocks["attn1"] = std::shared_ptr<GGMLBlock>(new CrossAttention(dim, dim, n_head, d_head));
-        blocks["attn2"] = std::shared_ptr<GGMLBlock>(new CrossAttention(dim, context_dim, n_head, d_head));
+        blocks["attn2"] = std::shared_ptr<GGMLBlock>(new CrossAttention(dim, context_dim, n_head, d_head, true));
         blocks["ff"]    = std::shared_ptr<GGMLBlock>(new FeedForward(dim, dim));
         blocks["norm1"] = std::shared_ptr<GGMLBlock>(new LayerNorm(dim));
         blocks["norm2"] = std::shared_ptr<GGMLBlock>(new LayerNorm(dim));
@@ -450,7 +475,7 @@ protected:
     int64_t context_dim = 768;  // hidden_size, 1024 for VERSION_SD2
     bool use_linear     = false;
 
-    void init_params(ggml_context* ctx, const String2TensorStorage& tensor_storage_map = {}, const std::string prefix = "") {
+    void init_params(ggml_context* ctx, const String2TensorStorage& tensor_storage_map = {}, const std::string prefix = "") override {
         auto iter = tensor_storage_map.find(prefix + "proj_out.weight");
         if (iter != tensor_storage_map.end()) {
             int64_t inner_dim = n_head * d_head;

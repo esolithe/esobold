@@ -408,7 +408,7 @@ public:
             h = conv->forward(ctx, h);
             for (int j = 0; j < num_blocks; j++) {
                 auto block = std::dynamic_pointer_cast<MemBlock>(blocks[std::to_string(index++)]);
-                auto mem   = ggml_pad_ext(ctx->ggml_ctx, h, 0, 0, 0, 0, 0, 0, 1, 0);
+                auto mem   = ggml_ext_pad_ext(ctx->ggml_ctx, ctx->backend, h, 0, 0, 0, 0, 0, 0, 1, 0);
                 mem        = ggml_view_4d(ctx->ggml_ctx, mem, h->ne[0], h->ne[1], h->ne[2], h->ne[3], h->nb[1], h->nb[2], h->nb[3], 0);
                 h          = block->forward(ctx, h, mem);
             }
@@ -479,7 +479,7 @@ public:
         int index = 3;
         for (int i = 0; i < num_layers; i++) {
             for (int j = 0; j < num_blocks; j++) {
-                auto mem = ggml_pad_ext(ctx->ggml_ctx, h, 0, 0, 0, 0, 0, 0, 1, 0);
+                auto mem = ggml_ext_pad_ext(ctx->ggml_ctx, ctx->backend, h, 0, 0, 0, 0, 0, 0, 1, 0);
                 mem      = ggml_view_4d(ctx->ggml_ctx, mem, h->ne[0], h->ne[1], h->ne[2], h->ne[3], h->nb[1], h->nb[2], h->nb[3], 0);
                 if (is_wide) {
                     auto block = std::dynamic_pointer_cast<WideMemBlock>(blocks[std::to_string(index++)]);
@@ -528,6 +528,9 @@ public:
         if (version == VERSION_WAN2_2_TI2V) {
             z_channels = 48;
             patch      = 2;
+        } else if (sd_version_is_hunyuan_video(version)) {
+            z_channels = 32;
+            patch      = 2;
         } else if (sd_version_is_ltxav(version)) {
             z_channels     = 128;
             patch          = 4;
@@ -542,13 +545,13 @@ public:
 
     ggml_tensor* decode(GGMLRunnerContext* ctx, ggml_tensor* z) {
         auto decoder = std::dynamic_pointer_cast<TinyVideoDecoder>(blocks["decoder"]);
-        if (sd_version_is_wan(version) || sd_version_is_ltxav(version)) {
+        if (sd_version_is_wan(version) || sd_version_is_hunyuan_video(version) || sd_version_is_ltxav(version)) {
             // (W, H, C, T) -> (W, H, T, C)
             z = ggml_cont(ctx->ggml_ctx, ggml_permute(ctx->ggml_ctx, z, 0, 1, 3, 2));
         }
         auto result = decoder->forward(ctx, z);
-        if (sd_version_is_wan(version) || sd_version_is_ltxav(version)) {
-            // (W, H, C, T) -> (W, H, T, C)
+        if (sd_version_is_wan(version) || sd_version_is_hunyuan_video(version) || sd_version_is_ltxav(version)) {
+            // (W, H, T, C) -> (W, H, C, T)
             result = ggml_cont(ctx->ggml_ctx, ggml_permute(ctx->ggml_ctx, result, 0, 1, 3, 2));
         }
         return result;
@@ -556,8 +559,10 @@ public:
 
     ggml_tensor* encode(GGMLRunnerContext* ctx, ggml_tensor* x) {
         auto encoder = std::dynamic_pointer_cast<TinyVideoEncoder>(blocks["encoder"]);
-        // (W, H, T, C) -> (W, H, C, T)
-        x                  = ggml_cont(ctx->ggml_ctx, ggml_permute(ctx->ggml_ctx, x, 0, 1, 3, 2));
+        if (sd_version_is_wan(version) || sd_version_is_hunyuan_video(version) || sd_version_is_ltxav(version)) {
+            // (W, H, T, C) -> (W, H, C, T)
+            x = ggml_cont(ctx->ggml_ctx, ggml_permute(ctx->ggml_ctx, x, 0, 1, 3, 2));
+        }
         int64_t num_frames = x->ne[3];
         if (num_frames % encoder->t_downscale) {
             // pad to multiple of encoder->t_downscale at the end
@@ -567,7 +572,10 @@ public:
             }
         }
         x = encoder->forward(ctx, x);
-        x = ggml_cont(ctx->ggml_ctx, ggml_permute(ctx->ggml_ctx, x, 0, 1, 3, 2));
+        if (sd_version_is_wan(version) || sd_version_is_hunyuan_video(version) || sd_version_is_ltxav(version)) {
+            // (W, H, C, T) -> (W, H, T, C)
+            x = ggml_cont(ctx->ggml_ctx, ggml_permute(ctx->ggml_ctx, x, 0, 1, 3, 2));
+        }
         return x;
     }
 };

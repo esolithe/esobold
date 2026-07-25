@@ -1,4 +1,4 @@
-﻿#ifndef __SD_MODEL_TE_LLM_HPP__
+#ifndef __SD_MODEL_TE_LLM_HPP__
 #define __SD_MODEL_TE_LLM_HPP__
 
 #include <algorithm>
@@ -200,7 +200,11 @@ namespace LLM {
                         config.vision.in_channels = tensor_storage.ne[2];
                         config.vision.hidden_size = tensor_storage.ne[3];
                     }
-                    if (contains(name, "visual.patch_embed.bias")) {
+                    // HF-format checkpoints keep the patch embed unsplit under a single name.
+                    if (contains(name, "visual.patch_embed.proj.weight")) {
+                        config.vision.patch_size = static_cast<int>(tensor_storage.ne[0]);
+                    }
+                    if (contains(name, "visual.patch_embed.bias") || contains(name, "visual.patch_embed.proj.bias")) {
                         config.vision.hidden_size = tensor_storage.ne[0];
                     }
                     if (contains(name, "visual.pos_embed.weight")) {
@@ -250,7 +254,7 @@ namespace LLM {
                     config.intermediate_size = tensor_storage.ne[1];
                 }
             }
-            if (arch == LLMArch::QWEN3 && config.num_layers == 28) {
+            if ((arch == LLMArch::QWEN3 || arch == LLMArch::QWEN3_VL) && config.num_layers == 28) {
                 config.num_heads = 16;
             }
             if (detected_vision_layers > 0) {
@@ -285,7 +289,7 @@ namespace LLM {
                    bool add_unit_offset = false)
             : hidden_size(hidden_size), eps(eps), add_unit_offset(add_unit_offset) {}
 
-        ggml_tensor* forward(GGMLRunnerContext* ctx, ggml_tensor* x) {
+        ggml_tensor* forward(GGMLRunnerContext* ctx, ggml_tensor* x) override {
             ggml_tensor* w = params["weight"];
             if (ctx->weight_adapter) {
                 w = ctx->weight_adapter->patch_weight(ctx->ggml_ctx, ctx->backend, w, prefix + "weight");

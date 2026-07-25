@@ -150,6 +150,8 @@ namespace ZImage {
 
             if (sd_backend_is(ctx->backend, "ROCm")) {
                 out_proj->set_scale(1.f / 16.f);
+                out_proj->set_force_prec_f32(true);
+                qkv_proj->set_force_prec_f32(true);
             }
 
             auto qkv = qkv_proj->forward(ctx, x);                                                                            // [N, n_token, (num_heads + num_kv_heads*2)*head_dim]
@@ -227,7 +229,7 @@ namespace ZImage {
             auto w2 = std::dynamic_pointer_cast<Linear>(blocks["w2"]);
             auto w3 = std::dynamic_pointer_cast<Linear>(blocks["w3"]);
 
-            if (sd_backend_is(ctx->backend, "Vulkan")) {
+            if (sd_backend_is(ctx->backend, "Vulkan") || sd_backend_is(ctx->backend, "ROCm")) {
                 w2->set_force_prec_f32(true);
             }
 
@@ -575,7 +577,7 @@ namespace ZImage {
                                  const sd::Tensor<float>& timesteps_tensor,
                                  const sd::Tensor<float>& context_tensor,
                                  const std::vector<sd::Tensor<float>>& ref_latents_tensor = {},
-                                 bool increase_ref_index                                  = false) {
+                                 Rope::RefIndexMode ref_index_mode                        = Rope::RefIndexMode::FIXED) {
             ggml_cgraph* gf        = new_graph_custom(Z_IMAGE_GRAPH_SIZE);
             ggml_tensor* x         = make_input(x_tensor);
             ggml_tensor* timesteps = make_input(timesteps_tensor);
@@ -595,7 +597,7 @@ namespace ZImage {
                                                static_cast<int>(context->ne[1]),
                                                SEQ_MULTI_OF,
                                                ref_latents,
-                                               increase_ref_index,
+                                               ref_index_mode,
                                                config.theta,
                                                circular_y_enabled,
                                                circular_x_enabled,
@@ -626,12 +628,12 @@ namespace ZImage {
                                   const sd::Tensor<float>& timesteps,
                                   const sd::Tensor<float>& context,
                                   const std::vector<sd::Tensor<float>>& ref_latents = {},
-                                  bool increase_ref_index                           = false) {
+                                  Rope::RefIndexMode ref_index_mode                 = Rope::RefIndexMode::FIXED) {
             // x: [N, in_channels, h, w]
             // timesteps: [N, ]
             // context: [N, max_position, hidden_size]
             auto get_graph = [&]() -> ggml_cgraph* {
-                return build_graph(x, timesteps, context, ref_latents, increase_ref_index);
+                return build_graph(x, timesteps, context, ref_latents, ref_index_mode);
             };
 
             return restore_trailing_singleton_dims(GGMLRunner::compute<float>(get_graph, n_threads, false, false, false), x.dim());
@@ -646,8 +648,8 @@ namespace ZImage {
                            *diffusion_params.x,
                            *diffusion_params.timesteps,
                            tensor_or_empty(diffusion_params.context),
-                           diffusion_params.ref_latents ? *diffusion_params.ref_latents : empty_ref_latents,
-                           diffusion_params.increase_ref_index);
+                           diffusion_params.ref_latents && diffusion_params.ref_image_params.pass_to_dit ? *diffusion_params.ref_latents : empty_ref_latents,
+                           diffusion_params.ref_image_params.ref_index_mode);
         }
 
         void test() {
@@ -681,7 +683,7 @@ namespace ZImage {
                                        timesteps,
                                        context,
                                        {},
-                                       false);
+                                       Rope::RefIndexMode::FIXED);
                 int64_t t1   = ggml_time_ms();
 
                 GGML_ASSERT(!out_opt.empty());

@@ -152,6 +152,9 @@ KoboldCpp is an easy-to-use AI text-generation software for GGML and GGUF models
 - Ready-to-use binaries for Windows, MacOS, Linux. Runs directly with Colab, Docker, also supports other platforms if self-compiled (like  Android (via Termux) and Raspberry PI).
 - [Need help finding a model? Read this!](https://github.com/LostRuins/koboldcpp/wiki#getting-an-ai-model-file)
 
+## Phishing Scam Alert
+- Phishing SCAM Warning: koboldcpp.com is NOT an official site, please help to report it to google for impersonation. You should **ONLY** trust official downloads from the release binaries on the official github at https://github.com/LostRuins/koboldcpp/releases/latest
+
 ## Windows Usage (Precompiled Binary, Recommended)
 - Windows binaries are provided in the form of **koboldcpp.exe**, which is a pyinstaller wrapper containing all necessary files. **[Download the latest koboldcpp.exe release here](https://github.com/LostRuins/koboldcpp/releases/latest)**
 - To run, simply execute **koboldcpp.exe**.
@@ -317,7 +320,6 @@ and it will install everything required. Alternatively, you can download the abo
 - **I try to keep backwards compatibility with ALL past llama.cpp models**. But you are also encouraged to reconvert/update your models if possible for best results.
 - Since v1.75, openblas has been deprecated and removed in favor of the native CPU implementation.
 - Since v1.107, CLBlast has been deprecated and removed in favor of Vulkan.
-- Phishing SCAM Warning: koboldcpp(dot)com is NOT an official site, please help to report it to google for impersonation. You should ONLY trust official downloads from the release binaries on the official github at https://github.com/LostRuins/koboldcpp/releases/latest
 
 ## License
 - The original GGML library, stable-diffusion.cpp and llama.cpp by ggerganov are licensed under the MIT License

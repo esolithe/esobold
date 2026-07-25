@@ -25,7 +25,7 @@
 #define SPC_ERR(fmt, ...) LOG_ERR("spec %12.*s: " fmt, 12, __func__, __VA_ARGS__)
 #define SPC_CNT(fmt, ...) LOG_CNT(""              fmt,               __VA_ARGS__)
 
-#define SPEC_VOCAB_MAX_SIZE_DIFFERENCE  128
+#define SPEC_VOCAB_MAX_SIZE_DIFFERENCE  256
 #define SPEC_VOCAB_CHECK_START_TOKEN_ID 5
 
 const std::map<std::string, common_speculative_type> common_speculative_type_from_name_map = {
@@ -74,14 +74,14 @@ static bool common_speculative_are_compatible(
     SPC_DBG("vocab_type dft: %d\n", vocab_type_dft);
 
     if (vocab_type_tgt != vocab_type_dft) {
-        SPC_WRN("draft model vocab type must match target model to use speculation but "
+        SPC_ERR("draft model vocab type must match target model to use speculation but "
                 "vocab_type_dft = %d while vocab_type_tgt = %d\n", vocab_type_dft, vocab_type_tgt);
         return false;
     }
 
     if (llama_vocab_get_add_bos(vocab_tgt) != llama_vocab_get_add_bos(vocab_dft) ||
         (llama_vocab_get_add_bos(vocab_tgt) && llama_vocab_bos(vocab_tgt) != llama_vocab_bos(vocab_dft))) {
-        SPC_WRN("draft model bos tokens must match target model to use speculation. add: %d - %d, id: %d - %d)\n",
+        SPC_ERR("draft model bos tokens must match target model to use speculation. add: %d - %d, id: %d - %d)\n",
                 llama_vocab_get_add_bos(vocab_tgt), llama_vocab_get_add_bos(vocab_dft),
                 llama_vocab_bos(vocab_tgt), llama_vocab_bos(vocab_dft));
         return false;
@@ -89,7 +89,7 @@ static bool common_speculative_are_compatible(
 
     if (llama_vocab_get_add_eos(vocab_tgt) != llama_vocab_get_add_eos(vocab_dft) ||
         (llama_vocab_get_add_eos(vocab_tgt) && llama_vocab_eos(vocab_tgt) != llama_vocab_eos(vocab_dft))) {
-        SPC_WRN("draft model eos tokens must match target model to use speculation. add: %d - %d, id: %d - %d)\n",
+        SPC_ERR("draft model eos tokens must match target model to use speculation. add: %d - %d, id: %d - %d)\n",
                 llama_vocab_get_add_eos(vocab_tgt), llama_vocab_get_add_eos(vocab_dft),
                 llama_vocab_eos(vocab_tgt), llama_vocab_eos(vocab_dft));
         return false;
@@ -103,7 +103,7 @@ static bool common_speculative_are_compatible(
             : n_vocab_dft - n_vocab_tgt;
 
         if (vocab_diff > SPEC_VOCAB_MAX_SIZE_DIFFERENCE) {
-            SPC_DBG("draft model vocab must closely match target model to use speculation but "
+            SPC_ERR("draft model vocab must closely match target model to use speculation but "
                     "target vocab size %d does not match draft vocab size %d - difference %d, max allowed %d\n",
                     n_vocab_tgt, llama_vocab_n_tokens(vocab_dft), vocab_diff, SPEC_VOCAB_MAX_SIZE_DIFFERENCE);
             return false;
@@ -114,7 +114,7 @@ static bool common_speculative_are_compatible(
             const char * token_text_dft = llama_vocab_get_text(vocab_dft, i);
 
             if (std::strcmp(token_text_tgt, token_text_dft) != 0) {
-                SPC_DBG("draft model vocab must match target model to use speculation but "
+                SPC_ERR("draft model vocab must match target model to use speculation but "
                         "token %d content differs - target '%s', draft '%s'\n", i,
                         common_token_to_piece(vocab_tgt, i).c_str(),
                         common_token_to_piece(vocab_dft, i).c_str());
@@ -260,7 +260,10 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
     bool process(const llama_batch & batch) override {
         auto * ctx_dft = params.ctx_dft;
 
-        const int ret = llama_decode(ctx_dft, batch);
+        llama_batch batch_dft = batch;
+        batch_dft.logits = nullptr;
+
+        const int ret = llama_decode(ctx_dft, batch_dft);
 
         if (ret != 0) {
             SPC_ERR("failed to decode draft batch, ret = %d\n", ret);
@@ -955,10 +958,11 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
         LOG_INF("%s: - block_size=%d, mask_token_id=%d, n_extract=%u\n", __func__, block_size, mask_token_id, target_layer_ids_n);
 
         // DFlash input is [id_last, <mask> * (block_size-1)], so it can draft at most block_size-1 tokens per step
-        if (this->params.n_max > block_size - 1) {
-            LOG_WRN("%s: requested draft size %d exceeds the trained DFlash block size %d -- clamping to %d draft tokens per step\n",
-                    __func__, this->params.n_max, block_size - 1, block_size - 1);
-            this->params.n_max = block_size - 1;
+        if (this->params.n_max > block_size - 1 || this->params.n_min > block_size - 1) {
+            LOG_WRN("%s: requested draft size (n_max=%d, n_min=%d) exceeds the trained DFlash block size %d -- clamping to %d\n",
+                    __func__, this->params.n_max, this->params.n_min, block_size, block_size - 1);
+            this->params.n_max = std::min(this->params.n_max, block_size - 1);
+            this->params.n_min = std::min(this->params.n_min, block_size - 1);
         }
 
         batch        = llama_batch_init(llama_n_batch(ctx_dft), 0,          n_seq);
@@ -968,7 +972,7 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
         for (auto & s : smpls) {
             common_params_sampling sparams;
             sparams.no_perf  = false;
-            sparams.top_k    = 1;
+            sparams.top_k    = 10;
             sparams.samplers = { COMMON_SAMPLER_TYPE_TOP_K };
             s.reset(common_sampler_init(model_dft, sparams));
         }
@@ -1173,9 +1177,17 @@ struct common_speculative_impl_draft_dflash : public common_speculative_impl {
 
                 const llama_token id = cur_p->data[0].id;
 
+                if (cur_p->data[0].p < params.p_min) {
+                    break;
+                }
+
                 common_sampler_accept(smpl, id, true);
 
                 result.push_back(id);
+            }
+
+            if (result.size() < (size_t) params.n_min) {
+                result.clear();
             }
         }
     }
@@ -2210,6 +2222,112 @@ int32_t common_speculative_n_max(const common_params_speculative * spec) {
     }
 
     return n_max;
+}
+
+common_params common_base_params_to_speculative(const common_params & params) {
+    const bool has_draft = params.speculative.has_dft();
+
+    const auto & params_spec = params.speculative.draft;
+    common_params result = params;
+
+    if (has_draft) {
+        result.devices               = params_spec.devices;
+        result.model                 = params_spec.mparams;
+        result.n_gpu_layers          = params_spec.n_gpu_layers;
+        result.tensor_buft_overrides = params_spec.tensor_buft_overrides;
+
+        if (params_spec.cpuparams.n_threads > 0) {
+            result.cpuparams.n_threads       = params_spec.cpuparams.n_threads;
+            result.cpuparams_batch.n_threads = params_spec.cpuparams_batch.n_threads;
+        }
+    }
+
+    result.cache_type_k  = params_spec.cache_type_k;
+    result.cache_type_v  = params_spec.cache_type_v;
+    result.n_outputs_max = params.n_parallel;
+
+    return result;
+}
+
+struct common_speculative_init_result::impl {
+    impl() = default;
+    ~impl() = default;
+
+    // note: the order in which model, context, etc. are declared matters because their destructors will be called bottom-to-top
+    llama_model_ptr   model;
+    llama_context_ptr context;
+};
+
+common_speculative_init_result::common_speculative_init_result(
+    common_params & params,
+      llama_model * model_tgt,
+    llama_context * ctx_tgt) :
+    pimpl(new impl{}) {
+    const bool has_draft = params.speculative.has_dft();
+    const bool spec_mtp = std::find(params.speculative.types.begin(),
+                                    params.speculative.types.end(),
+                                    COMMON_SPECULATIVE_TYPE_DRAFT_MTP) != params.speculative.types.end();
+    GGML_ASSERT(has_draft || spec_mtp);
+
+    auto mparams = common_model_params_to_llama(params);
+    auto cparams = common_context_params_to_llama(params);
+
+    if (spec_mtp) {
+        cparams.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
+    }
+
+    // note: for small models maybe we can set this to the maximum possible draft from all speculative types
+    //       the extra memory for small models is likely negligible?
+    cparams.n_rs_seq  = 0;
+    cparams.ctx_other = ctx_tgt;
+
+    std::string model_path;
+    if (has_draft) {
+        model_path = params.speculative.draft.mparams.path;
+        LOG_TRC("%s: loading draft model '%s'\n", __func__, model_path.c_str());
+
+        llama_model * model_dft = llama_model_load_from_file(params.model.path.c_str(), mparams);
+        if (model_dft == NULL) {
+            LOG_ERR("%s: failed to load draft model, '%s'\n", __func__, model_path.c_str());
+            return;
+        }
+
+        pimpl->model.reset(model_dft);
+
+        llama_context * ctx_dft = llama_init_from_model(model_dft, cparams);
+        if (ctx_dft == nullptr) {
+            LOG_ERR("%s: failed to create MTP context\n", __func__);
+            return;
+        }
+
+        pimpl->context.reset(ctx_dft);
+    } else if (spec_mtp) {
+        model_path = params.model.path;
+
+        LOG_TRC("%s: creating MTP draft context against the target model '%s'\n", __func__, model_path.c_str());
+
+        llama_context * ctx_dft = llama_init_from_model(model_tgt, cparams);
+        if (ctx_dft == nullptr) {
+            LOG_ERR("%s: failed to create MTP context\n", __func__);
+            return;
+        }
+
+        pimpl->context.reset(ctx_dft);
+    }
+}
+
+common_speculative_init_result::~common_speculative_init_result() = default;
+
+llama_model * common_speculative_init_result::model() {
+    return pimpl->model.get();
+}
+
+llama_context * common_speculative_init_result::context() {
+    return pimpl->context.get();
+}
+
+common_speculative_init_result_ptr common_speculative_init_from_params(common_params & params, llama_model * model_tgt, llama_context * ctx_tgt) {
+    return std::make_unique<common_speculative_init_result>(params, model_tgt, ctx_tgt);
 }
 
 // initialization of the speculative decoding system

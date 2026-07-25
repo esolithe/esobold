@@ -502,9 +502,7 @@ static size_t estimate_draft_autofit_tax_mb(
     llama_model_params draft_model_params = llama_model_default_params();
     llama_context_params draft_ctx_params = llama_context_default_params();
 
-    draft_model_params.use_mmap = base_model_params.use_mmap;
-    draft_model_params.use_mlock = base_model_params.use_mlock;
-    draft_model_params.use_direct_io = base_model_params.use_direct_io;
+    draft_model_params.load_mode = base_model_params.load_mode;
     draft_model_params.n_gpu_layers = has_draft_model ? draft_gpulayers : 0;
     draft_model_params.devices = base_model_params.devices;
     draft_model_params.main_gpu = base_model_params.main_gpu;
@@ -554,8 +552,7 @@ static size_t estimate_draft_autofit_tax_mb(
     {
         llama_model_params draft_probe_params = draft_model_params;
         draft_probe_params.no_alloc = true;
-        draft_probe_params.use_mmap = false;
-        draft_probe_params.use_mlock = false;
+        draft_probe_params.load_mode = LLAMA_LOAD_MODE_NONE;
 
         llama_model * draft_probe = llama_model_load_from_file(spec_model_filename.c_str(), draft_probe_params);
         if(draft_probe != nullptr)
@@ -591,8 +588,7 @@ static size_t estimate_draft_autofit_tax_mb(
     {
         llama_model_params ctx_other_model_params = base_model_params;
         ctx_other_model_params.no_alloc = true;
-        ctx_other_model_params.use_mmap = false;
-        ctx_other_model_params.use_mlock = false;
+        ctx_other_model_params.load_mode = LLAMA_LOAD_MODE_NONE;
 
         ctx_other_model = llama_model_load_from_file(main_model_filename.c_str(), ctx_other_model_params);
         if(ctx_other_model != nullptr)
@@ -869,6 +865,7 @@ static bool speculative_state_setup(llama_context * main_ctx, const llama_contex
     }
     catch(const std::exception & e)
     {
+        common_log_flush(common_log_main());
         printf("Error: failed to initialize speculative decoding state: %s\n", e.what());
         llama_free(draft_ctx);
         draft_ctx = nullptr;
@@ -878,6 +875,7 @@ static bool speculative_state_setup(llama_context * main_ctx, const llama_contex
 
     if(draft_spec == nullptr)
     {
+        common_log_flush(common_log_main());
         printf("Error: failed to initialize speculative decoding state.\n");
         llama_free(draft_ctx);
         draft_ctx = nullptr;
@@ -921,9 +919,7 @@ static void speculative_decoding_setup(std::string spec_model_filename, llama_co
     llama_model_params draft_model_params = llama_model_default_params();
     llama_context_params draft_ctx_params = llama_context_default_params();
 
-    draft_model_params.use_mmap = base_model_params.use_mmap;
-    draft_model_params.use_mlock = base_model_params.use_mlock;
-    draft_model_params.use_direct_io = base_model_params.use_direct_io;
+    draft_model_params.load_mode = base_model_params.load_mode;
     draft_model_params.n_gpu_layers = draft_gpulayers; //layers offload the speculative model.
     draft_model_params.devices = base_model_params.devices;
     draft_ctx_params.n_ctx = base_ctx_params.n_ctx;
@@ -992,7 +988,7 @@ static void speculative_decoding_setup(std::string spec_model_filename, llama_co
         {
             if(debugmode==1)
             {
-                printf("WARNING: Draft model vocab of (%d) does not match base vocab of (%d).\nIn debug mode, this restriction is bypassed. However, speculative decoding may malfunction!\n",draftvocab,base_n_vocab);
+                printf("WARNING: Draft model vocab of (%d) does not match base vocab of (%d).\n",draftvocab,base_n_vocab);
             }
             else
             {
@@ -3233,11 +3229,9 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
             // Match llama-server's target rollback slots for speculative verification.
             llama_ctx_params.n_rs_seq = inputs.draft_amount;
         }
-        model_params.use_mmap = inputs.use_mmap;
-        model_params.use_mlock = inputs.use_mlock;
-        model_params.use_direct_io = false; //no direct io for now until stable
+        model_params.load_mode = inputs.use_mlock ? LLAMA_LOAD_MODE_MLOCK : (inputs.use_mmap ? LLAMA_LOAD_MODE_MMAP : LLAMA_LOAD_MODE_NONE);
         model_params.n_gpu_layers = inputs.gpulayers;
-        kcpp_permit_any_repack = (model_params.use_mmap?false:true);
+        kcpp_permit_any_repack = (inputs.use_mmap?false:true);
 
         //set device overrides if needed
         std::vector<ggml_backend_dev_t> devices_override;
@@ -3482,6 +3476,7 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
             if(!dospam)
             {
                 llama_log_set(currlogger, curruserdat);
+                common_log_set_verbosity_thold(oldverbosity);
             }
             printf("Autofit Success: %d, Autofit Result: ",success);
             print_fitted_params(model_params,llama_ctx_params);
@@ -3489,7 +3484,6 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
             {
                 //revert to previous
                 model_params.n_gpu_layers = inputs.gpulayers;
-                common_log_set_verbosity_thold(oldverbosity);
             }
         }
 
@@ -4256,12 +4250,17 @@ struct BatchGenerateRequest
     bool has_pending = false;
     llama_token pending_token = 0;
     int i_batch = -1;
+    bool i_batch_is_prefill = false;
     llama_sampler * sampler = nullptr;
     std::vector<std::string> generated_pieces;
     std::string output;
     int prompt_token_count = 0;
     int completion_token_count = 0;
     std::chrono::steady_clock::time_point start_time;
+    std::chrono::steady_clock::time_point process_start_time;
+    std::chrono::steady_clock::time_point generation_start_time;
+    float init_time = 0.0f;
+    float process_time = 0.0f;
     stop_reason finish_reason = stop_reason::INVALID;
     bool abort_requested = false;
     generation_outputs result;
@@ -4596,7 +4595,15 @@ static void batch_finish_request_locked(BatchGenerateRequest & req, stop_reason 
 {
     auto finish_time = std::chrono::steady_clock::now();
     float total_time = req.start_time.time_since_epoch().count() == 0 ? 0.0f : std::chrono::duration<float>(finish_time - req.start_time).count();
-    float generated_tps = total_time > 0.0f ? (float) req.completion_token_count / total_time : 0.0f;
+    float init_time = req.init_time;
+    float process_time = req.process_time;
+    float gen_time = req.generation_start_time.time_since_epoch().count() == 0 ? 0.0f : std::chrono::duration<float>(finish_time - req.generation_start_time).count();
+    if(process_time == 0.0f && req.prompt_token_count > 0 && total_time > 0.0f)
+    {
+        process_time = std::max(0.0f, total_time - init_time);
+    }
+    float processed_tps = process_time > 0.0f ? (float) req.prompt_token_count / process_time : 0.0f;
+    float generated_tps = gen_time > 0.0f ? (float) req.completion_token_count / gen_time : 0.0f;
     req.finish_reason = reason;
     req.result.status = (reason == stop_reason::ERROR_ENCOUNTERED) ? 0 : 1;
     req.result.stopreason = reason;
@@ -4609,8 +4616,8 @@ static void batch_finish_request_locked(BatchGenerateRequest & req, stop_reason 
         llama_memory_seq_rm(llama_get_memory(llama_ctx_v4), req.slot, -1, -1);
     }
     req.slot = -1;
-    printf("\n[%s] BatchRequest:%d, Prompt:%d, Generated:%d/%d in %.2fs (%.2fT/s), Stop:%d",
-        get_timestamp_str().c_str(), req.id, req.prompt_token_count, req.completion_token_count, req.max_length, total_time, generated_tps, (int) reason);
+    printf("\n[%s] BatchRequest:%d, Init:%.2fs, Processed:%d in %.2fs (%.2fT/s), Generated:%d/%d in %.2fs (%.2fT/s), Total:%.2fs, Stop:%d",
+        get_timestamp_str().c_str(), req.id, init_time, req.prompt_token_count, process_time, processed_tps, req.completion_token_count, req.max_length, gen_time, generated_tps, total_time, (int) reason);
     fflush(stdout);
     batch_cv.notify_all();
 }
@@ -4655,6 +4662,7 @@ static bool batch_claim_waiting_locked()
         req->slot = slot;
         req->state = BatchState::PREFILL;
         batch_touched_since_legacy = true;
+        req->start_time = std::chrono::steady_clock::now();
 
         ApplyPromptFormatAdjustments(req->prompt_added_memory, req->prompt);
         std::vector<llama_token> added_memory_tokens; //temporary buf before copying over
@@ -4699,8 +4707,12 @@ static bool batch_claim_waiting_locked()
         req->n_past = 0;
         req->has_pending = false;
         req->i_batch = -1;
-        req->start_time = std::chrono::steady_clock::now();
+        req->i_batch_is_prefill = false;
         llama_memory_seq_rm(llama_get_memory(llama_ctx_v4), slot, -1, -1);
+        req->process_start_time = std::chrono::steady_clock::now();
+        req->generation_start_time = std::chrono::steady_clock::time_point();
+        req->init_time = std::chrono::duration<float>(req->process_start_time - req->start_time).count();
+        req->process_time = 0.0f;
         claimed = true;
     }
     return claimed;
@@ -4736,6 +4748,7 @@ static void batch_worker_loop()
                 }
                 BatchGenerateRequest & req = *req_ptr;
                 req.i_batch = -1;
+                req.i_batch_is_prefill = false;
                 if(req.abort_requested)
                 {
                     batch_finish_request_locked(req, stop_reason::INVALID);
@@ -4749,6 +4762,7 @@ static void batch_worker_loop()
                         if(is_last)
                         {
                             req.i_batch = batch.n_tokens;
+                            req.i_batch_is_prefill = true;
                         }
                         common_batch_add(batch, req.prompt_tokens[req.prompt_pos], req.n_past, { req.slot }, is_last);
                         req.prompt_pos++;
@@ -4762,6 +4776,7 @@ static void batch_worker_loop()
                 else if(req.state == BatchState::GENERATING && req.has_pending)
                 {
                     req.i_batch = batch.n_tokens;
+                    req.i_batch_is_prefill = false;
                     common_batch_add(batch, req.pending_token, req.n_past, { req.slot }, true);
                     req.n_past++;
                     req.has_pending = false;
@@ -4781,6 +4796,7 @@ static void batch_worker_loop()
         }
 
         int decode_status = llama_decode(llama_ctx_v4, batch);
+        auto decode_finish_time = std::chrono::steady_clock::now();
 
         std::lock_guard<std::mutex> lock(batch_mutex);
         if(decode_status != 0)
@@ -4804,6 +4820,11 @@ static void batch_worker_loop()
             if(!req || req->state != BatchState::GENERATING || req->i_batch < 0)
             {
                 continue;
+            }
+            if(req->i_batch_is_prefill && req->generation_start_time.time_since_epoch().count() == 0)
+            {
+                req->generation_start_time = decode_finish_time;
+                req->process_time = std::chrono::duration<float>(decode_finish_time - req->process_start_time).count();
             }
             llama_token sampled = llama_sampler_sample(req->sampler, llama_ctx_v4, req->i_batch);
             req->completion_token_count++;
@@ -5305,8 +5326,10 @@ static void PrepareMediaEmbds(const int nctx, const std::vector<int> & media_int
                 printf("\nError: MTMD media %d failed to load!",i);
                 continue;
             }
+            const auto * marker = mtmd_default_marker();
             mtmd_input_text inp_txt = {
-                mtmd_default_marker(),
+                marker,
+                strlen(marker),
                 /* add_special */ false,
                 /* parse_special */ true,
             };
@@ -6257,6 +6280,8 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
     {
         bool triggersc = kcpp_data->use_smartcontext;
         bool triggerff = kcpp_data->use_fastforward;
+        std::vector<int> embd_inp_before_fastforward;
+        bool attempted_fastforward = false;
         if(!blank_prompt) //special case for blank prompts, no fast forward or shifts
         {
             int ff_swa_retain_amount = 0; //a hack for SWA to improve coherency for illegal rewinds
@@ -6281,6 +6306,8 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
             }
             if(triggerff)
             {
+                embd_inp_before_fastforward = embd_inp;
+                attempted_fastforward = true;
                 ContextFastForward(current_context_tokens, embd_inp, n_past, last_n_tokens, nctx, smartcontext, triggersc, false, 4, ff_swa_retain_amount);
             }
         }
@@ -6292,11 +6319,37 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
             }
             else
             {
-                llama_memory_seq_rm(llama_get_memory(llama_ctx_v4), 0, n_past, -1);
+                bool kv_trim_ok = llama_memory_seq_rm(llama_get_memory(llama_ctx_v4), 0, n_past, -1);
+                if(!kv_trim_ok && attempted_fastforward)
+                {
+                    llama_memory_clear(llama_get_memory(llama_ctx_v4),true);
+                    embd_inp = embd_inp_before_fastforward;
+                    n_past = 0;
+                    std::fill(last_n_tokens.begin(), last_n_tokens.end(), 0);
+                    if(debugmode==1 && !is_quiet)
+                    {
+                        printf("\nNote: KV cache could not be rewound for prompt reuse; reprocessing full prompt instead.\n");
+                    }
+                }
             }
             if(draft_ctx)
             {
-                llama_memory_seq_rm(llama_get_memory(draft_ctx), 0, n_past, -1);
+                if(n_past==0)
+                {
+                    llama_memory_clear(llama_get_memory(draft_ctx),true);
+                }
+                else if(!llama_memory_seq_rm(llama_get_memory(draft_ctx), 0, n_past, -1) && attempted_fastforward)
+                {
+                    llama_memory_clear(llama_get_memory(llama_ctx_v4),true);
+                    llama_memory_clear(llama_get_memory(draft_ctx),true);
+                    embd_inp = embd_inp_before_fastforward;
+                    n_past = 0;
+                    std::fill(last_n_tokens.begin(), last_n_tokens.end(), 0);
+                    if(debugmode==1 && !is_quiet)
+                    {
+                        printf("\nNote: Draft KV cache could not be rewound for prompt reuse; reprocessing full prompt instead.\n");
+                    }
+                }
             }
         }
     }

@@ -4,6 +4,8 @@
 #include <cmath>
 #include <codecvt>
 #include <cstdarg>
+#include <cstdlib>
+#include <cstring>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -29,6 +31,7 @@
 #include <unistd.h>
 #endif
 
+#include "ggml-backend.h"
 #include "ggml.h"
 #include "stable-diffusion.h"
 
@@ -360,6 +363,9 @@ int sd_preview_interval              = 1;
 bool sd_preview_denoised             = true;
 bool sd_preview_noisy                = false;
 
+static sd_graph_eval_callback_t sd_backend_eval_cb = nullptr;
+static void* sd_backend_eval_cb_data               = nullptr;
+
 std::u32string utf8_to_utf32(const std::string& utf8_str) {
     std::wstring_convert<std::codecvt_utf8<char32_t>, char32_t> converter;
     return converter.from_bytes(utf8_str);
@@ -662,6 +668,11 @@ void sd_set_preview_callback(sd_preview_cb_t cb, preview_t mode, int interval, b
     sd_preview_noisy    = noisy;
 }
 
+void sd_set_backend_eval_callback(sd_graph_eval_callback_t cb, void* data) {
+    sd_backend_eval_cb      = cb;
+    sd_backend_eval_cb_data = data;
+}
+
 sd_preview_cb_t sd_get_preview_callback() {
     return sd_preview_cb;
 }
@@ -680,6 +691,14 @@ bool sd_should_preview_denoised() {
 }
 bool sd_should_preview_noisy() {
     return sd_preview_noisy;
+}
+
+sd_graph_eval_callback_t sd_get_backend_eval_callback() {
+    return sd_backend_eval_cb;
+}
+
+void* sd_get_backend_eval_callback_data() {
+    return sd_backend_eval_cb_data;
 }
 
 sd_progress_cb_t sd_get_progress_callback() {
@@ -1025,4 +1044,27 @@ std::vector<std::pair<std::string, float>> split_quotation_attention(
         }
     }
     return result;
+}
+
+size_t sd_list_devices(char* buffer, size_t buffer_size) {
+    if (ggml_backend_dev_count() == 0) {
+        // dynamic-backend builds discover their backend modules at runtime
+        ggml_backend_load_all();
+    }
+
+    std::ostringstream oss;
+    for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
+        ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+        const char* name       = ggml_backend_dev_name(dev);
+        const char* desc       = ggml_backend_dev_description(dev);
+        oss << (name ? name : "") << '\t' << (desc ? desc : "") << '\n';
+    }
+
+    std::string devices = oss.str();
+    if (buffer != nullptr && buffer_size > 0) {
+        size_t copy_size = std::min(devices.size(), buffer_size - 1);
+        memcpy(buffer, devices.data(), copy_size);
+        buffer[copy_size] = '\0';
+    }
+    return devices.size();
 }

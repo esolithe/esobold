@@ -19,6 +19,7 @@
 
 #include "stable-diffusion.h"
 #include "src/kcpp_sd_extensions.h"
+#include "src/core/util.h"
 #include "ggml-backend.h"
 
 using namespace kcpp_sd;
@@ -117,12 +118,14 @@ struct SDParams {
     float distilled_guidance      = -1.0f;
     float shifted_timestep        = 0;
     float flow_shift              = -1.0f;
+    std::string extra_sample_args = "";
     float eta                     = -1.0f;
     float strength                = 0.75f;
     int64_t seed                  = 42;
     bool diffusion_flash_attn     = false;
     bool diffusion_conv_direct    = false;
     bool vae_conv_direct          = false;
+    std::string ref_image_args    = "";
 
     LoraMap lora_map;
     bool lora_dynamic = false;
@@ -190,7 +193,7 @@ static std::string read_str_from_disk(std::string filepath)
     std::string output;
     std::cout << "\nTry read vocab from " << filepath << std::endl;
 
-    std::ifstream file(filepath);  // text mode
+    std::ifstream file(sd_get_u8path(filepath));  // text mode
     if (!file) {
         throw std::runtime_error("Failed to open file: " + filepath);
     }
@@ -270,39 +273,10 @@ std::string load_gpt_oss_vocab_json()
     return load_embd_file(cache, "embd_res/gpt_oss_vocab_json.embd");
 }
 
-static std::string get_device_override(int value, const char * module = nullptr)
-{
-    std::string device_name;
-    if (value <= -2) {
-        device_name = "CPU";
-    } else if (value >= 0) {
-        size_t gpu_index = static_cast<size_t>(value);
-        if (gpu_index >= ggml_backend_dev_count()) {
-            printf("\nWARNING: device %zu doesn't exist, falling back to default for %s\n",
-                   gpu_index,
-                   module ? module : "the main device");
-        } else {
-            auto dev = ggml_backend_dev_get(gpu_index);
-            device_name = ggml_backend_dev_name(dev);
-        }
-    }
-    std::string result;
-    if (device_name == "") {
-        result = ""; // no override: sdcpp will use the main device
-    } else if (module) {
-        printf("Selecting %s as %s image generation device\n", device_name.c_str(), module);
-        result = std::string{","} + module + "=" + device_name;
-    } else {
-        printf("Selecting %s as the main image generation device\n", device_name.c_str());
-        result = device_name;
-    }
-    return result;
-}
-
 bool sdtype_load_model(const sd_load_model_inputs inputs) {
     sd_is_quiet = inputs.quiet;
     set_sd_quiet(sd_is_quiet);
-    executable_path = inputs.executable_path;
+    executable_path = sd_get_u8path(inputs.executable_path);
     std::string taesdpath = "";
     LoraMap lora_map;
     for(int i=0;i<inputs.lora_len;++i)
@@ -323,7 +297,9 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
     cfg_square_limit = inputs.img_soft_limit;
     printf("\nImageGen Init - Load Model: %s\n",inputs.model_filename);
 
-    std::string backends = get_device_override(inputs.kcpp_main_device);
+    std::string backend = inputs.backend ? inputs.backend : "";
+    std::string params_backend = inputs.params_backend ? inputs.params_backend : "";
+    std::string split_mode = inputs.split_mode ? inputs.split_mode : "";
 
     int lora_apply_mode = LORA_APPLY_AT_RUNTIME;
     bool lora_dynamic = false;
@@ -402,20 +378,33 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
     {
         printf("Conv2D Direct for VAE model is enabled\n");
     }
-    if (inputs.use_mmap && inputs.offload_cpu) {
+    if(backend != "")
+    {
+        printf("Backend assignment: \"%s\"\n", backend.c_str());
+    }
+    if (inputs.use_mmap && params_backend == "CPU") {
         printf("Offloading weights to system RAM with mmap\n");
         if (!lora_dynamic && inputs.lora_len > 0) {
             printf("Note: static LoRAs can reduce mmap memory savings!\n");
         }
-    } else if (inputs.offload_cpu) {
+    } else if (inputs.params_backend == "CPU") {
         printf("Offloading weights to system RAM\n");
     } else if (inputs.use_mmap) {
         printf("Using mmap for I/O\n");
     }
+    if(inputs.auto_fit) {
+        printf("Using auto-fit");
+    }
+    if(params_backend != "" && params_backend != "CPU") {
+        printf("Parameters backend assignment: \"%s\"\n", params_backend.c_str());
+    }
+    if(split_mode != "") {
+        printf("Using split mode: \"%s\"\n", split_mode.c_str());
+    }
     std::string max_vram;
-    if(inputs.max_vram != 0.f) {
-        printf("Using max VRAM = %0.2f GB\n", inputs.max_vram);
-        max_vram = std::to_string(inputs.max_vram);
+    if(inputs.max_vram && *inputs.max_vram) {
+        max_vram = inputs.max_vram;
+        printf("Using max VRAM = %s GB\n", max_vram.c_str());
     }
     if(inputs.quant > 0)
     {
@@ -479,21 +468,15 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
     params.diffusion_flash_attn = sd_params->diffusion_flash_attn;
     params.diffusion_conv_direct = sd_params->diffusion_conv_direct;
     params.vae_conv_direct = sd_params->vae_conv_direct;
-    params.chroma_use_dit_mask = true;
+    params.model_args = "chroma_use_dit_mask=true";
     params.max_vram = max_vram.c_str();
     params.stream_layers = inputs.stream_layers;
     params.eager_load = true; //kcpp should preload everything
     params.enable_mmap = inputs.use_mmap;
-    params.params_backend = inputs.offload_cpu ? "CPU" : "";
-    backends += get_device_override(inputs.kcpp_vae_device, "VAE");
-    backends += get_device_override(inputs.kcpp_clip_device, "CLIP");
-    if (backends.rfind(",", 0) == 0) {
-        backends = "auto" + backends;
-    }
-    params.backend = backends.c_str();
-    if (inputs.debugmode==1) {
-        printf("\nSetting sd backend list to \"%s\", params backend list to \"%s\"", params.backend, params.params_backend);
-    }
+    params.backend = backend.c_str();
+    params.params_backend = params_backend.c_str();
+    params.split_mode = split_mode.c_str();
+    params.auto_fit = inputs.auto_fit;
     params.lora_apply_mode = (lora_apply_mode_t)lora_apply_mode;
 
     // also switches flash attn for the vae and conditioner
@@ -973,8 +956,27 @@ static sd_audio_t load_audio_from_b64(const std::string& b64audio) {
 
 bool supports_reference_images(kcpp_sd::model_info info)
 {
-    bool supported = (info.is_wan || info.is_ltx || info.supports_ref_image || info.is_kontext || photomaker_enabled);
+    bool supported = (info.is_wan || info.is_ltx || info.supports_ref_image || info.is_kontext || photomaker_enabled) && !info.is_zimage;
     return supported;
+}
+
+static std::string upscale_image_to_png_base64(upscaler_ctx_t* upscaler_ctx, const sd_image_t& input_image, int upscale_factor = 2, const std::string& meta_image_info = "")
+{
+    std::string gen_data;
+    sd_image_t* upscaled = nullptr;
+    int upscaled_count = 0;
+    if (upscale(upscaler_ctx, input_image, upscale_factor, &upscaled, &upscaled_count)) {
+        gen_data = raw_image_to_png_base64(*upscaled, meta_image_info);
+        free_sd_images(upscaled, upscaled_count);
+    } else {
+        printf("Upscaling failed!\n");
+        gen_data = raw_image_to_png_base64(input_image, meta_image_info);
+    }
+    return gen_data;
+}
+
+void sdtype_abort_generation() {
+    sd_cancel_generation(sd_ctx, SD_CANCEL_ALL);
 }
 
 sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
@@ -984,6 +986,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
         return sd_generation.error("Warning: KCPP image generation not initialized!");
     }
     sd_image_t * results = nullptr;
+    int generated_num_results = 0;
 
     std::string img2img_data = std::string(inputs.init_images);
     std::string img2img_mask = std::string(inputs.mask);
@@ -993,7 +996,6 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
     {
         extra_image_data.push_back(std::string(inputs.extra_images[i]));
     }
-
     sd_params->prompt = inputs.prompt;
     sd_params->negative_prompt = inputs.negative_prompt;
     sd_params->cfg_scale = inputs.cfg_scale;
@@ -1001,6 +1003,19 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
     sd_params->sample_steps = inputs.sample_steps;
     sd_params->shifted_timestep = inputs.shifted_timestep;
     sd_params->flow_shift = inputs.flow_shift;
+    sd_params->extra_sample_args = inputs.extra_sample_args ? inputs.extra_sample_args : "";
+    bool force_image_edit = false;
+    sd_params->ref_image_args = "resize_before_vae=on"; // auto_resize_ref_image = true;
+    if (inputs.ref_image_args && *inputs.ref_image_args) {
+        sd_params->ref_image_args += ",";
+        sd_params->ref_image_args += inputs.ref_image_args;
+        if (sd_params->ref_image_args.find("preset") != std::string::npos) {
+            force_image_edit = true;
+            if(!sd_is_quiet && sddebugmode==1) {
+                printf("ref_image_args=\"%s\", forcing edit mode", inputs.ref_image_args);
+            }
+        }
+    }
     sd_params->eta = inputs.eta;
     sd_params->seed = inputs.seed;
     sd_params->width = inputs.width;
@@ -1013,8 +1028,6 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
     if (sd_params->sample_method == sample_method_t::SAMPLE_METHOD_COUNT) {
         sd_params->sample_method = sd_get_default_sample_method(sd_ctx);
     }
-
-    SetCircularAxesAll(sd_ctx, inputs.circular_x, inputs.circular_y);
 
     sd_params->cache_mode    = inputs.cache_mode ? inputs.cache_mode : "";
     sd_params->cache_options = inputs.cache_options ? inputs.cache_options : "";
@@ -1059,11 +1072,14 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
     //if a single extra image is provided, mask is NOT provided, and img2img image is NOT provided
     //and it's a (SD1.5, SDXL) model that doesn't support extra images (see extra_image_data later)
     //swap extra image data into img2img instead (graceful fallback)
-    if(!supports_reference_images(info) && extra_image_data.size()==1 && !is_img2img && img2img_mask=="")
+    if(!supports_reference_images(info) && !force_image_edit && extra_image_data.size()==1 && !is_img2img && img2img_mask=="")
     {
         is_img2img = true;
         img2img_data = extra_image_data[0];
         extra_image_data.clear();
+        if (!sd_is_quiet && sddebugmode == 1) {
+            printf("Switching reference image to img2img\n");
+        }
     }
 
     if ((info.is_wan || info.is_ltx) && extra_image_data.size() == 0 && is_img2img)
@@ -1146,7 +1162,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
         {
             int nx2, ny2, nc2;
             int desiredchannels = 3;
-            if(supports_reference_images(info))
+            if(supports_reference_images(info)||force_image_edit)
             {
                 if(info.is_wan || info.is_ltx)
                 {
@@ -1162,7 +1178,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
                         wan_imgs.push_back(extraimage_reference);
                     }
                 }
-                else if(info.supports_ref_image)
+                else if(info.supports_ref_image||force_image_edit)
                 {
                     uint8_t * loaded = load_image_from_b64(extra_image_data[i],nx2,ny2);
                     if(loaded)
@@ -1240,12 +1256,12 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
     sd_img_gen_params_t params = {};
     sd_img_gen_params_init (&params);
     params.batch_count = 1;
-    params.auto_resize_ref_image = true;
+    params.ref_image_args = sd_params->ref_image_args.c_str();
     params.prompt = sd_params->prompt.c_str();
     params.negative_prompt = sd_params->negative_prompt.c_str();
     params.clip_skip = sd_params->clip_skip;
     params.sample_params.guidance.txt_cfg = sd_params->cfg_scale;
-    params.sample_params.guidance.img_cfg = sd_params->cfg_scale;
+    // params.sample_params.guidance.img_cfg = sd_params->cfg_scale; //removed, breaks qwen img edit and more
     if (sd_params->distilled_guidance >= 0.f) {
         params.sample_params.guidance.distilled_guidance = sd_params->distilled_guidance;
     }
@@ -1261,6 +1277,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
     if (sd_params->flow_shift > 0.f && sd_params->flow_shift != INFINITY) {
         params.sample_params.flow_shift = sd_params->flow_shift;
     }
+    params.sample_params.extra_sample_args = sd_params->extra_sample_args.c_str();
     params.seed = sd_params->seed;
     params.strength = sd_params->strength;
     params.vae_tiling_params.enabled = dotile;
@@ -1273,6 +1290,8 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
         params.vae_tiling_params.temporal_tiling = true;
     }
     parse_cache_options(params.cache, sd_params->cache_mode, sd_params->cache_options);
+    params.circular_x = inputs.circular_x;
+    params.circular_y = inputs.circular_y;
 
     LoraMap lora_map = sd_params->lora_map;
     if (sd_params->lora_dynamic) {
@@ -1309,7 +1328,6 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
     //the below params are only used in video models. May move into standalone object in future
     int vid_req_frames = inputs.vid_req_frames;
     int video_output_type = inputs.video_output_type;
-    int generated_num_results = 1;
     int vid_fps = inputs.vid_fps;
     remove_limits = inputs.remove_limits;
 
@@ -1399,7 +1417,10 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
 
         fflush(stdout);
 
-        results = generate_image(sd_ctx, &params);
+        if (!generate_image(sd_ctx, &params, &results, &generated_num_results)) {
+            results = nullptr;
+            generated_num_results = 0;
+        }
 
     } else {
 
@@ -1466,7 +1487,10 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
         if (is_passthrough) {
             printf("No generation triggered, passthrough mode.\n");
         } else {
-            results = generate_image(sd_ctx, &params);
+            if (!generate_image(sd_ctx, &params, &results, &generated_num_results)) {
+                results = nullptr;
+                generated_num_results = 0;
+            }
         }
     }
 
@@ -1509,113 +1533,105 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
         jsoninfo["all_prompts"] = nlohmann::json::array();
         jsoninfo["all_negative_prompts"] = nlohmann::json::array();
         jsoninfo["all_seeds"] = nlohmann::json::array();
+        jsoninfo["lora_meta"] = lora_meta;
         jsoninfo["version"] = "KoboldCpp";
     }
-    sd_image_t upscaled_image;
-    upscaled_image.data = nullptr;
+    sd_image_t* upscaled_image = nullptr;
     std::string gen_data;
     std::string gen_data2;
     std::string final_frame_data;
 
     if (is_passthrough)
     {
-        //either return original image or upscale if needed
-        sd_image_t *result_image = &input_image;
         if(inputs.upscale && upscaler_ctx != nullptr)
         {
             printf("Upscaling original image (passthrough)...\n");
-            upscaled_image = upscale(upscaler_ctx, input_image, 2);
-            result_image = &upscaled_image;
+            gen_data = upscale_image_to_png_base64(upscaler_ctx, input_image, 2);
         }
-        gen_data = raw_image_to_png_base64(*result_image);
+        else {
+            gen_data = raw_image_to_png_base64(input_image);
+        }
+    }
+    else if (isanim)
+    {
+        //if multiframe, make a video
+        if (generated_num_results > 0 && results && results->data)
+        {
+            if(!sd_is_quiet && sddebugmode==1)
+            {
+                printf("\nSaving video buffer, VIDEO_OUTPUT_TYPE=%d...",video_output_type);
+            }
+            uint8_t * out_data = nullptr;
+            uint8_t * out_data2 = nullptr;
+            size_t out_len = 0;
+            size_t out_len2 = 0;
+            int status = 0;
+            int status2 = 0;
+
+            if(video_output_type==0 || video_output_type==2)
+            {
+                status = create_gif_buf_from_sd_images_msf(results, generated_num_results, vid_fps, &out_data,&out_len);
+            }
+            if(video_output_type==1 || video_output_type==2)
+            {
+                status2 = create_mjpg_avi_membuf_from_sd_images(results, generated_num_results, vid_fps, 40, &out_data2,&out_len2, generated_audio);
+            }
+
+            if(generated_num_results>1)
+            {
+                sd_image_t *final_frame_image = &results[generated_num_results-1];
+                final_frame_data = raw_image_to_png_base64(*final_frame_image);
+            }
+
+            if(!sd_is_quiet && sddebugmode==1)
+            {
+                printf("Video Output Sizes: GIF=%zu AVI=%zu\n",out_len,out_len2);
+                if(status==0 && status2==0)
+                {
+                    printf("Video(s) Saved (Len %zu)!\n",out_len);
+                } else {
+                    printf("Save Failed!\n");
+                }
+            }
+            if(status==0 && out_len>0)
+            {
+                gen_data = kcpp_base64_encode(out_data, out_len);
+                free(out_data);
+            }
+            if (status2 == 0 && out_len2 > 0) {
+                if (gen_data == "") {
+                    gen_data = kcpp_base64_encode(out_data2, out_len2);
+                } else {
+                    gen_data2 = kcpp_base64_encode(out_data2, out_len2);
+                }
+                free(out_data2);
+            }
+        }
+        free_sd_images(results, generated_num_results);
     }
     else
     {
-        for (int i = 0; i < params.batch_count; i++)
+        for (int i = 0; i < generated_num_results; i++)
         {
-            if (results[i].data == NULL) {
+            sd_image_t& result_image = results[i];
+            if (result_image.data == NULL) {
                 continue;
             }
-
-            //if multiframe, make a video
-            if(isanim)
+            std::string meta_image_info = get_image_params(params, lora_meta, i);
+            if(inputs.upscale && upscaler_ctx != nullptr)
             {
-                if(!sd_is_quiet && sddebugmode==1)
-                {
-                    printf("\nSaving video buffer, VIDEO_OUTPUT_TYPE=%d...",video_output_type);
-                }
-                uint8_t * out_data = nullptr;
-                uint8_t * out_data2 = nullptr;
-                size_t out_len = 0;
-                size_t out_len2 = 0;
-                int status = 0;
-                int status2 = 0;
-
-                if(video_output_type==0 || video_output_type==2)
-                {
-                    status = create_gif_buf_from_sd_images_msf(results, generated_num_results, vid_fps, &out_data,&out_len);
-                }
-                if(video_output_type==1 || video_output_type==2)
-                {
-                    status2 = create_mjpg_avi_membuf_from_sd_images(results, generated_num_results, vid_fps, 40, &out_data2,&out_len2, generated_audio);
-                }
-
-                if(generated_num_results>1)
-                {
-                    sd_image_t *final_frame_image = &results[generated_num_results-1];
-                    final_frame_data = raw_image_to_png_base64(*final_frame_image);
-                }
-
-                if(!sd_is_quiet && sddebugmode==1)
-                {
-                    printf("Video Output Sizes: GIF=%zu AVI=%zu\n",out_len,out_len2);
-                    if(status==0 && status2==0)
-                    {
-                        printf("Video(s) Saved (Len %zu)!\n",out_len);
-                    } else {
-                        printf("Save Failed!\n");
-                    }
-                }
-                if(status==0 && out_len>0)
-                {
-                    gen_data = kcpp_base64_encode(out_data, out_len);
-                    free(out_data);
-                }
-                if (status2 == 0 && out_len2 > 0) {
-                    if (gen_data == "") {
-                        gen_data = kcpp_base64_encode(out_data2, out_len2);
-                    } else {
-                        gen_data2 = kcpp_base64_encode(out_data2, out_len2);
-                    }
-                    free(out_data2);
-                }
+                printf("Upscaling output image...\n");
+                gen_data = upscale_image_to_png_base64(upscaler_ctx, result_image, 2, meta_image_info);
+            } else {
+                gen_data = raw_image_to_png_base64(result_image, meta_image_info);
             }
-            else
-            {
-                sd_image_t *result_image = &results[i];
-                if(inputs.upscale && upscaler_ctx != nullptr)
-                {
-                    printf("Upscaling output image...\n");
-                    upscaled_image = upscale(upscaler_ctx, results[i], 2);
-                    result_image = &upscaled_image;
-                }
-                std::string meta_image_info = get_image_params(params, lora_meta, i);
-                gen_data = raw_image_to_png_base64(*result_image, meta_image_info);
-                jsoninfo["infotexts"][i] = meta_image_info;
-                jsoninfo["all_seeds"][i] = params.seed + i;
-                jsoninfo["all_prompts"][i] = params.prompt;
-                jsoninfo["all_negative_prompts"][i] = params.negative_prompt;
-            }
-
-            free(results[i].data);
-            results[i].data = NULL;
+            jsoninfo["infotexts"][i] = meta_image_info;
+            jsoninfo["all_seeds"][i] = params.seed + i;
+            jsoninfo["all_prompts"][i] = params.prompt;
+            jsoninfo["all_negative_prompts"][i] = params.negative_prompt;
         }
-    }
-
-    if(upscaled_image.data)
-    {
-        free(upscaled_image.data);
-        upscaled_image.data = nullptr;
+        free_sd_images(results, generated_num_results);
+        results = nullptr;
     }
 
     if (generated_audio) {
@@ -1626,8 +1642,6 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
         free(input_audio.data);
         input_audio.data = nullptr;
     }
-
-    free(results);
 
     total_img_gens += 1;
     if(!sd_is_quiet)
@@ -1662,9 +1676,7 @@ sd_generation_outputs sdtype_upscale(const sd_upscale_inputs inputs)
     }
     upscale_src_buffer = load_image_from_b64(rawb64,nx,ny);
     sd_image_t source_img;
-    sd_image_t upscaled_image;
     source_img.data = nullptr;
-    upscaled_image.data = nullptr;
     std::string result;
     if(upscale_src_buffer)
     {
@@ -1673,10 +1685,7 @@ sd_generation_outputs sdtype_upscale(const sd_upscale_inputs inputs)
         source_img.channel = 3;
         source_img.data = upscale_src_buffer;
 
-        upscaled_image = upscale(upscaler_ctx, source_img, inputs.upscaling_resize);
-        result = raw_image_to_png_base64(upscaled_image);
-        free(upscaled_image.data);
-
+        result = upscale_image_to_png_base64(upscaler_ctx, source_img, inputs.upscaling_resize);
     }
 
     if (result == "") {

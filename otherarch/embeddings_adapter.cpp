@@ -98,8 +98,7 @@ bool embeddingstype_load_model(const embeddings_load_model_inputs inputs)
     llama_model_params model_params = llama_model_default_params();
     llama_context_params ctx_params = llama_context_default_params();
     const int nthreads = inputs.threads;
-    model_params.use_mmap = inputs.use_mmap;
-    model_params.use_mlock = false;
+    model_params.load_mode = inputs.use_mmap ? LLAMA_LOAD_MODE_MMAP : LLAMA_LOAD_MODE_NONE;
     model_params.n_gpu_layers = inputs.gpulayers; //offload if possible
     int kcpp_parseinfo_maindevice = inputs.kcpp_main_gpu<=0?0:inputs.kcpp_main_gpu;
     model_params.main_gpu = kcpp_parseinfo_maindevice;

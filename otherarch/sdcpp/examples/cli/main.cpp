@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <algorithm>
 #include <cctype>
 #include <filesystem>
 #include <functional>
@@ -53,6 +54,9 @@ struct SDCliParams {
     bool metadata_brief      = false;
     bool metadata_all        = false;
 
+    std::string imatrix_out;
+    std::vector<std::string> imatrix_in;
+
     bool normal_exit = false;
 
     ArgOptions get_options() {
@@ -79,6 +83,11 @@ struct SDCliParams {
              "path to write preview image to (default: ./preview.png). Multi-frame previews support .avi, .webm, and animated .webp",
              0,
              &preview_path},
+            {"",
+             "--imat-out",
+             "compute the imatrix for this run and save it to the provided path",
+             0,
+             &imatrix_out},
         };
 
         options.int_options = {
@@ -179,10 +188,18 @@ struct SDCliParams {
             return -1;
         };
 
+        auto on_imatrix_in_arg = [&](int argc, const char** argv, int index) {
+            if (++index >= argc) {
+                return -1;
+            }
+            imatrix_in.push_back(argv[index]);
+            return 1;
+        };
+
         options.manual_options = {
             {"-M",
              "--mode",
-             "run mode, one of [img_gen, vid_gen, upscale, convert, metadata], default: img_gen",
+             "run mode, one of [img_gen, adetailer, vid_gen, upscale, convert, metadata], default: img_gen",
              on_mode_arg},
             {"",
              "--preview",
@@ -192,6 +209,10 @@ struct SDCliParams {
              "--help",
              "show this help message and exit",
              on_help_arg},
+            {"",
+             "--imat-in",
+             "load an imatrix file for quantization or continued collection; can be specified multiple times",
+             on_imatrix_in_arg},
         };
 
         return options;
@@ -253,6 +274,7 @@ struct SDCliParams {
             << "  preview_fps: " << preview_fps << ",\n"
             << "  taesd_preview: " << (taesd_preview ? "true" : "false") << ",\n"
             << "  preview_noisy: " << (preview_noisy ? "true" : "false") << ",\n"
+            << "  imatrix_out: \"" << imatrix_out << "\",\n"
             << "  metadata_raw: " << (metadata_raw ? "true" : "false") << ",\n"
             << "  metadata_brief: " << (metadata_brief ? "true" : "false") << ",\n"
             << "  metadata_all: " << (metadata_all ? "true" : "false") << "\n"
@@ -459,7 +481,8 @@ bool save_results(const SDCliParams& cli_params,
         if (!img.data)
             return false;
 
-        const int64_t metadata_seed = cli_params.mode == VID_GEN ? gen_params.seed : gen_params.seed + idx;
+        int images_per_batch        = gen_params.batch_count > 0 ? std::max(1, num_results / gen_params.batch_count) : 1;
+        const int64_t metadata_seed = cli_params.mode == VID_GEN ? gen_params.seed : gen_params.seed + idx / images_per_batch;
         std::string params          = gen_params.embed_image_metadata
                                           ? get_image_params(ctx_params, gen_params, metadata_seed, cli_params.mode)
                                           : "";
@@ -543,6 +566,65 @@ bool save_results(const SDCliParams& cli_params,
     return sucessful_reults != 0;
 }
 
+static bool apply_adetailer(sd_ctx_t* sd_ctx,
+                            const sd_ctx_params_t& sd_ctx_params,
+                            const SDContextParams& ctx_params,
+                            const SDGenerationParams& gen_params,
+                            const sd_img_gen_params_t& img_gen_params,
+                            SDMode mode,
+                            SDImageVec& results,
+                            int num_results) {
+    if (gen_params.ad_model_path.empty()) {
+        return true;
+    }
+
+    sd_adetailer_params_t ad_params{};
+    ad_params.prompt          = gen_params.ad_prompt.empty() ? nullptr : gen_params.ad_prompt.c_str();
+    ad_params.negative_prompt = gen_params.ad_negative_prompt.empty() ? nullptr : gen_params.ad_negative_prompt.c_str();
+    ad_params.extra_ad_args   = gen_params.extra_ad_args.c_str();
+
+    ADetailerCtxPtr ad_ctx(new_adetailer_ctx(gen_params.ad_model_path.c_str(),
+                                             ctx_params.n_threads,
+                                             sd_ctx_params.backend,
+                                             sd_ctx_params.params_backend));
+    if (ad_ctx == nullptr) {
+        LOG_ERROR("new_adetailer_ctx failed");
+        return false;
+    }
+
+    for (int i = 0; i < num_results; ++i) {
+        if (results[i].data == nullptr) {
+            continue;
+        }
+        sd_img_gen_params_t ad_generation_params = img_gen_params;
+        ad_generation_params.seed                = img_gen_params.seed + i;
+        if (mode == IMG_GEN) {
+            ad_generation_params.width    = 512;
+            ad_generation_params.height   = 512;
+            ad_generation_params.strength = 0.4f;
+        }
+        sd_image_t* detailed_images = nullptr;
+        int detailed_count          = 0;
+        if (!adetail_image(ad_ctx.get(),
+                           sd_ctx,
+                           results[i],
+                           &ad_params,
+                           &ad_generation_params,
+                           &detailed_images,
+                           &detailed_count) ||
+            detailed_count <= 0 || detailed_images == nullptr || detailed_images[0].data == nullptr) {
+            free_sd_images(detailed_images, detailed_count);
+            LOG_ERROR("ADetailer failed for image %d", i + 1);
+            return false;
+        }
+        free(results[i].data);
+        results[i]         = detailed_images[0];
+        detailed_images[0] = {0, 0, 0, nullptr};
+        free_sd_images(detailed_images, detailed_count);
+    }
+    return true;
+}
+
 int main(int argc, const char* argv[]) {
     if (argc > 1 && std::string(argv[1]) == "--version") {
         std::cout << version_string() << "\n";
@@ -575,6 +657,11 @@ int main(int argc, const char* argv[]) {
         return 0;
     }
 
+    if (!gen_params.ad_model_path.empty() && cli_params.mode != IMG_GEN && cli_params.mode != ADETAILER) {
+        LOG_ERROR("--ad-model is only supported in image generation and adetailer modes");
+        return 1;
+    }
+
     if (gen_params.video_frames > 4) {
         size_t last_dot_pos   = cli_params.preview_path.find_last_of(".");
         std::string base_path = cli_params.preview_path;
@@ -605,13 +692,33 @@ int main(int argc, const char* argv[]) {
     LOG_DEBUG("%s", ctx_params.to_string().c_str());
     LOG_DEBUG("%s", gen_params.to_string().c_str());
 
+    if (!cli_params.imatrix_out.empty()) {
+        if (fs::exists(cli_params.imatrix_out) &&
+            std::find(cli_params.imatrix_in.begin(), cli_params.imatrix_in.end(), cli_params.imatrix_out) == cli_params.imatrix_in.end()) {
+            LOG_WARN("imatrix file '%s' already exists and will be overwritten", cli_params.imatrix_out.c_str());
+        }
+        enable_imatrix_collection();
+    }
+
+    for (const auto& in_file : cli_params.imatrix_in) {
+        LOG_INFO("loading imatrix from '%s'", in_file.c_str());
+        if (!load_imatrix(in_file.c_str())) {
+            LOG_WARN("failed to load imatrix from '%s'", in_file.c_str());
+        }
+    }
+
     if (cli_params.mode == CONVERT) {
-        bool success = convert(ctx_params.model_path.c_str(),
-                               ctx_params.vae_path.c_str(),
-                               cli_params.output_path.c_str(),
-                               ctx_params.wtype,
-                               ctx_params.tensor_type_rules.c_str(),
-                               cli_params.convert_name);
+        bool success = convert_with_components(ctx_params.model_path.c_str(),
+                                               ctx_params.clip_l_path.c_str(),
+                                               ctx_params.clip_g_path.c_str(),
+                                               ctx_params.t5xxl_path.c_str(),
+                                               ctx_params.diffusion_model_path.c_str(),
+                                               ctx_params.vae_path.c_str(),
+                                               cli_params.output_path.c_str(),
+                                               ctx_params.wtype,
+                                               ctx_params.tensor_type_rules.c_str(),
+                                               cli_params.convert_name,
+                                               ctx_params.n_threads);
         if (!success) {
             LOG_ERROR("convert '%s'/'%s' to '%s' failed",
                       ctx_params.model_path.c_str(),
@@ -710,6 +817,16 @@ int main(int argc, const char* argv[]) {
         }
     }
 
+    if (gen_params.ip_adapter_image_path.size() > 0) {
+        if (!load_sd_image_from_file(gen_params.ip_adapter_image.put(),
+                                     gen_params.ip_adapter_image_path.c_str(),
+                                     0,
+                                     0)) {
+            LOG_ERROR("load image from '%s' failed", gen_params.ip_adapter_image_path.c_str());
+            return 1;
+        }
+    }
+
     if (!gen_params.control_video_path.empty()) {
         gen_params.control_frames.clear();
         if (!load_images_from_dir(gen_params.control_video_path,
@@ -763,11 +880,22 @@ int main(int argc, const char* argv[]) {
             gen_params.sample_params.scheduler = sd_get_default_scheduler(sd_ctx.get(), gen_params.sample_params.sample_method);
         }
 
-        if (cli_params.mode == IMG_GEN) {
-            sd_img_gen_params_t img_gen_params = gen_params.to_sd_img_gen_params_t();
+        sd_img_gen_params_t img_gen_params{};
+        const bool use_img_gen_params = cli_params.mode == IMG_GEN || cli_params.mode == ADETAILER;
+        if (use_img_gen_params) {
+            img_gen_params = gen_params.to_sd_img_gen_params_t();
+        }
 
-            num_results = gen_params.batch_count;
-            results.adopt(generate_image(sd_ctx.get(), &img_gen_params), num_results);
+        if (cli_params.mode == IMG_GEN) {
+            sd_image_t* generated_images = nullptr;
+            if (!generate_image(sd_ctx.get(), &img_gen_params, &generated_images, &num_results)) {
+                generated_images = nullptr;
+                num_results      = 0;
+            }
+            results.adopt(generated_images, num_results);
+        } else if (cli_params.mode == ADETAILER) {
+            num_results = 1;
+            results.push_back(gen_params.init_image.release());
         } else if (cli_params.mode == VID_GEN) {
             sd_vid_gen_params_t vid_gen_params = gen_params.to_sd_vid_gen_params_t();
             sd_image_t* generated_video        = nullptr;
@@ -779,6 +907,18 @@ int main(int argc, const char* argv[]) {
 
         if (!results) {
             LOG_ERROR("generate failed");
+            return 1;
+        }
+
+        if (use_img_gen_params &&
+            !apply_adetailer(sd_ctx.get(),
+                             sd_ctx_params,
+                             ctx_params,
+                             gen_params,
+                             img_gen_params,
+                             cli_params.mode,
+                             results,
+                             num_results)) {
             return 1;
         }
     }
@@ -802,12 +942,22 @@ int main(int argc, const char* argv[]) {
                 SDImageOwner current_image(results[i]);
                 results[i] = {0, 0, 0, nullptr};
                 for (int u = 0; u < gen_params.upscale_repeats; ++u) {
-                    SDImageOwner upscaled_image(upscale(upscaler_ctx.get(), current_image.get(), upscale_factor));
-                    if (upscaled_image.get().data == nullptr) {
+                    sd_image_t* upscaled_images = nullptr;
+                    int upscaled_count          = 0;
+                    bool upscale_ok             = upscale(upscaler_ctx.get(),
+                                                          current_image.get(),
+                                                          upscale_factor,
+                                                          &upscaled_images,
+                                                          &upscaled_count);
+                    if (!upscale_ok || upscaled_count <= 0 || upscaled_images[0].data == nullptr) {
+                        free_sd_images(upscaled_images, upscaled_count);
                         LOG_ERROR("upscale failed");
                         break;
                     }
-                    current_image = std::move(upscaled_image);
+                    sd_image_t upscaled_image = upscaled_images[0];
+                    upscaled_images[0]        = {0, 0, 0, nullptr};
+                    free_sd_images(upscaled_images, upscaled_count);
+                    current_image.reset(upscaled_image);
                 }
                 results[i] = current_image.release();  // Set the final upscaled image as the result
             }
@@ -817,6 +967,11 @@ int main(int argc, const char* argv[]) {
     if (!save_results(cli_params, ctx_params, gen_params, results.data(), num_results, generated_audio)) {
         free_sd_audio(generated_audio);
         return 1;
+    }
+
+    if (!cli_params.imatrix_out.empty()) {
+        LOG_INFO("saving imatrix to '%s'", cli_params.imatrix_out.c_str());
+        save_imatrix(cli_params.imatrix_out.c_str());
     }
 
     free_sd_audio(generated_audio);

@@ -5,6 +5,7 @@
 #include "common.h"
 #include "download.h"
 #include "json-schema-to-grammar.h"
+#include "llama.h"
 #include "log.h"
 #include "sampling.h"
 #include "speculative.h"
@@ -28,6 +29,7 @@
 #include <cinttypes>
 #include <climits>
 #include <cstdarg>
+#include <filesystem>
 #include <fstream>
 #include <list>
 #include <regex>
@@ -351,6 +353,10 @@ static std::string get_default_local_path(const std::string & url) {
     return fs_get_cache_file(string_split<std::string>(f, '/').back());
 }
 
+static bool spec_types_is_default(const common_params & params) {
+    return params.speculative.types == std::vector<enum common_speculative_type>{COMMON_SPECULATIVE_TYPE_NONE};
+}
+
 common_models_handler common_models_handler_init(const common_params & params, llama_example curr_ex) {
     common_download_hf_plan plan;
     common_download_hf_plan plan_spec;
@@ -360,6 +366,14 @@ common_models_handler common_models_handler_init(const common_params & params, l
     const bool spec_type_draft_mtp = std::find(params.speculative.types.begin(),
                                         params.speculative.types.end(),
                                         COMMON_SPECULATIVE_TYPE_DRAFT_MTP) != params.speculative.types.end();
+
+    const bool spec_type_draft_dflash = std::find(params.speculative.types.begin(),
+                                           params.speculative.types.end(),
+                                           COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH) != params.speculative.types.end();
+
+    const bool spec_type_draft_eagle3 = std::find(params.speculative.types.begin(),
+                                           params.speculative.types.end(),
+                                           COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3) != params.speculative.types.end();
 
     // only download mmproj if the current example is using it
     bool use_mmproj = false;
@@ -373,6 +387,8 @@ common_models_handler common_models_handler_init(const common_params & params, l
     opts.bearer_token    = params.hf_token;
     opts.offline         = params.offline;
     opts.download_mtp    = spec_type_draft_mtp;
+    opts.download_eagle3 = spec_type_draft_eagle3;
+    opts.download_dflash = spec_type_draft_dflash;
     opts.download_mmproj = use_mmproj && !params.no_mmproj
                         && params.mmproj.path.empty() && params.mmproj.url.empty();
 
@@ -381,7 +397,14 @@ common_models_handler common_models_handler_init(const common_params & params, l
     }
 
     if (!params.speculative.draft.mparams.hf_repo.empty()) {
-        plan_spec = common_download_get_hf_plan(params.speculative.draft.mparams, opts);
+        // without a requested type, discover every sidecar the draft repo ships to infer the type later
+        auto opts_spec = opts;
+        if (spec_types_is_default(params)) {
+            opts_spec.download_mtp    = true;
+            opts_spec.download_dflash = true;
+            opts_spec.download_eagle3 = true;
+        }
+        plan_spec = common_download_get_hf_plan(params.speculative.draft.mparams, opts_spec);
     }
 
     if (!params.vocoder.model.hf_repo.empty()) {
@@ -488,12 +511,15 @@ void common_models_handler_apply(common_models_handler & handler, common_params 
         task.opts       = opts;
         tasks.push_back(task);
     }
+
+    bool had_spec_url = false;
     if (!params.speculative.draft.mparams.url.empty()) {
         common_download_task task;
         task.url        = params.speculative.draft.mparams.url;
         task.local_path = params.speculative.draft.mparams.path;
         task.opts       = opts;
         tasks.push_back(task);
+        had_spec_url = true;
     }
 
     // handle hf_plan tasks
@@ -513,6 +539,67 @@ void common_models_handler_apply(common_models_handler & handler, common_params 
             });
         }
     };
+
+    // infer the speculative type from the sidecar shipped by the draft repo when none is requested
+    if (spec_types_is_default(params)) {
+        if (!plan_spec.mtp.local_path.empty()) {
+            params.speculative.types = { COMMON_SPECULATIVE_TYPE_DRAFT_MTP };
+            plan_spec.dflash = {};
+            plan_spec.eagle3 = {};
+        } else if (!plan_spec.dflash.local_path.empty()) {
+            params.speculative.types = { COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH };
+            plan_spec.eagle3 = {};
+        } else if (!plan_spec.eagle3.local_path.empty()) {
+            params.speculative.types = { COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3 };
+        }
+    }
+
+    // when a sidecar type is requested, the draft repo resolves to its sidecar instead of a full model
+    const bool spec_sidecar_found = !plan_spec.mtp.local_path.empty() ||
+                                    !plan_spec.dflash.local_path.empty() ||
+                                    !plan_spec.eagle3.local_path.empty();
+    if (!plan_spec.mtp.local_path.empty() && !had_spec_url) {
+        tasks.emplace_back(plan_spec.mtp, opts, [&]() {
+            // only use the discovered MTP head when no draft path is set yet
+            if (params.speculative.draft.mparams.path.empty()) {
+                params.speculative.draft.mparams.path = hf_cache::finalize_file(plan_spec.mtp);
+            } else {
+                hf_cache::finalize_file(plan_spec.mtp);
+            }
+        });
+    }
+    if (!plan_spec.dflash.local_path.empty() && !had_spec_url) {
+        tasks.emplace_back(plan_spec.dflash, opts, [&]() {
+            // only use the discovered DFlash sidecar when no draft path is set yet
+            if (params.speculative.draft.mparams.path.empty()) {
+                params.speculative.draft.mparams.path = hf_cache::finalize_file(plan_spec.dflash);
+            } else {
+                hf_cache::finalize_file(plan_spec.dflash);
+            }
+        });
+    }
+    if (!plan_spec.eagle3.local_path.empty() && !had_spec_url) {
+        tasks.emplace_back(plan_spec.eagle3, opts, [&]() {
+            // only use the discovered Eagle3 sidecar when no draft path is set yet
+            if (params.speculative.draft.mparams.path.empty()) {
+                params.speculative.draft.mparams.path = hf_cache::finalize_file(plan_spec.eagle3);
+            } else {
+                hf_cache::finalize_file(plan_spec.eagle3);
+            }
+        });
+    }
+
+    // handle plan_spec (e.g. --spec-draft-hf)
+    if (!plan_spec.model_files.empty() && !had_spec_url && !spec_sidecar_found) {
+        add_tasks(plan_spec.model_files, plan_spec.primary, params.speculative.draft.mparams);
+        had_spec_url = true;
+    }
+
+    // handle vocoder plan (e.g. --hf-repo-v)
+    if (!plan_voc.model_files.empty()) {
+        add_tasks(plan_voc.model_files, plan_voc.primary, params.vocoder.model);
+    }
+
     if (!plan.model_files.empty()) {
         add_tasks(plan.model_files, plan.primary, params.model);
     }
@@ -521,13 +608,33 @@ void common_models_handler_apply(common_models_handler & handler, common_params 
             params.mmproj.path = hf_cache::finalize_file(plan.mmproj);
         });
     }
-    if (!plan.mtp.local_path.empty()) {
+    if (!plan.mtp.local_path.empty() && !had_spec_url) {
         tasks.emplace_back(plan.mtp, opts, [&]() {
             // only fall back to the discovered MTP head when no draft was explicitly provided
             if (params.speculative.draft.mparams.empty()) {
                 params.speculative.draft.mparams.path = hf_cache::finalize_file(plan.mtp);
             } else {
                 hf_cache::finalize_file(plan.mtp);
+            }
+        });
+    }
+    if (!plan.dflash.local_path.empty() && !had_spec_url) {
+        tasks.emplace_back(plan.dflash, opts, [&]() {
+            // only fall back to the discovered DFlash sidecar when no draft was explicitly provided
+            if (params.speculative.draft.mparams.empty()) {
+                params.speculative.draft.mparams.path = hf_cache::finalize_file(plan.dflash);
+            } else {
+                hf_cache::finalize_file(plan.dflash);
+            }
+        });
+    }
+    if (!plan.eagle3.local_path.empty() && !had_spec_url) {
+        tasks.emplace_back(plan.eagle3, opts, [&]() {
+            // only fall back to the discovered Eagle3 sidecar when no draft was explicitly provided
+            if (params.speculative.draft.mparams.empty()) {
+                params.speculative.draft.mparams.path = hf_cache::finalize_file(plan.eagle3);
+            } else {
+                hf_cache::finalize_file(plan.eagle3);
             }
         });
     }
@@ -538,16 +645,6 @@ void common_models_handler_apply(common_models_handler & handler, common_params 
             params.models_preset    = hf_cache::finalize_file(plan.preset);
             params.model = common_params_model{}; // make sure to clear model, so server starts in router mode
         });
-    }
-
-    // handle plan_spec (e.g. --spec-draft-hf)
-    if (!plan_spec.model_files.empty()) {
-        add_tasks(plan_spec.model_files, plan_spec.primary, params.speculative.draft.mparams);
-    }
-
-    // handle vocoder plan (e.g. --hf-repo-v)
-    if (!plan_voc.model_files.empty()) {
-        add_tasks(plan_voc.model_files, plan_voc.primary, params.vocoder.model);
     }
 
     // run all tasks in parallel
@@ -562,6 +659,7 @@ void common_models_handler_apply(common_models_handler & handler, common_params 
         }
         std::vector<common_download_task> unique_tasks_vec;
         for (auto & pair : unique_tasks) {
+            LOG_DBG("download task: %s -> %s\n", pair.second->url.c_str(), pair.second->local_path.c_str());
             unique_tasks_vec.push_back(*pair.second);
         }
         common_download_run_tasks(unique_tasks_vec);
@@ -689,9 +787,20 @@ static bool common_params_parse_ex(int argc, char ** argv, common_params_context
                     arg.c_str(), e.what(), opt.to_string().c_str()));
             }
         }
+
+        // TODO: remove this check after deprecating --mmap|mlock|dio
+        auto has_arg = [&](std::initializer_list<const char *> names) {
+            return std::any_of(names.begin(), names.end(), [&](const char * name) {
+                return seen_args.count(name);
+            });
+        };
+        if (has_arg({"-lm", "--load-mode"}) &&
+            has_arg({"--mlock", "--mmap", "--no-mmap", "-dio", "--direct-io", "-ndio", "--no-direct-io"})) {
+            LOG_WRN("DEPRECATED: `--load-mode` and `--mlock`/`--mmap`/`--direct-io` should not be combined; only the last flag on the command line will take effect\n");
+        }
     };
 
-    // parse the first time to get -hf option (used for remote preset)
+    // parse all CLI args now, so that -hf is available below for remote preset resolution
     parse_cli_args();
 
     postprocess_cpu_params(params.cpuparams,       nullptr);
@@ -719,9 +828,8 @@ static bool common_params_parse_ex(int argc, char ** argv, common_params_context
 
         // model is required (except for server)
         // TODO @ngxson : maybe show a list of available models in CLI in this case
-        if (params.model.path.empty()
-                && !params.usage
-                && !params.completion) {
+        bool can_skip_model = params.usage || params.completion || !params.server_base.empty();
+        if (!can_skip_model && params.model.path.empty()) {
             throw std::invalid_argument("error: --model is required\n");
         }
     }
@@ -741,6 +849,11 @@ static bool common_params_parse_ex(int argc, char ** argv, common_params_context
     if (!params.kv_overrides.empty()) {
         params.kv_overrides.emplace_back();
         params.kv_overrides.back().key[0] = 0;
+    }
+
+    if (!params.server_tools.empty() && !params.cors_origins_explicit) {
+        LOG_WRN("server tools are enabled, using localhost as default CORS origin (change via --cors-origins)\n");
+        params.cors_origins = "localhost";
     }
 
     // pad tensor_buft_overrides for llama_params_fit:
@@ -1072,6 +1185,7 @@ bool common_params_parse(int argc, char ** argv, common_params & params, llama_e
             if (ctx_arg.print_usage) {
                 ctx_arg.print_usage(argc, argv);
             }
+            common_log_flush(common_log_main());
             exit(0);
         }
         if (ctx_arg.params.completion) {
@@ -1173,6 +1287,8 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         params.sampling.temp = 0.2; // lower temp by default for better quality
     } else if (ex == LLAMA_EXAMPLE_SERVER) {
         params.n_parallel = -1;     // auto by default
+    } else if (ex == LLAMA_EXAMPLE_TOKENIZE) {
+        params.parse_special = true; // parse special tokens by default, like the old tokenize tool
     }
 
     params.use_color = tty_can_use_colors();
@@ -1241,6 +1357,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.completion = true;
         }
     ));
+    add_opt(common_arg(
+        {"--server-base"}, "URL",
+        string_format("connect to this server instead of starting a new one, example: 'http://localhost:8080' (default: none)"),
+        [](common_params & params, const std::string & value) {
+            params.server_base = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_CLI}));
     add_opt(common_arg(
         {"--verbose-prompt"},
         string_format("print a verbose prompt before generation (default: %s)", params.verbose_prompt ? "true" : "false"),
@@ -2385,27 +2508,45 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     }
     add_opt(common_arg(
         {"--mlock"},
-        "force system to keep model in RAM rather than swapping or compressing",
+        "DEPRECATED in favor of `--load-mode`: mmap + force system to keep model in RAM rather than swapping or compressing",
         [](common_params & params) {
-            params.use_mlock = true;
+            LOG_WRN("DEPRECATED: --mlock is deprecated. use --load-mode mlock instead\n");
+            params.load_mode = LLAMA_LOAD_MODE_MLOCK;
         }
     ).set_env("LLAMA_ARG_MLOCK"));
     add_opt(common_arg(
         {"--mmap"},
         {"--no-mmap"},
-        string_format("whether to memory-map model. (if mmap disabled, slower load but may reduce pageouts if not using mlock) (default: %s)", params.use_mmap ? "enabled" : "disabled"),
+        "DEPRECATED in favor of `--load-mode`: whether to memory-map model. (if mmap disabled, slower load but may reduce pageouts if not using mlock)",
         [](common_params & params, bool value) {
-            params.use_mmap = value;
+            LOG_WRN("DEPRECATED: --mmap and --no-mmap are deprecated. use --load-mode mmap instead\n");
+            params.load_mode = value ? LLAMA_LOAD_MODE_MMAP : LLAMA_LOAD_MODE_NONE;
         }
     ).set_env("LLAMA_ARG_MMAP"));
     add_opt(common_arg(
         {"-dio", "--direct-io"},
         {"-ndio", "--no-direct-io"},
-        string_format("use DirectIO if available. (default: %s)", params.use_direct_io ? "enabled" : "disabled"),
+        "DEPRECATED in favor of `--load-mode`: use DirectIO if available",
         [](common_params & params, bool value) {
-            params.use_direct_io = value;
+            LOG_WRN("DEPRECATED: --direct-io and --no-direct-io are deprecated. use --load-mode dio instead\n");
+            params.load_mode = value ? LLAMA_LOAD_MODE_DIRECT_IO : LLAMA_LOAD_MODE_NONE;
         }
     ).set_env("LLAMA_ARG_DIO"));
+    add_opt(common_arg(
+        {"-lm", "--load-mode"}, "MODE",
+        "model loading mode (default: mmap)\n"
+        "- none: no special loading mode\n"
+        "- mmap: memory-map model (if mmap disabled, slower load but may reduce pageouts if not using mlock)\n"
+        "- mlock: mmap + force system to keep model in RAM rather than swapping or compressing\n"
+        "- dio: use DirectIO if available\n",
+        [](common_params & params, const std::string & value) {
+            /**/ if (value == "none")  { params.load_mode = LLAMA_LOAD_MODE_NONE;      }
+            else if (value == "mmap")  { params.load_mode = LLAMA_LOAD_MODE_MMAP;      }
+            else if (value == "mlock") { params.load_mode = LLAMA_LOAD_MODE_MLOCK;     }
+            else if (value == "dio")   { params.load_mode = LLAMA_LOAD_MODE_DIRECT_IO; }
+            else { throw std::invalid_argument("invalid value"); }
+        }
+    ).set_env("LLAMA_ARG_LOAD_MODE"));
     add_opt(common_arg(
         {"--numa"}, "TYPE",
         "attempt optimizations that help on some NUMA systems\n"
@@ -2733,14 +2874,14 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         [](common_params & params, const std::string & value) {
             params.model.path = value;
         }
-    ).set_examples({LLAMA_EXAMPLE_COMMON, LLAMA_EXAMPLE_EXPORT_LORA, LLAMA_EXAMPLE_DOWNLOAD}).set_env("LLAMA_ARG_MODEL"));
+    ).set_examples({LLAMA_EXAMPLE_COMMON, LLAMA_EXAMPLE_EXPORT_LORA, LLAMA_EXAMPLE_DOWNLOAD, LLAMA_EXAMPLE_TOKENIZE}).set_env("LLAMA_ARG_MODEL"));
     add_opt(common_arg(
         {"-mu", "--model-url"}, "MODEL_URL",
         "model download url (default: unused)",
         [](common_params & params, const std::string & value) {
             params.model.url = value;
         }
-    ).set_examples({LLAMA_EXAMPLE_COMMON, LLAMA_EXAMPLE_DOWNLOAD}).set_env("LLAMA_ARG_MODEL_URL"));
+    ).set_examples({LLAMA_EXAMPLE_COMMON, LLAMA_EXAMPLE_DOWNLOAD, LLAMA_EXAMPLE_TOKENIZE}).set_env("LLAMA_ARG_MODEL_URL"));
     add_opt(common_arg(
         { "-dr", "--docker-repo" }, "[<repo>/]<model>[:quant]",
         "Docker Hub model repository. repo is optional, default to ai/. quant is optional, default to :latest.\n"
@@ -2749,7 +2890,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         [](common_params & params, const std::string & value) {
             params.model.docker_repo = value;
         }
-    ).set_examples({LLAMA_EXAMPLE_COMMON, LLAMA_EXAMPLE_DOWNLOAD}).set_env("LLAMA_ARG_DOCKER_REPO"));
+    ).set_examples({LLAMA_EXAMPLE_COMMON, LLAMA_EXAMPLE_DOWNLOAD, LLAMA_EXAMPLE_TOKENIZE}).set_env("LLAMA_ARG_DOCKER_REPO"));
     add_opt(common_arg(
         {"-hf", "-hfr", "--hf-repo"}, "<user>/<model>[:quant]",
         "Hugging Face model repository; quant is optional, case-insensitive, default to Q4_K_M, or falls back to the first file in the repo if Q4_K_M doesn't exist.\n"
@@ -2759,14 +2900,14 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         [](common_params & params, const std::string & value) {
             params.model.hf_repo = value;
         }
-    ).set_examples({LLAMA_EXAMPLE_COMMON, LLAMA_EXAMPLE_DOWNLOAD}).set_env("LLAMA_ARG_HF_REPO"));
+    ).set_examples({LLAMA_EXAMPLE_COMMON, LLAMA_EXAMPLE_DOWNLOAD, LLAMA_EXAMPLE_TOKENIZE}).set_env("LLAMA_ARG_HF_REPO"));
     add_opt(common_arg(
         {"-hff", "--hf-file"}, "FILE",
         "Hugging Face model file. If specified, it will override the quant in --hf-repo (default: unused)",
         [](common_params & params, const std::string & value) {
             params.model.hf_file = value;
         }
-    ).set_examples({LLAMA_EXAMPLE_COMMON, LLAMA_EXAMPLE_DOWNLOAD}).set_env("LLAMA_ARG_HF_FILE"));
+    ).set_examples({LLAMA_EXAMPLE_COMMON, LLAMA_EXAMPLE_DOWNLOAD, LLAMA_EXAMPLE_TOKENIZE}).set_env("LLAMA_ARG_HF_FILE"));
     add_opt(common_arg(
         {"-hfv", "-hfrv", "--hf-repo-v"}, "<user>/<model>[:quant]",
         "Hugging Face model repository for the vocoder model (default: unused)",
@@ -2787,12 +2928,26 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         [](common_params & params, const std::string & value) {
             params.hf_token = value;
         }
-    ).set_examples({LLAMA_EXAMPLE_COMMON, LLAMA_EXAMPLE_DOWNLOAD}).set_env("HF_TOKEN"));
+    ).set_examples({LLAMA_EXAMPLE_COMMON, LLAMA_EXAMPLE_DOWNLOAD, LLAMA_EXAMPLE_TOKENIZE}).set_env("HF_TOKEN"));
     add_opt(common_arg(
         {"--mtp"},
         "also download the multi-token prediction (MTP) head, if available (default: unused)",
         [](common_params & params) {
             params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_DRAFT_MTP);
+        }
+    ).set_examples({LLAMA_EXAMPLE_DOWNLOAD}));
+    add_opt(common_arg(
+        {"--dflash"},
+        "also download the DFlash sidecar, if available (default: unused)",
+        [](common_params & params) {
+            params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH);
+        }
+    ).set_examples({LLAMA_EXAMPLE_DOWNLOAD}));
+    add_opt(common_arg(
+        {"--eagle3"},
+        "also download the Eagle3 sidecar, if available (default: unused)",
+        [](common_params & params) {
+            params.speculative.types.push_back(COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3);
         }
     ).set_examples({LLAMA_EXAMPLE_DOWNLOAD}));
     add_opt(common_arg(
@@ -2843,7 +2998,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.out_file = value;
         }
     ).set_examples({LLAMA_EXAMPLE_IMATRIX, LLAMA_EXAMPLE_CVECTOR_GENERATOR, LLAMA_EXAMPLE_EXPORT_LORA, LLAMA_EXAMPLE_TTS, LLAMA_EXAMPLE_FINETUNE,
-                    LLAMA_EXAMPLE_RESULTS, LLAMA_EXAMPLE_EXPORT_GRAPH_OPS}));
+                    LLAMA_EXAMPLE_RESULTS, LLAMA_EXAMPLE_EXPORT_GRAPH_OPS, LLAMA_EXAMPLE_CLI}));
     add_opt(common_arg(
         {"-ofreq", "--output-frequency"}, "N",
         string_format("output the imatrix every N iterations (default: %d)", params.n_out_freq),
@@ -2903,6 +3058,41 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.parse_special = true;
         }
     ).set_examples({LLAMA_EXAMPLE_IMATRIX}));
+    add_opt(common_arg(
+        {"--ids"},
+        string_format("only print the token IDs, in a Python-parseable list form like [1, 2, 3] (default: %s)", params.tokenize_ids ? "true" : "false"),
+        [](common_params & params) {
+            params.tokenize_ids = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_TOKENIZE}));
+    add_opt(common_arg(
+        {"--stdin"},
+        string_format("read the prompt from stdin (takes precedence over -f/--file and -p/--prompt) (default: %s)", params.tokenize_stdin ? "true" : "false"),
+        [](common_params & params) {
+            params.tokenize_stdin = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_TOKENIZE}));
+    add_opt(common_arg(
+        {"--no-bos"},
+        string_format("do not add a BOS token to the prompt, even if the model normally uses one (default: %s)", params.tokenize_no_bos ? "true" : "false"),
+        [](common_params & params) {
+            params.tokenize_no_bos = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_TOKENIZE}));
+    add_opt(common_arg(
+        {"--no-parse-special"},
+        string_format("do not parse special tokens (chat, tool, etc) (default: %s)", !params.parse_special ? "true" : "false"),
+        [](common_params & params) {
+            params.parse_special = false;
+        }
+    ).set_examples({LLAMA_EXAMPLE_TOKENIZE}));
+    add_opt(common_arg(
+        {"--show-count"},
+        string_format("print the total number of tokens (default: %s)", params.tokenize_show_count ? "true" : "false"),
+        [](common_params & params) {
+            params.tokenize_show_count = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_TOKENIZE}));
     add_opt(common_arg(
         {"-pps"},
         string_format("is the prompt shared across parallel sequences (default: %s)", params.is_pp_shared ? "true" : "false"),
@@ -2998,6 +3188,42 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_STATIC_PATH"));
     add_opt(common_arg(
+        {"--cors-origins"}, "ORIGINS",
+        string_format(
+            "comma-separated list of allowed origins for CORS (default: %s)\n"
+            "if set to special value 'localhost', reflect the Origin header only if it is localhost",
+        params.cors_origins.c_str()),
+        [](common_params & params, const std::string & value) {
+            params.cors_origins = value;
+            params.cors_origins_explicit = true;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_CORS_ORIGINS"));
+    add_opt(common_arg(
+        {"--cors-methods"}, "METHODS",
+        string_format("comma-separated list of allowed methods for CORS (default: %s)", params.cors_methods.c_str()),
+        [](common_params & params, const std::string & value) {
+            params.cors_methods = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_CORS_METHODS"));
+    add_opt(common_arg(
+        {"--cors-headers"}, "HEADERS",
+        string_format("comma-separated list of allowed headers for CORS (default: %s)", params.cors_headers.c_str()),
+        [](common_params & params, const std::string & value) {
+            params.cors_headers = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_CORS_HEADERS"));
+    add_opt(common_arg(
+        {"--cors-credentials"},
+        {"--no-cors-credentials"},
+        string_format(
+            "whether to allow credentials for CORS (default: %s)\n"
+            "note: if this is enabled and --cors-origins is set to * (default), the Origin header will be echoed back, and credentials will always be allowed",
+        params.cors_credentials ? "enabled" : "disabled"),
+        [](common_params & params, bool value) {
+            params.cors_credentials = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_CORS_CREDENTIALS"));
+    add_opt(common_arg(
         {"--api-prefix"}, "PREFIX",
         string_format("prefix path the server serves from, without the trailing slash (default: %s)", params.api_prefix.c_str()),
         [](common_params & params, const std::string & value) {
@@ -3030,7 +3256,8 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         {"--tools"}, "TOOL1,TOOL2,...",
         "experimental: whether to enable built-in tools for AI agents - do not enable in untrusted environments (default: no tools)\n"
         "specify \"all\" to enable all tools\n"
-        "available tools: read_file, file_glob_search, grep_search, exec_shell_command, write_file, edit_file, apply_diff, get_datetime",
+        "available tools: read_file, file_glob_search, grep_search, exec_shell_command, write_file, edit_file, get_datetime\n"
+        "note: for security reasons, this will limit --cors-origins to localhost by default",
         [](common_params & params, const std::string & value) {
             params.server_tools = parse_csv_row(value);
         }
@@ -3038,7 +3265,8 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     add_opt(common_arg(
         {"-ag", "--agent"},
         {"-no-ag", "--no-agent"},
-        "whether to enable CORS proxy and all built-in tools - do not enable in untrusted environments (default: disabled)",
+        "whether to enable CORS proxy and all built-in tools - do not enable in untrusted environments (default: disabled)\n"
+        "note: for security reasons, this will limit --cors-origins to localhost by default",
         [](common_params & params, bool value) {
             if (value) {
                 params.server_tools = {"all"};
@@ -3047,6 +3275,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                 params.server_tools.clear();
                 params.ui_mcp_proxy = false;
             }
+            // note: do not modify cors_origins here, as the options are not evaluated in order (user may explicitly set --cors-origins before --agent)
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_AGENT"));
     add_opt(common_arg(
@@ -3452,9 +3681,14 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     ).set_env("LLAMA_ARG_LOG_FILE"));
     add_opt(common_arg(
         {"--log-prompts-dir"}, "PATH",
-        "Log prompts to directory (only used for debugging, default: disabled)",
+        "Log prompts to directory (auto-created if not present; only used for debugging, default: disabled)",
         [](common_params & params, const std::string & value) {
             params.path_prompts_log_dir = value;
+            std::error_code ec;
+            std::filesystem::create_directories(value, ec);
+            if (ec) {
+                fprintf(stderr, "warning: failed to create prompts-log-dir '%s': %s\n", value.c_str(), ec.message().c_str());
+            }
         }
     ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
     add_opt(common_arg(
@@ -3488,7 +3722,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         [](common_params & params) {
             params.offline = true;
         }
-    ).set_examples({LLAMA_EXAMPLE_COMMON, LLAMA_EXAMPLE_DOWNLOAD}).set_env("LLAMA_ARG_OFFLINE"));
+    ).set_examples({LLAMA_EXAMPLE_COMMON, LLAMA_EXAMPLE_DOWNLOAD, LLAMA_EXAMPLE_TOKENIZE}).set_env("LLAMA_ARG_OFFLINE"));
     add_opt(common_arg(
         {"-lv", "--verbosity", "--log-verbosity"}, "N",
         string_format("Set the verbosity threshold. Messages with a higher verbosity will be ignored. Values:\n"

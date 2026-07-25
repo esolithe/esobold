@@ -11,6 +11,10 @@ from pathlib import Path
 
 import torch
 
+script_dir = os.path.dirname(os.path.abspath(__file__))
+if script_dir not in sys.path:
+    sys.path.append(script_dir)
+
 if 'NO_LOCAL_GGUF' not in os.environ:
     sys.path.insert(1, str(Path(__file__).parent / 'gguf-py'))
 import gguf
@@ -259,10 +263,8 @@ def main() -> None:
             sys.exit(1)
 
         if args.mtp or args.no_mtp:
-            from conversion.qwen import _Qwen35MtpMixin
-            from conversion.step3 import Step35Model
-            if not (issubclass(model_class, _Qwen35MtpMixin) or issubclass(model_class, Step35Model)):
-                logger.error("--mtp / --no-mtp are only supported for Qwen3.5/3.6 and Step3.5 text variants today")
+            if not model_class.supports_mtp_export:
+                logger.error("--mtp / --no-mtp are not supported for %s", model_architecture)
                 sys.exit(1)
             if args.no_mtp:
                 model_class.no_mtp = True

@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "core/util.h"
+#include "ggml/src/ggml-impl.h"
 #include "stable-diffusion.h"
 
 static std::string trim_copy(const std::string& value) {
@@ -82,6 +83,10 @@ static bool parse_backend_module(const std::string& raw_name, SDBackendModule* m
         *module = SDBackendModule::UPSCALER;
         return true;
     }
+    if (name == "detector" || name == "adetailer" || name == "yolo") {
+        *module = SDBackendModule::DETECTOR;
+        return true;
+    }
     return false;
 }
 
@@ -110,7 +115,67 @@ static std::string resolve_first_device_by_type(enum ggml_backend_dev_type type)
     if (dev == nullptr) {
         return "";
     }
-    return ggml_backend_dev_name(dev);
+    const char* dev_name = ggml_backend_dev_name(dev);
+    if (dev_name != nullptr && dev_name[0] != '\0') {
+        return dev_name;
+    }
+    ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);
+    const char* reg_name   = reg != nullptr ? ggml_backend_reg_name(reg) : nullptr;
+    return reg_name != nullptr ? reg_name : "";
+}
+
+static ggml_backend_dev_t resolve_first_device_by_registry_name(const std::string& name) {
+    std::string lower = lower_copy(trim_copy(name));
+    if (lower == "metal") {
+        lower = "mtl";
+    }
+    if (lower.empty()) {
+        return nullptr;
+    }
+
+    const size_t device_count = ggml_backend_dev_count();
+    for (size_t i = 0; i < device_count; ++i) {
+        ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+        ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);
+        if (reg == nullptr) {
+            continue;
+        }
+        const char* reg_name = ggml_backend_reg_name(reg);
+        if (reg_name != nullptr && lower_copy(reg_name) == lower) {
+            return dev;
+        }
+    }
+    return nullptr;
+}
+
+static ggml_backend_dev_t resolve_device_by_name(const std::string& name) {
+    const std::string lower = lower_copy(trim_copy(name));
+    if (lower.empty()) {
+        return nullptr;
+    }
+
+    const size_t device_count = ggml_backend_dev_count();
+    for (size_t i = 0; i < device_count; ++i) {
+        ggml_backend_dev_t dev = ggml_backend_dev_get(i);
+        const char* dev_name   = ggml_backend_dev_name(dev);
+        if (dev_name != nullptr && lower_copy(dev_name) == lower) {
+            return dev;
+        }
+    }
+    return nullptr;
+}
+
+static std::string backend_device_name(ggml_backend_dev_t dev) {
+    if (dev == nullptr) {
+        return "";
+    }
+    const char* name = ggml_backend_dev_name(dev);
+    if (name != nullptr && name[0] != '\0') {
+        return name;
+    }
+    ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);
+    const char* reg_name   = reg != nullptr ? ggml_backend_reg_name(reg) : nullptr;
+    return reg_name != nullptr ? reg_name : "";
 }
 
 static ggml_backend_buffer_t ggml_backend_tensor_buffer(const struct ggml_tensor* tensor) {
@@ -296,6 +361,10 @@ std::string sd_backend_resolve_name(const std::string& name) {
         return resolve_first_device_by_type(GGML_BACKEND_DEVICE_TYPE_IGPU);
     }
 
+    if (ggml_backend_dev_t dev = resolve_first_device_by_registry_name(requested)) {
+        return backend_device_name(dev);
+    }
+
     const size_t device_count = ggml_backend_dev_count();
     for (size_t i = 0; i < device_count; ++i) {
         ggml_backend_dev_t dev = ggml_backend_dev_get(i);
@@ -328,7 +397,20 @@ static ggml_backend_t init_named_backend(const std::string& name) {
         return ggml_backend_init_best();
     }
 
+    if (ggml_backend_dev_t dev = resolve_device_by_name(name)) {
+        return ggml_backend_dev_init(dev, nullptr);
+    }
+    if (ggml_backend_dev_t dev = resolve_first_device_by_registry_name(name)) {
+        return ggml_backend_dev_init(dev, nullptr);
+    }
+
     std::string resolved = sd_backend_resolve_name(name);
+    if (ggml_backend_dev_t dev = resolve_device_by_name(resolved)) {
+        return ggml_backend_dev_init(dev, nullptr);
+    }
+    if (ggml_backend_dev_t dev = resolve_first_device_by_registry_name(resolved)) {
+        return ggml_backend_dev_init(dev, nullptr);
+    }
     if (resolved.empty()) {
         return nullptr;
     }
@@ -362,6 +444,68 @@ bool sd_backend_cpu_set_n_threads(ggml_backend_t backend, int n_threads) {
         }
     }
     return false;
+}
+
+static ggml_cgraph sd_ggml_graph_view(ggml_cgraph* cgraph0, int i0, int i1) {
+    ggml_cgraph cgraph = {
+        /*.size             =*/0,
+        /*.n_nodes          =*/i1 - i0,
+        /*.n_leafs          =*/0,
+        /*.nodes            =*/cgraph0->nodes + i0,
+        /*.grads            =*/nullptr,
+        /*.grad_accs        =*/nullptr,
+        /*.leafs            =*/nullptr,
+        /*.use_counts       =*/cgraph0->use_counts,
+        /*.visited_hash_set =*/cgraph0->visited_hash_set,
+        /*.order            =*/cgraph0->order,
+        /*.uid              =*/0,
+    };
+    return cgraph;
+}
+
+ggml_status sd_backend_graph_compute_with_eval_callback(ggml_backend_t backend,
+                                                        ggml_cgraph* gf,
+                                                        sd_graph_eval_callback_t callback_eval,
+                                                        void* callback_eval_user_data) {
+    if (callback_eval == nullptr) {
+        return ggml_backend_graph_compute(backend, gf);
+    }
+
+    ggml_status status = GGML_STATUS_SUCCESS;
+    const int n_nodes  = ggml_graph_n_nodes(gf);
+    bool stopped       = false;
+
+    for (int j0 = 0; j0 < n_nodes; ++j0) {
+        ggml_tensor* t = ggml_graph_node(gf, j0);
+        bool need      = callback_eval(t, true, callback_eval_user_data);
+        int j1         = j0;
+
+        while (!need && j1 < n_nodes - 1) {
+            t    = ggml_graph_node(gf, ++j1);
+            need = callback_eval(t, true, callback_eval_user_data);
+        }
+
+        ggml_cgraph gv = sd_ggml_graph_view(gf, j0, j1 + 1);
+        status         = ggml_backend_graph_compute_async(backend, &gv);
+        if (status != GGML_STATUS_SUCCESS) {
+            break;
+        }
+
+        ggml_backend_synchronize(backend);
+
+        if (need && !callback_eval(t, false, callback_eval_user_data)) {
+            stopped = true;
+            break;
+        }
+
+        j0 = j1;
+    }
+
+    ggml_backend_synchronize(backend);
+    if (stopped && status == GGML_STATUS_SUCCESS) {
+        status = GGML_STATUS_ABORTED;
+    }
+    return status;
 }
 
 const char* sd_get_system_info() {
@@ -525,12 +669,52 @@ SDBackendManager::~SDBackendManager() {
 
 void SDBackendManager::reset() {
     backends_.clear();
-    runtime_assignment_ = {};
-    params_assignment_  = {};
+    runtime_assignment_    = {};
+    params_assignment_     = {};
+    split_mode_assignment_ = {};
+}
+
+static std::vector<std::string> split_device_list(const std::string& value) {
+    std::vector<std::string> names;
+    for (const std::string& raw : split_copy(value, '&')) {
+        const std::string name = trim_copy(raw);
+        if (!name.empty()) {
+            names.push_back(name);
+        }
+    }
+    return names;
+}
+
+static std::string primary_device_name(const std::string& value) {
+    std::vector<std::string> names = split_device_list(value);
+    return names.empty() ? std::string() : names.front();
 }
 
 ggml_backend_t SDBackendManager::runtime_backend(SDBackendModule module) {
-    return init_cached_backend(runtime_assignment_.get(module));
+    return init_cached_backend(primary_device_name(runtime_assignment_.get(module)));
+}
+
+std::vector<ggml_backend_t> SDBackendManager::runtime_backends(SDBackendModule module) {
+    std::vector<ggml_backend_t> backends;
+    for (const std::string& name : split_device_list(runtime_assignment_.get(module))) {
+        ggml_backend_t backend = init_cached_backend(name);
+        if (backend == nullptr) {
+            LOG_ERROR("failed to initialize backend '%s' for module %s",
+                      name.c_str(),
+                      sd_backend_module_name(module));
+            continue;
+        }
+        if (std::find(backends.begin(), backends.end(), backend) == backends.end()) {
+            backends.push_back(backend);
+        }
+    }
+    if (backends.empty()) {
+        ggml_backend_t backend = runtime_backend(module);
+        if (backend != nullptr) {
+            backends.push_back(backend);
+        }
+    }
+    return backends;
 }
 
 ggml_backend_t SDBackendManager::params_backend(SDBackendModule module) {
@@ -556,6 +740,10 @@ bool SDBackendManager::params_backend_is_disk(SDBackendModule module) const {
     return is_disk_backend_token(params_assignment_.get(module));
 }
 
+bool SDBackendManager::params_backend_follows_runtime(SDBackendModule module) const {
+    return params_assignment_.get(module).empty();
+}
+
 bool SDBackendManager::runtime_backend_supports_host_buffer(SDBackendModule module) {
     ggml_backend_t backend = runtime_backend(module);
     if (backend == nullptr) {
@@ -575,6 +763,7 @@ bool SDBackendManager::runtime_backend_supports_host_buffer(SDBackendModule modu
 
 bool SDBackendManager::init(const char* backend_spec,
                             const char* params_backend_spec,
+                            const char* split_mode_spec,
                             std::string* error) {
     reset();
 
@@ -584,12 +773,53 @@ bool SDBackendManager::init(const char* backend_spec,
     if (!sd_parse_backend_assignment(SAFE_STR(params_backend_spec), &params_assignment_, error)) {
         return false;
     }
+    if (!sd_parse_backend_assignment(SAFE_STR(split_mode_spec), &split_mode_assignment_, error)) {
+        return false;
+    }
 
     return validate(error);
 }
 
+SDSplitMode SDBackendManager::split_mode(SDBackendModule module) const {
+    return lower_copy(trim_copy(split_mode_assignment_.get(module))) == "row" ? SDSplitMode::ROW
+                                                                              : SDSplitMode::LAYER;
+}
+
+ggml_backend_buffer_type_t SDBackendManager::split_buffer_type(ggml_backend_t backend,
+                                                               const std::vector<float>& tensor_split) {
+    if (backend == nullptr) {
+        return nullptr;
+    }
+    ggml_backend_dev_t dev = ggml_backend_get_device(backend);
+    if (dev == nullptr) {
+        return nullptr;
+    }
+    ggml_backend_reg_t reg = ggml_backend_dev_backend_reg(dev);
+    if (reg == nullptr) {
+        return nullptr;
+    }
+    auto fn = (ggml_backend_split_buffer_type_t)ggml_backend_reg_get_proc_address(reg, "ggml_backend_split_buffer_type");
+    if (fn == nullptr) {
+        return nullptr;
+    }
+    int main_device        = -1;
+    const size_t dev_count = ggml_backend_reg_dev_count(reg);
+    for (size_t i = 0; i < dev_count; ++i) {
+        if (ggml_backend_reg_dev_get(reg, i) == dev) {
+            main_device = (int)i;
+            break;
+        }
+    }
+    if (main_device < 0) {
+        return nullptr;
+    }
+    std::vector<float> padded_split(std::max<size_t>(tensor_split.size(), 64), 0.0f);
+    std::copy(tensor_split.begin(), tensor_split.end(), padded_split.begin());
+    return fn(main_device, padded_split.data());
+}
+
 bool SDBackendManager::validate(std::string* error) const {
-    auto validate_runtime_name = [&](const std::string& name) -> bool {
+    auto validate_single_runtime_name = [&](const std::string& name) -> bool {
         if (is_default_backend_token(name)) {
             return true;
         }
@@ -599,7 +829,7 @@ bool SDBackendManager::validate(std::string* error) const {
             }
             return false;
         }
-        if (!sd_backend_resolve_name(name).empty()) {
+        if (!sd_backend_resolve_name(name).empty() || resolve_first_device_by_registry_name(name) != nullptr) {
             return true;
         }
         if (error != nullptr) {
@@ -607,15 +837,56 @@ bool SDBackendManager::validate(std::string* error) const {
         }
         return false;
     };
+    auto validate_runtime_name = [&](const std::string& name) -> bool {
+        if (name.find('&') == std::string::npos) {
+            return validate_single_runtime_name(name);
+        }
+        std::vector<std::string> names = split_device_list(name);
+        if (names.empty()) {
+            if (error != nullptr) {
+                *error = "invalid backend device list '" + name + "'";
+            }
+            return false;
+        }
+        for (const std::string& entry : names) {
+            if (is_default_backend_token(entry)) {
+                if (error != nullptr) {
+                    *error = "default backend token is not allowed in a device list '" + name + "'";
+                }
+                return false;
+            }
+            if (!validate_single_runtime_name(entry)) {
+                return false;
+            }
+        }
+        return true;
+    };
     auto validate_params_name = [&](const std::string& name) -> bool {
         if (is_disk_backend_token(name)) {
             return true;
         }
-        return validate_runtime_name(name);
+        if (name.find('&') != std::string::npos) {
+            if (error != nullptr) {
+                *error = "params_backend does not accept device lists ('" + name + "')";
+            }
+            return false;
+        }
+        return validate_single_runtime_name(name);
+    };
+    auto validate_split_mode_name = [&](const std::string& name) -> bool {
+        const std::string lower = lower_copy(trim_copy(name));
+        if (lower.empty() || lower == "layer" || lower == "row") {
+            return true;
+        }
+        if (error != nullptr) {
+            *error = "invalid split mode '" + name + "' (expected layer or row)";
+        }
+        return false;
     };
 
     if (!validate_runtime_name(runtime_assignment_.default_name) ||
-        !validate_params_name(params_assignment_.default_name)) {
+        !validate_params_name(params_assignment_.default_name) ||
+        !validate_split_mode_name(split_mode_assignment_.default_name)) {
         return false;
     }
     for (const auto& kv : runtime_assignment_.module_names) {
@@ -625,6 +896,11 @@ bool SDBackendManager::validate(std::string* error) const {
     }
     for (const auto& kv : params_assignment_.module_names) {
         if (!validate_params_name(kv.second)) {
+            return false;
+        }
+    }
+    for (const auto& kv : split_mode_assignment_.module_names) {
+        if (!validate_split_mode_name(kv.second)) {
             return false;
         }
     }
@@ -684,6 +960,8 @@ const char* sd_backend_module_name(SDBackendModule module) {
             return "photomaker";
         case SDBackendModule::UPSCALER:
             return "upscaler";
+        case SDBackendModule::DETECTOR:
+            return "detector";
     }
     return "unknown";
 }

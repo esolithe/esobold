@@ -1,14 +1,21 @@
 #include "safetensors_io.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <exception>
+#include <filesystem>
 #include <fstream>
+#include <ostream>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "binary_io.h"
 #include "core/util.h"
 #include "json.hpp"
+#include "model_io/kcpp_sdcpp_quantized_safetensors.hpp"
+
+namespace fs = std::filesystem;
 
 static constexpr size_t ST_HEADER_SIZE_LEN = 8;
 
@@ -16,6 +23,14 @@ static void set_error(std::string* error, const std::string& message) {
     if (error != nullptr) {
         *error = message;
     }
+}
+
+static std::string resolve_index_shard_path(const std::string& index_path, const std::string& shard_path) {
+    fs::path shard_fs_path(shard_path);
+    if (shard_fs_path.is_absolute()) {
+        return shard_fs_path.lexically_normal().string();
+    }
+    return (fs::path(index_path).parent_path() / shard_fs_path).lexically_normal().string();
 }
 
 bool is_safetensors_file(const std::string& file_path) {
@@ -41,7 +56,7 @@ bool is_safetensors_file(const std::string& file_path) {
     }
 
     size_t header_size_ = model_io::read_u64(header_size_buf);
-    if (header_size_ >= file_size_ || header_size_ <= 2) {
+    if (header_size_ > file_size_ - ST_HEADER_SIZE_LEN || header_size_ <= 2) {
         return false;
     }
 
@@ -75,6 +90,8 @@ static ggml_type safetensors_dtype_to_ggml_type(const std::string& dtype) {
         ttype = GGML_TYPE_F16;
     } else if (dtype == "F8_E5M2") {
         ttype = GGML_TYPE_F16;
+    } else if (dtype == "I8") {
+        ttype = GGML_TYPE_F16;
     } else if (dtype == "I32") {
         ttype = GGML_TYPE_I32;
     } else if (dtype == "I64") {
@@ -86,7 +103,8 @@ static ggml_type safetensors_dtype_to_ggml_type(const std::string& dtype) {
 // https://huggingface.co/docs/safetensors/index
 bool read_safetensors_file(const std::string& file_path,
                            std::vector<TensorStorage>& tensor_storages,
-                           std::string* error) {
+                           std::string* error,
+                           std::map<std::string, std::string>* metadata) {
     std::ifstream file(file_path, std::ios::binary);
     if (!file.is_open()) {
         set_error(error, "failed to open '" + file_path + "'");
@@ -112,10 +130,11 @@ bool read_safetensors_file(const std::string& file_path,
     }
 
     size_t header_size_ = model_io::read_u64(header_size_buf);
-    if (header_size_ >= file_size_) {
+    if (header_size_ > file_size_ - ST_HEADER_SIZE_LEN) {
         set_error(error, "invalid safetensor file '" + file_path + "'");
         return false;
     }
+    const size_t data_start = ST_HEADER_SIZE_LEN + header_size_;
 
     // read header
     std::vector<char> header_buf;
@@ -135,13 +154,30 @@ bool read_safetensors_file(const std::string& file_path,
         return false;
     }
 
+    if (metadata != nullptr) {
+        metadata->clear();
+        auto metadata_item = header_.find("__metadata__");
+        if (metadata_item != header_.end() && metadata_item->is_object()) {
+            for (const auto& item : metadata_item->items()) {
+                if (item.value().is_string()) {
+                    metadata->emplace(item.key(), item.value().get<std::string>());
+                }
+            }
+        }
+    }
+
     tensor_storages.clear();
+    auto quant_layers = kcpp_safetensors_quant::read_quantization_metadata(header_);
     for (auto& item : header_.items()) {
         std::string name           = item.key();
         nlohmann::json tensor_info = item.value();
         // LOG_DEBUG("%s %s\n", name.c_str(), tensor_info.dump().c_str());
 
         if (name == "__metadata__") {
+            continue;
+        }
+
+        if (kcpp_safetensors_quant::should_skip_side_tensor(header_, name, quant_layers)) {
             continue;
         }
 
@@ -154,6 +190,10 @@ bool read_safetensors_file(const std::string& file_path,
 
         size_t begin = tensor_info["data_offsets"][0].get<size_t>();
         size_t end   = tensor_info["data_offsets"][1].get<size_t>();
+        if (begin > end || end > file_size_ - data_start) {
+            set_error(error, "data offsets out of bounds for tensor '" + name + "'");
+            return false;
+        }
 
         ggml_type type = safetensors_dtype_to_ggml_type(dtype);
         if (type == GGML_TYPE_COUNT) {
@@ -185,13 +225,26 @@ bool read_safetensors_file(const std::string& file_path,
             n_dims = 1;
         }
 
-        TensorStorage tensor_storage(name, type, ne, n_dims, 0, ST_HEADER_SIZE_LEN + header_size_ + begin);
+        TensorStorage tensor_storage(name, type, ne, n_dims, 0, data_start + begin);
         tensor_storage.reverse_ne();
 
         size_t tensor_data_size = end - begin;
 
         bool tensor_size_ok;
-        if (dtype == "F8_E4M3") {
+        if (dtype == "I8") {
+            if (!kcpp_safetensors_quant::fill_i8_tensorwise_storage(header_,
+                                                                    file,
+                                                                    quant_layers,
+                                                                    name,
+                                                                    data_start,
+                                                                    file_size_,
+                                                                    tensor_data_size,
+                                                                    tensor_storage,
+                                                                    error)) {
+                return false;
+            }
+            tensor_size_ok = true;
+        } else if (dtype == "F8_E4M3") {
             tensor_storage.is_f8_e4m3 = true;
             // f8 -> f16
             tensor_size_ok = (tensor_storage.nbytes() == tensor_data_size * 2);
@@ -218,6 +271,52 @@ bool read_safetensors_file(const std::string& file_path,
         tensor_storages.push_back(tensor_storage);
 
         // LOG_DEBUG("%s %s", tensor_storage.to_string().c_str(), dtype.c_str());
+    }
+
+    return true;
+}
+
+bool read_safetensors_index_file(const std::string& file_path,
+                                 std::vector<std::string>& shard_paths,
+                                 std::string* error) {
+    shard_paths.clear();
+
+    std::ifstream file(file_path);
+    if (!file.is_open()) {
+        set_error(error, "failed to open '" + file_path + "'");
+        return false;
+    }
+
+    nlohmann::json index;
+    try {
+        index = nlohmann::json::parse(file);
+    } catch (const std::exception&) {
+        set_error(error, "parsing safetensors index failed: '" + file_path + "'");
+        return false;
+    }
+
+    if (!index.is_object() || !index.contains("weight_map") || !index["weight_map"].is_object()) {
+        set_error(error, "invalid safetensors index '" + file_path + "'");
+        return false;
+    }
+
+    std::unordered_set<std::string> seen_shard_paths;
+    for (const auto& item : index["weight_map"].items()) {
+        if (!item.value().is_string()) {
+            set_error(error, "invalid shard path for tensor '" + item.key() + "'");
+            return false;
+        }
+
+        std::string shard_path = resolve_index_shard_path(file_path,
+                                                          item.value().get<std::string>());
+        if (seen_shard_paths.insert(shard_path).second) {
+            shard_paths.push_back(std::move(shard_path));
+        }
+    }
+
+    if (shard_paths.empty()) {
+        set_error(error, "safetensors index has no tensors: '" + file_path + "'");
+        return false;
     }
 
     return true;
@@ -313,4 +412,103 @@ bool write_safetensors_file(const std::string& file_path,
     }
 
     return true;
+}
+
+bool SafetensorsStreamingWriter::write_metadata(const std::string& file_path,
+                                                const std::vector<TensorWritePlan>& tensors,
+                                                std::string* error) {
+    file_path_ = file_path;
+    tensors_   = tensors;
+    tensor_offsets_.clear();
+    data_start_ = 0;
+    file_size_  = 0;
+
+    nlohmann::ordered_json header = nlohmann::ordered_json::object();
+    uint64_t data_offset          = 0;
+    tensor_offsets_.resize(tensors.size());
+    for (size_t i = 0; i < tensors.size(); i++) {
+        const TensorWritePlan& plan = tensors[i];
+        std::string dtype;
+        if (!ggml_type_to_safetensors_dtype(plan.type, &dtype)) {
+            set_error(error,
+                      "unsupported safetensors dtype '" + std::string(ggml_type_name(plan.type)) +
+                          "' for tensor '" + plan.name + "'");
+            return false;
+        }
+
+        nlohmann::ordered_json json_tensor_info = nlohmann::ordered_json::object();
+        json_tensor_info["dtype"]               = dtype;
+
+        nlohmann::ordered_json shape = nlohmann::ordered_json::array();
+        for (int j = 0; j < plan.n_dims; ++j) {
+            shape.push_back(plan.ne[plan.n_dims - 1 - j]);
+        }
+        json_tensor_info["shape"] = shape;
+
+        nlohmann::ordered_json data_offsets = nlohmann::ordered_json::array();
+        data_offsets.push_back(data_offset);
+        data_offsets.push_back(data_offset + plan.nbytes());
+        json_tensor_info["data_offsets"] = data_offsets;
+
+        header[plan.name]  = json_tensor_info;
+        tensor_offsets_[i] = data_offset;
+        data_offset += plan.nbytes();
+    }
+
+    const std::string header_str = header.dump();
+    data_start_                  = ST_HEADER_SIZE_LEN + header_str.size();
+
+    LOG_INFO("trying to save tensors to %s", file_path.c_str());
+    std::ofstream file(file_path, std::ios::binary | std::ios::trunc);
+    if (!file.is_open()) {
+        set_error(error, "failed to open '" + file_path + "' for writing");
+        return false;
+    }
+
+    uint8_t header_size[ST_HEADER_SIZE_LEN];
+    for (int i = 0; i < static_cast<int>(ST_HEADER_SIZE_LEN); ++i) {
+        header_size[i] = static_cast<uint8_t>((header_str.size() >> (8 * i)) & 0xFF);
+    }
+    file.write(reinterpret_cast<const char*>(header_size), sizeof(header_size));
+    file.write(header_str.data(), static_cast<std::streamsize>(header_str.size()));
+    if (!file) {
+        set_error(error, "failed to write safetensors header to '" + file_path + "'");
+        return false;
+    }
+
+    file_size_ = data_start_ + data_offset;
+    return true;
+}
+
+bool SafetensorsStreamingWriter::write_tensor(std::ostream& output,
+                                              size_t tensor_index,
+                                              const uint8_t* data,
+                                              size_t size,
+                                              std::string* error) const {
+    if (tensor_index >= tensors_.size() || tensor_index >= tensor_offsets_.size()) {
+        set_error(error, "invalid safetensors tensor index");
+        return false;
+    }
+    const TensorWritePlan& plan = tensors_[tensor_index];
+    if (size != plan.nbytes()) {
+        set_error(error, "size mismatch while writing tensor '" + plan.name + "'");
+        return false;
+    }
+    output.seekp(static_cast<std::streamoff>(data_start_ + tensor_offsets_[tensor_index]), std::ios::beg);
+    if (!output) {
+        set_error(error, "failed to seek output for tensor '" + plan.name + "'");
+        return false;
+    }
+    if (size > 0) {
+        output.write(reinterpret_cast<const char*>(data), static_cast<std::streamsize>(size));
+    }
+    if (!output) {
+        set_error(error, "failed to write tensor '" + plan.name + "' to '" + file_path_ + "'");
+        return false;
+    }
+    return true;
+}
+
+uint64_t SafetensorsStreamingWriter::file_size() const {
+    return file_size_;
 }
