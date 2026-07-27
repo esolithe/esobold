@@ -273,6 +273,7 @@ display_settings = () => {
     document.getElementById("agentFsContentCharLimit").value = localsettings.agentFsContentCharLimit || 5000;
     document.getElementById("agentFsContentCharLimitnumeric").value = localsettings.agentFsContentCharLimit || 5000;
     document.getElementById("agentLumaraPollingRate").checked = !!localsettings.agentLumaraPollingRate;
+    document.getElementById("agentBlockWriteOnSyntaxError").checked = !!localsettings.agentBlockWriteOnSyntaxError;
     document.getElementById("disableSaveCompressionLocally").checked = localsettings.disableSaveCompressionLocally;
     document.getElementById("enableRunningMemory").checked = localsettings.enableRunningMemory;
     document.getElementById("worldTreePrune").checked = localsettings.worldTreePrune;
@@ -314,6 +315,7 @@ confirm_settings = () => {
     localsettings.agentStreamThinking = (document.getElementById("agentStreamThinking").checked ? true : false);
     localsettings.agentFsContentCharLimit = document.getElementById("agentFsContentCharLimit").value || 5000;
     localsettings.agentLumaraPollingRate = (document.getElementById("agentLumaraPollingRate").checked ? true : false);
+    localsettings.agentBlockWriteOnSyntaxError = (document.getElementById("agentBlockWriteOnSyntaxError").checked ? true : false);
     localsettings.disableSaveCompressionLocally = (document.getElementById("disableSaveCompressionLocally").checked ? true : false);
     localsettings.enableRunningMemory = (document.getElementById("enableRunningMemory").checked ? true : false);
     localsettings.worldTreePrune = (document.getElementById("worldTreePrune").checked ? true : false);
@@ -408,6 +410,9 @@ window.addEventListener('load', () => {
         localsettings.agentLumaraPollingRate = false
     } else if (typeof localsettings.agentLumaraPollingRate !== "boolean") {
         localsettings.agentLumaraPollingRate = Number(localsettings.agentLumaraPollingRate) > 0
+    }
+    if (localsettings?.agentBlockWriteOnSyntaxError == undefined) {
+        localsettings.agentBlockWriteOnSyntaxError = false
     }
     if (localsettings?.disableSaveCompressionLocally == undefined) {
         localsettings.disableSaveCompressionLocally = true
@@ -724,6 +729,9 @@ window.addEventListener('load', () => {
     agentElems.push(settingLabelElem)
 
     settingLabelElem = createSettingElemBool("agentLumaraPollingRate", "Enable Lumara listener", "When enabled, agent mode listens for live Lumara websocket updates. If disconnected, reconnect attempts run every 60 seconds until connected.")
+    agentElems.push(settingLabelElem)
+
+    settingLabelElem = createSettingElemBool("agentBlockWriteOnSyntaxError", "Should write to disk fail if syntax is incorrect?", "When enabled, filesystem writes are blocked if tree-sitter syntax validation finds errors. When disabled, writes still proceed but the agent receives the syntax error and can replan.")
     agentElems.push(settingLabelElem)
 
     let lumaraStatusLabel = document.createElement("div")

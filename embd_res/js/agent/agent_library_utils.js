@@ -8,6 +8,7 @@ export const buildLibraryUtilsCommands = (ctx) => {
 	} = ctx
 
 	let LIBRARY_ALLOWED_TYPES = ["Character", "Save", "Autosave", "World Info", "Scenario"]
+	let agentLibraryChangesOccurred = false
 
 	let sanitizeLibraryName = (name) => {
 		return `${name || ""}`.replaceAll(/[^\w()_\-'",!\[\].]/g, " ").replaceAll(/\s+/g, " ").trim()
@@ -33,6 +34,71 @@ export const buildLibraryUtilsCommands = (ctx) => {
 			metadata = []
 		}
 		return metadata.filter(entry => typeof entry?.name === "string" && `${entry.name}`.trim() !== "")
+	}
+
+	let isServerSavingEnabled = () => {
+		return typeof is_using_kcpp_with_server_saving === "function" && is_using_kcpp_with_server_saving()
+	}
+
+	let refreshServerSavingCapability = async () => {
+		if (typeof validateRemoteDataEndpoint === "function") {
+			try {
+				await validateRemoteDataEndpoint()
+			}
+			catch (_e) {
+				// Keep local-only behavior if endpoint validation fails.
+			}
+		}
+		return isServerSavingEnabled()
+	}
+
+	let promptForAdminPasswordIfNeeded = async () => {
+		if (typeof window?.promptForAdminPassword !== "function") {
+			return
+		}
+		await new Promise((resolve) => window.promptForAdminPassword(resolve))
+	}
+
+	let ensureRemoteLibraryHydrated = async () => {
+		if (!await refreshServerSavingCapability()) {
+			return
+		}
+		await promptForAdminPasswordIfNeeded()
+		if (typeof window?.loadAllCharacterManagerData === "function") {
+			await window.loadAllCharacterManagerData()
+		}
+	}
+
+	let getLibraryMetadataWithServerHydration = async (nameToResolve = "") => {
+		let metadata = await getLocalLibraryMetadata()
+		if (!await refreshServerSavingCapability()) {
+			return metadata
+		}
+		let normalizedName = sanitizeLibraryName(nameToResolve).toLowerCase()
+		let hasEntry = normalizedName !== "" && metadata.some(entry => `${entry?.name || ""}`.toLowerCase() === normalizedName)
+		if (metadata.length > 0 && (normalizedName === "" || hasEntry)) {
+			return metadata
+		}
+		await ensureRemoteLibraryHydrated()
+		return await getLocalLibraryMetadata()
+	}
+
+	let maybePromptLibrarySyncAfterWrite = async () => {
+		if (!agentLibraryChangesOccurred) {
+			return
+		}
+		if (!await refreshServerSavingCapability()) {
+			agentLibraryChangesOccurred = false
+			return
+		}
+		agentLibraryChangesOccurred = false
+		if (typeof msgboxYesNo === "function" && typeof window?.putAllCharacterManagerData === "function") {
+			msgboxYesNo("Changes were made to the library. Would you like to sync to the server now?", "Library",
+				() => {
+					window.putAllCharacterManagerData()
+				},
+				null)
+		}
 	}
 
 	let saveLocalLibraryMetadata = async (metadata) => {
@@ -61,7 +127,7 @@ export const buildLibraryUtilsCommands = (ctx) => {
 	}
 
 	let getLocalLibraryEntryByName = async (name) => {
-		let metadata = await getLocalLibraryMetadata()
+		let metadata = await getLibraryMetadataWithServerHydration(name)
 		let normalizedName = sanitizeLibraryName(name)
 		let exact = metadata.find(entry => entry?.name === normalizedName)
 		if (exact) {
@@ -75,9 +141,13 @@ export const buildLibraryUtilsCommands = (ctx) => {
 		return undefined
 	}
 
-	let getLocalLibraryItem = async (name) => {
+	let getLocalLibraryItem = async (name, options = {}) => {
+		let shouldSkipServer = !!options?.skipServer
+		if (!shouldSkipServer && isServerSavingEnabled()) {
+			await promptForAdminPasswordIfNeeded()
+		}
 		if (typeof getCharacterData === "function") {
-			return await getCharacterData(name, true)
+			return await getCharacterData(name, shouldSkipServer)
 		}
 		let normalizedName = sanitizeLibraryName(name)
 		let raw = await indexeddb_load(`character_${normalizedName}`, "{}")
@@ -236,10 +306,11 @@ export const buildLibraryUtilsCommands = (ctx) => {
 			"outputVisibleToUser": true,
 			"executor": async (action) => {
 				try {
+					await ensureRemoteLibraryHydrated()
 					let pattern = `${action?.args?.pattern || "*"}`
 					let typeFilter = action?.args?.type
 					let regex = wildcardToRegex(pattern)
-					let metadata = await getLocalLibraryMetadata()
+					let metadata = await getLibraryMetadataWithServerHydration()
 					let results = metadata
 						.filter(entry => `${entry?.type || ""}` !== "Document")
 						.filter(entry => !typeFilter || entry?.type === typeFilter)
@@ -289,7 +360,7 @@ export const buildLibraryUtilsCommands = (ctx) => {
 						return responseError({ error: `Type mismatch for ${entry?.name}: expected ${typeFilter}, got ${entry?.type}`, type: "mismatch" })
 					}
 
-					let data = await getLocalLibraryItem(entry.name)
+					let data = await getLocalLibraryItem(entry.name, { skipServer: false })
 					if (!data || (typeof data === "object" && Object.keys(data).length === 0)) {
 						return responseError({ error: `Library item content not found: ${entry?.name}`, type: "not_found" })
 					}
@@ -420,6 +491,8 @@ export const buildLibraryUtilsCommands = (ctx) => {
 						return `${a?.name || ""}` > `${b?.name || ""}` ? 1 : -1
 					})
 					await saveLocalLibraryMetadata(nextMetadata)
+					agentLibraryChangesOccurred = true
+					await maybePromptLibrarySyncAfterWrite()
 					return responseText({ status: "ok", name, overwritten: !!existing })
 				}
 				catch (e) {
@@ -454,7 +527,7 @@ export const buildLibraryUtilsCommands = (ctx) => {
 					if (!entry) {
 						return { error: `Not found: ${trimmed}` }
 					}
-					let data = await getLocalLibraryItem(entry.name)
+					let data = await getLocalLibraryItem(entry.name, { skipServer: false })
 					if (!data || (typeof data === "object" && Object.keys(data).length === 0)) {
 						return { error: `Content not found: ${entry.name}` }
 					}

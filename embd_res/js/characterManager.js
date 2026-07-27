@@ -233,6 +233,8 @@ let putAllCharacterManagerData = () => {
     })
 }
 
+window.putAllCharacterManagerData = putAllCharacterManagerData
+
 let promptForSavePassword = (callback) => {
     if (window?.lastUsedSavePassword === undefined)
     {
@@ -258,6 +260,8 @@ let promptForSavePassword = (callback) => {
         callback({ password: window.lastUsedSavePassword, isEncrypted: window.lastUsedSavePassword !== "" })
     }
 }
+
+window.promptForSavePassword = promptForSavePassword
 
 let loadAllCharacterManagerData = () => {
     popupUtils.reset();
@@ -364,6 +368,8 @@ let loadAllCharacterManagerData = () => {
         })
     })
 }
+
+window.loadAllCharacterManagerData = loadAllCharacterManagerData
 
 let migrateOldData = async () => {
     let saveKLiteSaveToIndexDBIfNew = (name, data) => {

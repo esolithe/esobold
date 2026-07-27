@@ -14818,6 +14818,10 @@ Current version indicated by LITEVER below.
 		document.getElementById("customendpointcontainer").classList.add("hidden");
 	}
 
+	function sortAz(values = []) {
+		return [...values].sort()
+	}
+
 	var last_admin_key = "";
 	function display_admin_container()
 	{
@@ -14833,6 +14837,13 @@ Current version indicated by LITEVER below.
 		}
 		mainmenu_untab(false);
 		document.getElementById("loadstatetxt").innerText = "";
+
+		let sortConfigValues = (values = []) => {
+			let specialValues = new Set(["initial_model", "unload_model"])
+			let normalValues = sortAz(values.filter(value => !specialValues.has(`${value || ""}`)))
+			let trailingSpecialValues = sortAz(values.filter(value => specialValues.has(`${value || ""}`)))
+			return [...normalValues, ...trailingSpecialValues]
+		}
 		let fetch_kcpps_configs = function(adminkey)
 		{
 			let header = {'Content-Type': 'application/json'};
@@ -14849,6 +14860,7 @@ Current version indicated by LITEVER below.
 			.then(values => {
 				if(values && values.length>0)
 				{
+					values = sortConfigValues(values)
 					//on values received
 					var dropdown = document.getElementById("adminconfigdropdown");
 					for (var i = dropdown.options.length; i >= 0; i--) {
@@ -14895,6 +14907,7 @@ Current version indicated by LITEVER below.
 			.then(values => {
 				if(values && values.length>0)
 				{
+					values = sortAz(values)
 					//on values received
 					adminmodeldropdown.innerHTML = ""
 					adminmodeldropdown.appendChild(new Option("Default for config", ""))
@@ -14974,16 +14987,20 @@ Current version indicated by LITEVER below.
 			el.textContent = "Base Config";
 			el.value = "";
 			basecfgdropdown.appendChild(el);
+			let baseConfigValues = []
 			for(var i=0;i<dropdown.options.length;++i)
 			{
 				let str = dropdown.options[i].value;
 				if(str.endsWith(".gguf") || str=="unload_model" || str=="initial_model")
 				{continue;}
+				baseConfigValues.push(str)
+			}
+			sortAz(baseConfigValues).forEach((str) => {
 				var el = document.createElement("option");
 				el.textContent = str;
 				el.value = str;
 				basecfgdropdown.appendChild(el);
-			}
+			})
 		}
 	}
 	var adminrebootflag = 0;
