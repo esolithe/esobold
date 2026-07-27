@@ -826,6 +826,7 @@ let getFinalAgentPrompt = (agentRunState, commands, objectiveForCurrentAction) =
             `- Prefer triggerAgentResponse only when an actual agent loop/action workflow is needed.`
         ].join("\n")
         prompt.push(`When using content from the file system in web pages, links or media within a created HTML page should be accessed using relative links. For example, an image "test.png" in the same directory is accessed via src="./test.png". Absolute links should be resolved by using the "{host}/fs/test.png" and only used when providing the user links to the page directly.`)
+        prompt.push(`When you have been told to produce a plan after an error, examine the cause of the error and the last plan produced. Assess whether the plan was flawed or if the error was due to an external factor. If the plan was flawed, produce a new plan that addresses the flaws. If the error was due to an external factor, produce a new plan that accounts for that factor. If a plan is not possible, explain why and provide alternative suggestions.`)
         prompt.push(embeddedFunctionGuidance)
     }
 

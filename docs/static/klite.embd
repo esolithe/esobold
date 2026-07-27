@@ -14818,6 +14818,10 @@ Current version indicated by LITEVER below.
 		document.getElementById("customendpointcontainer").classList.add("hidden");
 	}
 
+	function sortAz(values = []) {
+		return [...values].sort()
+	}
+
 	var last_admin_key = "";
 	function display_admin_container()
 	{
@@ -14833,6 +14837,13 @@ Current version indicated by LITEVER below.
 		}
 		mainmenu_untab(false);
 		document.getElementById("loadstatetxt").innerText = "";
+
+		let sortConfigValues = (values = []) => {
+			let specialValues = new Set(["initial_model", "unload_model"])
+			let normalValues = sortAz(values.filter(value => !specialValues.has(`${value || ""}`)))
+			let trailingSpecialValues = sortAz(values.filter(value => specialValues.has(`${value || ""}`)))
+			return [...normalValues, ...trailingSpecialValues]
+		}
 		let fetch_kcpps_configs = function(adminkey)
 		{
 			let header = {'Content-Type': 'application/json'};
@@ -14849,6 +14860,7 @@ Current version indicated by LITEVER below.
 			.then(values => {
 				if(values && values.length>0)
 				{
+					values = sortConfigValues(values)
 					//on values received
 					var dropdown = document.getElementById("adminconfigdropdown");
 					for (var i = dropdown.options.length; i >= 0; i--) {
@@ -14895,6 +14907,7 @@ Current version indicated by LITEVER below.
 			.then(values => {
 				if(values && values.length>0)
 				{
+					values = sortAz(values)
 					//on values received
 					adminmodeldropdown.innerHTML = ""
 					adminmodeldropdown.appendChild(new Option("Default for config", ""))
@@ -14974,16 +14987,20 @@ Current version indicated by LITEVER below.
 			el.textContent = "Base Config";
 			el.value = "";
 			basecfgdropdown.appendChild(el);
+			let baseConfigValues = []
 			for(var i=0;i<dropdown.options.length;++i)
 			{
 				let str = dropdown.options[i].value;
 				if(str.endsWith(".gguf") || str=="unload_model" || str=="initial_model")
 				{continue;}
+				baseConfigValues.push(str)
+			}
+			sortAz(baseConfigValues).forEach((str) => {
 				var el = document.createElement("option");
 				el.textContent = str;
 				el.value = str;
 				basecfgdropdown.appendChild(el);
-			}
+			})
 		}
 	}
 	var adminrebootflag = 0;
@@ -30741,7 +30758,7 @@ Current version indicated by LITEVER below.
 				<button type="button" class="btn actbtn btn-primary mainnav" id="btn_actredo" onpointerdown="btn_redo_longpress_start()" onpointerleave="btn_redo_longpress_end()" onpointerup="btn_redo_longpress_end()" onclick="btn_redo()">Redo</button>
 				<button type="button" class="btn actbtn btn-primary mainnav" id="btn_actretry" onclick="btn_retry()">Retry</button>
 				<button type="button" class="btn actbtn btn-primary mainnav" id="btn_actbranch" onclick="btn_branch(this)">Branch</button>
-				<button type="button" class="btn actbtn btn-primary mainnav" id="btn_addmedia" onclick="add_media_btn_menu()">Add File</button>
+				<button type="button" class="btn actbtn btn-primary mainnav" id="btn_addmedia" onclick="add_media_btn_menu()">Media</button>
 				<button type="button" class="btn actbtn btn-primary mainnav slim btnicon-websearch hidden" id="btn_togglesearch" onclick="toggle_websearch()">&nbsp;</button>
 				<button type="button" class="btn actbtn btn-primary mainnav btnicon-agent slim inactive" id="btn_toggleAgent" tabindex="0">&nbsp;</button>
 			</div>
@@ -30790,7 +30807,7 @@ Current version indicated by LITEVER below.
 						<button type="button" class="btn actbtn btn-primary mainnav" id="btn_actredo2" onpointerdown="btn_redo_longpress_start()" onpointerleave="btn_redo_longpress_end()" onpointerup="btn_redo_longpress_end()" onclick="btn_redo()">Redo</button>
 						<button type="button" class="btn actbtn btn-primary mainnav" id="btn_actretry2" onclick="btn_retry()">Retry</button>
 						<button type="button" class="btn actbtn btn-primary mainnav" id="btn_actbranch2" onclick="btn_branch(this)">Branch</button>
-						<button type="button" class="btn actbtn btn-primary mainnav" id="btn_addmedia2" onclick="add_media_btn_menu()">Add File</button>
+						<button type="button" class="btn actbtn btn-primary mainnav" id="btn_addmedia2" onclick="add_media_btn_menu()">Media</button>
 						<button type="button" class="btn actbtn btn-primary mainnav slim btnicon-websearch hidden" id="btn_togglesearch2" onclick="toggle_websearch()">&nbsp;</button>
 						<button type="button" class="btn actbtn btn-primary mainnav btnicon-agent slim inactive" id="btn_toggleAgentAesthetic" tabindex="0">&nbsp;</button>
 						<button type="button" class="btn actbtn btn-primary mainnav" id="btn_editmode" onclick="btn_editmode()">Edit</button>
@@ -30846,7 +30863,7 @@ Current version indicated by LITEVER below.
 								<button type="button" id="btn_actredo3" onpointerdown="btn_redo_longpress_start()" onpointerleave="btn_redo_longpress_end()" onpointerup="btn_redo_longpress_end()" onclick="toggle_corpo_plusmenu(false);btn_redo()">Redo</button>
 								<button type="button" id="btn_actretry3" onclick="toggle_corpo_plusmenu(false);btn_retry()">Retry</button>
 								<button type="button" id="btn_actbranch3" onclick="btn_branch(this)">Branch</button>
-								<button type="button" id="btn_addmedia3" onclick="toggle_corpo_plusmenu(false);add_media_btn_menu()">Add File</button>
+								<button type="button" id="btn_addmedia3" onclick="toggle_corpo_plusmenu(false);add_media_btn_menu()">Media</button>
 							</div>
 							<div class="corpo_chat_inner" id="corpo_cht_inp_lengthtester" style="white-space: nowrap; visibility: hidden; height: 0px; position:absolute; width: auto;"></div>
 							<textarea title="User Input" class="corpo_chat_inner mainnav" id="corpo_cht_inp" name="crpchtinp"  role="presentation" autocomplete="noppynop" spellcheck="true" rows="1" wrap="on" placeholder="Message KoboldAI" oninput="update_submit_button();chat_resize_input();" onpaste="return img_paste_event(event)" onkeypress="return chat_handle_typing(event)"></textarea>
@@ -32042,7 +32059,7 @@ Current version indicated by LITEVER below.
 					<div class="settingitem wide">
 						<h3>Audio Output</h3>
 						<div class="settinglabel">
-							<div class="justifyleft">Text to speech <span class="helpicon">?<span class="helptext">Enable Text-To-Speech to have your story or chat automatically read to you. You can also generate audio clips with this enabled in the Add File menu.</span></span></div>
+							<div class="justifyleft">Text to speech <span class="helpicon">?<span class="helptext">Enable Text-To-Speech to have your story or chat automatically read to you. You can also generate audio clips with this enabled in the Media menu.</span></span></div>
 							<div class="push-right">
 							<select title="Text To Speech" class="form-control" id="ttsselect" onchange="toggle_tts_mode()">
 								<option value="0">Disabled</option>
