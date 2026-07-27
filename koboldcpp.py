@@ -290,6 +290,7 @@ class load_model_inputs(ctypes.Structure):
                 ("visionmaxtokens", ctypes.c_int),
                 ("use_mmap", ctypes.c_bool),
                 ("use_mlock", ctypes.c_bool),
+                ("no_host", ctypes.c_bool),
                 ("use_mtp", ctypes.c_bool),
                 ("use_smartcontext", ctypes.c_bool),
                 ("use_contextshift", ctypes.c_bool),
@@ -521,6 +522,7 @@ class tts_generation_inputs(ctypes.Structure):
                 ("custom_speaker_data", ctypes.c_char_p),
                 ("reference_audio", ctypes.c_char_p),
                 ("speaker_instruction", ctypes.c_char_p),
+                ("language", ctypes.c_char_p),
                 ("use_mp3", ctypes.c_bool)]
 
 class tts_generation_outputs(ctypes.Structure):
@@ -2009,6 +2011,7 @@ def load_model(model_filename):
     inputs.blasthreads = args.blasthreads
     inputs.use_mmap = args.usemmap
     inputs.use_mlock = args.usemlock
+    inputs.no_host = True
     inputs.use_mtp = args.usemtp
     inputs.lora_filename = "".encode("UTF-8")
     inputs.lora_multiplier = args.loramult
@@ -3674,10 +3677,12 @@ def tts_generate(genparams):
     inputs = tts_generation_inputs()
     inputs.custom_speaker_voice = normalized_voice.encode("UTF-8")
     ttsinstruction = genparams.get("instruction", "")
+    ttslang = genparams.get("language", "en")
     # if no instruction provided, extract from text
     if not genparams.get("instruction", ""):
         prompt, ttsinstruction = tts_extract_instruction(prompt)
     inputs.speaker_instruction = ttsinstruction.encode("UTF-8")
+    inputs.language = ttslang.encode("UTF-8")
     response_format_mp3 = True if (genparams.get("response_format")=="mp3") else False
     inputs.use_mp3 = genparams.get("use_mp3", response_format_mp3)
     inputs.prompt = prompt.encode("UTF-8")
@@ -15499,6 +15504,8 @@ def main(launch_args, default_args):
     else:  # manager command queue for admin mode
         with multiprocessing.Manager() as mp_manager:
             global_memory = mp_manager.dict({"tunnel_url": "", "restart_target": "", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "currentBaseConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "base_config":"", "swapReqType": None, "autoswapmode": False, "autoswapSettings": {}, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}, "restart_override_base_config": "", "current_model_override": "", "OpenLumara": False})
+            global_memory["autoswapmode"] = args.autoswapmode
+            global_memory["autoswapSettings"] = build_autoswap_settings(args)
 
             if args.OpenLumara and not args.prompt and not args.benchmark and not args.cli:
                 res = launch_OpenLumara(args)
@@ -15638,14 +15645,7 @@ def main(launch_args, default_args):
                                         global_memory["modelOverride"] = restart_model
 
                                 global_memory["autoswapmode"] = args.autoswapmode
-                                global_memory["autoswapSettings"] = {
-                                    "skipTextUnload": args.autoswapmode_skiptextunload is not None and args.autoswapmode_skiptextunload,
-                                    "skipTTSUnload": args.autoswapmode_skipttsunload is not None and args.autoswapmode_skipttsunload,
-                                    "skipSSTUnload": args.autoswapmode_skipsstunload is not None and args.autoswapmode_skipsstunload,
-                                    "skipEmbedUnload": args.autoswapmode_skipembedunload is not None and args.autoswapmode_skipembedunload,
-                                    "skipMusicUnload": args.autoswapmode_skipmusicunload is not None and args.autoswapmode_skipmusicunload,
-                                    "skipImageUnload": args.autoswapmode_skipimageunload is not None and args.autoswapmode_skipimageunload
-                                }
+                                global_memory["autoswapSettings"] = build_autoswap_settings(args)
                                 kcpp_instance = multiprocessing.Process(target=kcpp_main_process,kwargs={"launch_args": args, "g_memory": global_memory, "gui_launcher": False})
                                 kcpp_instance.daemon = True
                                 kcpp_instance.start()
@@ -15750,6 +15750,17 @@ def mk_lora_info(imgloras, multipliers):
             preloaded_table.append(lora_entry)
     return preloaded_table, lora_path_map, lora_name_map
 
+def build_autoswap_settings(args):
+    return {
+        "skipTextUnload": getattr(args, "autoswapmode_skiptextunload", False) is not None and getattr(args, "autoswapmode_skiptextunload", False),
+        "skipTTSUnload": getattr(args, "autoswapmode_skipttsunload", False) is not None and getattr(args, "autoswapmode_skipttsunload", False),
+        "skipSSTUnload": getattr(args, "autoswapmode_skipsstunload", False) is not None and getattr(args, "autoswapmode_skipsstunload", False),
+        "skipEmbedUnload": getattr(args, "autoswapmode_skipembedunload", False) is not None and getattr(args, "autoswapmode_skipembedunload", False),
+        "skipMusicUnload": getattr(args, "autoswapmode_skipmusicunload", False) is not None and getattr(args, "autoswapmode_skipmusicunload", False),
+        "skipImageUnload": getattr(args, "autoswapmode_skipimageunload", False) is not None and getattr(args, "autoswapmode_skipimageunload", False),
+    }
+
+
 def disableSwappedFieldsInConfig(args, swapReqType, autoswapSettings):
     print(f"Swapping to type: {swapReqType}")
 
@@ -15812,6 +15823,7 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
     if args.autoswapmode is not None and args.autoswapmode:
         autoswapmode = True
         global_memory["autoswapmode"] = True
+        global_memory["autoswapSettings"] = build_autoswap_settings(args)
         if args.model_param and args.model_param!="":
             tempName = os.path.basename(os.path.abspath(args.model_param))
             tempName = os.path.splitext(tempName)[0]
