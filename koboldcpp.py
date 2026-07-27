@@ -6106,48 +6106,84 @@ def fs_search_content_regex(pattern=".*", path_pattern="*", max_results=100, cas
     max_hits = max(1, tryparseint(max_results, 100))
     re_flags = re.IGNORECASE if case_insensitive else 0
     matcher = re.compile(regex_pattern, re_flags)
+    matches = []
 
-    with fs_lock:
-        fs = fs_snapshot_state()
-    if fs_is_disk_mode(fs):
-        items = []
-        root_dir = fs_get_disk_root(fs)
-        for root, _, filenames in os.walk(root_dir):
+    def _path_matches(path):
+        return fs_match_glob(path, path_glob, case_insensitive) or fs_match_glob(path.lstrip("/"), path_glob, case_insensitive)
+
+    def _append_match(path, line_number, line_content):
+        matches.append({
+            "path": path,
+            "line_start": line_number,
+            "line_end": line_number,
+            "snippet": line_content,
+        })
+        return len(matches) >= max_hits
+
+    def _search_content_bytes(path, content_bytes):
+        if fs_is_binary(content_bytes):
+            return False
+        for line_number, line_content in enumerate(fs_decode_text(content_bytes).splitlines(), start=1):
+            if matcher.search(line_content) and _append_match(path, line_number, line_content):
+                return True
+        return False
+
+    def _search_disk_tree(base_dir, virtual_prefix):
+        if not base_dir or not os.path.isdir(base_dir):
+            return False
+        for root, dirnames, filenames in os.walk(base_dir):
+            dirnames.sort()
+            filenames.sort()
             for filename in filenames:
                 if filename == FS_DIR_MARKER_FILENAME:
                     continue
                 abs_path = os.path.join(root, filename)
-                rel_path = "/" + os.path.relpath(abs_path, root_dir).replace("\\", "/").lstrip("/")
+                rel_path = os.path.relpath(abs_path, base_dir).replace("\\", "/").lstrip("/")
+                if virtual_prefix:
+                    virtual_path = virtual_prefix + "/" + rel_path
+                else:
+                    virtual_path = "/" + rel_path
+                if not _path_matches(virtual_path):
+                    continue
                 try:
                     with open(abs_path, mode="rb") as file_handle:
-                        content_bytes = file_handle.read()
+                        sample = file_handle.read(_BINARY_SAMPLE_SIZE)
+                        if fs_is_binary(sample):
+                            continue
+                        file_handle.seek(0)
+                        text_handle = io.TextIOWrapper(file_handle, encoding="utf-8", errors="replace", newline=None)
+                        for line_number, line_content in enumerate(text_handle, start=1):
+                            normalized_line = line_content.rstrip("\r\n")
+                            if matcher.search(normalized_line) and _append_match(virtual_path, line_number, normalized_line):
+                                return True
                 except Exception:
                     continue
-                items.append((rel_path, {"content": content_bytes}))
-        items.sort(key=lambda item: item[0])
+        return False
+
+    with fs_lock:
+        fs = fs_snapshot_state()
+
+    if fs_is_disk_mode(fs):
+        if _search_disk_tree(fs_get_disk_root(fs), ""):
+            return matches
     else:
-        items = sorted(fs["files"].items())
+        items = sorted(fs["files"].items(), key=lambda item: item[0])
+        for path, entry in items:
+            if posixpath.basename(path) == FS_DIR_MARKER_FILENAME:
+                continue
+            if not _path_matches(path):
+                continue
+            if _search_content_bytes(path, entry.get("content", b"")):
+                return matches
 
-    matches = []
-    for path, entry in items:
-        if posixpath.basename(path) == FS_DIR_MARKER_FILENAME:
-            continue
-        if not (fs_match_glob(path, path_glob, case_insensitive) or fs_match_glob(path.lstrip("/"), path_glob, case_insensitive)):
-            continue
-        content_bytes = entry.get("content", b"")
-        if fs_is_binary(content_bytes):
-            continue
-
-        for line_number, line_content in enumerate(fs_decode_text(content_bytes).splitlines(), start=1):
-            if matcher.search(line_content):
-                matches.append({
-                    "path": path,
-                    "line_start": line_number,
-                    "line_end": line_number,
-                    "snippet": line_content,
-                })
-                if len(matches) >= max_hits:
-                    return matches
+    _parsed = globals().get("args", None)
+    _admindocsdir = str(getattr(_parsed, "admindocsdir", "") or "").strip()
+    if _search_disk_tree(_admindocsdir, FS_INTERNAL_READONLY_DOCS):
+        return matches
+    _embddir = os.path.realpath(os.path.abspath(
+        os.path.join(os.path.dirname(os.path.realpath(__file__)), "embd_res")))
+    if _search_disk_tree(_embddir, FS_INTERNAL_READONLY_RES):
+        return matches
     return matches
 
 def fs_read_lines(path, start_line=1, end_line=None):
@@ -6779,50 +6815,61 @@ def fs_search_all_documents(search_query, max_results=5, chunk_size=1024, overla
 
 
 def fs_build_zip_bytes(dir_prefix=""):
-    prefix = (fs_normalize_path(dir_prefix) + "/").lstrip("/") if dir_prefix and dir_prefix.strip("/") else ""
+    if dir_prefix and dir_prefix.strip("/"):
+        normalized_prefix = fs_normalize_path(dir_prefix, allow_root=True)
+    else:
+        normalized_prefix = "/"
+
+    def _path_in_prefix(path):
+        return normalized_prefix == "/" or path == normalized_prefix or path.startswith(normalized_prefix + "/")
+
+    def _iter_disk_files(base_dir, virtual_prefix):
+        if not base_dir or not os.path.isdir(base_dir):
+            return
+        for root, dirnames, filenames in os.walk(base_dir):
+            dirnames.sort()
+            filenames.sort()
+            for filename in filenames:
+                if filename == FS_DIR_MARKER_FILENAME:
+                    continue
+                abs_path = os.path.join(root, filename)
+                rel_path = os.path.relpath(abs_path, base_dir).replace("\\", "/").lstrip("/")
+                if virtual_prefix:
+                    virtual_path = virtual_prefix + "/" + rel_path
+                else:
+                    virtual_path = "/" + rel_path
+                if _path_in_prefix(virtual_path):
+                    yield virtual_path, abs_path
+
     with fs_lock:
         fs = fs_snapshot_state()
-    if fs_is_disk_mode(fs):
-        root_dir = fs_get_disk_root(fs)
-        items = []
-        for root, _, filenames in os.walk(root_dir):
-            for filename in filenames:
-                rel_path = os.path.relpath(os.path.join(root, filename), root_dir).replace("\\", "/")
-                virtual_path = "/" + rel_path.lstrip("/")
-                if posixpath.basename(virtual_path) == FS_DIR_MARKER_FILENAME:
-                    continue
-                if prefix and not virtual_path.lstrip("/").startswith(prefix):
-                    continue
-                try:
-                    with open(os.path.join(root, filename), mode="rb") as file_handle:
-                        content_bytes = file_handle.read()
-                    modified = datetime.fromtimestamp(os.path.getmtime(os.path.join(root, filename)), timezone.utc).isoformat()
-                except Exception:
-                    continue
-                items.append((virtual_path, {"content": content_bytes, "modified": modified}))
-        items.sort(key=lambda x: x[0])
-    else:
-        items = sorted(
-            (
-                (p, e)
-                for p, e in fs["files"].items()
-                if (not prefix or p.lstrip("/").startswith(prefix))
-                and posixpath.basename(p) != FS_DIR_MARKER_FILENAME
-            ),
-            key=lambda x: x[0],
-        )
+
     archive_buffer = io.BytesIO()
     with zipfile.ZipFile(archive_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zip_file:
-        for path, entry in items:
-            arc_name = path.lstrip("/")
-            info = zipfile.ZipInfo(arc_name)
-            try:
-                modified_dt = datetime.fromisoformat(entry.get("modified", "").replace("Z", "+00:00"))
-                info.date_time = modified_dt.astimezone().timetuple()[:6]
-            except Exception:
-                info.date_time = datetime.now().timetuple()[:6]
-            info.compress_type = zipfile.ZIP_DEFLATED
-            zip_file.writestr(info, entry.get("content", b""))
+        if fs_is_disk_mode(fs):
+            for path, abs_path in _iter_disk_files(fs_get_disk_root(fs), ""):
+                zip_file.write(abs_path, arcname=path.lstrip("/"))
+        else:
+            for path, entry in sorted(fs["files"].items(), key=lambda item: item[0]):
+                if posixpath.basename(path) == FS_DIR_MARKER_FILENAME or not _path_in_prefix(path):
+                    continue
+                info = zipfile.ZipInfo(path.lstrip("/"))
+                try:
+                    modified_dt = datetime.fromisoformat(entry.get("modified", "").replace("Z", "+00:00"))
+                    info.date_time = modified_dt.astimezone().timetuple()[:6]
+                except Exception:
+                    info.date_time = datetime.now().timetuple()[:6]
+                info.compress_type = zipfile.ZIP_DEFLATED
+                zip_file.writestr(info, entry.get("content", b""))
+
+        _parsed = globals().get("args", None)
+        _admindocsdir = str(getattr(_parsed, "admindocsdir", "") or "").strip()
+        for path, abs_path in _iter_disk_files(_admindocsdir, FS_INTERNAL_READONLY_DOCS):
+            zip_file.write(abs_path, arcname=path.lstrip("/"))
+        _embddir = os.path.realpath(os.path.abspath(
+            os.path.join(os.path.dirname(os.path.realpath(__file__)), "embd_res")))
+        for path, abs_path in _iter_disk_files(_embddir, FS_INTERNAL_READONLY_RES):
+            zip_file.write(abs_path, arcname=path.lstrip("/"))
     return archive_buffer.getvalue()
 
 def fs_parse_multipart(body, content_type_header):
@@ -9562,9 +9609,14 @@ Change Mode<br>
                 parsed_dict = urllib.parse.parse_qs(parsed_url.query)
                 zip_dir = str(parsed_dict.get('dir', [''])[0])
                 zip_url = self.build_external_url('/fs.zip' + (f'?dir={urllib.parse.quote(zip_dir)}' if zip_dir else ''))
+                try:
+                    listed_entries = fs_list_entries('*', False)
+                    file_count = len(listed_entries.get("files", []))
+                except Exception:
+                    file_count = len(fs.get("files", {}))
                 response_body = (json.dumps({
                     "url": zip_url,
-                    "file_count": len(fs["files"]),
+                    "file_count": file_count,
                     "size_bytes": fs["current_size_bytes"],
                 }).encode())
 
