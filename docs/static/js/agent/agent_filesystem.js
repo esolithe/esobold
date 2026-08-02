@@ -99,6 +99,18 @@ let readFsPathAsBase64 = async (fsPath) => {
 	return normalizeBase64ImageData(await readFsPathAsDataUrl(fsPath))
 }
 
+let doesFsPathExist = async (fsPath) => {
+	try {
+		await ensureFsAdminPasswordIfRequired()
+		await window.fsClient.metadata([{ path: fsPath }])
+		return { exists: true }
+	}
+	catch (e)
+	{
+		return { exists: false, error: `${e?.message || e}` }
+	}
+}
+
 let writeBase64ToFs = async (fsPath, base64Data) => {
 	await ensureFsAdminPasswordIfRequired()
 	let bytes = base64ToUint8Array(base64Data)
@@ -631,6 +643,12 @@ export const buildFilesystemCommands = (ctx) => {
 						if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 						return
 					}
+					let pathCheck = await doesFsPathExist(fsPath)
+					if (!pathCheck.exists) {
+						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: describe_fs_image failed - file does not exist at path ${fsPath}${pathCheck?.error ? ` (${pathCheck.error})` : ""}`)
+						if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
+						return
+					}
 					let analysisPrompt = "Describe the image in detail. Transcribe and include any text from the image in the description."
 					if (!!action?.args?.question) {
 						analysisPrompt += ` Specifically please focus on:\n\n${action?.args?.question}`
@@ -938,21 +956,43 @@ export const buildFilesystemCommands = (ctx) => {
 					if (!Array.isArray(operations) || operations.length === 0) {
 						throw new Error("operations must be a non-empty array of {path, content} objects.")
 					}
+					let validationErrors = []
 					for (let op of operations) {
 						let validationError = await validateCodeContent(op.path, op.content)
 						if (validationError) {
-							addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: write_text failed - ${validationError}`)
-							if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
-							return
+							validationErrors.push(validationError)
 						}
+					}
+					let hasSyntaxValidationErrors = validationErrors.length > 0
+					let shouldBlockWriteOnSyntaxError = !!localsettings?.agentBlockWriteOnSyntaxError
+					let validationSummary = hasSyntaxValidationErrors ? validationErrors.join("\n\n") : ""
+					if (hasSyntaxValidationErrors && shouldBlockWriteOnSyntaxError) {
+						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: write_text failed - syntax validation detected errors:\n${validationSummary}\nWrite outcome: blocked (agentBlockWriteOnSyntaxError=true).`)
+						if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
+						return
+					}
+					if (hasSyntaxValidationErrors && localsettings?.agentReplanOnError) {
+						agentRunState.replanDueToError = true
 					}
 					let approved = await confirmFsMutation("fs_write_text", { operations })
 					if (!approved) {
-						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: write_text cancelled by confirmation dialog`)
-						return
+						if (hasSyntaxValidationErrors) {
+							addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: write_text failed - syntax validation detected errors:\n${validationSummary}\nWrite outcome: cancelled by confirmation dialog.`)
+							return !!localsettings?.agentReplanOnError
+						}
+						else {
+							addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: write_text cancelled by confirmation dialog`)
+							return
+						}
 					}
 					let result = await window.fsClient.write(operations)
-					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: write_text result\n${objToText(result)}`)
+					if (hasSyntaxValidationErrors) {
+						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: write_text result with syntax validation errors\n${validationSummary}\nWrite outcome: wrote to disk.\n${objToText(result)}`)
+						return !!localsettings?.agentReplanOnError
+					}
+					else {
+						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: write_text result\n${objToText(result)}`)
+					}
 				}
 				catch (e) {
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: write_text failed - ${e?.message || e}`)
@@ -991,24 +1031,46 @@ export const buildFilesystemCommands = (ctx) => {
 					if (!Array.isArray(operations) || operations.length === 0) {
 						throw new Error("operations must be a non-empty array of {path, lines, start_line, append} objects.")
 					}
+					let validationErrors = []
 					for (let op of operations) {
 						let lineContent = Array.isArray(op.lines) ? op.lines.join('\n') : null
 						if (lineContent !== null) {
 							let validationError = await validateCodeContent(op.path, lineContent)
 							if (validationError) {
-								addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: write_lines failed - ${validationError}`)
-								if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
-								return
+								validationErrors.push(validationError)
 							}
 						}
 					}
-					let approved = await confirmFsMutation("fs_write_lines", { operations })
-					if (!approved) {
-						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: write_lines cancelled by confirmation dialog`)
+					let hasSyntaxValidationErrors = validationErrors.length > 0
+					let shouldBlockWriteOnSyntaxError = !!localsettings?.agentBlockWriteOnSyntaxError
+					let validationSummary = hasSyntaxValidationErrors ? validationErrors.join("\n\n") : ""
+					if (hasSyntaxValidationErrors && shouldBlockWriteOnSyntaxError) {
+						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: write_lines failed - syntax validation detected errors:\n${validationSummary}\nWrite outcome: blocked (agentBlockWriteOnSyntaxError=true).`)
+						if (localsettings?.agentReplanOnError) { agentRunState.replanDueToError = true; return true; }
 						return
 					}
+					if (hasSyntaxValidationErrors && localsettings?.agentReplanOnError) {
+						agentRunState.replanDueToError = true
+					}
+					let approved = await confirmFsMutation("fs_write_lines", { operations })
+					if (!approved) {
+						if (hasSyntaxValidationErrors) {
+							addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: write_lines failed - syntax validation detected errors:\n${validationSummary}\nWrite outcome: cancelled by confirmation dialog.`)
+							return !!localsettings?.agentReplanOnError
+						}
+						else {
+							addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: write_lines cancelled by confirmation dialog`)
+							return
+						}
+					}
 					let result = await window.fsClient.write_lines(operations)
-					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: write_lines result\n${objToText(result)}`)
+					if (hasSyntaxValidationErrors) {
+						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: write_lines result with syntax validation errors\n${validationSummary}\nWrite outcome: wrote to disk.\n${objToText(result)}`)
+						return !!localsettings?.agentReplanOnError
+					}
+					else {
+						addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: write_lines result\n${objToText(result)}`)
+					}
 				}
 				catch (e) {
 					addThought(currentChainOfThought, createSysPrompt, `FS_TOOL: write_lines failed - ${e?.message || e}`)
