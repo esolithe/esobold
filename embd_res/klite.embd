@@ -20829,6 +20829,7 @@ Current version indicated by LITEVER below.
 				}
 				appendedsysprompt += "\n";
 			}
+			contextUsage.setUsage("systemPrompt", appendedsysprompt.length);
 			let memory_with_groupchat_context = current_memory;
 			let groupchat_context_memory = get_groupchat_context_memory();
 			if(groupchat_context_memory!="")
@@ -20842,6 +20843,7 @@ Current version indicated by LITEVER below.
 					truncated_memory += "\n";
 				}
 			}
+			contextUsage.setUsage("memory", truncated_memory.length);
 
 			//if world info exists, we inject it right after the memory
 			//for each matching key
@@ -21068,6 +21070,8 @@ Current version indicated by LITEVER below.
 
 			if(wi_insertlocation>0)
 			{
+				contextUsage.setUsage("authorsNote", truncated_anote.length);
+				contextUsage.calculateOverspillUsage("authorsNote", "worldInfo", max_anote_len);
 				truncated_anote = wistr + truncated_anote;
 			}
 			else
@@ -21085,8 +21089,10 @@ Current version indicated by LITEVER below.
 				appendedsysprompt = replace_placeholders(appendedsysprompt,false,false,true);
 				truncated_memory = replace_placeholders(truncated_memory,false,false,true);
 				truncated_memory = appendedsysprompt + truncate_memory(truncated_memory, max_mem_len, true);
+				contextUsage.setUsage("memory", truncated_memory.length);
 				truncated_anote = replace_placeholders(truncated_anote,false,false,false);
 				truncated_anote = substring_to_boundary(truncated_anote, max_anote_len);
+				contextUsage.setUsage("authorsNote", truncated_anote.length);
 				let min_context_len = Math.min(32, max_allowed_characters);
 				if(!is_using_kcpp_with_added_memory())
 				{
@@ -21102,6 +21108,9 @@ Current version indicated by LITEVER below.
 					}
 					let newlimit = Math.max(min_context_len, max_allowed_characters - truncated_memory.length - truncated_anote.length);
 					truncated_context = substring_to_boundary(truncated_context, newlimit);
+					contextUsage.setUsage("authorsNote", truncated_anote.length);
+					contextUsage.setUsage("memory", truncated_memory.length);
+					contextUsage.setUsage("context", truncated_context.length);
 				}
 				else
 				{
@@ -21112,6 +21121,8 @@ Current version indicated by LITEVER below.
 					}
 					let newlimit = Math.max(min_context_len, max_allowed_characters - truncated_anote.length);
 					truncated_context = substring_to_boundary(truncated_context, newlimit);
+					contextUsage.setUsage("authorsNote", truncated_anote.length);
+					contextUsage.setUsage("context", truncated_context.length);
 				}
 
 				if (anote_strength === "turn") 
