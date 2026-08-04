@@ -11,6 +11,49 @@ let updateMetadata = async () => {
 
 }
 
+let normalizeLibraryStorageName = (name, fallback = "Untitled") => {
+    let normalized = `${name || ""}`.replaceAll(/[^\w()_\-'",!\[\].]/g, " ").replaceAll(/\s+/g, " ").trim()
+    if (!normalized) {
+        normalized = fallback
+    }
+    return normalized
+}
+
+let getLibraryMetaForName = (name) => {
+    let normalizedName = normalizeLibraryStorageName(name)
+    return (allCharacterNames || []).find(meta => normalizeLibraryStorageName(meta?.name) === normalizedName)
+}
+
+let getCharacterStorageKeyForName = (name) => {
+    let meta = getLibraryMetaForName(name)
+    let keyId = `${meta?.id || ""}`.trim() || normalizeLibraryStorageName(name)
+    return `character_${keyId}`
+}
+
+let getRemoteManagerFilenameForName = (name) => {
+    if (`${name || ""}`.trim() === "allCharacterMetadata") {
+        return "allCharacterMetadata"
+    }
+    let meta = getLibraryMetaForName(name)
+    if (meta?.id === undefined) {
+        let resolvedId = normalizeLibraryStorageName(`${meta?.name}`.trim());
+        return getNextAutoincrementName(resolvedId)
+    }
+    else {
+        return meta?.id
+    }
+}
+
+let removeLibraryMetaByName = (name) => {
+    let normalizedName = normalizeLibraryStorageName(name)
+    let targetMeta = getLibraryMetaForName(name)
+    if (!!targetMeta?.id) {
+        allCharacterNames = (allCharacterNames || []).filter(meta => `${meta?.id || ""}` !== `${targetMeta.id}`)
+        return
+    }
+    allCharacterNames = (allCharacterNames || []).filter(meta => normalizeLibraryStorageName(meta?.name) !== normalizedName)
+}
+
 let getAutosavesForName = async (charName, shouldAlsoSave = false) => {
     let remoteDataSettings = JSON.parse(await indexeddb_load("remoteDataSettings"))
     if (!!remoteDataSettings) {
@@ -27,12 +70,13 @@ let getAutosavesForName = async (charName, shouldAlsoSave = false) => {
             try {
                 await new Promise((resolve) => promptForAdminPassword(resolve));
                 let autoSaves = await getServerSaves({ typeName: "Autosave" })
-                if (autoSaves[charName] !== undefined) {
+                let remoteAutosaveKey = getRemoteManagerFilenameForName(charName)
+                if (autoSaves[remoteAutosaveKey] !== undefined) {
                     let remoteEndpoint = await getRemoteDataEndpoint();
                     let autosaveData = await fetch(`${remoteEndpoint}/api/data/get`, {
                         method: "POST",
                         headers: getAuthHeaders(),
-                        body: JSON.stringify({ filename: charName })
+                        body: JSON.stringify({ filename: remoteAutosaveKey })
                     })
                         .then(resp => resp.json())
                         .then(JSON.parse)
@@ -67,17 +111,18 @@ let getAutosavesForName = async (charName, shouldAlsoSave = false) => {
     return []
 }
 
-let saveAutosaveToServer = async (charName, existingAutosaves = undefined) => {
+let saveAutosaveToServer = async (charName, existingAutosaves = undefined, explicitRemoteKey = undefined) => {
     let remoteDataSettings = JSON.parse(await indexeddb_load("remoteDataSettings"))
     if (!!remoteDataSettings) {
         let { remoteDataStorageUrl, autosaveMaxNumber, autosaveRemoteSync } = remoteDataSettings;
         if (is_using_kcpp_with_server_saving() && autosaveRemoteSync) {
             try {
+                let remoteAutosaveKey = explicitRemoteKey || getRemoteManagerFilenameForName(charName)
                 let remoteEndpoint = await getRemoteDataEndpoint();
                 await fetch(`${remoteEndpoint}/api/data/delete`, {
                     method: "POST",
                     headers: getAuthHeaders(),
-                    body: JSON.stringify({ filename: charName })
+                    body: JSON.stringify({ filename: remoteAutosaveKey })
                 })
                     .catch(e => {
 
@@ -85,7 +130,7 @@ let saveAutosaveToServer = async (charName, existingAutosaves = undefined) => {
 
                 if (existingAutosaves !== undefined) {
                     let bodyData = {
-                        filename: charName,
+                        filename: remoteAutosaveKey,
                         data: JSON.stringify(existingAutosaves),
                         type: "Autosave",
                         isEncrypted: "0",
@@ -120,16 +165,18 @@ let syncAutosave = async (autosaveName, shouldAlsoSave = false) => {
 
 let removeAutosave = async (autosaveName) => {
     let charName = autosaveName.replaceAll(/[^\w()_\-'",!\[\].]/g, " ").replaceAll(/\s+/g, " ").trim().replace(" (Auto)", "") + " (Auto)"
-    await indexeddb_save(`character_${charName}`)
+    await indexeddb_save(getCharacterStorageKeyForName(charName))
+    removeLibraryMetaByName(charName)
     updateCharacterListFromAll()
-    await saveAutosaveToServer(charName, undefined)
+    await saveAutosaveToServer(charName, undefined, remoteAutosaveKey)
 }
 
 let removeFileFromServer = async (remoteEndpoint, fileName) => {
+    let targetFileName = getRemoteManagerFilenameForName(fileName)
     await fetch(`${remoteEndpoint}/api/data/delete`, {
         method: "POST",
         headers: getAuthHeaders(),
-        body: JSON.stringify({ filename: fileName.trim() })
+        body: JSON.stringify({ filename: `${targetFileName}`.trim() })
     })
         .then(resp => resp.json())
         .catch(e => {
@@ -153,32 +200,100 @@ let putAllCharacterManagerData = () => {
                 await updateMetadata()
 
                 let allTasks = await Promise.all([...allCharacterNames.map(async c => {
-                    let { name, type, thumbnail } = c, data = await getCharacterData(name, true);
-                    if (doesObjectHaveKeys(data))
-                    {
-                        waitingToast.setText(`Sending data ${name}`)
-                        waitingToast.show()
-                        data.type = type
-                        data.thumbnail = thumbnail
-                        data.favorite = !!c?.favorite
-                        data = JSON.stringify(data)
-                        if (isEncrypted) {
+                    try {
+                        let { id, name, type, thumbnail } = c, data = await getCharacterData(id || name, true);
+                        if (doesObjectHaveKeys(data))
+                        {
+                            waitingToast.setText(`Sending data ${name}`)
+                            waitingToast.show()
+                            let generatedId = id || data?.id || getRemoteManagerFilenameForName(name)
+                            data.id = generatedId
+                            data.name = name
+                            data.type = type
+                            data.thumbnail = thumbnail
+                            data.favorite = !!c?.favorite
+                            data = JSON.stringify(data)
+                            let skipDueToError = false
+                            if (isEncrypted) {
+                                try
+                                {
+                                    data = encrypt(password, data)
+                                }
+                                catch (e)
+                                {
+                                    handleError(`Error encrypting ${name}: ${e}`)
+                                    skipDueToError = true
+                                }
+                            }
+
+                            if (!skipDueToError) {
+                                // Clear old data
+                                let remoteEndpoint = await getRemoteDataEndpoint();
+                                await removeFileFromServer(remoteEndpoint, name)
+
+                                debugger
+                                // Save to server
+                                let bodyData = {
+                                    filename: generatedId,
+                                    data: data,
+                                    isEncrypted: isEncrypted ? "1" : "0",
+                                    group: null,
+                                    type: "Manager",
+                                    thumbnail: null
+                                }
+                                await fetch(`${remoteEndpoint}/api/data/put`, {
+                                    method: "POST",
+                                    body: JSON.stringify(bodyData),
+                                    headers: getAuthHeaders()
+                                })
+                                    .then(resp => resp.json())
+                                    .catch(e => {
+                                        handleError(e)
+                                    })
+                            }
+                        }                    
+
+                        console.log(c, data)
+                        return true
+                    }
+                    catch (e) {
+                        handleError(`Error sending data ${c?.name || ""}: ${e}`)
+                    }
+                    // decrypt("test", (await Promise.all(putAllCharacterManagerData()))[0].data)
+                    // JSON.parse(decrypt("test", (await Promise.all(putAllCharacterManagerData()))[0].data))
+                }), (async () => {
+                    // Push metadata
+                    let name = "allCharacterMetadata", data = allCharacterNames;
+                    waitingToast.setText(`Sending data ${name}`)
+                    waitingToast.show()
+                    data = JSON.stringify(data)
+                    let skipDueToError = false
+                    if (isEncrypted) {
+                        try
+                        {
                             data = encrypt(password, data)
                         }
+                        catch (e)
+                        {
+                            handleError(`Error encrypting ${name}: ${e}`)
+                            skipDueToError = true
+                        }
+                    }
 
-                        // Clear old data
-                        let remoteEndpoint = await getRemoteDataEndpoint();
-                        await removeFileFromServer(remoteEndpoint, name)
-
-                        // Save to server
+                    if (!skipDueToError) {
                         let bodyData = {
-                            filename: name.trim(),
+                            filename: name,
                             data: data,
                             isEncrypted: isEncrypted ? "1" : "0",
                             group: null,
                             type: "Manager",
                             thumbnail: null
                         }
+                        // Clear old data
+                        let remoteEndpoint = await getRemoteDataEndpoint();
+                        await removeFileFromServer(remoteEndpoint, name)
+
+                        // Save to server
                         await fetch(`${remoteEndpoint}/api/data/put`, {
                             method: "POST",
                             body: JSON.stringify(bodyData),
@@ -188,44 +303,7 @@ let putAllCharacterManagerData = () => {
                             .catch(e => {
                                 handleError(e)
                             })
-                    }                    
-
-                    return true
-
-                    // decrypt("test", (await Promise.all(putAllCharacterManagerData()))[0].data)
-                    // JSON.parse(decrypt("test", (await Promise.all(putAllCharacterManagerData()))[0].data))
-                }), (async () => {
-                    // Push metadata
-                    let name = "allCharacterMetadata", data = allCharacterNames;
-                    waitingToast.setText(`Sending data ${name}`)
-                    waitingToast.show()
-                    data = JSON.stringify(data)
-                    if (isEncrypted) {
-                        data = encrypt(password, data)
                     }
-
-                    let bodyData = {
-                        filename: name,
-                        data: data,
-                        isEncrypted: isEncrypted ? "1" : "0",
-                        group: null,
-                        type: "Manager",
-                        thumbnail: null
-                    }
-                    // Clear old data
-                    let remoteEndpoint = await getRemoteDataEndpoint();
-                    await removeFileFromServer(remoteEndpoint, name)
-
-                    // Save to server
-                    await fetch(`${remoteEndpoint}/api/data/put`, {
-                        method: "POST",
-                        body: JSON.stringify(bodyData),
-                        headers: getAuthHeaders()
-                    })
-                        .then(resp => resp.json())
-                        .catch(e => {
-                            handleError(e)
-                        })
                 })()])
                 waitingToast.hide()
             });
@@ -300,56 +378,16 @@ let loadAllCharacterManagerData = () => {
                                 console.error(e)
                             }
                         }
-                        let managerSaves = await getServerSaves();
-                        if (!!managerSaves) {
-                            managerSaves = Object.entries(managerSaves).filter((entry) => {
-                                let [key, save] = entry
-                                return !!save.name && save?.typeName === "Manager"
-                            }).map((entry) => {
-                                let [key, save] = entry
-                                return save.name
-                            })
-                            for (key of managerSaves)    
-                            {
-                                if (allCharacterNames.find(c => c.name === key) === undefined) {
-                                    let cachedData = managerStoredData.find(data => data.name === key)
-                                    if (cachedData !== undefined) {
-                                        await indexeddb_save(`character_${key}`)
-                                        allCharacterNames.push(cachedData);
-                                    }
-                                    else
-                                    {
-                                        await fetch(`${remoteEndpoint}/api/data/get`, {
-                                            method: "POST",
-                                            headers: getAuthHeaders(),
-                                            body: JSON.stringify({ filename: key })
-                                        })
-                                            .then(resp => resp.json())
-                                            .then(saveData => {
-                                                let handler = () => {
-                                                    let data = !!isEncrypted ? decrypt(window.lastUsedSavePassword, saveData) : saveData;
-                                                    data = JSON.parse(data)
-                                                    let { name, type, thumbnail, favorite } = data
-
-                                                    if (name !== undefined)
-                                                    {
-                                                        allCharacterNames.push({ name, type, thumbnail, favorite: !!favorite });
-                                                        return indexeddb_save(`character_${data.name}`, JSON.stringify(data))
-                                                    }
-                                                }
-                                                if (isEncrypted && window?.lastUsedSavePassword == undefined) {
-                                                    return (new Promise(resolve => promptForSavePassword(resolve))).then(handler)
-                                                }
-                                                else {
-                                                    return handler()
-                                                }
-                                            }).catch(e => {
-                                                console.error(e)
-                                            })
-                                    }
-                                }
+                        allCharacterNames.push(...managerStoredData)
+                        allCharacterNames = allCharacterNames.map(meta => {
+                            if (meta?.id === undefined) {
+                                let resolvedId = normalizeLibraryStorageName(`${meta?.name}`.trim());
+                                return Object.assign({ id: getNextAutoincrementName(resolvedId) }, meta);
                             }
-                        }
+                            else {
+                                return meta
+                            }
+                        });
                         updateCharacterListFromAll()
                         waitingToast.hide()
                         resolve()
@@ -735,11 +773,12 @@ window.loadByCharacterNameIntoWI = async (name) => {
 let cleanupAllCharacterList = async () => {
     await Promise.all(allCharacterNames.map(async char => { 
         return { 
+            id: char.id,
             name: char.name, 
-            valid: doesObjectHaveKeys(await getCharacterData(char.name, true)) 
+            valid: doesObjectHaveKeys(await getCharacterData(char.id || char.name, true)) 
         } 
     })).then(rows => rows.forEach(data => { 
-        if (!data.valid) allCharacterNames = allCharacterNames.filter(c => c.name !== data.name) 
+        if (!data.valid) removeLibraryMetaByName(data.name)
     }))
 }
 
@@ -1493,7 +1532,7 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
                 popupUtils.reset()
                 msgboxYesNo("Are you sure you wish to delete?", "Autosave manager", async () => {
                     libraryChangesOccurred = true
-                    allCharacterNames = allCharacterNames.filter(c => c.name !== name)
+                    removeLibraryMetaByName(name)
                     removeAutosave(name)
                     waitForLibraryAndShow()
                 })
@@ -1661,8 +1700,8 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
                                 await removeFileFromServer(remoteEndpoint, name)
                             }
                             libraryChangesOccurred = true
-                            allCharacterNames = allCharacterNames.filter(c => c.name !== name)
-                            await indexeddb_save(`character_${name}`)
+                            removeLibraryMetaByName(name)
+                            await indexeddb_save(getCharacterStorageKeyForName(name))
                             updateCharacterListFromAll()
                             showCharacterList(undefined, false, true)
                         })
@@ -1714,8 +1753,8 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
                                 await removeFileFromServer(remoteEndpoint, name)
                             }
                             libraryChangesOccurred = true
-                            allCharacterNames = allCharacterNames.filter(c => c.name !== name)
-                            await indexeddb_save(`character_${name}`)
+                            removeLibraryMetaByName(name)
+                            await indexeddb_save(getCharacterStorageKeyForName(name))
                             updateCharacterListFromAll()
                             showCharacterList(undefined, false, true)
                         })
@@ -1784,8 +1823,8 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
                                 await removeFileFromServer(remoteEndpoint, name)
                             }
                             libraryChangesOccurred = true
-                            allCharacterNames = allCharacterNames.filter(c => c.name !== name)
-                            await indexeddb_save(`character_${name}`)
+                            removeLibraryMetaByName(name)
+                            await indexeddb_save(getCharacterStorageKeyForName(name))
                             updateCharacterListFromAll()
                             showCharacterList(undefined, false, true)
                         })
@@ -1810,7 +1849,7 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
                             let extractedText = await documentParser.extractTextFromB64(charData.data)
                             if (!!extractedText) {
                                 charData.extractedText = extractedText
-                                await indexeddb_save(`character_${name}`, JSON.stringify(charData))
+                                    await indexeddb_save(getCharacterStorageKeyForName(name), JSON.stringify(charData))
                                 updateCharacterListFromAll()
                                 replaceDocumentFromTextDB(name, extractedText)
                             }
@@ -1837,8 +1876,8 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
                                 await removeFileFromServer(remoteEndpoint, name)
                             }
                             libraryChangesOccurred = true
-                            allCharacterNames = allCharacterNames.filter(c => c.name !== name)
-                            await indexeddb_save(`character_${name}`)
+                            removeLibraryMetaByName(name)
+                            await indexeddb_save(getCharacterStorageKeyForName(name))
                             updateCharacterListFromAll()
                             showCharacterList(undefined, false, true)
                         })
@@ -1941,8 +1980,8 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
                                 await removeFileFromServer(remoteEndpoint, name)
                             }
                             libraryChangesOccurred = true
-                            allCharacterNames = allCharacterNames.filter(c => c.name !== name)
-                            await indexeddb_save(`character_${name}`)
+                            removeLibraryMetaByName(name)
+                            await indexeddb_save(getCharacterStorageKeyForName(name))
                             updateCharacterListFromAll()
                             showCharacterList(undefined, false, true)
                         })
@@ -2037,7 +2076,7 @@ let showCharacterList = async (event = undefined, serverLoad = false, isReturn =
             libraryChangesOccurred = true
             waitingToast.setText(`Deleting all local data`)
             waitingToast.show()
-            await Promise.all(allCharacterNames.map(elem => indexeddb_save(`character_${elem.name}`)))
+            await Promise.all(allCharacterNames.map(elem => indexeddb_save(`character_${elem.id || normalizeLibraryStorageName(elem.name)}`)))
             allCharacterNames = []
             await updateCharacterListFromAll()
             waitingToast.hide()
@@ -2502,13 +2541,21 @@ function showCharacterCreator() {
             }
             let dataUrl = `data:image/png;base64,${btoa(text)}`
 
-            const toSave = { name, data: charInner, image: String(dataUrl) };
-            await indexeddb_save(`character_${name}`, JSON.stringify(toSave));
+            let resolvedName = normalizeLibraryStorageName(name, "No character name")
+            let existingMeta = getLibraryMetaForName(resolvedName)
+            if (!!existingMeta && !localsettings?.overwriteCharacterOnNameCollision && typeof getNextAutoincrementName === "function") {
+                resolvedName = getNextAutoincrementName(resolvedName)
+                existingMeta = undefined
+            }
+            let resolvedId = existingMeta?.id || resolvedName
+
+            charInner.name = normalizeLibraryStorageName(name, "No character name")
+            const toSave = { id: resolvedId, name: resolvedName, data: charInner, image: String(dataUrl) };
+            await indexeddb_save(`character_${resolvedId}`, JSON.stringify(toSave));
 
             // Update list
-            const existingMeta = (allCharacterNames || []).find(c => c?.name === name);
-            allCharacterNames = (allCharacterNames || []).filter(c => c?.name !== name);
-            allCharacterNames.push({ name, thumbnail: thumbUrl, type: 'Character', favorite: !!existingMeta?.favorite });
+            allCharacterNames = (allCharacterNames || []).filter(c => `${c?.id || ""}` !== `${resolvedId}`);
+            allCharacterNames.push({ id: resolvedId, name: resolvedName, thumbnail: thumbUrl, type: 'Character', favorite: !!existingMeta?.favorite });
             await updateCharacterListFromAll();
 
             waitingToast.hide();

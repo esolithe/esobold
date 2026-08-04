@@ -150,7 +150,9 @@ export const buildLibraryUtilsCommands = (ctx) => {
 			return await getCharacterData(name, shouldSkipServer)
 		}
 		let normalizedName = sanitizeLibraryName(name)
-		let raw = await indexeddb_load(`character_${normalizedName}`, "{}")
+		let matchedMeta = (Array.isArray(allCharacterNames) ? allCharacterNames : []).find(entry => `${entry?.name || ""}`.toLowerCase() === normalizedName.toLowerCase())
+		let storageKey = `character_${matchedMeta?.id || normalizedName}`
+		let raw = await indexeddb_load(storageKey, "{}")
 		try {
 			return JSON.parse(raw || "{}")
 		}
@@ -481,9 +483,17 @@ export const buildLibraryUtilsCommands = (ctx) => {
 					}
 					let dataUrl = `data:image/png;base64,${btoa(text)}`
 
-					await indexeddb_save(`character_${name}`, JSON.stringify({ name, data: charInner, image: `${dataUrl}` }))
-					let nextMetadata = metadata.filter(entry => entry?.name !== name)
-					nextMetadata.push({ name, thumbnail, type: "Character", favorite: !!existing?.favorite })
+					let savedName = name
+					let matchedExisting = existing
+					if (!!matchedExisting && !localsettings?.overwriteCharacterOnNameCollision && typeof getNextAutoincrementName === "function") {
+						savedName = getNextAutoincrementName(savedName)
+						matchedExisting = undefined
+					}
+					let savedId = matchedExisting?.id || savedName
+					charInner.name = name
+					await indexeddb_save(`character_${savedId}`, JSON.stringify({ id: savedId, name: savedName, data: charInner, image: `${dataUrl}` }))
+					let nextMetadata = metadata.filter(entry => `${entry?.id || ""}` !== `${savedId}`)
+					nextMetadata.push({ id: savedId, name: savedName, thumbnail, type: "Character", favorite: !!matchedExisting?.favorite })
 					nextMetadata.sort((a, b) => {
 						if (!!a?.favorite !== !!b?.favorite) {
 							return !!a?.favorite ? -1 : 1
@@ -493,7 +503,7 @@ export const buildLibraryUtilsCommands = (ctx) => {
 					await saveLocalLibraryMetadata(nextMetadata)
 					agentLibraryChangesOccurred = true
 					await maybePromptLibrarySyncAfterWrite()
-					return responseText({ status: "ok", name, overwritten: !!existing })
+					return responseText({ status: "ok", name: savedName, overwritten: !!matchedExisting })
 				}
 				catch (e) {
 					return responseError({ error: `${e?.message || e}`, type: "validation" })

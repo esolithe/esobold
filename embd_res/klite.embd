@@ -6152,16 +6152,16 @@ Current version indicated by LITEVER below.
 
 	function updateCharacterListFromAll()
 	{
-		let mergedByName = new Map();
+		let mergedById = new Map();
 		(allCharacterNames || []).forEach((elem) => {
-			if (!elem || !elem.name) {
+			if (!elem || !elem.id || !elem.name) {
 				return;
 			}
-			let previous = mergedByName.get(elem.name) || {};
-			let merged = Object.assign({}, previous, elem, { name: elem.name, favorite: !!elem.favorite });
-			mergedByName.set(elem.name, merged);
+			let previous = mergedById.get(elem.id) || {};
+			let merged = Object.assign({}, previous, elem, { id: elem.id, name: elem.name, favorite: !!elem.favorite });
+			mergedById.set(elem.id, merged);
 		});
-		allCharacterNames = [...mergedByName.values()].sort((a, b) => {
+		allCharacterNames = [...mergedById.values()].sort((a, b) => {
 			if (!!a.favorite !== !!b.favorite) {
 				return !!a.favorite ? -1 : 1;
 			}
@@ -6185,6 +6185,133 @@ Current version indicated by LITEVER below.
 	}
 	let updateCharacterListFromAllDe = debounce(updateCharacterListFromAll, 5000);
 
+	function normalizeCharacterStorageName(value, fallbackName = "Untitled")
+	{
+		let normalized = `${value || ""}`.replaceAll(/[^\w()_\-'",!\[\].]/g, " ").replaceAll(/\s+/g, " ").trim();
+		if (!normalized) {
+			normalized = fallbackName;
+		}
+		return normalized;
+	}
+
+	function getCharacterStorageKey(characterId)
+	{
+		return `character_${characterId}`;
+	}
+
+	function findCharacterMetaById(characterId)
+	{
+		return (allCharacterNames || []).find(meta => `${meta?.id || ""}` === `${characterId || ""}`);
+	}
+
+	function findCharacterMetaByName(characterName)
+	{
+		let normalizedName = normalizeCharacterStorageName(characterName, "Untitled");
+		return (allCharacterNames || []).find(meta => normalizeCharacterStorageName(meta?.name, "Untitled") === normalizedName);
+	}
+
+	function getNextAutoincrementName(namePrefix)
+	{
+		let baseName = normalizeCharacterStorageName(namePrefix, "Untitled");
+		let usedNames = new Set((allCharacterNames || []).map(meta => normalizeCharacterStorageName(meta?.id, "Untitled")));
+		if (!usedNames.has(baseName)) {
+			return baseName;
+		}
+		let index = 1;
+		while (usedNames.has(`${baseName}_${index}`)) {
+			index += 1;
+		}
+		return `${baseName}_${index}`;
+	}
+	window.getNextAutoincrementName = getNextAutoincrementName;
+
+	function safeParseCharacterStorage(rawData)
+	{
+		if (rawData === undefined || rawData === null || rawData === "" || rawData === "{}") {
+			return {};
+		}
+		try {
+			return JSON.parse(rawData);
+		}
+		catch (_e)
+		{
+			return {};
+		}
+	}
+
+	function shouldOverwriteCharacterOnNameCollision()
+	{
+		return !!localsettings?.overwriteCharacterOnNameCollision;
+	}
+
+	function resolveCharacterNameAndId(rawName, fallbackName = "Untitled")
+	{
+		let normalizedName = normalizeCharacterStorageName(rawName, fallbackName);
+		let existingMeta = findCharacterMetaByName(normalizedName);
+		let shouldOverwrite = shouldOverwriteCharacterOnNameCollision();
+		let resolvedName = normalizedName;
+		if (!!existingMeta && !shouldOverwrite) {
+			resolvedName = getNextAutoincrementName(normalizedName);
+			existingMeta = undefined;
+		}
+		let resolvedId = existingMeta?.id || resolvedName;
+		return {
+			name: resolvedName,
+			id: resolvedId,
+			existingMeta,
+		};
+	}
+
+	function upsertCharacterMetadata(meta)
+	{
+		if (!meta?.id || !meta?.name) {
+			return;
+		}
+		let existingIndex = allCharacterNames.findIndex(entry => `${entry?.id || ""}` === `${meta.id}`);
+		let favorite = existingIndex >= 0 ? !!allCharacterNames[existingIndex]?.favorite : !!meta?.favorite;
+		let nextMeta = Object.assign({}, meta, { favorite: !!favorite });
+		if (existingIndex >= 0) {
+			allCharacterNames[existingIndex] = nextMeta;
+		}
+		else {
+			allCharacterNames.push(nextMeta);
+		}
+	}
+
+	async function migrateCharacterStorageToIds()
+	{
+		let migratedEntries = [];
+		for (let index = 0; index < (allCharacterNames || []).length; index++) {
+			let entry = allCharacterNames[index] || {};
+			let normalizedName = normalizeCharacterStorageName(entry?.name, "Untitled");
+			let entryId = entry?.id || getNextAutoincrementName(entry?.name);
+			let idKey = getCharacterStorageKey(entryId);
+			let idPayloadRaw = await indexeddb_load(idKey, "{}");
+			let idPayload = safeParseCharacterStorage(idPayloadRaw);
+			let legacyKey = getCharacterStorageKey(normalizedName);
+			let legacyPayloadRaw = await indexeddb_load(legacyKey, "{}");
+			let legacyPayload = safeParseCharacterStorage(legacyPayloadRaw);
+			let payload = (Object.keys(idPayload).length > 0 ? idPayload : legacyPayload);
+
+			if (Object.keys(payload).length > 0) {
+				payload.id = entryId;
+				payload.name = normalizeCharacterStorageName(payload?.name || normalizedName, normalizedName);
+				await indexeddb_save(idKey, JSON.stringify(payload));
+			}
+
+			if (legacyKey !== idKey && Object.keys(legacyPayload).length > 0) {
+				await indexeddb_save(legacyKey);
+			}
+
+			migratedEntries.push(Object.assign({}, entry, {
+				id: entryId,
+				name: payload?.name || normalizedName,
+				favorite: !!entry?.favorite,
+			}));
+		}
+		allCharacterNames = migratedEntries;
+	}
+
 	
 	// https://stackoverflow.com/questions/12710001/how-to-convert-uint8-array-to-base64-encoded-string
 	async function bufferToBase64(buffer) {
@@ -6203,20 +6330,25 @@ Current version indicated by LITEVER below.
 		try
 		{
 			let charData = !!decoded?.data ? decoded.data : decoded;
-			let rawName = !!charData?.name ? charData?.name : (!!filename ? filename : "No character name"), charName = rawName.replaceAll(/[^\w()_\-'",!\[\].]/g, " ").replaceAll(/\s+/g, " ").trim();
-			charData.name = charName;			
+			let rawName = !!charData?.name ? charData?.name : (!!filename ? filename : "No character name");
+			let originalCharacterName = normalizeCharacterStorageName(rawName, "No character name");
+			let resolved = resolveCharacterNameAndId(rawName, "No character name");
+			let charName = resolved.name;
+			let characterId = resolved.id;
+			charData.name = originalCharacterName;
 			if (!!data)
 			{
 				bufferToBase64(data).then(async (b64) => {
 					let b64Url = `data:image/png;base64,${b64}`
 					let dataUrl = await generateThumbnail(b64Url, [256, 256])
 					let dataToSave = {
+						id: characterId,
 						name: charName,
 						data: charData,
 						image: b64Url
 					}
-					indexeddb_save(`character_${charName}`, JSON.stringify(dataToSave)).then(() => {
-						allCharacterNames.push({name: charName, thumbnail: dataUrl, type: "Character"})
+					indexeddb_save(getCharacterStorageKey(characterId), JSON.stringify(dataToSave)).then(() => {
+						upsertCharacterMetadata({ id: characterId, name: charName, thumbnail: dataUrl, type: "Character" })
 						updateCharacterListFromAllDe();
 					})
 				})
@@ -6224,11 +6356,12 @@ Current version indicated by LITEVER below.
 			else
 			{
 				let dataToSave = {
+					id: characterId,
 					name: charName,
 					data: charData
 				}
-				indexeddb_save(`character_${charName}`, JSON.stringify(dataToSave)).then(() => {
-					allCharacterNames.push({name: charName, type: "Character"})
+				indexeddb_save(getCharacterStorageKey(characterId), JSON.stringify(dataToSave)).then(() => {
+					upsertCharacterMetadata({ id: characterId, name: charName, type: "Character" })
 					updateCharacterListFromAllDe();
 				})
 			}
@@ -6245,14 +6378,18 @@ Current version indicated by LITEVER below.
 		{
 			bufferToBase64(data).then(async (b64) => {
 				let b64Url = `data:${dataType};base64,${b64}`
-				let rawName = !!fileName ? fileName : "No document name", charName = rawName.replaceAll(/[^\w()_\-'",!\[\].]/g, " ").replaceAll(/\s+/g, " ").trim();
+				let rawName = !!fileName ? fileName : "No document name";
+				let resolved = resolveCharacterNameAndId(rawName, "No document name");
+				let charName = resolved.name;
+				let characterId = resolved.id;
 				let dataToSave = {
+					id: characterId,
 					name: charName,
 					data: b64Url,
 					dataType: dataType
 				}
-				indexeddb_save(`character_${charName}`, JSON.stringify(dataToSave)).then(() => {
-					allCharacterNames.push({name: charName, type: "Document"})
+				indexeddb_save(getCharacterStorageKey(characterId), JSON.stringify(dataToSave)).then(() => {
+					upsertCharacterMetadata({ id: characterId, name: charName, type: "Document" })
 					updateCharacterListFromAllDe();
 				})
 			})
@@ -6265,52 +6402,64 @@ Current version indicated by LITEVER below.
 
 	function saveLorebookToIndexDB(filename, data, originalData)
 	{
-		let charName = filename.replaceAll(/[^\w()_\-'",!\[\].]/g, " ").replaceAll(/\s+/g, " ").trim();
+		let resolved = resolveCharacterNameAndId(filename, "No world info name");
+		let charName = resolved.name;
+		let characterId = resolved.id;
 		let dataToSave = {
+			id: characterId,
 			name: charName,
 			data: data,
 			originalData: originalData
 		}
-		indexeddb_save(`character_${charName}`, JSON.stringify(dataToSave)).then(() => {
-			allCharacterNames.push({name: charName,	type: "World Info"})
+		indexeddb_save(getCharacterStorageKey(characterId), JSON.stringify(dataToSave)).then(() => {
+			upsertCharacterMetadata({ id: characterId, name: charName, type: "World Info" })
 			updateCharacterListFromAllDe();
 		})
 	}
 
 	function saveKLiteSaveToIndexDB(filename, data)
 	{
-		let charName = filename.replaceAll(/[^\w()_\-'",!\[\].]/g, " ").replaceAll(/\s+/g, " ").trim();
+		let resolved = resolveCharacterNameAndId(filename, "No save name");
+		let charName = resolved.name;
+		let characterId = resolved.id;
 		let dataToSave = {
+			id: characterId,
 			name: charName,
 			data: data
 		}
-		indexeddb_save(`character_${charName}`, JSON.stringify(dataToSave)).then(() => {
-			allCharacterNames.push({name: charName,	type: "Save"})
+		indexeddb_save(getCharacterStorageKey(characterId), JSON.stringify(dataToSave)).then(() => {
+			upsertCharacterMetadata({ id: characterId, name: charName, type: "Save" })
 			updateCharacterListFromAllDe();
 		})
 	}
 
 	function saveKLiteAutosaveToIndexDB(filename, data) {
-		let charName = filename.replaceAll(/[^\w()_\-'",!\[\].]/g, " ").replaceAll(/\s+/g, " ").trim();
+		let resolved = resolveCharacterNameAndId(filename, "No autosave name");
+		let charName = resolved.name;
+		let characterId = resolved.id;
 		let dataToSave = {
+			id: characterId,
 			name: charName,
 			data: data
 		}
-		indexeddb_save(`character_${charName}`, JSON.stringify(dataToSave)).then(() => {
-			allCharacterNames.push({ name: charName, type: "Autosave" })
+		indexeddb_save(getCharacterStorageKey(characterId), JSON.stringify(dataToSave)).then(() => {
+			upsertCharacterMetadata({ id: characterId, name: charName, type: "Autosave" })
 			updateCharacterListFromAllDe();
 		})
 	}
 
 	function saveKLiteScenarioToIndexDB(filename, data)
 	{
-		let charName = filename.replaceAll(/[^\w()_\-'",!\[\].]/g, " ").replaceAll(/\s+/g, " ").trim();
+		let resolved = resolveCharacterNameAndId(filename, "No scenario name");
+		let charName = resolved.name;
+		let characterId = resolved.id;
 		let dataToSave = {
+			id: characterId,
 			name: charName,
 			data: data
 		}
-		indexeddb_save(`character_${charName}`, JSON.stringify(dataToSave)).then(() => {
-			allCharacterNames.push({name: charName, type: "Scenario"})
+		indexeddb_save(getCharacterStorageKey(characterId), JSON.stringify(dataToSave)).then(() => {
+			upsertCharacterMetadata({ id: characterId, name: charName, type: "Scenario" })
 			updateCharacterListFromAllDe();
 		})
 	}
@@ -29433,30 +29582,63 @@ Current version indicated by LITEVER below.
 	let allCharacterNames = []
 	window.addEventListener("load", async () => {
 		allCharacterNames = JSON.parse(await indexeddb_load("characterList", "[]"))
-		allCharacterNames = (allCharacterNames || []).map((entry) => Object.assign({}, entry, { favorite: !!entry?.favorite }))
+		allCharacterNames = (allCharacterNames || []).map((entry) => {
+			let normalizedName = normalizeCharacterStorageName(entry?.name, "Untitled");
+			return Object.assign({}, entry, {
+				id: entry?.id || getNextAutoincrementName(entry?.name),
+				name: normalizedName,
+				favorite: !!entry?.favorite,
+			})
+		})
+		await migrateCharacterStorageToIds()
 		updateCharacterListFromAll()
 	})
 	
-	function getCharacterData(characterName, skipServer = false)
+	function getCharacterData(characterNameOrId, skipServer = false)
 	{
-		let charName = characterName.replaceAll(/[^\w()_\-'",!\[\].]/g, " ").replaceAll(/\s+/g, " ").trim()
-		return indexeddb_load(`character_${charName}`, "{}").then(charData => {
+		let characterLookup = `${characterNameOrId || ""}`;
+		let charName = normalizeCharacterStorageName(characterLookup, "Untitled")
+		let metaById = findCharacterMetaById(characterLookup)
+		let metaByName = findCharacterMetaByName(charName)
+		let meta = metaById || metaByName
+		let characterId = `${meta?.id || ""}`.trim()
+		let keyToLoad = characterId ? getCharacterStorageKey(characterId) : getCharacterStorageKey(charName)
+		return indexeddb_load(keyToLoad, "{}").then(charData => {
+			if ((charData === "" || charData === "{}") && characterId) {
+				return indexeddb_load(getCharacterStorageKey(charName), "{}").then(legacyCharData => {
+					if (legacyCharData !== "" && legacyCharData !== "{}") {
+						let parsed = safeParseCharacterStorage(legacyCharData)
+						if (Object.keys(parsed).length > 0) {
+							parsed.id = characterId
+							parsed.name = normalizeCharacterStorageName(parsed?.name || meta?.name || charName, charName)
+							indexeddb_save(getCharacterStorageKey(characterId), JSON.stringify(parsed))
+							indexeddb_save(getCharacterStorageKey(charName))
+							return JSON.stringify(parsed)
+						}
+					}
+					return charData
+				})
+			}
+			return charData
+		}).then(charData => {
 			if ((charData === "" || charData === "{}") && !skipServer)
 			{
 				if (is_using_kcpp_with_server_saving())
 				{
+					let remoteLookupKey = `${characterId || charName}`.trim()
 					waitingToast.setText(`Receiving data ${charName}`)
 					waitingToast.show()
 					return getRemoteDataEndpoint().then(remoteEndpoint => {
 						return getServerSaves().then(data => {
-							if (!!data && data[charName] !== undefined)
+							if (!!data && (data[remoteLookupKey] !== undefined || data[charName] !== undefined))
 							{
-								let isEncrypted = data[charName].isEncrypted
+								let remoteKey = data[remoteLookupKey] !== undefined ? remoteLookupKey : charName
+								let isEncrypted = data[remoteKey].isEncrypted
 								
 								return fetch(`${remoteEndpoint}/api/data/get`, {
 									method: "POST",
 									headers: getAuthHeaders(),
-									body: JSON.stringify({ filename: charName })
+									body: JSON.stringify({ filename: remoteKey })
 								})
 									.then(resp => resp.json())
 									.then(saveData => {
@@ -29466,7 +29648,17 @@ Current version indicated by LITEVER below.
 											let { type, thumbnail } = managerData
 											delete managerData["type"]
 											delete managerData["thumbnail"]
-											return indexeddb_save(`character_${managerData.name}`, JSON.stringify(managerData))
+											let remoteId = managerData?.id || characterId || getNextAutoincrementName(meta?.name)
+											managerData.id = remoteId
+											managerData.name = normalizeCharacterStorageName(managerData?.name || meta?.name || charName, charName)
+											upsertCharacterMetadata({
+												id: remoteId,
+												name: managerData.name,
+												type: meta?.type || type || "Character",
+												thumbnail: meta?.thumbnail || thumbnail,
+												favorite: !!meta?.favorite,
+											})
+											return indexeddb_save(getCharacterStorageKey(remoteId), JSON.stringify(managerData))
 										}
 										if (isEncrypted && window?.lastUsedSavePassword == undefined)
 										{
@@ -29479,7 +29671,8 @@ Current version indicated by LITEVER below.
 									})
 									.then(() => {
 										waitingToast.hide()
-										return indexeddb_load(`character_${charName}`, "{}").then(char => {
+										let finalKey = getCharacterStorageKey(characterId || meta?.id || remoteLookupKey || charName)
+										return indexeddb_load(finalKey, "{}").then(char => {
 											if (char == undefined || char == "")
 											{
 												return {}
@@ -29500,17 +29693,25 @@ Current version indicated by LITEVER below.
 			{
 				return {}
 			}
-			return JSON.parse(charData);
+			let parsed = safeParseCharacterStorage(charData)
+			if (Object.keys(parsed).length > 0 && !parsed?.id && !!characterId) {
+				parsed.id = characterId
+			}
+			if (Object.keys(parsed).length > 0 && !parsed?.name && !!meta?.name) {
+				parsed.name = meta.name
+			}
+			return parsed;
 		});
 	}
 
-	function getImageUrlFromCharacter(characterName)
+	function getImageUrlFromCharacter(characterNameOrId)
 	{
-		let charData = allCharacterNames.find(c => c.name === characterName)
+		let charData = findCharacterMetaById(characterNameOrId) || findCharacterMetaByName(characterNameOrId)
 		if (charData !== undefined && charData?.thumbnail !== undefined)
 		{
-			let charName = characterName.replaceAll(/[^\w]/g, "_"), id = `style_image_${charName}`;
-			let varName = `--img_character_${charName}`
+			let styleIdKey = `${charData?.id || charData?.name || ""}`.replaceAll(/[^\w]/g, "_")
+			let id = `style_image_${styleIdKey}`;
+			let varName = `--img_character_${styleIdKey}`
 			if (!document.getElementById(id))
 			{
 				let styleElem = document.createElement("style");
