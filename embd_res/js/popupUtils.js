@@ -68,18 +68,23 @@ class PopupUtils {
     }
 
     _applyBackdropMode() {
-        if (!this.popupBackdropElem) {
+        if (!this.popupElem || !this.popupInternalDiv || !this.popupBackdropElem) {
             return
         }
         if (this.useBackdrop) {
+            this.popupElem.style.pointerEvents = "auto"
             this.popupBackdropElem.style.display = ""
             this.popupBackdropElem.style.pointerEvents = "auto"
             this.popupBackdropElem.style.visibility = "visible"
+            this.popupInternalDiv.style.pointerEvents = "auto"
         }
         else {
+            // Keep the popup window interactive but let all other clicks pass through.
+            this.popupElem.style.pointerEvents = "none"
             this.popupBackdropElem.style.display = "none"
             this.popupBackdropElem.style.pointerEvents = "none"
             this.popupBackdropElem.style.visibility = "hidden"
+            this.popupInternalDiv.style.pointerEvents = "auto"
         }
     }
 
