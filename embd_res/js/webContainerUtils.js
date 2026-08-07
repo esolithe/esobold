@@ -19,31 +19,107 @@ window.initialiseWebContainerAPIs = async () => {
 }
 
 let runningProcesses = {};
-window.wrapNPM = async (processRef, mapRef = "/") => {
-    if (!(mapRef in runningProcesses)) {
-        runningProcesses[mapRef] = [];
+let addRunningProcess = (mapRef, processRef) => {
+    let normalizedMapRef = `${mapRef || "/"}`
+    if (!(normalizedMapRef in runningProcesses)) {
+        runningProcesses[normalizedMapRef] = [];
     }
-    let installProcess = await processRef;
-    runningProcesses[mapRef].push(installProcess);
-    let writer = installProcess.input.getWriter()
-    installProcess.output.pipeTo(new WritableStream({
+    runningProcesses[normalizedMapRef].push(processRef)
+    return normalizedMapRef
+}
+
+let removeRunningProcess = (mapRef, processRef) => {
+    let normalizedMapRef = `${mapRef || "/"}`
+    if (!(normalizedMapRef in runningProcesses)) {
+        return
+    }
+    runningProcesses[normalizedMapRef] = runningProcesses[normalizedMapRef].filter(p => p !== processRef)
+    if (runningProcesses[normalizedMapRef].length === 0) {
+        delete runningProcesses[normalizedMapRef]
+    }
+}
+
+window.runContainerProcess = async (processRef, mapRef = "/", options = {}) => {
+    let settings = {
+        waitForExit: true,
+        captureOutput: false,
+        throwOnNonZero: true,
+        autoYesPrompt: true,
+        maxCapturedChars: 20000,
+        ...options,
+    }
+    let startedProcess = await processRef
+    let trackedMapRef = addRunningProcess(mapRef, startedProcess)
+    let outputText = ""
+    let captureTruncated = false
+    let writer = startedProcess.input.getWriter()
+
+    startedProcess.output.pipeTo(new WritableStream({
         write(data) {
-            console.log(data);
-            if (!!data && data.indexOf("Ok to proceed? (y)") !== -1) {
+            let text = `${data || ""}`
+            console.log(text)
+            if (settings.captureOutput) {
+                let maxChars = parseInt(`${settings.maxCapturedChars ?? 20000}`, 10)
+                if (!Number.isFinite(maxChars) || maxChars <= 0) {
+                    maxChars = 20000
+                }
+                if (outputText.length < maxChars) {
+                    outputText += text.substring(0, maxChars - outputText.length)
+                    if (outputText.length >= maxChars) {
+                        captureTruncated = true
+                    }
+                }
+                else {
+                    captureTruncated = true
+                }
+            }
+            if (settings.autoYesPrompt && text.indexOf("Ok to proceed? (y)") !== -1) {
                 writer.write("y\n")
             }
         }
-    }))
+    })).catch((error) => {
+        console.warn("Process output stream closed with error:", error)
+    })
 
-    let installExitCode = await installProcess.exit;
-    runningProcesses[mapRef] = runningProcesses[mapRef].filter(p => p !== installProcess);
-    if (runningProcesses[mapRef].length === 0) {
-        delete runningProcesses[mapRef];
+    let removeOnExit = () => removeRunningProcess(trackedMapRef, startedProcess)
+    startedProcess.exit.then(removeOnExit).catch(removeOnExit)
+
+    if (!settings.waitForExit) {
+        return {
+            started: true,
+            mapRef: trackedMapRef,
+            waitingForExit: false,
+            captureOutput: !!settings.captureOutput,
+        }
     }
-    if (installExitCode !== 0) {
+
+    let exitCode = await startedProcess.exit
+    removeOnExit()
+    if (settings.throwOnNonZero && exitCode !== 0) {
+        throw new Error(`Process exited with code ${exitCode}`)
+    }
+    return {
+        started: true,
+        mapRef: trackedMapRef,
+        waitingForExit: true,
+        captureOutput: !!settings.captureOutput,
+        output: settings.captureOutput ? outputText : undefined,
+        outputTruncated: !!settings.captureOutput ? captureTruncated : undefined,
+        exitCode,
+    }
+}
+
+window.wrapNPM = async (processRef, mapRef = "/") => {
+    let result = await window.runContainerProcess(processRef, mapRef, {
+        waitForExit: true,
+        captureOutput: false,
+        throwOnNonZero: false,
+        autoYesPrompt: true,
+    })
+    if (result.exitCode !== 0) {
         throw new Error('Unable to run npm install');
     }
-    return installExitCode;
+    return result.exitCode;
 }
 
 window.listDirectoriesRunningProcesses = () => {
@@ -119,6 +195,11 @@ class ArgsHelper {
             return wrapNPM(webcontainerInstance.spawn(...this.get()), this.spawnOptions?.cwd);
         });
     }
+    spawnForAgent(options = {}) {
+        return window.initialiseWebContainerAPIs().then(() => {
+            return window.runContainerProcess(webcontainerInstance.spawn(...this.get()), this.spawnOptions?.cwd, options);
+        });
+    }
 }
 
 window.process = (processName) => new ArgsHelper(processName);
@@ -136,8 +217,8 @@ window.createDevIframe = (url) => {
     return iframe;
 }
 
-window.createDevEmbeddedView = () => {
-  let elem = createDevIframe(webContainerDevURL)
+window.openDevEmbeddedView = () => {
+  let elem = window.createDevIframe(webContainerDevURL)
   popupUtils.reset()
     .title("Web container view")
     .content(elem)
@@ -145,8 +226,8 @@ window.createDevEmbeddedView = () => {
     .css("left", "10%")
     .css("height", "80%")
     .css("width", "80%")
-    .button("Refresh", () => createDevEmbeddedView())
-    .button("Close", () => popupUtils.reset())
+    .button("Refresh", () => window.openDevEmbeddedView())
+    .button("Close", () => window.popupUtils.reset())
     .modal(true).show()
 }
 
@@ -442,6 +523,6 @@ await loadContainerFileIntoLocal("/lumara/agent.css", "/tmp/lumu/a.css")
 /*
 
 createSvelteEnv()
-createDevEmbeddedView()
+openDevEmbeddedView()
 
 */

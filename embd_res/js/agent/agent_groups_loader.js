@@ -8,6 +8,7 @@ import { buildUtilityCommands } from "./agent_utilities.js"
 import { buildMediaCommands } from "./agent_media.js"
 import { buildFilesystemCommands } from "./agent_filesystem.js"
 import { buildOpenlumaraCommands } from "./agent_openlumara.js"
+import { buildWebContainerCommands } from "./agent_webContainer.js"
 
 window.eso = window.eso || {}
 window.eso.agentCommandGroupBuilders = {
@@ -22,4 +23,5 @@ window.eso.agentCommandGroupBuilders = {
 	media: buildMediaCommands,
 	filesystem: buildFilesystemCommands,
 	openlumara: buildOpenlumaraCommands,
+	webcontainer: buildWebContainerCommands,
 }

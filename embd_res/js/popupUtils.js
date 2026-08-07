@@ -178,7 +178,9 @@ class PopupUtils {
         if (!!window.ResizeObserver) {
             if (!this._resizeObserver && useFloatingWindow) {
                 this._resizeObserver = new ResizeObserver(() => {
-                    this.autoSize()
+                    if (this.useMobileMenu) {
+                        this.autoSize()
+                    }
                     this._ensurePopupWithinViewport()
                 })
                 this._resizeObserver.observe(this.popupInternalDiv)
@@ -233,6 +235,13 @@ class PopupUtils {
         this.popupElem.classList.remove("hidden")
         this._applyBackdropMode()
         this._applyWindowInteractionMode()
+
+        if (!this.useMobileMenu)
+        {
+            this.popupElem.classList.remove("mobileMenu", "expanded")
+            this.buttonsElem.style.height = ""
+            this.contentElem.style.height = ""
+        }
         
         if (this.useMobileMenu)
         {
@@ -260,6 +269,13 @@ class PopupUtils {
         if (document.body.offsetWidth > 800)
         {
             this.popupElem.classList.remove("expanded")
+        }
+        if (!this.useMobileMenu)
+        {
+            // Outside mobile-menu mode, leave sizing to CSS/content flow.
+            this.buttonsElem.style.height = "";
+            this.contentElem.style.height = "";
+            return
         }
         if (this.useMobileMenu && this.popupElem.classList.contains("expanded"))
         {
@@ -320,6 +336,12 @@ class PopupUtils {
 
     setMobileMenu(useMobileMenu) {
         this.useMobileMenu = useMobileMenu
+        if (!this.useMobileMenu)
+        {
+            this.popupElem?.classList.remove("mobileMenu", "expanded")
+            if (this.buttonsElem) this.buttonsElem.style.height = ""
+            if (this.contentElem) this.contentElem.style.height = ""
+        }
         return this;
     }
 
