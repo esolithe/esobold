@@ -346,15 +346,37 @@ async function collectLocalDirTree(localFs, rootDir) {
 async function collectContainerDirTree(localFs, containerFs, rootDir) {
     const directories = [];
     const files = [];
-    const entries = await containerFs.readdir(rootDir, { recursive: true, withFileTypes: true });
-    for (const entry of entries) {
-        const baseDir = entry.parentPath || rootDir;
-        const childPath = normalizePath(localFs, joinPath(baseDir, entry.name), true);
-        if (entry.isDirectory()) {
-            directories.push(childPath);
+
+    // WebContainer recursive readdir omits reliable parent path context in some cases.
+    // Walk recursively in JS while only using single-level readdir calls.
+    const queue = [rootDir];
+    const visited = new Set();
+    while (queue.length > 0) {
+        const currentDir = normalizePath(localFs, `${queue.shift() || ""}`, true);
+        if (!currentDir || visited.has(currentDir)) {
+            continue;
         }
-        else {
-            files.push(childPath);
+        visited.add(currentDir);
+
+        const entries = await containerFs.readdir(currentDir, { recursive: false, withFileTypes: true });
+        for (const entry of entries) {
+            const name = `${entry?.name || ""}`.trim();
+            if (!name) {
+                continue;
+            }
+            const childPath = normalizePath(localFs, joinPath(currentDir, name), true);
+            const isDirectory = typeof entry?.isDirectory === "function"
+                ? !!entry.isDirectory()
+                : !!entry?.isDirectory;
+            if (isDirectory) {
+                directories.push(childPath);
+                if (!visited.has(childPath)) {
+                    queue.push(childPath);
+                }
+            }
+            else {
+                files.push(childPath);
+            }
         }
     }
     return { directories, files };
@@ -464,8 +486,9 @@ window.loadContainerDirIntoLocalDir = async (containerDirPath, localDirPath) => 
     const normalizedLocalDirPath = normalizePath(localFs, localDirPath, true);
     const tree = await collectContainerDirTree(localFs, containerFs, normalizedContainerDirPath);
 
-    waitingToast.show();
     try {
+        waitingToast.show();
+        updateBulkTransferProgress("Copying to local", 0, tree.files.length);
         await ensureLocalDir(localFs, normalizedLocalDirPath);
         for (const sourceDir of tree.directories) {
             const relativePath = stripBasePrefix(sourceDir, normalizedContainerDirPath);

@@ -22,6 +22,99 @@ let truncateText = (text = "", maxLength = MAX_TEXT_RETURN_LENGTH) => {
 	}
 }
 
+let WC_EXCLUDED_RECURSIVE_SEGMENTS = [".git", "node_modules"]
+
+let pathContainsExcludedSegment = (path = "") => {
+	let normalizedPath = `${path || ""}`.replaceAll("\\", "/")
+	let segments = normalizedPath.split("/").map(segment => `${segment || ""}`.trim()).filter(segment => segment.length > 0)
+	return segments.some(segment => WC_EXCLUDED_RECURSIVE_SEGMENTS.includes(segment))
+}
+
+let normalizeContainerPath = (path = "") => {
+	let normalized = `${path || ""}`.trim().replaceAll("\\", "/")
+	if (!normalized) {
+		return normalized
+	}
+	normalized = normalized.replace(/\/+/g, "/")
+	if (normalized.length > 1 && normalized.endsWith("/")) {
+		normalized = normalized.slice(0, -1)
+	}
+	return normalized
+}
+
+let joinContainerPath = (parentPath = "", name = "") => {
+	let normalizedParent = normalizeContainerPath(parentPath)
+	let normalizedName = `${name || ""}`.trim().replaceAll("\\", "/").replace(/^\/+/, "")
+	if (!normalizedParent) {
+		return normalizedName
+	}
+	if (!normalizedName) {
+		return normalizedParent
+	}
+	if (normalizedParent === "/") {
+		return `/${normalizedName}`
+	}
+	return `${normalizedParent}/${normalizedName}`
+}
+
+let direntIsDirectory = (entry) => {
+	if (!entry || typeof entry !== "object") {
+		return false
+	}
+	if (typeof entry.isDirectory === "function") {
+		return !!entry.isDirectory()
+	}
+	if (typeof entry.isDirectory === "boolean") {
+		return entry.isDirectory
+	}
+	return entry.type === "directory"
+}
+
+let readDirectoryEntriesWithMetadata = async (fs, rootPath, recursive) => {
+	let normalizedRootPath = normalizeContainerPath(rootPath)
+	if (pathContainsExcludedSegment(normalizedRootPath)) {
+		return []
+	}
+
+	let pendingDirectories = [normalizedRootPath]
+	let visitedDirectories = new Set()
+	let results = []
+
+	while (pendingDirectories.length > 0) {
+		let currentDirectory = pendingDirectories.shift()
+		if (visitedDirectories.has(currentDirectory)) {
+			continue
+		}
+		visitedDirectories.add(currentDirectory)
+
+		let currentEntries = await fs.readdir(currentDirectory, { recursive: false, withFileTypes: true })
+		for (let entry of currentEntries) {
+			let entryName = `${entry?.name || ""}`.trim()
+			if (!entryName) {
+				continue
+			}
+			let fullPath = joinContainerPath(currentDirectory, entryName)
+			if (pathContainsExcludedSegment(fullPath)) {
+				continue
+			}
+			let isDirectory = direntIsDirectory(entry)
+			results.push({
+				name: entryName,
+				path: fullPath,
+				isDirectory,
+			})
+			if (recursive && isDirectory && !visitedDirectories.has(fullPath)) {
+				pendingDirectories.push(fullPath)
+			}
+		}
+		if (!recursive) {
+			break
+		}
+	}
+
+	return results
+}
+
 export const buildWebContainerCommands = (ctx) => {
 	let {
 		agentRunState,
@@ -72,6 +165,50 @@ export const buildWebContainerCommands = (ctx) => {
 		let resultText = typeof result === "string" ? result : objToText(result)
 		addThought(currentChainOfThought, createSysPrompt, `WC_TOOL: ${actionName} result\n${resultText}`)
 		return false
+	}
+
+	let readContainerFileResult = async (fs, path, encoding) => {
+		let bytes = new Uint8Array(await fs.readFile(path))
+		if (encoding === "base64") {
+			let base64Content = bytesToBase64(bytes)
+			let limited = truncateText(base64Content)
+			return {
+				path,
+				encoding: "base64",
+				bytes: bytes.length,
+				content: limited.text,
+				truncated: limited.truncated,
+			}
+		}
+		let textContent = new TextDecoder().decode(bytes)
+		let limited = truncateText(textContent)
+		return {
+			path,
+			encoding: "text",
+			bytes: bytes.length,
+			content: limited.text,
+			truncated: limited.truncated,
+		}
+	}
+
+	let writeContainerFile = async (fs, path, content, encoding) => {
+		let bytes
+		if (encoding === "base64") {
+			let binary = atob(content)
+			bytes = new Uint8Array(binary.length)
+			for (let i = 0; i < binary.length; i++) {
+				bytes[i] = binary.charCodeAt(i)
+			}
+		}
+		else {
+			bytes = new TextEncoder().encode(content)
+		}
+		await fs.writeFile(path, bytes)
+		return {
+			path,
+			encoding,
+			bytesWritten: bytes.length,
+		}
 	}
 
 	return [
@@ -185,11 +322,11 @@ export const buildWebContainerCommands = (ctx) => {
 		},
 		{
 			name: "wc_fs_readdir",
-			description: "Run webcontainerInstance.fs.readdir on a container path.",
+			description: "List WebContainer directory entries. Recursion is handled in JS with non-recursive fs.readdir calls, excludes .git/node_modules, and returns full paths with directory flags.",
 			args: {
 				path: "<container directory path>",
 				recursive: { description: "<whether to recurse>", type: "boolean" },
-				withFileTypes: { description: "<whether to include dirent metadata>", type: "boolean" },
+				withFileTypes: { description: "<deprecated; retained for compatibility>", type: "boolean" },
 			},
 			enabled: true,
 			executor: async (action) => {
@@ -200,9 +337,16 @@ export const buildWebContainerCommands = (ctx) => {
 					}
 					let recursive = !!action?.args?.recursive
 					let withFileTypes = !!action?.args?.withFileTypes
-					return await runConfirmed("fs.readdir", { path, recursive, withFileTypes }, async () => {
+					return await runConfirmed("fs.readdir", { path, recursive, withFileTypes, excludes: WC_EXCLUDED_RECURSIVE_SEGMENTS }, async () => {
 						let fs = await ensureWebContainerReady()
-						return await fs.readdir(path, { recursive, withFileTypes })
+						let entries = await readDirectoryEntriesWithMetadata(fs, path, recursive)
+						return {
+							path,
+							recursive,
+							withFileTypesRequested: withFileTypes,
+							excludesApplied: [...WC_EXCLUDED_RECURSIVE_SEGMENTS],
+							entries,
+						}
 					})
 				}
 				catch (e) {
@@ -212,9 +356,24 @@ export const buildWebContainerCommands = (ctx) => {
 		},
 		{
 			name: "wc_fs_readFile",
-			description: "Run webcontainerInstance.fs.readFile on a container file path.",
+			description: "Run webcontainerInstance.fs.readFile on one or many container file paths.",
 			args: {
 				path: "<container file path>",
+				operations: {
+					description: "<optional array of read operations {path, encoding}>",
+					optional: true,
+					format: {
+						type: "array",
+						items: {
+							type: "object",
+							properties: {
+								path: { type: "string" },
+								encoding: { type: "string", enum: ["text", "base64"] },
+							},
+							required: ["path"],
+						},
+					}
+				},
 				encoding: {
 					description: "<text|base64>",
 					type: "string",
@@ -225,33 +384,32 @@ export const buildWebContainerCommands = (ctx) => {
 			executor: async (action) => {
 				try {
 					let path = `${action?.args?.path || ""}`.trim()
-					if (!path) {
-						return failAndMaybeReplan("fs.readFile failed - path is required")
+					let operations = Array.isArray(action?.args?.operations) ? action.args.operations : []
+					if (!path && operations.length === 0) {
+						return failAndMaybeReplan("fs.readFile failed - either path or operations is required")
 					}
 					let encoding = `${action?.args?.encoding || "text"}`.trim().toLowerCase()
-					return await runConfirmed("fs.readFile", { path, encoding }, async () => {
-						let fs = await ensureWebContainerReady()
-						let bytes = new Uint8Array(await fs.readFile(path))
-						if (encoding === "base64") {
-							let base64Content = bytesToBase64(bytes)
-							let limited = truncateText(base64Content)
-							return {
-								path,
-								encoding: "base64",
-								bytes: bytes.length,
-								content: limited.text,
-								truncated: limited.truncated,
-							}
-						}
-						let textContent = new TextDecoder().decode(bytes)
-						let limited = truncateText(textContent)
+					let normalizedOperations = operations.map((operation) => {
+						let operationPath = `${operation?.path || ""}`.trim()
+						let operationEncoding = `${operation?.encoding || encoding || "text"}`.trim().toLowerCase()
 						return {
-							path,
-							encoding: "text",
-							bytes: bytes.length,
-							content: limited.text,
-							truncated: limited.truncated,
+							path: operationPath,
+							encoding: operationEncoding === "base64" ? "base64" : "text",
 						}
+					}).filter(operation => operation.path.length > 0)
+					if (operations.length > 0 && normalizedOperations.length === 0) {
+						return failAndMaybeReplan("fs.readFile failed - operations were provided but no valid operation.path values were found")
+					}
+					return await runConfirmed("fs.readFile", { path, encoding, operations: normalizedOperations }, async () => {
+						let fs = await ensureWebContainerReady()
+						if (normalizedOperations.length > 0) {
+							let results = []
+							for (let operation of normalizedOperations) {
+								results.push(await readContainerFileResult(fs, operation.path, operation.encoding))
+							}
+							return { results }
+						}
+						return await readContainerFileResult(fs, path, encoding === "base64" ? "base64" : "text")
 					})
 				}
 				catch (e) {
@@ -261,10 +419,26 @@ export const buildWebContainerCommands = (ctx) => {
 		},
 		{
 			name: "wc_fs_writeFile",
-			description: "Run webcontainerInstance.fs.writeFile on a container file path.",
+			description: "Run webcontainerInstance.fs.writeFile on one or many container file paths.",
 			args: {
 				path: "<container file path>",
 				content: "<file content as text or base64>",
+				operations: {
+					description: "<optional array of write operations {path, content, encoding}>",
+					optional: true,
+					format: {
+						type: "array",
+						items: {
+							type: "object",
+							properties: {
+								path: { type: "string" },
+								content: { type: "string" },
+								encoding: { type: "string", enum: ["text", "base64"] },
+							},
+							required: ["path", "content"],
+						},
+					}
+				},
 				encoding: {
 					description: "<text|base64>",
 					type: "string",
@@ -276,29 +450,39 @@ export const buildWebContainerCommands = (ctx) => {
 				try {
 					let path = `${action?.args?.path || ""}`.trim()
 					let content = `${action?.args?.content || ""}`
-					if (!path) {
-						return failAndMaybeReplan("fs.writeFile failed - path is required")
+					let operations = Array.isArray(action?.args?.operations) ? action.args.operations : []
+					if (!path && operations.length === 0) {
+						return failAndMaybeReplan("fs.writeFile failed - either path or operations is required")
 					}
 					let encoding = `${action?.args?.encoding || "text"}`.trim().toLowerCase()
-					return await runConfirmed("fs.writeFile", { path, encoding, contentLength: content.length }, async () => {
-						let fs = await ensureWebContainerReady()
-						let bytes
-						if (encoding === "base64") {
-							let binary = atob(content)
-							bytes = new Uint8Array(binary.length)
-							for (let i = 0; i < binary.length; i++) {
-								bytes[i] = binary.charCodeAt(i)
-							}
-						}
-						else {
-							bytes = new TextEncoder().encode(content)
-						}
-						await fs.writeFile(path, bytes)
+					let normalizedOperations = operations.map((operation) => {
+						let operationPath = `${operation?.path || ""}`.trim()
+						let operationContent = `${operation?.content || ""}`
+						let operationEncoding = `${operation?.encoding || encoding || "text"}`.trim().toLowerCase()
 						return {
-							path,
-							encoding,
-							bytesWritten: bytes.length,
+							path: operationPath,
+							content: operationContent,
+							encoding: operationEncoding === "base64" ? "base64" : "text",
 						}
+					}).filter(operation => operation.path.length > 0)
+					if (operations.length > 0 && normalizedOperations.length === 0) {
+						return failAndMaybeReplan("fs.writeFile failed - operations were provided but no valid operation.path values were found")
+					}
+					return await runConfirmed("fs.writeFile", {
+						path,
+						encoding,
+						contentLength: content.length,
+						operations: normalizedOperations.map(operation => ({ path: operation.path, encoding: operation.encoding, contentLength: operation.content.length }))
+					}, async () => {
+						let fs = await ensureWebContainerReady()
+						if (normalizedOperations.length > 0) {
+							let results = []
+							for (let operation of normalizedOperations) {
+								results.push(await writeContainerFile(fs, operation.path, operation.content, operation.encoding))
+							}
+							return { results }
+						}
+						return await writeContainerFile(fs, path, content, encoding === "base64" ? "base64" : "text")
 					})
 				}
 				catch (e) {
