@@ -6434,9 +6434,7 @@ Current version indicated by LITEVER below.
 	}
 
 	function saveKLiteAutosaveToIndexDB(filename, data) {
-		let resolved = resolveCharacterNameAndId(filename, "No autosave name");
-		let charName = resolved.name;
-		let characterId = resolved.id;
+		let charName = filename.replaceAll(/[^\w()_\-'",!\[\].]/g, " ").replaceAll(/\s+/g, " ").trim(), characterId = charName;
 		let dataToSave = {
 			id: characterId,
 			name: charName,
