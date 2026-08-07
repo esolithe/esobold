@@ -89,7 +89,7 @@ dry_seq_break_max = 128
 extra_images_max = 4 # for kontext/qwen img
 
 # global vars
-KcppVersion = "1.118.1"
+KcppVersion = "1.119"
 showdebug = True
 kcpp_instance = None #global running instance
 global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "currentBaseConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "base_config":"", "swapReqType": None, "autoswapmode": False, "autoswapSettings": {}, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}, "restart_override_base_config": "", "current_model_override": "", "OpenLumara": False}
@@ -2638,6 +2638,24 @@ def sd_oai_transform_params(genparams):
         height = int(match.group(2))
         genparams["width"] = width
         genparams["height"] = height
+    return genparams
+
+def sd_oai_transform_edit_params(genparams):
+    genparams = sd_oai_transform_params(genparams)
+    images = genparams.pop("image", None)
+    if images is None:
+        images = genparams.pop("image[]", None)
+    if images and not isinstance(images, list):
+        images = [images]
+    images = [img for img in (images or []) if img]
+    if images:
+        genparams["init_images"] = []
+        extra_images = genparams.get("extra_images", images)
+        if not isinstance(extra_images, list):
+            extra_images = [extra_images]
+        genparams["extra_images"] = extra_images
+    if not genparams.get("denoising_strength"):
+        genparams["denoising_strength"] = 0.6
     return genparams
 
 def sd_comfyui_tranform_params(genparams):
@@ -7516,7 +7534,7 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
         is_chat_completions_path = (clean_path.endswith('/v1/chat/completions') or clean_path=='/chat/completions')
 
         #any requests to the following endpoints is capable of waking the server
-        wake_requests = ["/api/extra/generate/stream","/api/extra/tokencount","/api/v1/generate","/sdapi/v1/interrogate","/v1/completions","/v1/chat/completions","/v1/responses","/completions","/chat/completions","/responses","/api/extra/transcribe","/v1/audio/transcriptions","/api/extra/tts","/v1/audio/speech","/api/extra/embeddings","/v1/embeddings","/api/embed","/api/extra/music/prepare","/api/extra/music/generate","/sdapi/v1/txt2img","/sdapi/v1/img2img","/sdapi/v1/upscale"]
+        wake_requests = ["/api/extra/generate/stream","/api/extra/tokencount","/api/v1/generate","/sdapi/v1/interrogate","/v1/completions","/v1/chat/completions","/v1/responses","/completions","/chat/completions","/responses","/api/extra/transcribe","/v1/audio/transcriptions","/api/extra/tts","/v1/audio/speech","/api/extra/embeddings","/v1/embeddings","/api/embed","/api/extra/music/prepare","/api/extra/music/generate","/images/generations","/v1/images/generations","/images/edits","/v1/images/edits","/sdapi/v1/txt2img","/sdapi/v1/img2img","/sdapi/v1/upscale"]
         is_wake_request = clean_path in wake_requests
 
         autoswapEnabled = global_memory["autoswapmode"] is not None and global_memory["autoswapmode"]
@@ -7572,7 +7590,7 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                     ttsReqs = ["/api/extra/tts", "/v1/audio/speech"]
                     embedReqs = ["/api/extra/embeddings", "/v1/embeddings", "/api/embed", "/api/extra/fs/semantic_search", "/api/extra/fs/search_all_documents"]
                     musicReqs = ["/api/extra/music/prepare","/api/extra/music/generate"]
-                    imageReqs = ["/sdapi/v1/txt2img", "/sdapi/v1/img2img", "/sdapi/v1/upscale"] # "/sdapi/v1/sd-models", "/sdapi/v1/options", "/sdapi/v1/samplers"
+                    imageReqs = ["/images/generations", "/v1/images/generations", "/images/edits", "/v1/images/edits", "/sdapi/v1/txt2img", "/sdapi/v1/img2img", "/sdapi/v1/upscale"] # "/sdapi/v1/sd-models", "/sdapi/v1/options", "/sdapi/v1/samplers"
 
                     swapModeChanged = False
 
@@ -8286,6 +8304,58 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         except Exception as e:
             print(f"File Upload Process Error: {e}")
             return result
+
+    def extract_multipart_formdata(self, body):
+        result = {"fields": {}, "files": {}}
+        try:
+            content_type = self.headers.get('content-type', '') or self.headers.get('Content-Type', '')
+            boundary_match = re.search(r'boundary=(?:"([^"]+)"|([^;]+))', content_type, flags=re.IGNORECASE)
+            if not boundary_match:
+                return result
+            boundary = (boundary_match.group(1) or boundary_match.group(2) or "").strip()
+            if not boundary:
+                return result
+            delimiter = ("--" + boundary).encode()
+            for part in body.split(delimiter):
+                part = part.strip(b"\r\n")
+                if not part or part == b"--":
+                    continue
+                if part.endswith(b"--"):
+                    part = part[:-2].rstrip(b"\r\n")
+                header_end = part.find(b"\r\n\r\n")
+                if header_end < 0:
+                    continue
+                header_text = part[:header_end].decode("utf-8", errors="ignore")
+                content = part[header_end + 4:]
+                if content.endswith(b"\r\n"):
+                    content = content[:-2]
+                name_match = re.search(r'Content-Disposition[^;]*;.*\bname=(?:"([^"]+)"|([^;\s]+))', header_text, flags=re.IGNORECASE)
+                if not name_match:
+                    continue
+                name = name_match.group(1) or name_match.group(2)
+                filename_match = re.search(r'\bfilename=(?:"([^"]*)"|([^;\s]*))', header_text, flags=re.IGNORECASE)
+                if filename_match:
+                    file_data_base64 = base64.b64encode(content).decode("utf-8", "ignore")
+                    result["files"].setdefault(name, []).append(file_data_base64)
+                else:
+                    result["fields"][name] = content.decode("utf-8", errors="ignore").strip()
+            return result
+        except Exception as e:
+            print(f"Multipart FormData Process Error: {e}")
+            return result
+
+    def extract_oai_image_edit_formdata(self, body):
+        formdata = self.extract_multipart_formdata(body)
+        genparams = dict(formdata.get("fields", {}))
+        files = formdata.get("files", {})
+        images = []
+        for key in ("image", "image[]"):
+            images.extend(files.get(key, []))
+        if images:
+            genparams["image"] = images
+        if files.get("mask"):
+            genparams["mask"] = files["mask"][0]
+        return genparams
 
     def prepare_basic_responses_body(self,resp_id,genparams):
         global friendlymodelname
@@ -11229,6 +11299,7 @@ Change Mode<br>
             is_imggen = False
             is_comfyui_imggen = False
             is_oai_imggen = False
+            is_oai_imgedit = False
             is_img_upscale = False
             is_transcribe = False
             is_extract_text = False
@@ -11329,12 +11400,15 @@ Change Mode<br>
                 api_format = 9
             elif clean_path.endswith('/sdapi/v1/extra-single-image') or clean_path.endswith('/sdapi/v1/upscale'):
                 is_img_upscale = True
-            elif clean_path=="/prompt" or clean_path=="/images/generations" or clean_path.endswith('/v1/images/generations') or clean_path.endswith('/sdapi/v1/txt2img') or clean_path.endswith('/sdapi/v1/img2img'):
+            elif clean_path=="/prompt" or clean_path=="/images/generations" or clean_path.endswith('/v1/images/generations') or clean_path=="/images/edits" or clean_path.endswith('/v1/images/edits') or clean_path.endswith('/sdapi/v1/txt2img') or clean_path.endswith('/sdapi/v1/img2img'):
                 is_imggen = True
                 if clean_path=="/prompt":
                     is_comfyui_imggen = True
                 elif clean_path.endswith('/v1/images/generations') or clean_path=="/images/generations":
                     is_oai_imggen = True
+                elif clean_path.endswith('/v1/images/edits') or clean_path=="/images/edits":
+                    is_oai_imggen = True
+                    is_oai_imgedit = True
             elif clean_path.endswith('/api/extra/extractText'):
                 is_extract_text = True
 
@@ -11377,6 +11451,8 @@ Change Mode<br>
                                 genparams["prompt"] = formdata["prompt"]
                             if "language" in formdata and formdata["language"]:
                                 genparams["language"] = formdata["language"]
+                    elif is_oai_imgedit:
+                        genparams = self.extract_oai_image_edit_formdata(body)
 
                     if not genparams:
                         utfprint("Body Err: " + str(body))
@@ -11712,6 +11788,8 @@ Change Mode<br>
                         if is_comfyui_imggen:
                             lastgeneratedcomfyimg = b''
                             genparams = sd_comfyui_tranform_params(genparams)
+                        elif is_oai_imgedit:
+                            genparams = sd_oai_transform_edit_params(genparams)
                         elif is_oai_imggen:
                             genparams = sd_oai_transform_params(genparams)
                         if not genparams.get('lora'):
@@ -11744,7 +11822,8 @@ Change Mode<br>
                                 lastgeneratedcomfyimg = b''
                             genresp = (json.dumps({"prompt_id": "12345678-0000-0000-0000-000000000001","number": 0,"node_errors":{}}).encode())
                         elif is_oai_imggen:
-                            genresp = (json.dumps({"created":int(time.time()),"data":[{"b64_json":gendat}],"background":"opaque","output_format":"png","size":"1024x1024","quality":"medium"}).encode())
+                            response_size = genparams.get("size", f"{genparams.get('width', 1024)}x{genparams.get('height', 1024)}")
+                            genresp = (json.dumps({"created":int(time.time()),"data":[{"b64_json":gendat}],"background":"opaque","output_format":"png","size":response_size,"quality":"medium"}).encode())
                         else:
                             genresp = (json.dumps({"images":[gendat],"parameters":{},"info":geninfo,"animated":genanim,"extra_data":gendatextra, "final_frame":genfinalframe}).encode())
                         self.send_response(200)

@@ -522,6 +522,8 @@ add_library(common2
             tools/mtmd/mtmd-helper.cpp
             tools/mtmd/mtmd-image.cpp
             tools/mtmd/mtmd-helper.h
+            tools/mtmd/mtmd-helper-gen.cpp
+            tools/mtmd/mtmd-helper-common.h
             tools/mtmd/clip.cpp
             tools/mtmd/clip.h
             src/unicode.h

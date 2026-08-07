@@ -291,6 +291,8 @@ std::string load_gpt_oss_vocab_json()
     return load_embd_file(cache, "embd_res/gpt_oss_vocab_json.embd");
 }
 
+static void step_callback(int step, int frame_count, sd_image_t* image, bool is_noisy, void* data);
+
 static void progress_callback(int step, int steps, float time, void* data)
 {
     (void) data;
@@ -313,11 +315,13 @@ static void progress_callback(int step, int steps, float time, void* data)
         speed = 1.0f / speed;
         unit  = "it/s";
     }
-    printf("\rGenerating image: %d/%d steps, %.2f%s%s", step, steps, speed, unit, step == steps ? "\n" : "");
+    if(step==1)
+    {
+        printf("\n");
+    }
+    printf("\rGenerating image: %d/%d steps, %.2f %s\033[K%s", step, steps, speed, unit, (step == steps || sddebugmode==1) ? "\n" : "");
     fflush(stdout);
 }
-
-static void step_callback(int step, int frame_count, sd_image_t* image, bool is_noisy, void* data);
 
 static bool is_video_model(kcpp_sd::model_info info)
 {
