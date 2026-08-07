@@ -115,7 +115,7 @@ let saveAutosaveToServer = async (charName, existingAutosaves = undefined, expli
     let remoteDataSettings = JSON.parse(await indexeddb_load("remoteDataSettings"))
     if (!!remoteDataSettings) {
         let { remoteDataStorageUrl, autosaveMaxNumber, autosaveRemoteSync } = remoteDataSettings;
-        if (is_using_kcpp_with_server_saving() && autosaveRemoteSync) {
+        if (is_using_kcpp_with_server_saving() && !!autosaveRemoteSync) {
             try {
                 let remoteAutosaveKey = explicitRemoteKey || getRemoteManagerFilenameForName(charName)
                 let remoteEndpoint = await getRemoteDataEndpoint();
