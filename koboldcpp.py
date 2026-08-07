@@ -7285,6 +7285,7 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
     def _rewrite_OpenLumara_path(self, raw_path):
         parsed = urllib.parse.urlsplit(raw_path)
         path = parsed.path or "/"
+
         if path == "/openlumara":
             upstream_path = "/"
         elif path.startswith("/openlumara/"):
@@ -7347,6 +7348,11 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
             text = text.replace(f"url('{p}", f"url('/openlumara{p}")
             text = text.replace(f'url("{p}', f'url("/openlumara{p}')
             text = text.replace(f"({p}", f"(/openlumara{p}")
+        
+        # We need to replace all references with a regex to catch any URL that has /assets/ in it, regardless of the domain or protocol. Group one needs to be replaced by /openlumara/assets/ with the incorrect host removed (relative paths).
+        regexForAssets = r"(https?://[^/]*)(/assets/.*?[\"'])"
+        text = re.sub(regexForAssets, r"/openlumara\2", text)
+
         # Inject base only for actual HTML responses, not JS/CSS containing HTML-like strings.
         ct = str(content_type or "").lower()
         is_html = ("text/html" in ct or "application/xhtml+xml" in ct)
