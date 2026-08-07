@@ -214,24 +214,48 @@ export const buildWebContainerCommands = (ctx) => {
 	return [
 		{
 			name: "wc_loadLocalDirIntoContainerDir",
-			description: "Copy a local filesystem directory into a WebContainer directory using existing utility helpers.",
+			description: "Copy one or many local filesystem directories into WebContainer directories using existing utility helpers.",
 			args: {
-				localDirPath: "<absolute local filesystem directory path>",
-				containerDirPath: "<absolute container directory path>",
+				operations: {
+					description: "<array of copy operations {localDirPath, containerDirPath}>",
+					format: {
+						type: "array",
+						items: {
+							type: "object",
+							properties: {
+								localDirPath: { type: "string" },
+								containerDirPath: { type: "string" },
+							},
+							required: ["localDirPath", "containerDirPath"],
+						},
+					}
+				},
 			},
 			enabled: true,
 			executor: async (action) => {
 				try {
-					let localDirPath = `${action?.args?.localDirPath || ""}`.trim()
-					let containerDirPath = `${action?.args?.containerDirPath || ""}`.trim()
-					if (!localDirPath || !containerDirPath) {
-						return failAndMaybeReplan("loadLocalDirIntoContainerDir failed - localDirPath and containerDirPath are required")
+					let operations = Array.isArray(action?.args?.operations) ? action.args.operations : []
+					if (operations.length === 0) {
+						return failAndMaybeReplan("loadLocalDirIntoContainerDir failed - operations are required")
+					}
+					let normalizedOperations = operations.map((operation) => ({
+						localDirPath: `${operation?.localDirPath || ""}`.trim(),
+						containerDirPath: `${operation?.containerDirPath || ""}`.trim(),
+					})).filter(operation => operation.localDirPath.length > 0 && operation.containerDirPath.length > 0)
+					if (normalizedOperations.length === 0) {
+						return failAndMaybeReplan("loadLocalDirIntoContainerDir failed - operations must include valid localDirPath and containerDirPath")
 					}
 					if (typeof window.loadLocalDirIntoContainerDir !== "function") {
 						throw new Error("loadLocalDirIntoContainerDir is unavailable")
 					}
-					return await runConfirmed("loadLocalDirIntoContainerDir", { localDirPath, containerDirPath }, async () => {
-						return await window.loadLocalDirIntoContainerDir(localDirPath, containerDirPath)
+					return await runConfirmed("loadLocalDirIntoContainerDir", {
+						operations: normalizedOperations,
+					}, async () => {
+						let results = []
+						for (let operation of normalizedOperations) {
+							results.push(await window.loadLocalDirIntoContainerDir(operation.localDirPath, operation.containerDirPath))
+						}
+						return { results }
 					})
 				}
 				catch (e) {
@@ -241,24 +265,48 @@ export const buildWebContainerCommands = (ctx) => {
 		},
 		{
 			name: "wc_loadLocalFileIntoContainerPath",
-			description: "Copy a local filesystem file into a WebContainer path using existing utility helpers.",
+			description: "Copy one or many local filesystem files into WebContainer paths using existing utility helpers.",
 			args: {
-				localFilePath: "<absolute local filesystem file path>",
-				containerFilePath: "<absolute container file path>",
+				operations: {
+					description: "<array of copy operations {localFilePath, containerFilePath}>",
+					format: {
+						type: "array",
+						items: {
+							type: "object",
+							properties: {
+								localFilePath: { type: "string" },
+								containerFilePath: { type: "string" },
+							},
+							required: ["localFilePath", "containerFilePath"],
+						},
+					}
+				},
 			},
 			enabled: true,
 			executor: async (action) => {
 				try {
-					let localFilePath = `${action?.args?.localFilePath || ""}`.trim()
-					let containerFilePath = `${action?.args?.containerFilePath || ""}`.trim()
-					if (!localFilePath || !containerFilePath) {
-						return failAndMaybeReplan("loadLocalFileIntoContainerPath failed - localFilePath and containerFilePath are required")
+					let operations = Array.isArray(action?.args?.operations) ? action.args.operations : []
+					if (operations.length === 0) {
+						return failAndMaybeReplan("loadLocalFileIntoContainerPath failed - operations are required")
+					}
+					let normalizedOperations = operations.map((operation) => ({
+						localFilePath: `${operation?.localFilePath || ""}`.trim(),
+						containerFilePath: `${operation?.containerFilePath || ""}`.trim(),
+					})).filter(operation => operation.localFilePath.length > 0 && operation.containerFilePath.length > 0)
+					if (normalizedOperations.length === 0) {
+						return failAndMaybeReplan("loadLocalFileIntoContainerPath failed - operations must include valid localFilePath and containerFilePath")
 					}
 					if (typeof window.loadLocalFileIntoContainerPath !== "function") {
 						throw new Error("loadLocalFileIntoContainerPath is unavailable")
 					}
-					return await runConfirmed("loadLocalFileIntoContainerPath", { localFilePath, containerFilePath }, async () => {
-						return await window.loadLocalFileIntoContainerPath(localFilePath, containerFilePath)
+					return await runConfirmed("loadLocalFileIntoContainerPath", {
+						operations: normalizedOperations,
+					}, async () => {
+						let results = []
+						for (let operation of normalizedOperations) {
+							results.push(await window.loadLocalFileIntoContainerPath(operation.localFilePath, operation.containerFilePath))
+						}
+						return { results }
 					})
 				}
 				catch (e) {
@@ -268,24 +316,48 @@ export const buildWebContainerCommands = (ctx) => {
 		},
 		{
 			name: "wc_loadContainerDirIntoLocalDir",
-			description: "Copy a WebContainer directory into a local filesystem directory using existing utility helpers.",
+			description: "Copy one or many WebContainer directories into local filesystem directories using existing utility helpers.",
 			args: {
-				containerDirPath: "<absolute container directory path>",
-				localDirPath: "<absolute local filesystem directory path>",
+				operations: {
+					description: "<array of copy operations {containerDirPath, localDirPath}>",
+					format: {
+						type: "array",
+						items: {
+							type: "object",
+							properties: {
+								containerDirPath: { type: "string" },
+								localDirPath: { type: "string" },
+							},
+							required: ["containerDirPath", "localDirPath"],
+						},
+					}
+				},
 			},
 			enabled: true,
 			executor: async (action) => {
 				try {
-					let containerDirPath = `${action?.args?.containerDirPath || ""}`.trim()
-					let localDirPath = `${action?.args?.localDirPath || ""}`.trim()
-					if (!containerDirPath || !localDirPath) {
-						return failAndMaybeReplan("loadContainerDirIntoLocalDir failed - containerDirPath and localDirPath are required")
+					let operations = Array.isArray(action?.args?.operations) ? action.args.operations : []
+					if (operations.length === 0) {
+						return failAndMaybeReplan("loadContainerDirIntoLocalDir failed - operations are required")
+					}
+					let normalizedOperations = operations.map((operation) => ({
+						containerDirPath: `${operation?.containerDirPath || ""}`.trim(),
+						localDirPath: `${operation?.localDirPath || ""}`.trim(),
+					})).filter(operation => operation.containerDirPath.length > 0 && operation.localDirPath.length > 0)
+					if (normalizedOperations.length === 0) {
+						return failAndMaybeReplan("loadContainerDirIntoLocalDir failed - operations must include valid containerDirPath and localDirPath")
 					}
 					if (typeof window.loadContainerDirIntoLocalDir !== "function") {
 						throw new Error("loadContainerDirIntoLocalDir is unavailable")
 					}
-					return await runConfirmed("loadContainerDirIntoLocalDir", { containerDirPath, localDirPath }, async () => {
-						return await window.loadContainerDirIntoLocalDir(containerDirPath, localDirPath)
+					return await runConfirmed("loadContainerDirIntoLocalDir", {
+						operations: normalizedOperations,
+					}, async () => {
+						let results = []
+						for (let operation of normalizedOperations) {
+							results.push(await window.loadContainerDirIntoLocalDir(operation.containerDirPath, operation.localDirPath))
+						}
+						return { results }
 					})
 				}
 				catch (e) {
@@ -295,24 +367,48 @@ export const buildWebContainerCommands = (ctx) => {
 		},
 		{
 			name: "wc_loadContainerFileIntoLocal",
-			description: "Copy a WebContainer file into a local filesystem path using existing utility helpers.",
+			description: "Copy one or many WebContainer files into local filesystem paths using existing utility helpers.",
 			args: {
-				containerFilePath: "<absolute container file path>",
-				localFilePath: "<absolute local filesystem file path>",
+				operations: {
+					description: "<array of copy operations {containerFilePath, localFilePath}>",
+					format: {
+						type: "array",
+						items: {
+							type: "object",
+							properties: {
+								containerFilePath: { type: "string" },
+								localFilePath: { type: "string" },
+							},
+							required: ["containerFilePath", "localFilePath"],
+						},
+					}
+				},
 			},
 			enabled: true,
 			executor: async (action) => {
 				try {
-					let containerFilePath = `${action?.args?.containerFilePath || ""}`.trim()
-					let localFilePath = `${action?.args?.localFilePath || ""}`.trim()
-					if (!containerFilePath || !localFilePath) {
-						return failAndMaybeReplan("loadContainerFileIntoLocal failed - containerFilePath and localFilePath are required")
+					let operations = Array.isArray(action?.args?.operations) ? action.args.operations : []
+					if (operations.length === 0) {
+						return failAndMaybeReplan("loadContainerFileIntoLocal failed - operations are required")
+					}
+					let normalizedOperations = operations.map((operation) => ({
+						containerFilePath: `${operation?.containerFilePath || ""}`.trim(),
+						localFilePath: `${operation?.localFilePath || ""}`.trim(),
+					})).filter(operation => operation.containerFilePath.length > 0 && operation.localFilePath.length > 0)
+					if (normalizedOperations.length === 0) {
+						return failAndMaybeReplan("loadContainerFileIntoLocal failed - operations must include valid containerFilePath and localFilePath")
 					}
 					if (typeof window.loadContainerFileIntoLocal !== "function") {
 						throw new Error("loadContainerFileIntoLocal is unavailable")
 					}
-					return await runConfirmed("loadContainerFileIntoLocal", { containerFilePath, localFilePath }, async () => {
-						return await window.loadContainerFileIntoLocal(containerFilePath, localFilePath)
+					return await runConfirmed("loadContainerFileIntoLocal", {
+						operations: normalizedOperations,
+					}, async () => {
+						let results = []
+						for (let operation of normalizedOperations) {
+							results.push(await window.loadContainerFileIntoLocal(operation.containerFilePath, operation.localFilePath))
+						}
+						return { results }
 					})
 				}
 				catch (e) {
@@ -324,29 +420,53 @@ export const buildWebContainerCommands = (ctx) => {
 			name: "wc_fs_readdir",
 			description: "List WebContainer directory entries. Recursion is handled in JS with non-recursive fs.readdir calls, excludes .git/node_modules, and returns full paths with directory flags.",
 			args: {
-				path: "<container directory path>",
-				recursive: { description: "<whether to recurse>", type: "boolean" },
-				withFileTypes: { description: "<deprecated; retained for compatibility>", type: "boolean" },
+				operations: {
+					description: "<array of readdir operations {path, recursive, withFileTypes}>",
+					format: {
+						type: "array",
+						items: {
+							type: "object",
+							properties: {
+								path: { type: "string" },
+								recursive: { type: "boolean" },
+								withFileTypes: { type: "boolean" },
+							},
+							required: ["path"],
+						},
+					}
+				},
 			},
 			enabled: true,
 			executor: async (action) => {
 				try {
-					let path = `${action?.args?.path || ""}`.trim()
-					if (!path) {
-						return failAndMaybeReplan("fs.readdir failed - path is required")
+					let operations = Array.isArray(action?.args?.operations) ? action.args.operations : []
+					if (operations.length === 0) {
+						return failAndMaybeReplan("fs.readdir failed - operations are required")
 					}
-					let recursive = !!action?.args?.recursive
-					let withFileTypes = !!action?.args?.withFileTypes
-					return await runConfirmed("fs.readdir", { path, recursive, withFileTypes, excludes: WC_EXCLUDED_RECURSIVE_SEGMENTS }, async () => {
+					let normalizedOperations = operations.map((operation) => ({
+						path: `${operation?.path || ""}`.trim(),
+						recursive: !!operation?.recursive,
+						withFileTypes: !!operation?.withFileTypes,
+					})).filter(operation => operation.path.length > 0)
+					if (normalizedOperations.length === 0) {
+						return failAndMaybeReplan("fs.readdir failed - operations were provided but no valid operation.path values were found")
+					}
+					return await runConfirmed("fs.readdir", {
+						operations: normalizedOperations,
+						excludes: WC_EXCLUDED_RECURSIVE_SEGMENTS,
+					}, async () => {
 						let fs = await ensureWebContainerReady()
-						let entries = await readDirectoryEntriesWithMetadata(fs, path, recursive)
-						return {
-							path,
-							recursive,
-							withFileTypesRequested: withFileTypes,
-							excludesApplied: [...WC_EXCLUDED_RECURSIVE_SEGMENTS],
-							entries,
+						let results = []
+						for (let operation of normalizedOperations) {
+							results.push({
+								path: operation.path,
+								recursive: operation.recursive,
+								withFileTypesRequested: operation.withFileTypes,
+								excludesApplied: [...WC_EXCLUDED_RECURSIVE_SEGMENTS],
+								entries: await readDirectoryEntriesWithMetadata(fs, operation.path, operation.recursive),
+							})
 						}
+						return { results }
 					})
 				}
 				catch (e) {
@@ -358,10 +478,8 @@ export const buildWebContainerCommands = (ctx) => {
 			name: "wc_fs_readFile",
 			description: "Run webcontainerInstance.fs.readFile on one or many container file paths.",
 			args: {
-				path: "<container file path>",
 				operations: {
-					description: "<optional array of read operations {path, encoding}>",
-					optional: true,
+					description: "<array of read operations {path, encoding}>",
 					format: {
 						type: "array",
 						items: {
@@ -383,10 +501,9 @@ export const buildWebContainerCommands = (ctx) => {
 			enabled: true,
 			executor: async (action) => {
 				try {
-					let path = `${action?.args?.path || ""}`.trim()
 					let operations = Array.isArray(action?.args?.operations) ? action.args.operations : []
-					if (!path && operations.length === 0) {
-						return failAndMaybeReplan("fs.readFile failed - either path or operations is required")
+					if (operations.length === 0) {
+						return failAndMaybeReplan("fs.readFile failed - operations are required")
 					}
 					let encoding = `${action?.args?.encoding || "text"}`.trim().toLowerCase()
 					let normalizedOperations = operations.map((operation) => {
@@ -400,16 +517,13 @@ export const buildWebContainerCommands = (ctx) => {
 					if (operations.length > 0 && normalizedOperations.length === 0) {
 						return failAndMaybeReplan("fs.readFile failed - operations were provided but no valid operation.path values were found")
 					}
-					return await runConfirmed("fs.readFile", { path, encoding, operations: normalizedOperations }, async () => {
+					return await runConfirmed("fs.readFile", { encoding, operations: normalizedOperations }, async () => {
 						let fs = await ensureWebContainerReady()
-						if (normalizedOperations.length > 0) {
-							let results = []
-							for (let operation of normalizedOperations) {
-								results.push(await readContainerFileResult(fs, operation.path, operation.encoding))
-							}
-							return { results }
+						let results = []
+						for (let operation of normalizedOperations) {
+							results.push(await readContainerFileResult(fs, operation.path, operation.encoding))
 						}
-						return await readContainerFileResult(fs, path, encoding === "base64" ? "base64" : "text")
+						return { results }
 					})
 				}
 				catch (e) {
@@ -421,11 +535,8 @@ export const buildWebContainerCommands = (ctx) => {
 			name: "wc_fs_writeFile",
 			description: "Run webcontainerInstance.fs.writeFile on one or many container file paths.",
 			args: {
-				path: "<container file path>",
-				content: "<file content as text or base64>",
 				operations: {
-					description: "<optional array of write operations {path, content, encoding}>",
-					optional: true,
+					description: "<array of write operations {path, content, encoding}>",
 					format: {
 						type: "array",
 						items: {
@@ -448,11 +559,9 @@ export const buildWebContainerCommands = (ctx) => {
 			enabled: true,
 			executor: async (action) => {
 				try {
-					let path = `${action?.args?.path || ""}`.trim()
-					let content = `${action?.args?.content || ""}`
 					let operations = Array.isArray(action?.args?.operations) ? action.args.operations : []
-					if (!path && operations.length === 0) {
-						return failAndMaybeReplan("fs.writeFile failed - either path or operations is required")
+					if (operations.length === 0) {
+						return failAndMaybeReplan("fs.writeFile failed - operations are required")
 					}
 					let encoding = `${action?.args?.encoding || "text"}`.trim().toLowerCase()
 					let normalizedOperations = operations.map((operation) => {
@@ -469,9 +578,6 @@ export const buildWebContainerCommands = (ctx) => {
 						return failAndMaybeReplan("fs.writeFile failed - operations were provided but no valid operation.path values were found")
 					}
 					return await runConfirmed("fs.writeFile", {
-						path,
-						encoding,
-						contentLength: content.length,
 						operations: normalizedOperations.map(operation => ({ path: operation.path, encoding: operation.encoding, contentLength: operation.content.length }))
 					}, async () => {
 						let fs = await ensureWebContainerReady()
@@ -482,7 +588,7 @@ export const buildWebContainerCommands = (ctx) => {
 							}
 							return { results }
 						}
-						return await writeContainerFile(fs, path, content, encoding === "base64" ? "base64" : "text")
+						return failAndMaybeReplan("fs.writeFile failed - no valid operation.path values were found")
 					})
 				}
 				catch (e) {
@@ -492,23 +598,45 @@ export const buildWebContainerCommands = (ctx) => {
 		},
 		{
 			name: "wc_fs_mkdir",
-			description: "Run webcontainerInstance.fs.mkdir on a container directory path.",
+			description: "Run webcontainerInstance.fs.mkdir on one or many container directory paths.",
 			args: {
-				path: "<container directory path>",
-				recursive: { description: "<whether to recurse>", type: "boolean" },
+				operations: {
+					description: "<array of mkdir operations {path, recursive}>",
+					format: {
+						type: "array",
+						items: {
+							type: "object",
+							properties: {
+								path: { type: "string" },
+								recursive: { type: "boolean" },
+							},
+							required: ["path"],
+						},
+					}
+				},
 			},
 			enabled: true,
 			executor: async (action) => {
 				try {
-					let path = `${action?.args?.path || ""}`.trim()
-					if (!path) {
-						return failAndMaybeReplan("fs.mkdir failed - path is required")
+					let operations = Array.isArray(action?.args?.operations) ? action.args.operations : []
+					if (operations.length === 0) {
+						return failAndMaybeReplan("fs.mkdir failed - operations are required")
 					}
-					let recursive = !!action?.args?.recursive
-					return await runConfirmed("fs.mkdir", { path, recursive }, async () => {
+					let normalizedOperations = operations.map((operation) => ({
+						path: `${operation?.path || ""}`.trim(),
+						recursive: !!operation?.recursive,
+					})).filter(operation => operation.path.length > 0)
+					if (normalizedOperations.length === 0) {
+						return failAndMaybeReplan("fs.mkdir failed - operations were provided but no valid operation.path values were found")
+					}
+					return await runConfirmed("fs.mkdir", { operations: normalizedOperations }, async () => {
 						let fs = await ensureWebContainerReady()
-						await fs.mkdir(path, { recursive })
-						return { path, recursive }
+						let results = []
+						for (let operation of normalizedOperations) {
+							await fs.mkdir(operation.path, { recursive: operation.recursive })
+							results.push({ path: operation.path, recursive: operation.recursive })
+						}
+						return { results }
 					})
 				}
 				catch (e) {
@@ -518,25 +646,47 @@ export const buildWebContainerCommands = (ctx) => {
 		},
 		{
 			name: "wc_fs_rm",
-			description: "Run webcontainerInstance.fs.rm on a container path.",
+			description: "Run webcontainerInstance.fs.rm on one or many container paths.",
 			args: {
-				path: "<container file or directory path>",
-				recursive: { description: "<whether to recurse>", type: "boolean" },
-				force: { description: "<whether to ignore missing paths>", type: "boolean" },
+				operations: {
+					description: "<array of rm operations {path, recursive, force}>",
+					format: {
+						type: "array",
+						items: {
+							type: "object",
+							properties: {
+								path: { type: "string" },
+								recursive: { type: "boolean" },
+								force: { type: "boolean" },
+							},
+							required: ["path"],
+						},
+					}
+				},
 			},
 			enabled: true,
 			executor: async (action) => {
 				try {
-					let path = `${action?.args?.path || ""}`.trim()
-					if (!path) {
-						return failAndMaybeReplan("fs.rm failed - path is required")
+					let operations = Array.isArray(action?.args?.operations) ? action.args.operations : []
+					if (operations.length === 0) {
+						return failAndMaybeReplan("fs.rm failed - operations are required")
 					}
-					let recursive = !!action?.args?.recursive
-					let force = !!action?.args?.force
-					return await runConfirmed("fs.rm", { path, recursive, force }, async () => {
+					let normalizedOperations = operations.map((operation) => ({
+						path: `${operation?.path || ""}`.trim(),
+						recursive: !!operation?.recursive,
+						force: !!operation?.force,
+					})).filter(operation => operation.path.length > 0)
+					if (normalizedOperations.length === 0) {
+						return failAndMaybeReplan("fs.rm failed - operations were provided but no valid operation.path values were found")
+					}
+					return await runConfirmed("fs.rm", { operations: normalizedOperations }, async () => {
 						let fs = await ensureWebContainerReady()
-						await fs.rm(path, { recursive, force })
-						return { path, recursive, force }
+						let results = []
+						for (let operation of normalizedOperations) {
+							await fs.rm(operation.path, { recursive: operation.recursive, force: operation.force })
+							results.push({ path: operation.path, recursive: operation.recursive, force: operation.force })
+						}
+						return { results }
 					})
 				}
 				catch (e) {
@@ -689,9 +839,20 @@ export const buildWebContainerCommands = (ctx) => {
 		},
 		{
 			name: "wc_listProcessesByDirectory",
-			description: "List directories that currently have tracked WebContainer processes, and optionally indicate whether a target directory is active.",
+			description: "List directories that currently have tracked WebContainer processes, and evaluate one or many directory checks.",
 			args: {
-				mapRef: "<optional container directory to check for running processes>",
+				operations: {
+					description: "<array of operations {mapRef?}>",
+					format: {
+						type: "array",
+						items: {
+							type: "object",
+							properties: {
+								mapRef: { type: "string" },
+							},
+						},
+					}
+				},
 			},
 			enabled: true,
 			executor: async (action) => {
@@ -699,13 +860,21 @@ export const buildWebContainerCommands = (ctx) => {
 					if (typeof window.listDirectoriesRunningProcesses !== "function") {
 						throw new Error("listDirectoriesRunningProcesses is unavailable")
 					}
-					let mapRef = `${action?.args?.mapRef || ""}`.trim()
-					return await runConfirmed("listProcessesByDirectory", { mapRef }, async () => {
+					let operations = Array.isArray(action?.args?.operations) ? action.args.operations : []
+					if (operations.length === 0) {
+						return failAndMaybeReplan("listProcessesByDirectory failed - operations are required")
+					}
+					let normalizedOperations = operations.map((operation) => ({
+						mapRef: `${operation?.mapRef || ""}`.trim() || null,
+					}))
+					return await runConfirmed("listProcessesByDirectory", { operations: normalizedOperations }, async () => {
 						let directories = await window.listDirectoriesRunningProcesses()
 						return {
 							directories,
-							mapRef: mapRef || null,
-							hasRunningProcessesInMapRef: mapRef ? directories.includes(mapRef) : null,
+							results: normalizedOperations.map((operation) => ({
+								mapRef: operation.mapRef,
+								hasRunningProcessesInMapRef: operation.mapRef ? directories.includes(operation.mapRef) : null,
+							})),
 						}
 					})
 				}
@@ -716,23 +885,46 @@ export const buildWebContainerCommands = (ctx) => {
 		},
 		{
 			name: "wc_killProcessesByDirectory",
-			description: "Kill tracked WebContainer processes for a specific container directory.",
+			description: "Kill tracked WebContainer processes for one or many container directories.",
 			args: {
-				mapRef: "<container directory with tracked running processes>",
+				operations: {
+					description: "<array of operations {mapRef}>",
+					format: {
+						type: "array",
+						items: {
+							type: "object",
+							properties: {
+								mapRef: { type: "string" },
+							},
+							required: ["mapRef"],
+						},
+					}
+				},
 			},
 			enabled: true,
 			executor: async (action) => {
 				try {
-					let mapRef = `${action?.args?.mapRef || ""}`.trim()
-					if (!mapRef) {
-						return failAndMaybeReplan("killProcessesByDirectory failed - mapRef is required")
+					let operations = Array.isArray(action?.args?.operations) ? action.args.operations : []
+					if (operations.length === 0) {
+						return failAndMaybeReplan("killProcessesByDirectory failed - operations are required")
+					}
+					let normalizedOperations = operations.map((operation) => ({
+						mapRef: `${operation?.mapRef || ""}`.trim(),
+					})).filter(operation => operation.mapRef.length > 0)
+					if (normalizedOperations.length === 0) {
+						return failAndMaybeReplan("killProcessesByDirectory failed - operations were provided but no valid mapRef values were found")
 					}
 					if (typeof window.killProcesses !== "function") {
 						throw new Error("killProcesses is unavailable")
 					}
-					return await runConfirmed("killProcessesByDirectory", { mapRef }, async () => {
-						window.killProcesses(mapRef)
-						return { killed: true, mapRef }
+					return await runConfirmed("killProcessesByDirectory", { operations: normalizedOperations }, async () => {
+						for (let operation of normalizedOperations) {
+							window.killProcesses(operation.mapRef)
+						}
+						return {
+							killed: true,
+							results: normalizedOperations.map((operation) => ({ mapRef: operation.mapRef, killed: true })),
+						}
 					})
 				}
 				catch (e) {
