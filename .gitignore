@@ -82,9 +82,8 @@ compile_commands.json
 CMakeSettings.json
 
 __pycache__
-dist
-
-dist/
+/dist
+/dist/
 *.spec
 
 zig-out/

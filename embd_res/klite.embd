@@ -34276,5 +34276,7 @@ Current version indicated by LITEVER below.
 <script src="static/js/embeddedContentViewer.js"></script>
 <script src="static/js/treeSitterGrammarLoader.js" type="module"></script>
 <script src="static/js/editorPopup.js" type="module"></script>
+<script src="static/js/webContainer.js" type="module"></script>
+<script src="static/js/webContainerUtils.js"></script>
 <!-- EsoLite modifications end -->
 </html>

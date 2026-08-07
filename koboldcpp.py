@@ -10052,6 +10052,10 @@ Change Mode<br>
             self.wfile.write(rp.encode())
         else:
             self.send_response(response_code)
+            
+            self.send_header('Cross-Origin-Embedder-Policy', 'require-corp')
+            self.send_header('Cross-Origin-Opener-Policy', 'same-origin')
+            
             self.send_header('content-length', str(len(response_body)))
             if content_encoding:
                 self.send_header('Content-Encoding', content_encoding)
