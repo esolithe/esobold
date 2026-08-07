@@ -24,6 +24,8 @@
 
 using namespace kcpp_sd;
 
+static void step_callback(int step, int frame_count, sd_image_t* image, bool is_noisy, void* data);
+
 //#define STB_IMAGE_IMPLEMENTATION //already defined in llava
 #include "stb_image.h"
 
@@ -1749,4 +1751,3 @@ sd_info_outputs sdtype_get_info()
     output.data = recent_info.c_str();
     return output;
 }
-
