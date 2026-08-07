@@ -2,11 +2,13 @@
 #include <string.h>
 #include <time.h>
 #include <iostream>
+#include <mutex>
 #include <random>
 #include <iomanip>
 #include <sstream>
 #include <string>
 #include <vector>
+#include <chrono>
 
 #include <nlohmann/json.hpp>
 #include <inttypes.h>
@@ -158,6 +160,22 @@ static bool photomaker_enabled = false;
 static bool is_vid_model = false;
 static bool remove_limits = false;
 
+struct gendata_st {
+    int status = 0;
+    int step = 0;
+    double step_time = 0.0;
+    std::string preview;
+};
+
+struct {
+    std::mutex mux;
+    std::chrono::steady_clock::time_point start_time;
+    int steps = 0;
+    bool preview_requested = false;
+    bool preview_enabled = false;
+    gendata_st gendata;
+} geninfo;
+
 static struct {
     std::string data;
     std::string data_extra;
@@ -273,7 +291,41 @@ std::string load_gpt_oss_vocab_json()
     return load_embd_file(cache, "embd_res/gpt_oss_vocab_json.embd");
 }
 
+static void progress_callback(int step, int steps, float time, void* data)
+{
+    (void) data;
+    bool enable_preview = false;
+    {
+        std::lock_guard<std::mutex> lock(geninfo.mux);
+        if (geninfo.preview_requested && !geninfo.preview_enabled) {
+            geninfo.preview_enabled = true;
+            enable_preview = true;
+        }
+    }
+    if (enable_preview) {
+        sd_set_preview_callback(step_callback, PREVIEW_PROJ, 1, true, false, nullptr);
+    }
+
+    if(sd_is_quiet || step == 0) return;
+    const char* unit = "s/it";
+    float speed = time;
+    if (speed < 1.0f && speed > 0.f) {
+        speed = 1.0f / speed;
+        unit  = "it/s";
+    }
+    printf("\rGenerating image: %d/%d steps, %.2f%s%s", step, steps, speed, unit, step == steps ? "\n" : "");
+    fflush(stdout);
+}
+
+static void step_callback(int step, int frame_count, sd_image_t* image, bool is_noisy, void* data);
+
+static bool is_video_model(kcpp_sd::model_info info)
+{
+    return info.is_wan || info.is_ltx || info.is_minimaxh3;
+}
+
 bool sdtype_load_model(const sd_load_model_inputs inputs) {
+
     sd_is_quiet = inputs.quiet;
     set_sd_quiet(sd_is_quiet);
     executable_path = sd_get_u8path(inputs.executable_path);
@@ -304,7 +356,7 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
     int lora_apply_mode = LORA_APPLY_AT_RUNTIME;
     bool lora_dynamic = false;
     bool lora_cache = false;
-    if(inputs.lora_apply_mode >= 0 && inputs.lora_apply_mode <= 2) {
+    if(inputs.lora_apply_mode >= 1 && inputs.lora_apply_mode <= 2) {
         lora_apply_mode = inputs.lora_apply_mode;
     }
     else {
@@ -501,7 +553,7 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
 
     auto info = get_model_info(sd_ctx);
 
-    if (info.is_wan || info.is_ltx)
+    if (is_video_model(info))
     {
         printf("\nSetting to Video Generation Mode!\n");
         is_vid_model = true;
@@ -535,6 +587,10 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
             printf("\nUpscaler has been loaded.\n");
         }
     }
+
+    sd_set_preview_callback(step_callback, PREVIEW_PROJ, 1, false, false, nullptr);
+
+    sd_set_progress_callback(progress_callback, nullptr);
 
     return true;
 }
@@ -954,9 +1010,9 @@ static sd_audio_t load_audio_from_b64(const std::string& b64audio) {
     return audio;
 }
 
-bool supports_reference_images(kcpp_sd::model_info info)
+static bool supports_reference_images(kcpp_sd::model_info info)
 {
-    bool supported = (info.is_wan || info.is_ltx || info.supports_ref_image || info.is_kontext || photomaker_enabled) && !info.is_zimage;
+    bool supported = (is_video_model(info) || info.supports_ref_image || info.is_kontext || photomaker_enabled) && !info.is_zimage;
     return supported;
 }
 
@@ -981,10 +1037,34 @@ void sdtype_abort_generation() {
 
 sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
 {
+    struct CleanupInfoOnExit {
+        ~CleanupInfoOnExit() {
+            {
+                std::lock_guard<std::mutex> lock(geninfo.mux);
+                geninfo.gendata.status = 0;
+                geninfo.preview_requested = false;
+                geninfo.preview_enabled = false;
+            }
+            sd_set_preview_callback(step_callback, PREVIEW_PROJ, 1, false, false, nullptr);
+        }
+    } cleanup_info_on_exit;
+
     if(sd_ctx == nullptr || sd_params == nullptr)
     {
         return sd_generation.error("Warning: KCPP image generation not initialized!");
     }
+
+    {
+        std::lock_guard<std::mutex> lock(geninfo.mux);
+        geninfo.start_time = std::chrono::steady_clock::now();
+        geninfo.steps = inputs.sample_steps;
+        geninfo.preview_requested = false;
+        geninfo.preview_enabled = false;
+        geninfo.gendata = {};
+        geninfo.gendata.status = 1;
+    }
+    sd_set_preview_callback(step_callback, PREVIEW_PROJ, 1, false, false, nullptr);
+
     sd_image_t * results = nullptr;
     int generated_num_results = 0;
 
@@ -1082,7 +1162,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
         }
     }
 
-    if ((info.is_wan || info.is_ltx) && extra_image_data.size() == 0 && is_img2img)
+    if (is_video_model(info) && extra_image_data.size() == 0 && is_img2img)
     {
         extra_image_data.push_back(img2img_data);
     }
@@ -1164,7 +1244,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
             int desiredchannels = 3;
             if(supports_reference_images(info)||force_image_edit)
             {
-                if(info.is_wan || info.is_ltx)
+                if(is_video_model(info))
                 {
                     uint8_t * loaded = load_image_from_b64(extra_image_data[i],nx2,ny2,img2imgW,img2imgH,3);
                     if(loaded)
@@ -1335,6 +1415,11 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
     bool is_passthrough = (sd_params->sample_steps<=1 && sd_params->strength<=0 && is_img2img && vid_req_frames<=1 && extra_image_data.size()==0);
     sd_audio_t* generated_audio = nullptr;
     sd_audio_t input_audio = {0, 0, 0, nullptr};
+
+    {
+        std::lock_guard<std::mutex> lock(geninfo.mux);
+        geninfo.steps = inputs.sample_steps;
+    }
 
     if(is_vid_model)
     {
@@ -1658,6 +1743,54 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
     return sd_generation.outputs(1);
 }
 
+static inline double get_time_delta(const std::chrono::steady_clock::time_point& start) {
+    auto now = std::chrono::steady_clock::now();
+    return std::chrono::duration<double>(now - start).count();
+}
+
+static void step_callback(int step, int frame_count, sd_image_t* image, bool is_noisy, void* data)
+{
+    {
+        std::lock_guard<std::mutex> lock(geninfo.mux);
+        if (!geninfo.preview_requested) {
+            return;
+        }
+        geninfo.preview_requested = false;
+        geninfo.preview_enabled = false;
+    }
+    sd_set_preview_callback(step_callback, PREVIEW_PROJ, 1, false, false, nullptr);
+
+    gendata_st gendata;
+    gendata.status = 2;
+    if (frame_count == 1) {
+        gendata.preview = raw_image_to_png_base64(*image);
+    } else {
+        uint8_t * out_data = nullptr;
+        size_t out_len = 0;
+        if (create_gif_buf_from_sd_images_msf(image, frame_count, 16, &out_data,&out_len) == 0 && out_data && out_len > 0) {
+            gendata.preview = kcpp_base64_encode(out_data, out_len);
+        }
+        if (out_data) {
+            free(out_data);
+        }
+    }
+    gendata.step = step;
+    gendata.step_time = get_time_delta(geninfo.start_time);
+
+    std::lock_guard<std::mutex> lock(geninfo.mux);
+    if (step == geninfo.steps)
+        gendata.status = 3;
+    geninfo.gendata = gendata;
+}
+
+void sdtype_request_ongoing_generation_preview()
+{
+    std::lock_guard<std::mutex> lock(geninfo.mux);
+    if (geninfo.gendata.status != 0) {
+        geninfo.preview_requested = true;
+    }
+}
+
 sd_generation_outputs sdtype_upscale(const sd_upscale_inputs inputs)
 {
     sd_generation.reset();
@@ -1744,6 +1877,43 @@ sd_info_outputs sdtype_get_info()
     j["devices"] = devices;
 
     static std::string recent_info = j.dump();
+    sd_info_outputs output;
+    output.status = 0;
+    output.data = recent_info.c_str();
+    return output;
+}
+
+sd_info_outputs sdtype_get_ongoing_generation_info()
+{
+    double elapsed_time = 0.0;
+    int steps = 0;
+    gendata_st gendata;
+    {
+        std::lock_guard<std::mutex> lock(geninfo.mux);
+        gendata = geninfo.gendata;
+        steps = geninfo.steps;
+        if (gendata.status != 0) {
+            elapsed_time = get_time_delta(geninfo.start_time);
+        }
+    }
+
+    nlohmann::json j;
+    j["steps"] = steps;
+    j["elapsed_time"] = elapsed_time;
+    j["step"] = gendata.step;
+    j["step_time"] = gendata.step_time;
+    if (gendata.status == 1)
+        j["status"] = "conditioning";
+    else if (gendata.status == 2)
+        j["status"] = "diffusing";
+    else if (gendata.status == 3)
+        j["status"] = "decoding";
+    else
+        j["status"] = "idle";
+    j["preview"] = gendata.preview;
+
+    static thread_local std::string recent_info;
+    recent_info = j.dump();
     sd_info_outputs output;
     output.status = 0;
     output.data = recent_info.c_str();

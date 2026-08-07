@@ -217,6 +217,14 @@ extern "C"
     {
         sdtype_abort_generation();
     }
+    sd_info_outputs sd_get_ongoing_generation_info()
+    {
+        return sdtype_get_ongoing_generation_info();
+    }
+    void sd_request_ongoing_generation_preview()
+    {
+        sdtype_request_ongoing_generation_preview();
+    }
 
     bool whisper_load_model(const whisper_load_model_inputs inputs)
     {
