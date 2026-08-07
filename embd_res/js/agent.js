@@ -2344,6 +2344,18 @@ let openAgentFsPickerPopup = () => {
         }
         header.appendChild(closeButton)
 
+        if (window.webContainerDevURL !== undefined) {
+            let devContainerButton = document.createElement("button")
+            devContainerButton.type = "button"
+            devContainerButton.classList.add("btn-primary")
+            devContainerButton.innerText = "Open dev container view"
+            devContainerButton.onclick = () => {
+                openDevEmbeddedView()
+                closeAgentFsPickerRequest(null)
+            }
+            header.appendChild(devContainerButton)
+        }
+
         let body = document.createElement("div")
         body.classList.add("agent-user-input-body", "agent-fs-picker-body")
 
