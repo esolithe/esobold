@@ -7338,7 +7338,7 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
         prefixes = [
             "/static/", "/api/", "/messages", "/stream", "/send", "/edit", "/delete", "/cancel", "/upload",
             "/chats", "/chat/", "/settings/", "/storage/", "/server/", "/manifest.json", "/sw.js", "/icon-192.png", "/icon-512.png",
-            "/themes.js",
+            "/themes.js", "/openapi.json",
         ]
         for p in prefixes:
             text = text.replace(f'"{p}', f'"/openlumara{p}')
