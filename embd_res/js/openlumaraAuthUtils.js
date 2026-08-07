@@ -4,8 +4,8 @@
     let ensureAuthState = () => {
         if (!window[AUTH_STATE_KEY]) {
             window[AUTH_STATE_KEY] = {
-                token: "",
                 username: "",
+                hasSession: false,
                 authInFlight: null,
             };
         }
@@ -25,16 +25,11 @@
         return `${contextLabel} failed (${resp.status}${resp.statusText ? ` ${resp.statusText}` : ""})${body ? `: ${body}` : ""}`;
     };
 
-    let validateCachedToken = async (baseUrl, token) => {
-        if (!token) {
-            return false;
-        }
+    let validateCachedSession = async (baseUrl) => {
         try {
-            let resp = await fetch(`${baseUrl}/api/health`, {
+            let resp = await fetch(`${baseUrl}/api/settings/load`, {
                 method: "GET",
-                headers: {
-                    "Authorization": `Bearer ${token}`,
-                },
+                credentials: "include",
             });
             return resp.status === 200;
         } catch (_err) {
@@ -42,15 +37,17 @@
         }
     };
 
-    let loginAndCacheToken = async (baseUrl, username, password) => {
+    let loginAndCacheSession = async (baseUrl, username, password) => {
         let authState = ensureAuthState();
-        let resp = await fetch(`${baseUrl}/api/login`, {
+        let body = new URLSearchParams();
+        body.set("username", username);
+        body.set("password", password);
+
+        let resp = await fetch(`${baseUrl}/login`, {
             method: "POST",
-            headers: {
-                "Content-Type": "application/json",
-                "charset": "utf-8",
-            },
-            body: JSON.stringify({ username, password }),
+            body,
+            credentials: "include",
+            redirect: "follow",
         });
 
         if (!resp.ok) {
@@ -58,15 +55,14 @@
             throw new Error(errText);
         }
 
-        let body = await resp.json();
-        let token = `${body?.token || ""}`.trim();
-        if (!token) {
-            throw new Error("OpenLumara login succeeded but no token was returned.");
+        let sessionIsValid = await validateCachedSession(baseUrl);
+        if (!sessionIsValid) {
+            throw new Error("OpenLumara login failed: invalid username or password.");
         }
 
-        authState.token = token;
+        authState.hasSession = true;
         authState.username = username;
-        return token;
+        return true;
     };
 
     let promptForCredentials = (initialUsername = "") => {
@@ -140,17 +136,11 @@
 
     window.clearOpenLumaraAuthToken = () => {
         let authState = ensureAuthState();
-        authState.token = "";
+        authState.hasSession = false;
     };
 
     window.getOpenLumaraAuthHeader = () => {
-        let authState = ensureAuthState();
-        if (!authState.token) {
-            return {};
-        }
-        return {
-            "Authorization": `Bearer ${authState.token}`,
-        };
+        return {};
     };
 
     window.promptForOpenLumaraIdentity = async (callback, opts = {}) => {
@@ -169,15 +159,15 @@
         }
 
         authState.authInFlight = (async () => {
-            if (authState.token) {
-                let tokenIsValid = await validateCachedToken(baseUrl, authState.token);
-                if (tokenIsValid) {
+            if (authState.hasSession) {
+                let sessionIsValid = await validateCachedSession(baseUrl);
+                if (sessionIsValid) {
                     if (typeof callback === "function") {
                         await callback();
                     }
                     return true;
                 }
-                authState.token = "";
+                authState.hasSession = false;
             }
 
             let creds = await promptForCredentials(authState.username || "");
@@ -196,7 +186,7 @@
             }
 
             try {
-                await loginAndCacheToken(baseUrl, username, password);
+                await loginAndCacheSession(baseUrl, username, password);
                 if (typeof callback === "function") {
                     await callback();
                 }
