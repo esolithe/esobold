@@ -8688,7 +8688,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                 break
         # If not found in raw template, also check the rendered dummy output (more reliable for some models)
         if not tool_segment_tag and rendered:
-            for start, end, streamhandled in tool_call_pairs:
+            for start, end, _required_match_txt, streamhandled in tool_call_pairs:
                 if streamhandled and start in rendered:
                     tool_segment_tag = start
                     break
