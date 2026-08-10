@@ -53,3 +53,6 @@ beautifulsoup4>=4.14.2
 ddgs
 partial-json-parser
 filetype
+tree_sitter_language_pack
+rich
+flask
