@@ -56,8 +56,8 @@ import io
 num_server_threads = 40
 sampler_order_max = 7
 tensor_split_max = 16
-images_max = 48
-audio_max = 48
+images_max = 64
+audio_max = 64
 bias_min_value = -100.0
 bias_max_value = 100.0
 logprobs_max = 10
@@ -17104,11 +17104,13 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
                 print(f"Output: {result}\n-----")
                 if save_to_file:
                     try:
-                        with open(args.benchmark, "a") as file:
+                        import csv
+                        with open(args.benchmark, "a", newline="", encoding="utf-8") as file:
                             file.seek(0, 2)
+                            writer = csv.writer(file)
                             if file.tell() == 0: #empty file
-                                file.write("Timestamp,Backend,Layers,Model,MaxCtx,GenAmount,ProcessingTime,ProcessingSpeed,GenerationTime,GenerationSpeed,TotalTime,Output,Flags")
-                            file.write(f"\n{datetimestamp},{libname},{args.gpulayers},{benchmodel},{benchmaxctx},{benchlen},{t_pp:.2f},{s_pp:.2f},{t_gen:.2f},{s_gen:.2f},{(t_pp+t_gen):.2f},{result},\"{benchflagstr}\"")
+                                writer.writerow(["Timestamp","Backend","Layers","Model","MaxCtx","GenAmount","ProcessingTime","ProcessingSpeed","GenerationTime","GenerationSpeed","TotalTime","Output","Flags"])
+                            writer.writerow([datetimestamp,libname,args.gpulayers,benchmodel,benchmaxctx,benchlen,f"{t_pp:.2f}",f"{s_pp:.2f}",f"{t_gen:.2f}",f"{s_gen:.2f}",f"{(t_pp+t_gen):.2f}",result,benchflagstr])
                     except Exception as e:
                         print(f"Error writing benchmark to file: {e}")
                 if global_memory and using_gui_launcher and not save_to_file:
