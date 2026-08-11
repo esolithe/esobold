@@ -16,6 +16,7 @@
 #include "otherarch.h"
 #include "llama.h"
 #include <vector>
+#include <sstream>
 #include <map>
 #include <cstdint>
 #include <string>
@@ -131,7 +132,8 @@ static llama_v3_context * llama_ctx_v3 = nullptr;
 static llama_context * llama_ctx_v4 = nullptr;
 static llama_context * draft_ctx = nullptr; //will remain null if speculative is unused
 static common_speculative * draft_spec = nullptr; // llama.cpp speculative state for draft model / MTP drafting
-static bool draft_is_mtp = false;
+static bool draft_is_mtp = false; // true for MTP/DFLASH/DSPARK paths that verify multiple target logits
+static common_speculative_type draft_spec_type_active = COMMON_SPECULATIVE_TYPE_NONE;
 static bool mtp_uses_spec_checkpoint = false;
 static common_prompt_checkpoint mtp_spec_ckpt;
 static llama_context * guidance_ctx = nullptr; //for classifier free guidance, will be null if unused
@@ -235,6 +237,46 @@ inline bool LogitsDuplicated(std::vector<float> & arr1, std::vector<float> & arr
 
 static inline void log_callback_off(ggml_log_level level, const char* text, void*) {
     return;
+}
+
+static inline void kcpp_flush_log_output()
+{
+    common_log_flush(common_log_main());
+    fflush(stdout);
+    fflush(stderr);
+}
+
+static common_speculative_type speculative_draft_type_from_model(const llama_model * model)
+{
+    if(model == nullptr)
+    {
+        return COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE;
+    }
+
+    if(model->arch == LLM_ARCH_DFLASH)
+    {
+        return model->dspark_markov_w1 != nullptr ? COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK : COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH;
+    }
+
+    if(model->hparams.n_layer_nextn > 0)
+    {
+        return COMMON_SPECULATIVE_TYPE_DRAFT_MTP;
+    }
+
+    return COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE;
+}
+
+static bool speculative_draft_type_verifies_all_logits(common_speculative_type type)
+{
+    return type == COMMON_SPECULATIVE_TYPE_DRAFT_MTP
+        || type == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH
+        || type == COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK;
+}
+
+static bool speculative_draft_type_needs_preprocess_kv_rollback(common_speculative_type type)
+{
+    return type == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH
+        || type == COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK;
 }
 
 static inline void string_trim_whitespace(std::string & s) {
@@ -452,10 +494,11 @@ bool allExtendedUnicode(const std::string& str) {
     return true;
 }
 
-void print_fitted_params(const llama_model_params & mparams, const llama_context_params & cparams)
+std::string get_fitted_params_str(const llama_model_params & mparams, const llama_context_params & cparams)
 {
-    std::cout << "-c "    << cparams.n_ctx;
-    std::cout << " -ngl " << mparams.n_gpu_layers;
+    std::ostringstream out;
+    out << "-c "    << cparams.n_ctx;
+    out << " -ngl " << mparams.n_gpu_layers;
     size_t nd = llama_max_devices();
     while (nd > 1 && mparams.tensor_split[nd - 1] == 0.0f) {
         nd--;
@@ -463,25 +506,25 @@ void print_fitted_params(const llama_model_params & mparams, const llama_context
     if (nd > 1) {
         for (size_t id = 0; id < nd; id++) {
             if (id == 0) {
-                std::cout << " -ts ";
+                out << " -ts ";
             }
             if (id > 0) {
-                std::cout << ",";
+                out << ",";
             }
-            std::cout << mparams.tensor_split[id];
+            out << mparams.tensor_split[id];
         }
     }
     const size_t ntbo = llama_max_tensor_buft_overrides();
     for (size_t itbo = 0; itbo < ntbo && mparams.tensor_buft_overrides[itbo].pattern != nullptr; itbo++) {
         if (itbo == 0) {
-            std::cout << " -ot ";
+            out << " -ot ";
         }
         if (itbo > 0) {
-            std::cout << ",";
+            out << ",";
         }
-        std::cout << mparams.tensor_buft_overrides[itbo].pattern << "=" << ggml_backend_buft_name(mparams.tensor_buft_overrides[itbo].buft);
+        out << mparams.tensor_buft_overrides[itbo].pattern << "=" << ggml_backend_buft_name(mparams.tensor_buft_overrides[itbo].buft);
     }
-    std::cout << "\n";
+    return out.str();
 }
 
 static size_t estimate_draft_autofit_tax_mb(
@@ -507,6 +550,7 @@ static size_t estimate_draft_autofit_tax_mb(
     draft_model_params.devices = base_model_params.devices;
     draft_model_params.main_gpu = base_model_params.main_gpu;
     draft_model_params.split_mode = llama_split_mode::LLAMA_SPLIT_MODE_LAYER;
+    draft_model_params.load_mtp = true;
 
     draft_ctx_params.n_ctx = base_ctx_params.n_ctx;
     draft_ctx_params.offload_kqv = base_ctx_params.offload_kqv;
@@ -537,7 +581,7 @@ static size_t estimate_draft_autofit_tax_mb(
 
     const char * estimate_model_path = has_draft_model ? spec_model_filename.c_str() : main_model_filename.c_str();
     bool measure_model_bytes = true;
-    bool draft_is_mtp_estimate = !has_draft_model && use_mtp;
+    common_speculative_type draft_spec_type_estimate = !has_draft_model && use_mtp ? COMMON_SPECULATIVE_TYPE_DRAFT_MTP : COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE;
 
     //mute logs for the fitting stuff first
     auto oldverbosity = common_log_get_verbosity_thold();
@@ -557,7 +601,7 @@ static size_t estimate_draft_autofit_tax_mb(
         llama_model * draft_probe = llama_model_load_from_file(spec_model_filename.c_str(), draft_probe_params);
         if(draft_probe != nullptr)
         {
-            draft_is_mtp_estimate = draft_probe->hparams.n_layer_nextn > 0;
+            draft_spec_type_estimate = speculative_draft_type_from_model(draft_probe);
             llama_model_free(draft_probe);
         }
     }
@@ -606,7 +650,7 @@ static size_t estimate_draft_autofit_tax_mb(
         }
     }
 
-    if(draft_is_mtp_estimate)
+    if(draft_spec_type_estimate == COMMON_SPECULATIVE_TYPE_DRAFT_MTP)
     {
         draft_ctx_params.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
         draft_ctx_params.n_seq_max = base_ctx_params.n_seq_max;
@@ -870,6 +914,7 @@ static bool speculative_state_setup(llama_context * main_ctx, const llama_contex
         llama_free(draft_ctx);
         draft_ctx = nullptr;
         draft_is_mtp = false;
+        draft_spec_type_active = COMMON_SPECULATIVE_TYPE_NONE;
         return false;
     }
 
@@ -880,8 +925,10 @@ static bool speculative_state_setup(llama_context * main_ctx, const llama_contex
         llama_free(draft_ctx);
         draft_ctx = nullptr;
         draft_is_mtp = false;
+        draft_spec_type_active = COMMON_SPECULATIVE_TYPE_NONE;
         return false;
     }
+    draft_spec_type_active = type;
     return true;
 }
 
@@ -922,6 +969,7 @@ static void speculative_decoding_setup(std::string spec_model_filename, llama_co
     draft_model_params.load_mode = base_model_params.load_mode;
     draft_model_params.n_gpu_layers = draft_gpulayers; //layers offload the speculative model.
     draft_model_params.devices = base_model_params.devices;
+    draft_model_params.load_mtp = true;
     draft_ctx_params.n_ctx = base_ctx_params.n_ctx;
     draft_ctx_params.offload_kqv = base_ctx_params.offload_kqv;
     draft_model_params.main_gpu = base_model_params.main_gpu;
@@ -958,14 +1006,25 @@ static void speculative_decoding_setup(std::string spec_model_filename, llama_co
         draft_is_mtp = false;
         return;
     }
-    draft_is_mtp = draftmodel && draftmodel->hparams.n_layer_nextn > 0;
-    if(draft_is_mtp)
+    const common_speculative_type draft_spec_type = speculative_draft_type_from_model(draftmodel);
+    draft_is_mtp = speculative_draft_type_verifies_all_logits(draft_spec_type);
+    if(draft_spec_type == COMMON_SPECULATIVE_TYPE_DRAFT_MTP)
     {
         printf("Detected MTP draft head, using llama.cpp MTP speculative decoding.\n");
         draft_ctx_params.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
         draft_ctx_params.ctx_other = main_ctx;
         draft_ctx_params.n_rs_seq = speculative_chunk_amt;
         draft_ctx_params.n_outputs_max = base_ctx_params.n_seq_max; //draft-mtp generates tokens autoregressively (1 output per sequence per decode, looped up to n_max); cap outputs at n_seq instead of letting it default to n_batch, which sized the draft sampling buffer at n_batch*n_vocab (~2GB on large-vocab models like Gemma)
+    }
+    else if(draft_spec_type == COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK)
+    {
+        printf("Detected DSpark draft model, using llama.cpp DSpark speculative decoding.\n");
+        draft_ctx_params.ctx_other = main_ctx;
+    }
+    else if(draft_spec_type == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH)
+    {
+        printf("Detected DFlash draft model, using llama.cpp DFlash speculative decoding.\n");
+        draft_ctx_params.ctx_other = main_ctx;
     }
     draft_ctx = llama_init_from_model(draftmodel, draft_ctx_params);
     if(draft_ctx == NULL)
@@ -1010,7 +1069,7 @@ static void speculative_decoding_setup(std::string spec_model_filename, llama_co
 
         if(draft_ctx && draft_is_mtp)
         {
-            speculative_state_setup(main_ctx, draft_ctx_params, draft_gpulayers, COMMON_SPECULATIVE_TYPE_DRAFT_MTP);
+            speculative_state_setup(main_ctx, draft_ctx_params, draft_gpulayers, draft_spec_type);
         }
         else if(draft_ctx)
         {
@@ -1024,13 +1083,16 @@ static int32_t kcpp_decode_main_and_spec(llama_context * main_ctx, llama_batch b
     const int32_t decode_status = llama_decode(main_ctx, batch);
     if(decode_status == 0 && draft_spec)
     {
-        if(draft_ctx && llama_get_ctx_other(draft_ctx) != main_ctx && batch.n_tokens > 0 && batch.n_seq_id[0] > 0)
+        if(draft_ctx && batch.n_tokens > 0 && batch.n_seq_id[0] > 0 &&
+            (llama_get_ctx_other(draft_ctx) != main_ctx || speculative_draft_type_needs_preprocess_kv_rollback(draft_spec_type_active)))
         {
             llama_memory_seq_rm(llama_get_memory(draft_ctx), batch.seq_id[0][0], batch.pos[0], -1);
         }
         if(!common_speculative_process(draft_spec, batch))
         {
+            kcpp_flush_log_output();
             printf("\nERROR: Speculative state update failed!\n");
+            fflush(stdout);
             return -1;
         }
     }
@@ -1098,7 +1160,9 @@ static speculative_draft_result speculative_decoding_eval_chunk(llama_context * 
     const int32_t decode_status = kcpp_decode_main_and_spec(main_ctx, batch.batch);
     if(decode_status != 0)
     {
+        kcpp_flush_log_output();
         printf("\nERROR: Speculative verification failed! (code:%d)\n", decode_status);
+        fflush(stdout);
         return results;
     }
 
@@ -3000,6 +3064,7 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
     }
     draft_ctx = nullptr;
     draft_is_mtp = false;
+    draft_spec_type_active = COMMON_SPECULATIVE_TYPE_NONE;
     mtp_uses_spec_checkpoint = false;
     mtp_spec_ckpt.clear();
     guidance_ctx = nullptr;
@@ -3232,6 +3297,7 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
         model_params.load_mode = inputs.use_mlock ? LLAMA_LOAD_MODE_MLOCK : (inputs.use_mmap ? LLAMA_LOAD_MODE_MMAP : LLAMA_LOAD_MODE_NONE);
         model_params.n_gpu_layers = inputs.gpulayers;
         model_params.no_host = inputs.no_host;
+        model_params.load_mtp = inputs.use_mtp;
         kcpp_permit_any_repack = (inputs.use_mmap?false:true);
 
         //set device overrides if needed
@@ -3479,8 +3545,11 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
                 llama_log_set(currlogger, curruserdat);
                 common_log_set_verbosity_thold(oldverbosity);
             }
-            printf("Autofit Success: %d, Autofit Result: ",success);
-            print_fitted_params(model_params,llama_ctx_params);
+            common_log_flush(common_log_main());
+            fflush(stderr);
+            const std::string fitted_params = get_fitted_params_str(model_params,llama_ctx_params);
+            printf("Autofit Success: %d, Autofit Result: %s\n",success,fitted_params.c_str());
+            fflush(stdout);
             if(!success)
             {
                 //revert to previous
@@ -5107,7 +5176,27 @@ std::string gpttype_parse_chat_tool_calls(const std::string & generated_text,
         parser_params.parse_tool_calls = true;
         parser_params.parser.load(chat_params.parser);
 
-        common_chat_msg parsed = common_chat_parse(generated_text, is_partial, parser_params);
+        ggml_log_callback currlogger = nullptr;
+        void * curruserdat = nullptr;
+        int oldverbosity = common_log_get_verbosity_thold();
+        llama_log_get(&currlogger, &curruserdat);
+        llama_log_set(log_callback_off, nullptr);
+        common_log_set_verbosity_thold(GGML_LOG_LEVEL_NONE);
+
+        common_chat_msg parsed;
+        try
+        {
+            parsed = common_chat_parse(generated_text, is_partial, parser_params);
+        }
+        catch(...)
+        {
+            llama_log_set(currlogger, curruserdat);
+            common_log_set_verbosity_thold(oldverbosity);
+            throw;
+        }
+
+        llama_log_set(currlogger, curruserdat);
+        common_log_set_verbosity_thold(oldverbosity);
         if(parsed.tool_calls.empty())
         {
             return "";
@@ -5861,6 +5950,12 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                 end = "[/THINK]";
                 budget_exceeded = "\n(Reasoning budget exceeded)\nTime to respond now.\n[/THINK]";
                 break;
+            case llm_arch::LLM_ARCH_MUSE_GLIMMER:
+                start = " to=self<|message|>";
+                end = "<|eom|>";
+                budget_exceeded = "\n(Reasoning budget exceeded)\nTime to respond now.\n<|eom|>";
+                expected_start_tokens = 3;
+                break;
             default:
                 break;
         }
@@ -6584,8 +6679,13 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                     evalres = draft_results.draft_success;
                     if(debugmode==1 && !is_quiet)
                     {
+                        if(!evalres)
+                        {
+                            kcpp_flush_log_output();
+                        }
                         std::string draftedtoks = get_tok_vec_str(draft_results.draftids);
                         printf("\nDrafted %d Tokens: [%s]\n",draft_results.drafted_amount,draftedtoks.c_str());
+                        fflush(stdout);
                     }
                 }
             }
@@ -6656,7 +6756,9 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
 
             if (!evalres)
             {
+                kcpp_flush_log_output();
                 fprintf(stderr, "\nFailed to predict at token position %d! Check your context buffer sizes!\n",n_past);
+                fflush(stderr);
                 media_composite_image_signature = ""; //force invalidate
                 output.text = nullptr;
                 output.status = 0;
@@ -6936,6 +7038,7 @@ generation_outputs gpttype_generate(const generation_inputs inputs)
                 if (startedsampling && allow_regular_prints)
                 {
                     printf("\rGenerating (%d / %d tokens)", (kcpp_data->n_predict - remaining_tokens), kcpp_data->n_predict);
+                    fflush(stdout);
                 }
                 if(debugmode==1 && !is_quiet && top_picks_history.size()>0)
                 {

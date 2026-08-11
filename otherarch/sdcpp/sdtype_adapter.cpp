@@ -293,19 +293,46 @@ std::string load_gpt_oss_vocab_json()
 
 static void step_callback(int step, int frame_count, sd_image_t* image, bool is_noisy, void* data);
 
+// 0 disable, 1 initial, 2 denoised
+// the first noisy call is used to detect the inference phase
+static void set_preview_images(int enable) {
+    bool denoised = (enable == 2);
+    bool noisy = (enable == 1);
+    sd_set_preview_callback(step_callback, PREVIEW_PROJ, 1, denoised, noisy, nullptr);
+}
+
+static inline double get_time_delta(const std::chrono::steady_clock::time_point& start) {
+    auto now = std::chrono::steady_clock::now();
+    return std::chrono::duration<double>(now - start).count();
+}
+
 static void progress_callback(int step, int steps, float time, void* data)
 {
     (void) data;
-    bool enable_preview = false;
+    const char* phase = "Encoding";
     {
         std::lock_guard<std::mutex> lock(geninfo.mux);
-        if (geninfo.preview_requested && !geninfo.preview_enabled) {
+        if (geninfo.gendata.status == 2 && geninfo.preview_requested && !geninfo.preview_enabled) {
             geninfo.preview_enabled = true;
-            enable_preview = true;
+            set_preview_images(2);
         }
-    }
-    if (enable_preview) {
-        sd_set_preview_callback(step_callback, PREVIEW_PROJ, 1, true, false, nullptr);
+        /* Once diffusion has started, use progress_callback for step counts
+        because img2img and custom schedules can change the effective total. */
+        if (geninfo.gendata.status == 2) {
+            /* adjust the max step count (may change for img2img) */
+            geninfo.steps = steps;
+            if (step != geninfo.gendata.step) {
+                geninfo.gendata.step = step;
+                geninfo.gendata.preview = "";
+            }
+            if (step == steps) {
+                geninfo.gendata.status = 3;
+            }
+            phase = "Generating image";
+        } else if (geninfo.gendata.status == 3) {
+            phase = "Decoding";
+        }
+        /* let the terminal report tiling progress */
     }
 
     if(sd_is_quiet || step == 0) return;
@@ -319,7 +346,7 @@ static void progress_callback(int step, int steps, float time, void* data)
     {
         printf("\n");
     }
-    printf("\rGenerating image: %d/%d steps, %.2f %s\033[K%s", step, steps, speed, unit, (step == steps || sddebugmode==1) ? "\n" : "");
+    printf("\r%s: %d/%d steps, %.2f %s\033[K%s", phase, step, steps, speed, unit, (step == steps || sddebugmode==1) ? "\n" : "");
     fflush(stdout);
 }
 
@@ -592,7 +619,7 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
         }
     }
 
-    sd_set_preview_callback(step_callback, PREVIEW_PROJ, 1, false, false, nullptr);
+    set_preview_images(0);
 
     sd_set_progress_callback(progress_callback, nullptr);
 
@@ -1049,7 +1076,7 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
                 geninfo.preview_requested = false;
                 geninfo.preview_enabled = false;
             }
-            sd_set_preview_callback(step_callback, PREVIEW_PROJ, 1, false, false, nullptr);
+            set_preview_images(0);
         }
     } cleanup_info_on_exit;
 
@@ -1066,8 +1093,8 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
         geninfo.preview_enabled = false;
         geninfo.gendata = {};
         geninfo.gendata.status = 1;
+        set_preview_images(1);
     }
-    sd_set_preview_callback(step_callback, PREVIEW_PROJ, 1, false, false, nullptr);
 
     sd_image_t * results = nullptr;
     int generated_num_results = 0;
@@ -1420,11 +1447,6 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
     sd_audio_t* generated_audio = nullptr;
     sd_audio_t input_audio = {0, 0, 0, nullptr};
 
-    {
-        std::lock_guard<std::mutex> lock(geninfo.mux);
-        geninfo.steps = inputs.sample_steps;
-    }
-
     if(is_vid_model)
     {
         std::vector<sd_image_t> control_frames; //empty for now
@@ -1747,50 +1769,62 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
     return sd_generation.outputs(1);
 }
 
-static inline double get_time_delta(const std::chrono::steady_clock::time_point& start) {
-    auto now = std::chrono::steady_clock::now();
-    return std::chrono::duration<double>(now - start).count();
-}
-
 static void step_callback(int step, int frame_count, sd_image_t* image, bool is_noisy, void* data)
 {
+    double step_time = get_time_delta(geninfo.start_time);
+
+    bool should_encode_preview = false;
     {
         std::lock_guard<std::mutex> lock(geninfo.mux);
-        if (!geninfo.preview_requested) {
-            return;
+        if (geninfo.gendata.status <= 1) {
+            geninfo.gendata.status = 2;
+            if (geninfo.preview_requested && !geninfo.preview_enabled) {
+                geninfo.preview_enabled = true;
+                set_preview_images(2);
+            } else {
+                set_preview_images(0);
+            }
         }
+        geninfo.gendata.step = step;
+        geninfo.gendata.step_time = step_time;
+        should_encode_preview = !is_noisy && geninfo.preview_requested;
+    }
+
+    if (!should_encode_preview) {
+        return;
+    }
+
+    std::string preview;
+    if (image != nullptr) {
+        if (frame_count == 1) {
+            preview = raw_image_to_png_base64(*image);
+        } else {
+            uint8_t * out_data = nullptr;
+            size_t out_len = 0;
+            if (create_gif_buf_from_sd_images_msf(image, frame_count, 16, &out_data,&out_len) == 0 && out_data && out_len > 0) {
+                preview = kcpp_base64_encode(out_data, out_len);
+            }
+            if (out_data) {
+                free(out_data);
+            }
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(geninfo.mux);
         geninfo.preview_requested = false;
         geninfo.preview_enabled = false;
+        geninfo.gendata.step = step;
+        geninfo.gendata.step_time = step_time;
+        geninfo.gendata.preview = preview;
+        set_preview_images(0);
     }
-    sd_set_preview_callback(step_callback, PREVIEW_PROJ, 1, false, false, nullptr);
-
-    gendata_st gendata;
-    gendata.status = 2;
-    if (frame_count == 1) {
-        gendata.preview = raw_image_to_png_base64(*image);
-    } else {
-        uint8_t * out_data = nullptr;
-        size_t out_len = 0;
-        if (create_gif_buf_from_sd_images_msf(image, frame_count, 16, &out_data,&out_len) == 0 && out_data && out_len > 0) {
-            gendata.preview = kcpp_base64_encode(out_data, out_len);
-        }
-        if (out_data) {
-            free(out_data);
-        }
-    }
-    gendata.step = step;
-    gendata.step_time = get_time_delta(geninfo.start_time);
-
-    std::lock_guard<std::mutex> lock(geninfo.mux);
-    if (step == geninfo.steps)
-        gendata.status = 3;
-    geninfo.gendata = gendata;
 }
 
 void sdtype_request_ongoing_generation_preview()
 {
     std::lock_guard<std::mutex> lock(geninfo.mux);
-    if (geninfo.gendata.status != 0) {
+    if (geninfo.gendata.status != 0 && !geninfo.preview_requested) {
         geninfo.preview_requested = true;
     }
 }
@@ -1912,8 +1946,10 @@ sd_info_outputs sdtype_get_ongoing_generation_info()
         j["status"] = "diffusing";
     else if (gendata.status == 3)
         j["status"] = "decoding";
-    else
+    else if (gendata.status == 0)
         j["status"] = "idle";
+    else
+        j["status"] = "UNKNOWN";
     j["preview"] = gendata.preview;
 
     static thread_local std::string recent_info;

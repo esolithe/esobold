@@ -3043,6 +3043,7 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
 
             if (false
                     || t.first == "<|eot_id|>"
+                    || t.first == "<|eot|>" // muse-glimmer
                     || t.first == "<|im_end|>"
                     || t.first == "<|end|>"
                     || t.first == "<|return|>" // o200k_harmony
@@ -3098,6 +3099,7 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
                 || t.first=="<|START_THINKING|>" || t.first=="<|END_THINKING|>"
                 || t.first=="<|START_ACTION|>" || t.first=="<|END_ACTION|>"
                 || t.first == "[THINK]" || t.first == "[/THINK]"
+                || t.first == "<|eom|>" // muse-glimmer mid-turn delimiter
                 || t.first == "<think>" || t.first == "</think>"
                 || t.first == "[CALL_ID]" || t.first == "[TOOL_CONTENT]" || t.first == "[TOOL_CALLS]" || t.first == "[ARGS]") {
                 LLAMA_LOG_WARN("%s: setting token '%s' (%d) attribute to USER_DEFINED (%u), old attributes: %u\n",
