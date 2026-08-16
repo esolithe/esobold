@@ -5215,7 +5215,7 @@ ws ::= | " " | "\n" [ \t]{0,20}
         # openai allows either a string or a list as a stop sequence
         if genparams.get('stop',[]) is not None:
             if isinstance(genparams.get('stop',[]), list):
-                genparams["stop_sequence"] = genparams.get('stop', [])
+                genparams["stop_sequence"] = genparams.get('stop', genparams.get('stop_sequence', []))
             else:
                 genparams["stop_sequence"] = [genparams.get('stop')]
 
@@ -5427,10 +5427,9 @@ ws ::= | " " | "\n" [ \t]{0,20}
             if len(audio_added)>0:
                 genparams["audio"] = audio_added
             if len(genparams.get('stop_sequence', []))==0: #only set stop seq if it wont overwrite existing
-                genparams["stop_sequence"] = [user_message_start.strip(),assistant_message_start.strip()]
+                genparams["stop_sequence"] = [user_message_start.strip()]
             else:
                 genparams["stop_sequence"].append(user_message_start.strip())
-                genparams["stop_sequence"].append(assistant_message_start.strip())
             if not used_tool_json and jinjatools and latest_turn_was_tool:
                 genparams["stop_sequence"].append("(Made a function call") # qol prevent fake toolcalls
             genparams["trim_stop"] = True

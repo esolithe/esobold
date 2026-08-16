@@ -1771,11 +1771,11 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
 
 static void step_callback(int step, int frame_count, sd_image_t* image, bool is_noisy, void* data)
 {
+    std::lock_guard<std::mutex> lock(geninfo.mux);
     double step_time = get_time_delta(geninfo.start_time);
 
     bool should_encode_preview = false;
     {
-        std::lock_guard<std::mutex> lock(geninfo.mux);
         if (geninfo.gendata.status <= 1) {
             geninfo.gendata.status = 2;
             if (geninfo.preview_requested && !geninfo.preview_enabled) {
@@ -1787,7 +1787,7 @@ static void step_callback(int step, int frame_count, sd_image_t* image, bool is_
         }
         geninfo.gendata.step = step;
         geninfo.gendata.step_time = step_time;
-        should_encode_preview = !is_noisy && geninfo.preview_requested;
+        should_encode_preview = !is_noisy && geninfo.preview_enabled;
     }
 
     if (!should_encode_preview) {
@@ -1811,13 +1811,9 @@ static void step_callback(int step, int frame_count, sd_image_t* image, bool is_
     }
 
     {
-        std::lock_guard<std::mutex> lock(geninfo.mux);
-        geninfo.preview_requested = false;
-        geninfo.preview_enabled = false;
         geninfo.gendata.step = step;
         geninfo.gendata.step_time = step_time;
         geninfo.gendata.preview = preview;
-        set_preview_images(0);
     }
 }
 

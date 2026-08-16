@@ -279,6 +279,18 @@ static bool speculative_draft_type_needs_preprocess_kv_rollback(common_speculati
         || type == COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK;
 }
 
+static void speculative_apply_block_draft_output_limits(llama_context_params & ctx_params, common_speculative_type type)
+{
+    if(type != COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH && type != COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK)
+    {
+        return;
+    }
+
+    const uint32_t per_seq = std::max<uint32_t>(1, speculative_chunk_amt + 1);
+    ctx_params.n_outputs_max = std::max<uint32_t>(ctx_params.n_outputs_max, per_seq);
+    ctx_params.n_outputs_max_per_seq = std::max<uint32_t>(ctx_params.n_outputs_max_per_seq, per_seq);
+}
+
 static inline void string_trim_whitespace(std::string & s) {
     auto nul = std::find(s.begin(), s.end(), '\0'); //remove everything after the first NUL
     if (nul != s.end()) {
@@ -658,6 +670,7 @@ static size_t estimate_draft_autofit_tax_mb(
         draft_ctx_params.n_outputs_max = std::max<uint32_t>(1, base_ctx_params.n_seq_max); //match the real MTP draft context so the autofit tax doesn't over-reserve the draft compute buffer at n_batch*n_vocab (~2GB on large-vocab models like Gemma)
         measure_model_bytes = has_draft_model;
     }
+    speculative_apply_block_draft_output_limits(draft_ctx_params, draft_spec_type_estimate);
 
     std::vector<ggml_backend_dev_t> devs;
     uint32_t hp_ngl = 0;
@@ -1020,11 +1033,13 @@ static void speculative_decoding_setup(std::string spec_model_filename, llama_co
     {
         printf("Detected DSpark draft model, using llama.cpp DSpark speculative decoding.\n");
         draft_ctx_params.ctx_other = main_ctx;
+        speculative_apply_block_draft_output_limits(draft_ctx_params, draft_spec_type);
     }
     else if(draft_spec_type == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH)
     {
         printf("Detected DFlash draft model, using llama.cpp DFlash speculative decoding.\n");
         draft_ctx_params.ctx_other = main_ctx;
+        speculative_apply_block_draft_output_limits(draft_ctx_params, draft_spec_type);
     }
     draft_ctx = llama_init_from_model(draftmodel, draft_ctx_params);
     if(draft_ctx == NULL)
@@ -1128,7 +1143,9 @@ static speculative_draft_result speculative_decoding_eval_chunk(llama_context * 
     common_speculative_draft(draft_spec);
     if(drafted_ids.empty())
     {
+        kcpp_flush_log_output();
         printf("\nERROR: Draft model produced no draft tokens!\n");
+        fflush(stdout);
         return results;
     }
 

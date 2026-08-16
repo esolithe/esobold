@@ -266,7 +266,7 @@ value binary_expression::execute_impl(context & ctx) {
             return res;
         }
         for (int64_t i = 0; i < repeat; ++i) {
-            res->val_str = res->val_str.append(str);
+            res->val_str.append(str);
         }
         return res;
     }

@@ -99,6 +99,7 @@ enum llm_type {
     LLM_TYPE_290B,
     LLM_TYPE_314B,
     LLM_TYPE_405B,
+    LLM_TYPE_456B,
     LLM_TYPE_671B,
     LLM_TYPE_SMALL,
     LLM_TYPE_MEDIUM,
@@ -271,6 +272,7 @@ struct llama_layer {
     struct ggml_tensor * wv        = nullptr;
     struct ggml_tensor * wo        = nullptr;
     struct ggml_tensor * wqkv      = nullptr;
+    struct ggml_tensor * wg        = nullptr;
     struct ggml_tensor * wq_a      = nullptr;
     struct ggml_tensor * wq_b      = nullptr;
     struct ggml_tensor * wkv_a_mqa = nullptr;
@@ -623,8 +625,9 @@ struct llama_model {
     struct ggml_tensor * per_layer_model_proj = nullptr;
     struct ggml_tensor * per_layer_proj_norm  = nullptr;
 
-    // eagle3
-    struct ggml_tensor * fc  = nullptr;  // feature fusion layer
+    // eagle3 / dflash feature fusion layer
+    struct ggml_tensor * fc   = nullptr;
+    struct ggml_tensor * fc_s = nullptr;
     struct ggml_tensor * d2t = nullptr;  // draft to target vocabulary mapping
 
     // dspark

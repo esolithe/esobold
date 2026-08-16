@@ -779,7 +779,10 @@ static void parse_phase1_into_aces(
     int N = (int)texts.size();
     aces.resize(N);
     for (int i = 0; i < N; i++) {
-        fprintf(stderr, "[%s Batch%d] seed=%lld:\n%s\n", label, i, base_seed + i, texts[i].c_str());
+        if(acestep_lm_dbg)
+        {
+            fprintf(stderr, "[%s Batch%d] seed=%lld:\n%s\n", label, i, base_seed + i, texts[i].c_str());
+        }
         AcePrompt parsed = {};
         if (!parse_cot_and_lyrics(texts[i], &parsed))
             fprintf(stderr, "WARNING: batch %d CoT parse incomplete\n", i);
