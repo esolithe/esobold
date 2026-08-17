@@ -269,3 +269,12 @@ window.detectWarnings = detectWarnings;
 // await detectWarnings("javascript", test)
 
 // await getSymbols(fileExtensionToLanguageName("js"), test)
+
+window.addEventListener('load', async () => {
+    // Polyfill for globalThis.process.versions.node in browsers (used by tree-sitter)
+    if (typeof globalThis?.process?.versions === 'undefined') {
+        window.globalThis = window.globalThis || {};
+        globalThis.process = globalThis.process || {};
+        globalThis.process.versions = {node: false};
+    }
+});

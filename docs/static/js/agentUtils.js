@@ -197,6 +197,7 @@ let AGENT_COMMAND_GROUPS = {
 		{ key: "library_utils", label: "Library Utils", commands: ["listLibraryData", "getLibraryData", "createCharacter", "unifiedLoad"] },
 		{ key: "utilities", label: "Utilities", commands: ["roll_dice", "get_random_terms_from_table", "evaluate_formula", "wordcount", "get_command_description"] },
 		{ key: "openlumara", label: "OpenLumara", commands: ["lumara_status", "lumara_send", "lumara_get_messages", "lumara_list_chats", "lumara_new_chat", "lumara_load_chat", "lumara_clear_chat", "lumara_rename_chat"] },
+		{ key: "webcontainer", label: "WebContainer", commands: ["wc_loadLocalDirIntoContainerDir", "wc_loadLocalFileIntoContainerPath", "wc_loadContainerDirIntoLocalDir", "wc_loadContainerFileIntoLocal", "wc_fs_readdir", "wc_fs_readFile", "wc_fs_writeFile", "wc_fs_mkdir", "wc_fs_rm", "wc_spawn", "wc_openDevEmbeddedView", "wc_getDevEnvUrl", "wc_listProcessesByDirectory", "wc_killProcessesByDirectory", "wc_killAllProcesses", "wc_createSvelteEnv"] },
 		{ key: "mcp", label: "MCP Tools", commands: [] },
 		{ key: "misc", label: "Misc", commands: [] },
 	],

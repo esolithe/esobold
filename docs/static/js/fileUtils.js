@@ -27,10 +27,12 @@ let b64ToBytesToText = (b64) => {
     return new TextDecoder().decode(new Uint8Array(atob(b64).split(",").map(Number)));
 }
 let getDownloadDataFromManager = async (charName) => {
-    let characterType = allCharacterNames.find(c => c.name === charName)?.type;
+    let normalizedName = `${charName || ""}`.replaceAll(/[^\w()_\-'",!\[\].]/g, " ").replaceAll(/\s+/g, " ").trim()
+    let characterMeta = (allCharacterNames || []).find(c => `${c?.name || ""}`.replaceAll(/[^\w()_\-'",!\[\].]/g, " ").replaceAll(/\s+/g, " ").trim() === normalizedName)
+    let characterType = characterMeta?.type;
     if (characterType !== undefined) {
         let fileName = null, b64Url = null;
-        let charData = await getCharacterData(charName);
+        let charData = await getCharacterData(characterMeta?.id || charName);
         if (!!charData)
             {
 

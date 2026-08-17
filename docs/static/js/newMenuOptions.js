@@ -281,6 +281,7 @@ display_settings = () => {
     document.getElementById("worldTreeShowAll").checked = localsettings.worldTreeShowAll;
     document.getElementById("useNewEditor").checked = localsettings.useNewEditor;
     document.getElementById("legacySaveMechanisms").checked = localsettings.legacySaveMechanisms;
+    document.getElementById("overwriteCharacterOnNameCollision").checked = !!localsettings.overwriteCharacterOnNameCollision;
     document.getElementById("showContextUsageChart").checked = localsettings.showContextUsageChart;
     document.getElementById("fullScreenEditorForInputs").checked = localsettings.fullScreenEditorForInputs;
     document.getElementById("corpoHideLeftPanel").checked = localsettings.corpoHideLeftPanel;
@@ -323,6 +324,7 @@ confirm_settings = () => {
     localsettings.worldTreeShowAll = (document.getElementById("worldTreeShowAll").checked ? true : false);
     localsettings.useNewEditor = (document.getElementById("useNewEditor").checked ? true : false);
     localsettings.legacySaveMechanisms = (document.getElementById("legacySaveMechanisms").checked ? true : false);
+    localsettings.overwriteCharacterOnNameCollision = (document.getElementById("overwriteCharacterOnNameCollision").checked ? true : false);
     localsettings.showContextUsageChart = (document.getElementById("showContextUsageChart").checked ? true : false);
     localsettings.fullScreenEditorForInputs = (document.getElementById("fullScreenEditorForInputs").checked ? true : false);
     localsettings.corpoHideLeftPanel = (document.getElementById("corpoHideLeftPanel").checked ? true : false);
@@ -437,6 +439,9 @@ window.addEventListener('load', () => {
     }
     if (localsettings?.legacySaveMechanisms == undefined) {
         localsettings.legacySaveMechanisms = false
+    }
+    if (localsettings?.overwriteCharacterOnNameCollision == undefined) {
+        localsettings.overwriteCharacterOnNameCollision = false
     }
     if (localsettings?.showContextUsageChart == undefined) {
         localsettings.showContextUsageChart = true
@@ -775,6 +780,9 @@ window.addEventListener('load', () => {
     settingsBox.append(settingLabelElem)
 
     settingLabelElem = createSettingElemBool("legacySaveMechanisms", "Save options (legacy)", "Shows buttons for saving to slots and server using the non-data manager UI (legacy)")
+    settingsBox.append(settingLabelElem)
+
+    settingLabelElem = createSettingElemBool("overwriteCharacterOnNameCollision", "Overwrite character on name collision", "When this flag is set to true, if a new character has the same name it will overwrite. When this is set to false, it will append a _1, _2 etc.")
     settingsBox.append(settingLabelElem)
 
     settingsBox.appendChild(createNewSubSection("Misc settings"))

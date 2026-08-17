@@ -1,11 +1,19 @@
 class PopupUtils {
     popupElem
+    popupBackdropElem
     popupInternalDiv
     titleBarElem
     titleElem
     contentElem
     buttonsElem
     useMobileMenu = false
+    useBackdrop = true
+    useDraggableWindow = false
+    useResizableWindow = false
+    _isDragBound = false
+    _resizeObserver = null
+    _onTitleMouseDown = null
+    _needsInitialFloatingPosition = true
     createPopup() {
         let popupElem = document.createElement("div");
         popupElem.classList.add("popupcontainer", "flex", "hidden");
@@ -24,6 +32,7 @@ class PopupUtils {
         document.body.appendChild(popupElem)
 
         this.popupElem = document.getElementById("popupContainer")
+        this.popupBackdropElem = popupElem.querySelector(".popupbg")
         this.popupInternalDiv = popupElem.querySelector(".nspopup")
         this.titleBarElem = popupElem.querySelector(".popuptitlebar")
         this.titleElem = popupElem.querySelector(".popuptitletext")
@@ -33,6 +42,159 @@ class PopupUtils {
 
     constructor() {
        this.createPopup()
+    }
+
+    _getPopupDimensions() {
+        if (!this.popupInternalDiv) {
+            return { width: 1, height: 1 }
+        }
+        let rect = this.popupInternalDiv.getBoundingClientRect()
+        let width = Math.max(1, Math.round(rect.width || this.popupInternalDiv.offsetWidth || 1))
+        let height = Math.max(1, Math.round(rect.height || this.popupInternalDiv.offsetHeight || 1))
+        return { width, height }
+    }
+
+    _centerPopupInViewport() {
+        if (!this.popupInternalDiv) {
+            return
+        }
+        let viewportWidth = Math.max(1, window.innerWidth || 1)
+        let viewportHeight = Math.max(1, window.innerHeight || 1)
+        let { width, height } = this._getPopupDimensions()
+        let centeredLeft = Math.max(0, Math.floor((viewportWidth - width) / 2))
+        let centeredTop = Math.max(0, Math.floor((viewportHeight - height) / 2))
+        this.popupInternalDiv.style.left = `${centeredLeft}px`
+        this.popupInternalDiv.style.top = `${centeredTop}px`
+    }
+
+    _applyBackdropMode() {
+        if (!this.popupElem || !this.popupInternalDiv || !this.popupBackdropElem) {
+            return
+        }
+        if (this.useBackdrop) {
+            this.popupElem.style.pointerEvents = "auto"
+            this.popupBackdropElem.style.display = ""
+            this.popupBackdropElem.style.pointerEvents = "auto"
+            this.popupBackdropElem.style.visibility = "visible"
+            this.popupInternalDiv.style.pointerEvents = "auto"
+        }
+        else {
+            // Keep the popup window interactive but let all other clicks pass through.
+            this.popupElem.style.pointerEvents = "none"
+            this.popupBackdropElem.style.display = "none"
+            this.popupBackdropElem.style.pointerEvents = "none"
+            this.popupBackdropElem.style.visibility = "hidden"
+            this.popupInternalDiv.style.pointerEvents = "auto"
+        }
+    }
+
+    _ensurePopupWithinViewport() {
+        if (!this.popupInternalDiv) {
+            return
+        }
+        if (!this.useDraggableWindow && !this.useResizableWindow) {
+            return
+        }
+
+        let viewportWidth = Math.max(1, window.innerWidth || 1)
+        let viewportHeight = Math.max(1, window.innerHeight || 1)
+        let { width: popupWidth, height: popupHeight } = this._getPopupDimensions()
+        let maxLeft = Math.max(0, viewportWidth - popupWidth)
+        let maxTop = Math.max(0, viewportHeight - popupHeight)
+        let currentLeft = parseInt(this.popupInternalDiv.style.left || "0", 10) || 0
+        let currentTop = parseInt(this.popupInternalDiv.style.top || "0", 10) || 0
+        let clampedLeft = Math.max(0, Math.min(currentLeft, maxLeft))
+        let clampedTop = Math.max(0, Math.min(currentTop, maxTop))
+        this.popupInternalDiv.style.left = `${clampedLeft}px`
+        this.popupInternalDiv.style.top = `${clampedTop}px`
+    }
+
+    _applyWindowInteractionMode() {
+        if (!this.popupInternalDiv || !this.titleBarElem) {
+            return
+        }
+
+        let useFloatingWindow = this.useDraggableWindow || this.useResizableWindow
+        let popupIsHidden = !!this.popupElem?.classList.contains("hidden")
+        if (useFloatingWindow) {
+            this.popupInternalDiv.style.position = "fixed"
+            this.popupInternalDiv.style.margin = "0"
+            if (!popupIsHidden) {
+                if (this._needsInitialFloatingPosition) {
+                    this._centerPopupInViewport()
+                    this._needsInitialFloatingPosition = false
+                }
+                this._ensurePopupWithinViewport()
+            }
+        }
+        else {
+            this.popupInternalDiv.style.position = ""
+            this.popupInternalDiv.style.left = ""
+            this.popupInternalDiv.style.top = ""
+            this.popupInternalDiv.style.margin = ""
+            this._needsInitialFloatingPosition = true
+        }
+
+        if (this.useResizableWindow) {
+            this.popupInternalDiv.style.resize = "both"
+            this.popupInternalDiv.style.overflow = "hidden"
+            this.popupInternalDiv.style.minWidth = "180px"
+            this.popupInternalDiv.style.minHeight = "140px"
+        }
+        else {
+            this.popupInternalDiv.style.resize = ""
+            this.popupInternalDiv.style.overflow = ""
+        }
+
+        this.titleBarElem.style.cursor = this.useDraggableWindow ? "move" : ""
+
+        if (this.useDraggableWindow && !this._isDragBound) {
+            this._onTitleMouseDown = (e) => {
+                if (e.target.closest("button")) return
+                e.preventDefault()
+                let startX = e.clientX - this.popupInternalDiv.offsetLeft
+                let startY = e.clientY - this.popupInternalDiv.offsetTop
+                let onMouseMove = (me) => {
+                    let { width: popupWidth, height: popupHeight } = this._getPopupDimensions()
+                    let maxLeft = Math.max(0, window.innerWidth - popupWidth)
+                    let maxTop = Math.max(0, window.innerHeight - popupHeight)
+                    let newLeft = Math.max(0, Math.min(me.clientX - startX, maxLeft))
+                    let newTop = Math.max(0, Math.min(me.clientY - startY, maxTop))
+                    this.popupInternalDiv.style.left = `${newLeft}px`
+                    this.popupInternalDiv.style.top = `${newTop}px`
+                    this._needsInitialFloatingPosition = false
+                }
+                let onMouseUp = () => {
+                    document.removeEventListener("mousemove", onMouseMove)
+                    document.removeEventListener("mouseup", onMouseUp)
+                }
+                document.addEventListener("mousemove", onMouseMove)
+                document.addEventListener("mouseup", onMouseUp)
+            }
+            this.titleBarElem.addEventListener("mousedown", this._onTitleMouseDown)
+            this._isDragBound = true
+        }
+        if (!this.useDraggableWindow && this._isDragBound && this._onTitleMouseDown) {
+            this.titleBarElem.removeEventListener("mousedown", this._onTitleMouseDown)
+            this._isDragBound = false
+            this._onTitleMouseDown = null
+        }
+
+        if (!!window.ResizeObserver) {
+            if (!this._resizeObserver && useFloatingWindow) {
+                this._resizeObserver = new ResizeObserver(() => {
+                    if (this.useMobileMenu) {
+                        this.autoSize()
+                    }
+                    this._ensurePopupWithinViewport()
+                })
+                this._resizeObserver.observe(this.popupInternalDiv)
+            }
+            if (this._resizeObserver && !useFloatingWindow) {
+                this._resizeObserver.disconnect()
+                this._resizeObserver = null
+            }
+        }
     }
 
     _createButtonForPopup(text, onClick) {
@@ -58,6 +220,16 @@ class PopupUtils {
 
     reset() {
         this.useMobileMenu = false
+        this.useBackdrop = true
+        this.useDraggableWindow = false
+        this.useResizableWindow = false
+        this._needsInitialFloatingPosition = true
+        if (this._resizeObserver) {
+            this._resizeObserver.disconnect()
+            this._resizeObserver = null
+        }
+        this._isDragBound = false
+        this._onTitleMouseDown = null
         document.getElementById("popupContainer")?.remove()
         this.createPopup()
         this.popupElem.classList.add("hidden")
@@ -66,6 +238,15 @@ class PopupUtils {
 
     show() {
         this.popupElem.classList.remove("hidden")
+        this._applyBackdropMode()
+        this._applyWindowInteractionMode()
+
+        if (!this.useMobileMenu)
+        {
+            this.popupElem.classList.remove("mobileMenu", "expanded")
+            this.buttonsElem.style.height = ""
+            this.contentElem.style.height = ""
+        }
         
         if (this.useMobileMenu)
         {
@@ -84,6 +265,7 @@ class PopupUtils {
             navToggle.append(createLineForNav(), createLineForNav(), createLineForNav())
             this.buttonsElem.append(navToggle)
         }
+        this._ensurePopupWithinViewport()
         this.autoSize()
         return this;
     }
@@ -92,6 +274,13 @@ class PopupUtils {
         if (document.body.offsetWidth > 800)
         {
             this.popupElem.classList.remove("expanded")
+        }
+        if (!this.useMobileMenu)
+        {
+            // Outside mobile-menu mode, leave sizing to CSS/content flow.
+            this.buttonsElem.style.height = "";
+            this.contentElem.style.height = "";
+            return
         }
         if (this.useMobileMenu && this.popupElem.classList.contains("expanded"))
         {
@@ -152,6 +341,37 @@ class PopupUtils {
 
     setMobileMenu(useMobileMenu) {
         this.useMobileMenu = useMobileMenu
+        if (!this.useMobileMenu)
+        {
+            this.popupElem?.classList.remove("mobileMenu", "expanded")
+            if (this.buttonsElem) this.buttonsElem.style.height = ""
+            if (this.contentElem) this.contentElem.style.height = ""
+        }
+        return this;
+    }
+
+    backdrop(enabled = true) {
+        this.useBackdrop = !!enabled
+        this._applyBackdropMode()
+        return this;
+    }
+
+    setDraggableWindow(useDraggableWindow) {
+        this.useDraggableWindow = !!useDraggableWindow
+        this._applyWindowInteractionMode()
+        return this;
+    }
+
+    setResizableWindow(useResizableWindow) {
+        this.useResizableWindow = !!useResizableWindow
+        this._applyWindowInteractionMode()
+        return this;
+    }
+
+    modal() {
+        this.setDraggableWindow(true)
+        this.setResizableWindow(true)
+        this.backdrop(false)
         return this;
     }
 }
@@ -227,6 +447,8 @@ window.addEventListener("load", () => {
                 .title(`${title || "Confirm action"}`)
                 .content(body)
                 .css("min-width", "min(900px, 95vw)")
+                .setDraggableWindow(true)
+                .setResizableWindow(true)
                 .button("Confirm", () => finalize(true))
                 .button("Cancel", () => finalize(false))
                 .show()

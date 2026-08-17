@@ -1,0 +1,541 @@
+/**
+ * The WebContainer Public API allows you build custom applications on top of an in-browser Node.js runtime.
+ *
+ * Its main entrypoint is the {@link WebContainer} class.
+ *
+ * @packageDocumentation
+ */
+import { authState, assertAuthTokens } from './internal/auth-state.js';
+import { PreviewMessageType } from './preview-message-types.js';
+import { Comlink } from './vendor/index.js';
+import { auth as authImpl } from './internal/auth-state.js';
+import { addAccessTokenChangedListener } from './internal/tokens.js';
+import { iframeSettings } from './internal/iframe-url.js';
+import { isPreviewMessage } from './utils.js';
+import { toExternalFileSystemTree, toInternalFileSystemTree } from './utils/file-system.js';
+export const auth = authImpl;
+export { PreviewMessageType };
+export * from './utils.js';
+let bootPromise = null;
+let cachedServerPromise = null;
+let cachedBootOptions = {};
+const decoder = new TextDecoder();
+const encoder = new TextEncoder();
+/**
+ * The main export of this library. An instance of `WebContainer` represents a runtime
+ * ready to be used.
+ */
+export class WebContainer {
+    _instance;
+    _runtimeInfo;
+    /**
+     * Gives access to the underlying file system.
+     */
+    fs;
+    /** @internal */
+    static _instance = null;
+    /** @internal */
+    static _teardownPromise = null;
+    _tornDown = false;
+    _unsubscribeFromTokenChangedListener = () => { };
+    /** @internal */
+    constructor(
+    /** @internal */
+    _instance, fs, previewScript, 
+    /** @internal */
+    _runtimeInfo) {
+        this._instance = _instance;
+        this._runtimeInfo = _runtimeInfo;
+        this.fs = new FileSystemAPIClient(fs);
+        // forward the credentials to webcontainer if needed
+        if (authState.initialized) {
+            this._unsubscribeFromTokenChangedListener = addAccessTokenChangedListener((accessToken) => {
+                this._instance.setCredentials({ accessToken, editorOrigin: authState.editorOrigin });
+            });
+            (async () => {
+                await authState.authComplete.promise;
+                if (this._tornDown) {
+                    return;
+                }
+                assertAuthTokens(authState.tokens);
+                await this._instance.setCredentials({
+                    accessToken: authState.tokens.access,
+                    editorOrigin: authState.editorOrigin,
+                });
+            })().catch((error) => {
+                // print the error as this is likely a bug in webcontainer
+                console.error(error);
+            });
+        }
+    }
+    async spawn(command, optionsOrArgs, options) {
+        let args = [];
+        if (Array.isArray(optionsOrArgs)) {
+            args = optionsOrArgs;
+        }
+        else {
+            options = optionsOrArgs;
+        }
+        let output = undefined;
+        let outputStream = new ReadableStream();
+        if (options?.output !== false) {
+            const result = streamWithPush();
+            output = result.push;
+            outputStream = result.stream;
+        }
+        let stdout = undefined;
+        let stdoutStream;
+        let stderr = undefined;
+        let stderrStream;
+        const wrappedOutput = proxyListener(binaryListener(output));
+        const wrappedStdout = proxyListener(binaryListener(stdout));
+        const wrappedStderr = proxyListener(binaryListener(stderr));
+        const process = await this._instance.run({
+            command,
+            args,
+            cwd: options?.cwd,
+            env: options?.env,
+            terminal: options?.terminal,
+        }, wrappedStdout, wrappedStderr, wrappedOutput);
+        return new WebContainerProcessImpl(process, outputStream, stdoutStream, stderrStream);
+    }
+    async export(path, options) {
+        const serializeOptions = {
+            format: options?.format ?? 'json',
+            includes: options?.includes,
+            excludes: options?.excludes,
+            external: true,
+        };
+        const result = await this._instance.serialize(path, serializeOptions);
+        if (serializeOptions.format === 'json') {
+            const data = JSON.parse(decoder.decode(result));
+            return toExternalFileSystemTree(data);
+        }
+        return result;
+    }
+    on(event, listener) {
+        if (event === 'preview-message') {
+            const originalListener = listener;
+            listener = ((message) => {
+                if (isPreviewMessage(message)) {
+                    originalListener(message);
+                }
+            });
+        }
+        const { listener: wrapped, subscribe } = syncSubscription(listener);
+        return subscribe(this._instance.on(event, Comlink.proxy(wrapped)));
+    }
+    /**
+     * Mounts a tree of files into the filesystem. This can be specified as a tree object ({@link FileSystemTree})
+     * or as a binary snapshot generated by [`@webcontainer/snapshot`](https://www.npmjs.com/package/@webcontainer/snapshot).
+     *
+     * @param snapshotOrTree - A tree of files, or a binary snapshot. Note that binary payloads will be transferred.
+     * @param options - Additional options.
+     */
+    mount(snapshotOrTree, options) {
+        const payload = snapshotOrTree instanceof Uint8Array
+            ? snapshotOrTree
+            : snapshotOrTree instanceof ArrayBuffer
+                ? new Uint8Array(snapshotOrTree)
+                : encoder.encode(JSON.stringify(toInternalFileSystemTree(snapshotOrTree)));
+        return this._instance.loadFiles(Comlink.transfer(payload, [payload.buffer]), {
+            mountPoints: options?.mountPoint,
+        });
+    }
+    /**
+     * Set a custom script to be injected into all previews. When this function is called, every
+     * future page reload will contain the provided script tag on all HTML responses.
+     *
+     * Note:
+     *
+     * When this function resolves, every preview reloaded _after_ will have the new script.
+     * Existing preview have to be explicitely reloaded.
+     *
+     * To reload a preview you can use `reloadPreview`.
+     *
+     * @param scriptSrc Source for the script tag.
+     * @param options Options to define which type of script this is.
+     */
+    setPreviewScript(scriptSrc, options) {
+        return this._instance.setPreviewScript(scriptSrc, options);
+    }
+    /**
+     * The default value of the `PATH` environment variable for processes started through {@link spawn}.
+     */
+    get path() {
+        return this._runtimeInfo.path;
+    }
+    /**
+     * The full path to the working directory (see {@link FileSystemAPI}).
+     */
+    get workdir() {
+        return this._runtimeInfo.cwd;
+    }
+    /**
+     * Destroys the WebContainer instance, turning it unusable, and releases its resources. After this,
+     * a new WebContainer instance can be obtained by calling {@link WebContainer.boot | `boot`}.
+     *
+     * All entities derived from this instance (e.g. processes, the file system, etc.) also become unusable
+     * after calling this method.
+     */
+    teardown() {
+        if (this._tornDown) {
+            throw new Error('WebContainer already torn down');
+        }
+        this._tornDown = true;
+        this._unsubscribeFromTokenChangedListener();
+        const teardownFn = async () => {
+            try {
+                await this.fs._teardown();
+                await this._instance.teardown();
+            }
+            finally {
+                this._instance[Comlink.releaseProxy]();
+                if (WebContainer._instance === this) {
+                    WebContainer._instance = null;
+                }
+            }
+        };
+        WebContainer._teardownPromise = teardownFn();
+    }
+    /**
+     * Boots a WebContainer. Only a single instance of WebContainer can be booted concurrently
+     * (see {@link WebContainer.teardown | `teardown`}).
+     *
+     * Booting WebContainer is an expensive operation.
+     */
+    static async boot(options = {}) {
+        await this._teardownPromise;
+        WebContainer._teardownPromise = null;
+        const { workdirName } = options;
+        if (window.crossOriginIsolated && options.coep === 'none') {
+            console.warn(`A Cross-Origin-Embedder-Policy header is required in cross origin isolated environments.\nSet the 'coep' option to 'require-corp'.`);
+        }
+        if (workdirName?.includes('/') || workdirName === '..' || workdirName === '.') {
+            throw new Error('workdirName should be a valid folder name');
+        }
+        // signal that boot was called to auth module as calling auth.init after boot is likely incorrect
+        authState.bootCalled = true;
+        // try to "acquire the lock", i.e. wait for any ongoing boot request to finish
+        while (bootPromise) {
+            await bootPromise;
+        }
+        if (WebContainer._instance) {
+            throw new Error('Only a single WebContainer instance can be booted');
+        }
+        const instancePromise = unsynchronizedBoot(options);
+        // the "lock" is a promise for the ongoing boot that never fails
+        bootPromise = instancePromise.catch(() => { });
+        try {
+            const instance = await instancePromise;
+            WebContainer._instance = instance;
+            return instance;
+        }
+        finally {
+            // release the "lock"
+            bootPromise = null;
+        }
+    }
+}
+/**
+ * Configure an API key to be used for this instance of WebContainer.
+ *
+ * @param key WebContainer API key.
+ */
+export function configureAPIKey(key) {
+    if (authState.bootCalled) {
+        throw new Error('`configureAPIKey` should always be called before `WebContainer.boot`');
+    }
+    iframeSettings.setQueryParam('client_id', key);
+}
+const DIR_ENTRY_TYPE_FILE = 1;
+const DIR_ENTRY_TYPE_DIR = 2;
+/**
+ * @internal
+ */
+class DirEntImpl {
+    name;
+    _type;
+    constructor(name, _type) {
+        this.name = name;
+        this._type = _type;
+    }
+    isFile() {
+        return this._type === DIR_ENTRY_TYPE_FILE;
+    }
+    isDirectory() {
+        return this._type === DIR_ENTRY_TYPE_DIR;
+    }
+}
+class FSWatcher {
+    _apiClient;
+    _path;
+    _options;
+    _listener;
+    _wrappedListener;
+    _watcher;
+    _closed = false;
+    constructor(_apiClient, _path, _options, _listener) {
+        this._apiClient = _apiClient;
+        this._path = _path;
+        this._options = _options;
+        this._listener = _listener;
+        this._apiClient._watchers.add(this);
+        this._wrappedListener = (event, filename) => {
+            if (this._listener && !this._closed) {
+                this._listener(event, filename);
+            }
+        };
+        this._apiClient._fs
+            .watch(this._path, this._options, proxyListener(this._wrappedListener))
+            .then((_watcher) => {
+            this._watcher = _watcher;
+            if (this._closed) {
+                return this._teardown();
+            }
+            return undefined;
+        })
+            .catch(console.error);
+    }
+    async close() {
+        if (!this._closed) {
+            this._closed = true;
+            this._apiClient._watchers.delete(this);
+            await this._teardown();
+        }
+    }
+    /**
+     * @internal
+     */
+    async _teardown() {
+        await this._watcher?.close().finally(() => {
+            this._watcher?.[Comlink.releaseProxy]();
+        });
+    }
+}
+/**
+ * @internal
+ */
+class WebContainerProcessImpl {
+    output;
+    input;
+    exit;
+    _process;
+    stdout;
+    stderr;
+    constructor(process, output, stdout, stderr) {
+        this.output = output;
+        this._process = process;
+        this.input = new WritableStream({
+            write: (data) => {
+                // this promise is not supposed to fail anyway
+                this._getProcess()
+                    ?.write(data)
+                    .catch(() => { });
+            },
+        });
+        this.exit = this._onExit();
+        this.stdout = stdout;
+        this.stderr = stderr;
+    }
+    kill() {
+        this._process?.kill();
+    }
+    resize(dimensions) {
+        this._getProcess()?.resize(dimensions);
+    }
+    async _onExit() {
+        try {
+            return await this._process.onExit;
+        }
+        finally {
+            this._process?.[Comlink.releaseProxy]();
+            this._process = null;
+        }
+    }
+    _getProcess() {
+        if (this._process == null) {
+            console.warn('This process already exited');
+        }
+        return this._process;
+    }
+}
+/**
+ * @internal
+ */
+class FileSystemAPIClient {
+    _fs;
+    _watchers = new Set([]);
+    constructor(fs) {
+        this._fs = fs;
+    }
+    rm(...args) {
+        return this._fs.rm(...args);
+    }
+    async readFile(path, encoding) {
+        return await this._fs.readFile(path, encoding);
+    }
+    async rename(oldPath, newPath) {
+        return await this._fs.rename(oldPath, newPath);
+    }
+    async writeFile(path, data, options) {
+        if (data instanceof Uint8Array) {
+            const buffer = data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
+            data = Comlink.transfer(new Uint8Array(buffer), [buffer]);
+        }
+        await this._fs.writeFile(path, data, options);
+    }
+    async readdir(path, options) {
+        const result = await this._fs.readdir(path, options);
+        if (isStringArray(result)) {
+            return result;
+        }
+        if (isTypedArrayCollection(result)) {
+            return result;
+        }
+        const entries = result.map((entry) => new DirEntImpl(entry.name, entry['Symbol(type)']));
+        return entries;
+    }
+    async mkdir(path, options) {
+        return await this._fs.mkdir(path, options);
+    }
+    watch(path, options, listener) {
+        if (typeof options === 'function') {
+            listener = options;
+            options = null;
+        }
+        return new FSWatcher(this, path, options, listener);
+    }
+    /**
+     * @internal
+     */
+    async _teardown() {
+        this._fs[Comlink.releaseProxy]();
+        await Promise.all([...this._watchers].map((watcher) => watcher.close()));
+    }
+}
+async function unsynchronizedBoot(options) {
+    const { serverPromise } = serverFactory(options);
+    const server = await serverPromise;
+    const instance = await server.build({
+        host: window.location.host,
+        version: "1.6.4",
+        workdirName: options.workdirName,
+        forwardPreviewErrors: options.forwardPreviewErrors,
+    });
+    const [fs, previewScript, runtimeInfo] = await Promise.all([
+        instance.fs(),
+        instance.previewScript(),
+        instance.runtimeInfo(),
+    ]);
+    return new WebContainer(instance, fs, previewScript, runtimeInfo);
+}
+function binaryListener(listener) {
+    if (listener == null) {
+        return undefined;
+    }
+    return (data) => {
+        if (data instanceof Uint8Array) {
+            listener(decoder.decode(data));
+        }
+        else if (data == null) {
+            listener(null);
+        }
+    };
+}
+function proxyListener(listener) {
+    if (listener == null) {
+        return undefined;
+    }
+    return Comlink.proxy(listener);
+}
+function serverFactory(options) {
+    if (cachedServerPromise != null) {
+        if (options.coep !== cachedBootOptions.coep) {
+            console.warn(`Attempting to boot WebContainer with 'coep: ${options.coep}'`);
+            console.warn(`First boot had 'coep: ${cachedBootOptions.coep}', new settings will not take effect!`);
+        }
+        return { serverPromise: cachedServerPromise };
+    }
+    if (options.coep) {
+        iframeSettings.setQueryParam('coep', options.coep);
+    }
+    if (options.experimentalNode) {
+        iframeSettings.setQueryParam('experimental_node', '1');
+    }
+    const iframe = document.createElement('iframe');
+    iframe.style.display = 'none';
+    iframe.setAttribute('allow', 'cross-origin-isolated');
+    const url = iframeSettings.url;
+    iframe.src = url.toString();
+    const { origin } = url;
+    cachedBootOptions = { ...options };
+    cachedServerPromise = new Promise((resolve) => {
+        const onMessage = (event) => {
+            if (event.origin !== origin) {
+                return;
+            }
+            const { data } = event;
+            if (data.type === 'init') {
+                resolve(Comlink.wrap(event.ports[0]));
+                return;
+            }
+            if (data.type === 'warning') {
+                console[data.level].call(console, data.message);
+                return;
+            }
+        };
+        window.addEventListener('message', onMessage);
+    });
+    document.body.insertBefore(iframe, null);
+    return { serverPromise: cachedServerPromise };
+}
+function isStringArray(list) {
+    return typeof list[0] === 'string';
+}
+function isTypedArrayCollection(list) {
+    return list[0] instanceof Uint8Array;
+}
+function streamWithPush() {
+    let controller = null;
+    const stream = new ReadableStream({
+        start(controller_) {
+            controller = controller_;
+        },
+    });
+    const push = (item) => {
+        if (item != null) {
+            controller?.enqueue(item);
+        }
+        else {
+            controller?.close();
+            controller = null;
+        }
+    };
+    return { stream, push };
+}
+function syncSubscription(listener) {
+    let stopped = false;
+    let unsubscribe = () => { };
+    const wrapped = ((...args) => {
+        if (stopped) {
+            return;
+        }
+        listener(...args);
+    });
+    return {
+        subscribe(promise) {
+            promise.then((unsubscribe_) => {
+                unsubscribe = unsubscribe_;
+                if (stopped) {
+                    unsubscribe();
+                }
+            });
+            return () => {
+                stopped = true;
+                unsubscribe();
+            };
+        },
+        listener: wrapped,
+    };
+}
