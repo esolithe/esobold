@@ -2397,6 +2397,11 @@ int llama_v2_apply_lora_from_file_internal(struct llama_v2_context * ctx, const 
             break;
         }
 
+        if (n_dims < 1 || n_dims > 2) {
+            fprintf(stderr, "%s: invalid n_dims %d in lora file\n", __func__, n_dims);
+            return 1;
+        }
+
         int32_t ne[2] = { 1, 1 };
         for (int i = 0; i < n_dims; ++i) {
             fin.read(reinterpret_cast<char *>(&ne[i]), sizeof(ne[i]));

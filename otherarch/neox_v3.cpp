@@ -271,6 +271,11 @@ ModelLoadResult gpt_neox_model_load(const std::string & fname, gpt_neox_model & 
                 break;
             }
 
+            if (n_dims < 1 || n_dims > 2) {
+                fprintf(stderr, "%s: invalid n_dims %d in model file\n", __func__, n_dims);
+                return ModelLoadResult::FAIL;
+            }
+
             int32_t nelements = 1;
             int32_t ne[2] = { 1, 1 };
             for (int i = 0; i < n_dims; ++i) {

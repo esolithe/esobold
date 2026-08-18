@@ -698,6 +698,8 @@ bool rwkv_v2_quantize_model_file(const char * model_file_path_in, const char * m
                 break;
             }
 
+            RWKV_V2_ASSERT_FALSE(n_dims >= 1 && n_dims <= 2, "Invalid tensor dimensions %d", n_dims);
+
             RWKV_V2_ASSERT_FALSE(parameter_data_type >= 0 && parameter_data_type < RWKV_V2_FORMAT_TYPE_COUNT, "Invalid parameter data type %d", parameter_data_type);
 
             ggml_v2_type parameter_ggml_v2_type = FORMAT_TYPE_TO_GGML_V2_TYPE[parameter_data_type];
