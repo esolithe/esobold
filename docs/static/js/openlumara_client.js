@@ -1,7 +1,7 @@
 /**
  * OpenlumaraClient — async wrapper around the OpenLumara WebUI REST API.
  *
- * OpenLumara (formerly OptiClaw) is a Flask-based AI chat backend served at
+ * OpenLumara (formerly OptiClaw) is a FastAPI-based AI chat backend served at
  * a configurable sub-path of the current origin.  By default all requests go
  * to  <origin>/openlumara/...
  *
@@ -46,6 +46,36 @@ class OpenlumaraClient {
             headers = { ...window.getOpenLumaraAuthHeader(), ...headers };
         }
         return headers;
+    }
+
+    _normalizeApiEnvelope(payload) {
+        if (payload && typeof payload === 'object' && Object.prototype.hasOwnProperty.call(payload, 'success') && Object.prototype.hasOwnProperty.call(payload, 'data')) {
+            return {
+                success: !!payload.success,
+                data: payload.data,
+                raw: payload,
+            };
+        }
+
+        return {
+            success: true,
+            data: payload,
+            raw: payload,
+        };
+    }
+
+    _stringifyApiData(value) {
+        if (value === null || value === undefined) {
+            return '';
+        }
+        if (typeof value === 'string') {
+            return value;
+        }
+        try {
+            return JSON.stringify(value);
+        } catch (_err) {
+            return `${value}`;
+        }
     }
 
     _emitSocketEvent(eventName, ...args) {
@@ -157,8 +187,9 @@ class OpenlumaraClient {
 
     async _sendMessageOverSocket(data, timeoutMs = 120000) {
         const payload = data && typeof data === 'object' ? data : { role: 'user', content: `${data ?? ''}` };
-        if (!payload.role) {
-            payload.role = 'user';
+        let contentText = `${payload?.content ?? ''}`;
+        if (!contentText.trim()) {
+            throw new Error('Cannot send an empty message to OpenLumara.');
         }
 
         const preState = await this.getMessages().catch(() => ({ messages: [], count: 0 }));
@@ -202,7 +233,7 @@ class OpenlumaraClient {
             this.onSocket('close', onClose);
 
             try {
-                socket.send(JSON.stringify({ type: 'user_message', content: payload }));
+                socket.send(JSON.stringify({ type: 'user_message', content: contentText }));
             } catch (err) {
                 cleanup();
                 reject(err);
@@ -232,6 +263,7 @@ class OpenlumaraClient {
     async _get(path, params) {
         const resp = await fetch(this._url(path, params), {
             headers: this._authHeaders(),
+            credentials: 'include',
         });
         if (!resp.ok) {
             const body = await resp.text().catch(() => '');
@@ -245,6 +277,7 @@ class OpenlumaraClient {
             method: 'POST',
             headers: this._authHeaders({ 'Content-Type': 'application/json', 'charset': 'utf-8' }),
             body: JSON.stringify(body_obj ?? {}),
+            credentials: 'include',
         });
         if (!resp.ok) {
             const body = await resp.text().catch(() => '');
@@ -258,6 +291,7 @@ class OpenlumaraClient {
             method: 'DELETE',
             headers: this._authHeaders({ 'Content-Type': 'application/json', 'charset': 'utf-8' }),
             body: JSON.stringify(body_obj ?? {}),
+            credentials: 'include',
         });
         if (!resp.ok) {
             const body = await resp.text().catch(() => '');
@@ -277,7 +311,39 @@ class OpenlumaraClient {
      *   error?:string, error_type?:string, action?:string}>}
      */
     async getStatus() {
-        return this._get('/api/status');
+        let connectionPayload = await this._get('/api/check_connection');
+        let connection = this._normalizeApiEnvelope(connectionPayload);
+        let connected = !!connection.success;
+
+        let model = null;
+        let modelCount = 0;
+        if (connected) {
+            try {
+                let modelsResult = await this.listModels();
+                let models = Array.isArray(modelsResult?.models) ? modelsResult.models : [];
+                modelCount = models.length;
+                let first = models[0];
+                if (typeof first === 'string') {
+                    model = first;
+                } else if (first && typeof first === 'object') {
+                    model = first.id || first.name || first.model || null;
+                }
+            } catch (_err) {
+                // Best-effort enrichment; status should still work when model listing fails.
+            }
+        }
+
+        return {
+            connected,
+            server_ok: connected,
+            model,
+            model_count: modelCount,
+            url_configured: true,
+            key_configured: true,
+            model_configured: connected,
+            error: connected ? undefined : this._stringifyApiData(connection.data) || 'not connected',
+            action: connected ? '' : 'Verify OpenLumara API settings and use reconnect.',
+        };
     }
 
     /**
@@ -285,7 +351,15 @@ class OpenlumaraClient {
      * @returns {Promise<{success:boolean, error?:string, action?:string}>}
      */
     async reconnect() {
-        return this._post('/api/reconnect');
+        let payload = await this._post('/api/reconnect');
+        let result = this._normalizeApiEnvelope(payload);
+        if (!result.success) {
+            return {
+                success: false,
+                error: this._stringifyApiData(result.data) || 'reconnect failed',
+            };
+        }
+        return { success: true };
     }
 
     /**
@@ -293,7 +367,10 @@ class OpenlumaraClient {
      * @returns {Promise<{success:boolean}>}
      */
     async disconnect() {
-        return this._post('/api/disconnect');
+        return {
+            success: false,
+            error: 'OpenLumara no longer exposes a dedicated disconnect endpoint.',
+        };
     }
 
     /**
@@ -301,7 +378,14 @@ class OpenlumaraClient {
      * @returns {Promise<{models:Array<{id:string, owned_by:string}>, error?:string}>}
      */
     async listModels() {
-        return this._get('/api/models');
+        let payload = await this._get('/api/models');
+        let result = this._normalizeApiEnvelope(payload);
+        let models = Array.isArray(result.data) ? result.data : [];
+        return {
+            models,
+            success: result.success,
+            error: result.success ? '' : this._stringifyApiData(result.data),
+        };
     }
 
     // -------------------------------------------------------------------------
@@ -313,7 +397,16 @@ class OpenlumaraClient {
      * @returns {Promise<{messages:Array, count:number, current_chat_id:string|null}>}
      */
     async getMessages() {
-        return this._get('/messages');
+        let current = await this.getCurrentChat();
+        let chat = current?.chat || {};
+        let messages = Array.isArray(chat?.messages) ? chat.messages : [];
+        return {
+            messages,
+            count: messages.length,
+            current_chat_id: chat?.id || null,
+            current_chat_title: chat?.title || '',
+            success: !!current?.success,
+        };
     }
 
     /**
@@ -323,7 +416,18 @@ class OpenlumaraClient {
      *   current_chat_id:string|null, current_chat_title:string, current_chat_tags:string[]}>}
      */
     async getMessagesSince(index) {
-        return this._get('/messages/since', { index });
+        let state = await this.getMessages();
+        let allMessages = Array.isArray(state?.messages) ? state.messages : [];
+        let firstIndex = Number.isInteger(index) ? index : 0;
+        let filtered = allMessages.filter(msg => Number.isInteger(msg?.index) ? msg.index >= firstIndex : true);
+
+        return {
+            messages: filtered,
+            count: filtered.length,
+            total: allMessages.length,
+            current_chat_id: state?.current_chat_id || null,
+            current_chat_title: state?.current_chat_title || '',
+        };
     }
 
     /**
@@ -412,7 +516,26 @@ class OpenlumaraClient {
      *   tags:string[], message_count:number, created:string, updated:string}>}>}
      */
     async listChats() {
-        return this._get('/chats');
+        const pageSize = 100;
+        let offset = 0;
+        let chats = [];
+        let hasMore = true;
+
+        while (hasMore) {
+            let payload = await this._get('/api/chats', { offset, limit: pageSize });
+            let result = this._normalizeApiEnvelope(payload);
+            if (!result.success) {
+                throw new Error(`OpenLumara list chats failed: ${this._stringifyApiData(result.data)}`);
+            }
+
+            let page = Array.isArray(result.data?.messages) ? result.data.messages : [];
+            chats.push(...page);
+
+            hasMore = !!result.data?.has_more && page.length > 0;
+            offset += page.length;
+        }
+
+        return { chats };
     }
 
     /**
@@ -422,7 +545,13 @@ class OpenlumaraClient {
      *   category:string, tags:string[], messages:Array, total:number}}>}
      */
     async loadChat(id) {
-        return this._get('/chat/load', { id });
+        let payload = await this._get(`/api/chat/load/${encodeURIComponent(id)}`);
+        let result = this._normalizeApiEnvelope(payload);
+        return {
+            success: result.success,
+            chat: result.success ? result.data : null,
+            error: result.success ? '' : this._stringifyApiData(result.data),
+        };
     }
 
     /**
@@ -430,7 +559,13 @@ class OpenlumaraClient {
      * @returns {Promise<{success:boolean, chat?:object, current_id?:null}>}
      */
     async getCurrentChat() {
-        return this._get('/chat/current');
+        let payload = await this._get('/api/chat/current');
+        let result = this._normalizeApiEnvelope(payload);
+        return {
+            success: result.success,
+            chat: result.success ? result.data : null,
+            error: result.success ? '' : this._stringifyApiData(result.data),
+        };
     }
 
     /**
@@ -439,7 +574,22 @@ class OpenlumaraClient {
      * @returns {Promise<{success:boolean, title?:string, error?:string}>}
      */
     async renameChat(title) {
-        return this._post('/chat/rename', { title });
+        let current = await this.getCurrentChat();
+        let chatId = current?.chat?.id;
+        if (!chatId) {
+            return {
+                success: false,
+                error: 'No active chat selected.',
+            };
+        }
+
+        let payload = await this._post(`/api/chat/rename/${encodeURIComponent(chatId)}`, { title });
+        let result = this._normalizeApiEnvelope(payload);
+        return {
+            success: result.success,
+            title,
+            error: result.success ? '' : this._stringifyApiData(result.data),
+        };
     }
 
     /**
@@ -451,9 +601,47 @@ class OpenlumaraClient {
      */
     async newChat(title, category) {
         const body = {};
-        if (title) body.title = title;
-        if (category) body.category = category;
-        return this._post('/chat/new', body);
+        if (category) {
+            body.category = category;
+        }
+
+        let payload = await this._post('/api/chat/new', body);
+        let result = this._normalizeApiEnvelope(payload);
+        if (!result.success) {
+            return {
+                success: false,
+                error: this._stringifyApiData(result.data),
+            };
+        }
+
+        let chatId = null;
+        if (typeof result.data === 'string') {
+            chatId = result.data;
+        } else if (result.data && typeof result.data === 'object') {
+            chatId = result.data.id || null;
+        }
+
+        if (chatId && title) {
+            await this._post(`/api/chat/rename/${encodeURIComponent(chatId)}`, { title });
+        }
+
+        let chat = null;
+        if (chatId) {
+            let loaded = await this.loadChat(chatId);
+            if (loaded?.success) {
+                chat = loaded.chat;
+            }
+        }
+
+        if (!chat) {
+            let current = await this.getCurrentChat();
+            chat = current?.chat || null;
+        }
+
+        return {
+            success: true,
+            chat,
+        };
     }
 
     /**
@@ -461,7 +649,26 @@ class OpenlumaraClient {
      * @returns {Promise<{success:boolean}>}
      */
     async clearChat() {
-        return this._post('/chat/clear');
+        let current = await this.getCurrentChat();
+        let currentId = current?.chat?.id;
+
+        if (currentId) {
+            let deleted = await this.deleteChat(currentId);
+            if (!deleted?.success) {
+                return deleted;
+            }
+        }
+
+        let created = await this.newChat();
+        if (!created?.success) {
+            return created;
+        }
+
+        return {
+            success: true,
+            replaced_chat_id: currentId || null,
+            new_chat_id: created?.chat?.id || null,
+        };
     }
 
     /**
@@ -470,7 +677,12 @@ class OpenlumaraClient {
      * @returns {Promise<{success:boolean, error?:string}>}
      */
     async deleteChat(id) {
-        return this._post('/chat/delete', { id });
+        let payload = await this._post(`/api/chat/delete/${encodeURIComponent(id)}`, {});
+        let result = this._normalizeApiEnvelope(payload);
+        return {
+            success: result.success,
+            error: result.success ? '' : this._stringifyApiData(result.data),
+        };
     }
 
     // -------------------------------------------------------------------------
@@ -521,7 +733,12 @@ class OpenlumaraClient {
      * @returns {Promise<object>}
      */
     async loadSettings() {
-        return this._get('/settings/load');
+        let payload = await this._get('/api/settings/load');
+        let result = this._normalizeApiEnvelope(payload);
+        if (!result.success) {
+            throw new Error(`OpenLumara settings load failed: ${this._stringifyApiData(result.data)}`);
+        }
+        return result.data;
     }
 
     /**
@@ -530,7 +747,9 @@ class OpenlumaraClient {
      * @returns {Promise<{success:boolean}>}
      */
     async saveSettings(config) {
-        return this._post('/settings/save', config);
+        let payload = await this._post('/api/settings/save', config);
+        let result = this._normalizeApiEnvelope(payload);
+        return { success: result.success };
     }
 
     // -------------------------------------------------------------------------
@@ -594,7 +813,9 @@ class OpenlumaraClient {
      * @returns {Promise<{success:boolean}>}
      */
     async restartServer() {
-        return this._post('/server/restart');
+        let payload = await this._post('/api/system/restart', {});
+        let result = this._normalizeApiEnvelope(payload);
+        return { success: result.success };
     }
 
     // -------------------------------------------------------------------------

@@ -4,7 +4,7 @@ let extractCodeFromElem = (el) => {
     const codeContainer = el.parentElement.querySelector('pre code');
     let innercode = codeContainer.innerText;
     //remove common language descriptiors from the start
-    let langsmatched = ["javascript", "js", "html", "xhtml"];
+    let langsmatched = ["javascript", "js", "html", "xhtml", "svg"];
     for (let i = 0; i < langsmatched.length; ++i) {
         let matcher = langsmatched[i] + "\n";
         if (innercode.startsWith(matcher)) {
@@ -74,6 +74,7 @@ let handleExecCode = (meta) => {
             break;
         case "html":
         case "xhtml":
+        case "svg":
             execHTML(code);
             break;
     }

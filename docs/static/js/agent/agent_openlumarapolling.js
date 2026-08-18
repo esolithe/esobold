@@ -9,6 +9,7 @@ window.eso.lumaraSocketStatus = "disabled";
 window.eso.lumaraSocketStatusDetail = "";
 window.eso.lumaraActiveStreamText = "";
 window.eso.lumaraActiveStreamStartedAt = 0;
+window.eso.lumaraActiveTurnStream = null;
 
 let setLumaraSocketStatus = (status, detail = "") => {
     window.eso.lumaraSocketStatus = status
@@ -21,6 +22,7 @@ let setLumaraSocketStatus = (status, detail = "") => {
 let clearLumaraVisualStream = () => {
     window.eso.lumaraActiveStreamText = ""
     window.eso.lumaraActiveStreamStartedAt = 0
+    window.eso.lumaraActiveTurnStream = null
     if (typeof window.clearAgentStreamingDisplay === "function") {
         window.clearAgentStreamingDisplay()
         return
@@ -30,54 +32,94 @@ let clearLumaraVisualStream = () => {
     }
 }
 
-let extractLumaraTokenFromSocketPayload = (payload) => {
-    let source = payload?.message && typeof payload.message === "object" ? payload.message : payload
-    
-    // Handle tool call deltas
-    if (source?.type === "tool_call_delta" && Array.isArray(source?.tool_calls) && source.tool_calls.length > 0) {
-        let parts = []
-        source.tool_calls.forEach(tc => {
-            if (tc?.function?.name) {
-                parts.push(`[${tc.function.name}]`)
-            }
-            if (tc?.function?.arguments) {
-                parts.push(`${tc.function.arguments}`)
-            }
-        })
-        return parts.join(" ")
+let getLumaraThinkTags = () => {
+    return {
+        start: `${localsettings?.start_thinking_tag || "<think>"}`,
+        stop: `${localsettings?.stop_thinking_tag || "</think>"}`,
     }
-    
-    // Handle regular content
-    return `${source?.content || source?.text || source?.token || ""}`
 }
 
-let stripDuplicatedPrefix = (existingText, incomingText) => {
-    let existing = `${existingText || ""}`
-    let incoming = `${incomingText || ""}`
-    if (!incoming) {
+let formatLumaraToolCallsText = (toolCalls) => {
+    if (!Array.isArray(toolCalls) || toolCalls.length === 0) {
         return ""
     }
-    if (existing.length > 0 && incoming.startsWith(existing)) {
-        return incoming.substring(existing.length)
-    }
-    return incoming
+    let lines = ["[Lumara tool calls]"]
+    toolCalls.forEach((call, idx) => {
+        let fnName = `${call?.function?.name || call?.name || `tool_${idx + 1}`}`
+        let fnArgs = `${call?.function?.arguments || call?.arguments || ""}`.trim()
+        let fnResp = `${call?.response || ""}`.trim()
+        lines.push(`${idx + 1}. ${fnName}${fnArgs ? `(${fnArgs})` : "()"}`)
+        if (fnResp) {
+            lines.push(`   response: ${fnResp}`)
+        }
+    })
+    return lines.join("\n")
 }
 
-let appendLumaraVisualToken = (payload) => {
-    let token = extractLumaraTokenFromSocketPayload(payload)
-    let delta = stripDuplicatedPrefix(window.eso.lumaraActiveStreamText, token)
-    if (!delta) {
+let renderLumaraTurnToText = (turnObj) => {
+    let turnMessages = Array.isArray(turnObj?.messages) ? turnObj.messages : []
+    if (turnMessages.length === 0) {
+        return ""
+    }
+
+    let reasoningParts = []
+    let contentParts = []
+    let toolParts = []
+    let tags = getLumaraThinkTags()
+
+    turnMessages.forEach(seg => {
+        let segType = `${seg?.type || ""}`.toLowerCase()
+        if (segType === "reasoning") {
+            let txt = `${seg?.reasoning_content || seg?.content || ""}`
+            if (txt) {
+                reasoningParts.push(txt)
+            }
+            return
+        }
+        if (segType === "tool_calls") {
+            let toolText = formatLumaraToolCallsText(seg?.tool_calls || [])
+            if (toolText) {
+                toolParts.push(toolText)
+            }
+            return
+        }
+        if (segType === "content") {
+            let txt = `${seg?.content || ""}`
+            if (txt) {
+                contentParts.push(txt)
+            }
+        }
+    })
+
+    let blocks = []
+    if (reasoningParts.length > 0) {
+        blocks.push(`${tags.start}${reasoningParts.join("\n\n")}${tags.stop}`)
+    }
+    if (toolParts.length > 0) {
+        blocks.push(toolParts.join("\n\n"))
+    }
+    if (contentParts.length > 0) {
+        blocks.push(contentParts.join(""))
+    }
+
+    return blocks.join("\n\n").trim()
+}
+
+let renderLumaraTurnToUi = (turnObj) => {
+    let rendered = renderLumaraTurnToText(turnObj)
+    if (!rendered) {
         return
     }
+    window.eso.lumaraActiveTurnStream = turnObj
+    window.eso.lumaraActiveStreamText = rendered
     if (!window.eso.lumaraActiveStreamStartedAt) {
         window.eso.lumaraActiveStreamStartedAt = Date.now()
         if (window.eso.lumaraSocketEnabled) {
             setLumaraSocketStatus("connected", "streaming")
         }
     }
-    window.eso.lumaraActiveStreamText += delta
     if (typeof window.updateAgentStreamingDisplay === "function") {
-        window.updateAgentStreamingDisplay(window.eso.lumaraActiveStreamText)
+        window.updateAgentStreamingDisplay(rendered)
     }
 }
 
@@ -91,6 +133,37 @@ let finalizeLumaraVisualStream = (statusDetail = "") => {
     if (window.eso.lumaraSocketEnabled && openlumaraClient?.isSocketConnected()) {
         setLumaraSocketStatus("connected", statusDetail)
     }
+}
+
+let turnHasRenderableAssistantData = (turnObj) => {
+    if (!turnObj || `${turnObj?.role || ""}` !== "assistant") {
+        return false
+    }
+    return !!renderLumaraTurnToText(turnObj)
+}
+
+let emitLumaraTurnToChat = async (turnObj) => {
+    if (!turnHasRenderableAssistantData(turnObj)) {
+        return false
+    }
+
+    let rendered = renderLumaraTurnToText(turnObj)
+    if (!rendered) {
+        return false
+    }
+
+    window.eso.currentlyProcessingFromLumara = window.eso.currentlyProcessingFromLumara.then(async () => {
+        try {
+            gametext_arr.push(createAIPrompt(`Lumara: ${rendered}`).replace(/\\\\/g, ""))
+            render_gametext()
+        } catch (err) {
+            console.error("Error rendering Lumara turn stream to chat:", err)
+        } finally {
+            return Promise.resolve()
+        }
+    })
+    await window.eso.currentlyProcessingFromLumara
+    return true
 }
 
 ensureLumaraPollingIdentity = async () => {
@@ -244,37 +317,6 @@ let processLumaraMessages = async (messages) => {
     await window.eso.currentlyProcessingFromLumara
 }
 
-let extractMessagesFromSocketPayload = (payload) => {
-    if (!payload) {
-        return []
-    }
-
-    if (Array.isArray(payload.messages)) {
-        return payload.messages.filter(msg => !!msg)
-    }
-
-    if (!!payload.message && typeof payload.message === "object") {
-        return [payload.message]
-    }
-
-    return []
-}
-
-let isLumaraDeltaBatchPayload = (payload) => {
-    let sourceType = `${payload?.source_type || ""}`.toLowerCase()
-    if (sourceType === "token" || sourceType.includes("delta") || sourceType.includes("reasoning") || sourceType.includes("content")) {
-        return true
-    }
-
-    let rawType = `${payload?.raw?.type || ""}`.toLowerCase()
-    if (rawType === "token" || rawType.includes("delta") || rawType.includes("reasoning") || rawType.includes("content")) {
-        return true
-    }
-
-    let metaType = `${payload?.raw?._meta?.type || ""}`.toLowerCase()
-    return metaType === "delta"
-}
-
 let bindLumaraSocketHandlers = () => {
     if (window.eso.lumaraSocketBoundHandlers) {
         return
@@ -295,45 +337,40 @@ let bindLumaraSocketHandlers = () => {
             setLumaraSocketStatus("error", "socket error")
             scheduleLumaraSocketReconnectLoop()
         },
-        onToken: (payload) => {
-            let streamPayload = payload?.message && typeof payload.message === "object" ? payload.message : payload
-            appendLumaraVisualToken(streamPayload)
+        onTurnStream: (payload) => {
+            let turn = payload?.turns && typeof payload.turns === "object" ? payload.turns : null
+            if (!turn) {
+                return
+            }
+            renderLumaraTurnToUi(turn)
         },
         onStreamComplete: async () => {
-            finalizeLumaraVisualStream()
             try {
-                let lastProcessed = localsettings.lastMessageProcessedFromLumara || 0
-                let nextIndex = lastProcessed > 0 ? lastProcessed + 1 : 0
-                let history = await openlumaraClient.getMessagesSince(nextIndex)
-                let messages = Array.isArray(history?.messages) ? history.messages : []
-                if (messages.length > 0) {
-                    await processLumaraMessages(messages)
+                if (window.eso.lumaraActiveTurnStream) {
+                    await emitLumaraTurnToChat(window.eso.lumaraActiveTurnStream)
                 }
             } catch (err) {
-                console.error("Error finalizing Lumara stream from history sync:", err)
+                console.error("Error finalizing Lumara turn stream:", err)
             }
+            finalizeLumaraVisualStream()
         },
         onMessageBatch: async (payload) => {
-            if (isLumaraDeltaBatchPayload(payload)) {
-                // Token/delta payloads must remain temporary visual stream only.
+            let sourceType = `${payload?.source_type || ""}`.toLowerCase()
+            if (sourceType !== "turn_stream") {
                 return
             }
-            let messages = extractMessagesFromSocketPayload(payload)
-            if (messages.length === 0) {
+            let turn = payload?.raw?.turns && typeof payload.raw.turns === "object" ? payload.raw.turns : null
+            if (!turn) {
                 return
             }
-            // If completion arrives as a message batch before stream_complete, finalize now.
-            if (window.eso.lumaraActiveStreamStartedAt || window.eso.lumaraActiveStreamText) {
-                finalizeLumaraVisualStream()
-            }
-            await processLumaraMessages(messages)
+            renderLumaraTurnToUi(turn)
         },
     }
 
     openlumaraClient.onSocket("open", window.eso.lumaraSocketBoundHandlers.onOpen)
     openlumaraClient.onSocket("close", window.eso.lumaraSocketBoundHandlers.onClose)
     openlumaraClient.onSocket("error", window.eso.lumaraSocketBoundHandlers.onError)
-    openlumaraClient.onSocket("token", window.eso.lumaraSocketBoundHandlers.onToken)
+    openlumaraClient.onSocket("turn_stream", window.eso.lumaraSocketBoundHandlers.onTurnStream)
     openlumaraClient.onSocket("stream_complete", window.eso.lumaraSocketBoundHandlers.onStreamComplete)
     openlumaraClient.onSocket("message_batch", window.eso.lumaraSocketBoundHandlers.onMessageBatch)
 }
@@ -346,7 +383,7 @@ let unbindLumaraSocketHandlers = () => {
     openlumaraClient.offSocket("open", window.eso.lumaraSocketBoundHandlers.onOpen)
     openlumaraClient.offSocket("close", window.eso.lumaraSocketBoundHandlers.onClose)
     openlumaraClient.offSocket("error", window.eso.lumaraSocketBoundHandlers.onError)
-    openlumaraClient.offSocket("token", window.eso.lumaraSocketBoundHandlers.onToken)
+    openlumaraClient.offSocket("turn_stream", window.eso.lumaraSocketBoundHandlers.onTurnStream)
     openlumaraClient.offSocket("stream_complete", window.eso.lumaraSocketBoundHandlers.onStreamComplete)
     openlumaraClient.offSocket("message_batch", window.eso.lumaraSocketBoundHandlers.onMessageBatch)
     window.eso.lumaraSocketBoundHandlers = null
