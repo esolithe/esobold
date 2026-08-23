@@ -209,6 +209,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: pwsh
         run: |
-          gh release upload kcpp_tools_rolling `
+          gh release upload rolling `
             koboldcpp_tools.zip `
             --clobber

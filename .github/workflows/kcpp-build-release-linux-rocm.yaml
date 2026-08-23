@@ -72,7 +72,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload rocm-rolling dist/koboldcpp-linux-x64-rocm --clobber
+          gh release upload rolling dist/koboldcpp-linux-x64-rocm --clobber
 
       - name: Upload version pinned tagged binary
         if: ${{ inputs.tag_name != '' }}
@@ -81,4 +81,4 @@ jobs:
           TAG_NAME: ${{ inputs.tag_name }}
         run: |
           cp dist/koboldcpp-linux-x64-rocm "dist/koboldcpp-linux-x64-rocm-${TAG_NAME}"
-          gh release upload rocm-rolling "dist/koboldcpp-linux-x64-rocm-${TAG_NAME}" --clobber
+          gh release upload rolling "dist/koboldcpp-linux-x64-rocm-${TAG_NAME}" --clobber
