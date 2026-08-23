@@ -47,6 +47,7 @@
 #include "models/baichuan.cpp"
 #include "models/bailingmoe.cpp"
 #include "models/bailingmoe2.cpp"
+#include "models/bailingmoe3.cpp"
 #include "models/bert.cpp"
 #include "models/bitnet.cpp"
 #include "models/bloom.cpp"
@@ -91,6 +92,7 @@
 #include "models/gptneox.cpp"
 #include "models/granite-hybrid.cpp"
 #include "models/granite-moe.cpp"
+#include "models/granite-swa.cpp"
 #include "models/granite-switch.cpp"
 #include "models/granite.cpp"
 #include "models/grok.cpp"
@@ -105,6 +107,7 @@
 #include "models/jamba.cpp"
 #include "models/jina-bert-v2.cpp"
 #include "models/jina-bert-v3.cpp"
+#include "models/kimi-k3.cpp"
 #include "models/kimi-linear.cpp"
 #include "models/laguna.cpp"
 #include "models/lfm2.cpp"
@@ -393,6 +396,8 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
             return new llama_model_minicpm(params);
         case LLM_ARCH_GRANITE_HYBRID:
             return new llama_model_granite_hybrid(params);
+        case LLM_ARCH_GRANITE_SWA:
+            return new llama_model_granite_swa(params);
         case LLM_ARCH_CHAMELEON:
             return new llama_model_chameleon(params);
         case LLM_ARCH_WAVTOKENIZER_DEC:
@@ -403,6 +408,8 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
             return new llama_model_bailingmoe(params);
         case LLM_ARCH_BAILINGMOE2:
             return new llama_model_bailingmoe2(params);
+        case LLM_ARCH_BAILINGMOE3:
+            return new llama_model_bailingmoe3(params);
         case LLM_ARCH_SEED_OSS:
             return new llama_model_seed_oss(params);
         case LLM_ARCH_DOTS1:
@@ -469,6 +476,8 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
             return new llama_model_mimo2(params);
         case LLM_ARCH_KIMI_LINEAR:
             return new llama_model_kimi_linear(params);
+        case LLM_ARCH_KIMI_K3:
+            return new llama_model_kimi_k3(params);
         case LLM_ARCH_STEP35:
             return new llama_model_step35(params);
         default:
@@ -966,6 +975,7 @@ const char * llm_type_name(llm_type type) {
         case LLM_TYPE_A13B:          return "A13B";
         case LLM_TYPE_7B_A1B:        return "7B.A1B";
         case LLM_TYPE_8B_A1B:        return "8B.A1B";
+        case LLM_TYPE_7_9B_A1_3B:    return "7.9B.A1.3B";
         case LLM_TYPE_12B_A2_5B:     return "12B.A2.5B";
         case LLM_TYPE_16B_A1B:       return "16B.A1B";
         case LLM_TYPE_21B_A3B:       return "21B.A3B";
@@ -982,6 +992,7 @@ const char * llm_type_name(llm_type type) {
         case LLM_TYPE_118B_A8B:      return "118B.A8B";
         case LLM_TYPE_120B_A12B:     return "120B.A12B";
         case LLM_TYPE_122B_A10B:     return "122B.A10B";
+        case LLM_TYPE_124B_A5_1B:    return "124B.A5.1B";
         case LLM_TYPE_196B_A11B:     return "196B.A11B";
         case LLM_TYPE_230B_A10B:     return "230B.A10B";
         case LLM_TYPE_428B_A23B:     return "428B.A23B";
@@ -992,6 +1003,7 @@ const char * llm_type_name(llm_type type) {
         case LLM_TYPE_397B_A17B:     return "397B.A17B";
         case LLM_TYPE_685B_A37B:     return "685B.A37B";
         case LLM_TYPE_744B_A40B:     return "744B.A40B";
+        case LLM_TYPE_2_8T_A50B:     return "2.8T.A50B";
         case LLM_TYPE_E2B:           return "E2B";
         case LLM_TYPE_E4B:           return "E4B";
         default:                     return "?B";
@@ -1297,6 +1309,7 @@ void llama_model_base::load_hparams(llama_model_loader & ml) {
     std::fill(hparams.n_ff_arr.begin(),      hparams.n_ff_arr.end(),      0);
 
     std::fill(hparams.rope_sections.begin(), hparams.rope_sections.end(), 0);
+    std::fill(hparams.rope_pattern.begin(),  hparams.rope_pattern.end(), 1);
     std::fill(hparams.is_swa_impl.begin(),   hparams.is_swa_impl.end(), 0);
     std::fill(hparams.is_recr_impl.begin(),  hparams.is_recr_impl.end(),  llm_arch_is_recurrent(ml.get_arch()) ? 1 : 0);
     std::fill(hparams.is_indexer_full_impl.begin(), hparams.is_indexer_full_impl.end(), 0);
@@ -2104,7 +2117,7 @@ void llama_model::print_info() const {
             LLAMA_LOG_INFO("%s: expert_weights_norm   = %d\n",     __func__, hparams.expert_weights_norm);
         }
 
-        if (arch == LLM_ARCH_BAILINGMOE2) {
+        if (arch == LLM_ARCH_BAILINGMOE2 || arch == LLM_ARCH_BAILINGMOE3) {
             LLAMA_LOG_INFO("%s: n_layer_dense_lead    = %d\n",     __func__, hparams.n_layer_dense_lead);
             LLAMA_LOG_INFO("%s: n_ff_exp              = %d\n",     __func__, hparams.n_ff_exp);
             LLAMA_LOG_INFO("%s: n_ff_shexp            = %d\n",     __func__, hparams.n_ff_shexp);
@@ -2399,11 +2412,11 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
         // checks
         default:
             {
-                // The MTP head is dense-attention only on hybrid Qwen3-Next/3.5/3.6, so use a plain
-                // attention KV cache for the MTP context instead of the hybrid wrapper.
+                // Dense MTP heads use a plain attention KV cache instead of the hybrid wrapper.
                 const bool mtp_on_hybrid_qwen =
                     params.ctx_type == LLAMA_CONTEXT_TYPE_MTP &&
-                    (arch == LLM_ARCH_QWEN3NEXT || arch == LLM_ARCH_QWEN35 || arch == LLM_ARCH_QWEN35MOE);
+                    (arch == LLM_ARCH_QWEN3NEXT || arch == LLM_ARCH_QWEN35 || arch == LLM_ARCH_QWEN35MOE ||
+                     arch == LLM_ARCH_BAILINGMOE3);
 
                 const bool mtp_on_hybrid_nemotron =
                     params.ctx_type == LLAMA_CONTEXT_TYPE_MTP && arch == LLM_ARCH_NEMOTRON_H_MOE;
@@ -2749,6 +2762,7 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
         case LLM_ARCH_NEMOTRON_H:
         case LLM_ARCH_NEMOTRON_H_MOE:
         case LLM_ARCH_KIMI_LINEAR:
+        case LLM_ARCH_KIMI_K3:
             return LLAMA_ROPE_TYPE_NONE;
 
         // use what we call a normal RoPE, operating on pairs of consecutive head values
@@ -2778,8 +2792,10 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
         case LLM_ARCH_GRANITE_MOE:
         case LLM_ARCH_GRANITE_HYBRID:
         case LLM_ARCH_GRANITE_SWITCH:
+        case LLM_ARCH_GRANITE_SWA:
         case LLM_ARCH_CHAMELEON:
         case LLM_ARCH_BAILINGMOE:
+        case LLM_ARCH_BAILINGMOE3:
         case LLM_ARCH_NEO_BERT:
         case LLM_ARCH_SMOLLM3:
         case LLM_ARCH_ARCEE:

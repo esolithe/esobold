@@ -89,7 +89,7 @@ dry_seq_break_max = 128
 extra_images_max = 4 # for kontext/qwen img
 
 # global vars
-KcppVersion = "1.119"
+KcppVersion = "1.120"
 showdebug = True
 kcpp_instance = None #global running instance
 global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "currentBaseConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "base_config":"", "swapReqType": None, "autoswapmode": False, "autoswapSettings": {}, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}, "restart_override_base_config": "", "current_model_override": "", "OpenLumara": False}
@@ -5686,7 +5686,7 @@ ws ::= | " " | "\n" [ \t]{0,20}
                     prompt = replace_last_in_string(prompt,"{{[OUTPUT]}}",assistant_message_gen)
                 elif "{{[OUTPUT]}}" in memory:
                     memory = replace_last_in_string(memory,"{{[OUTPUT]}}",assistant_message_gen)
-                elif assistant_message_start and prompt.rstrip().endswith(assistant_message_start):
+                elif assistant_message_start and not assistant_message_gen.endswith(assistant_message_start) and prompt.rstrip().endswith(assistant_message_start):
                     prompt = replace_last_in_string(prompt, assistant_message_start, assistant_message_gen)
             if "{{[INPUT_END]}}" in prompt or "{{[OUTPUT_END]}}" in prompt:
                 prompt = prompt.replace("{{[INPUT]}}", user_message_start)
@@ -14238,7 +14238,7 @@ def show_gui():
                             gpu_choice_var.set(str(opt))
                             break
 
-        elif ("noavx2" in mydict and "usecpu" in mydict and mydict["usecpu"] and mydict["noavx2"]) or ("failsafe" in mydict and mydict["failsafe"]):
+        elif ("failsafe" in mydict and mydict["failsafe"]):
             if failsafe_option is not None:
                 runopts_var.set(failsafe_option)
         elif "noavx2" in mydict and mydict["noavx2"]:
