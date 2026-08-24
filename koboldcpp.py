@@ -335,6 +335,7 @@ class load_model_inputs(ctypes.Structure):
                 ("visionmaxtokens", ctypes.c_int),
                 ("use_mmap", ctypes.c_bool),
                 ("use_mlock", ctypes.c_bool),
+                ("use_direct_io", ctypes.c_bool),
                 ("no_host", ctypes.c_bool),
                 ("use_mtp", ctypes.c_bool),
                 ("use_smartcontext", ctypes.c_bool),
@@ -2060,6 +2061,7 @@ def load_model(model_filename):
     inputs.blasthreads = args.blasthreads
     inputs.use_mmap = args.usemmap
     inputs.use_mlock = args.usemlock
+    inputs.use_direct_io = args.usedirectio
     inputs.no_host = False
     inputs.use_mtp = args.usemtp
     inputs.lora_filename = "".encode("UTF-8")
@@ -12583,6 +12585,7 @@ def show_gui():
     highpriority = ctk.IntVar()
     usemmap = ctk.IntVar(value=0)
     usemlock = ctk.IntVar()
+    usedirectio = ctk.IntVar()
     debugmode = ctk.IntVar()
     keepforeground = ctk.IntVar()
     terminalonly = ctk.IntVar()
@@ -13297,6 +13300,7 @@ def show_gui():
     quick_boxes = {
         "Launch Browser": [launchbrowser, "Launches your default browser after model loading is complete"],
         "Use MMAP": [usemmap,  "Use mmap to load models if enabled, model will not be unloadable"],
+        "Direct I/O": [usedirectio, "Use direct I/O when loading GGUF models. May improve cold-load times on some storage."],
         "Use ContextShift": [contextshift_var, "Uses Context Shifting to reduce reprocessing.\nRecommended. Check the wiki for more info."],
         "Remote Tunnel": [remotetunnel_var,  "Creates a trycloudflare tunnel.\nAllows you to access koboldcpp from other devices over an internet URL."],
         "Use FlashAttention": [flashattention_var, "Enable flash attention for GGUF models."],
@@ -13355,6 +13359,7 @@ def show_gui():
         "High Priority": [highpriority, "Increases the koboldcpp process priority.\nMay cause lag or slowdown instead. Not recommended."],
         "Use MMAP": [usemmap, "Use mmap to load models if enabled, model will not be unloadable"],
         "Use mlock": [usemlock, "Enables mlock, preventing the RAM used to load the model from being paged out."],
+        "Direct I/O": [usedirectio, "Use direct I/O when loading GGUF models. May improve cold-load times on some storage."],
         "Debug Mode": [debugmode, "Enables debug mode, with extra info printed to the terminal."],
         "Keep Foreground": [keepforeground, "Bring KoboldCpp to the foreground every time there is a new generation."],
         "CLI Terminal Only": [terminalonly, "Does not launch KoboldCpp HTTP server. Instead, enables KoboldCpp from the command line, accepting interactive console input and displaying responses to the terminal."],
@@ -13901,7 +13906,8 @@ def show_gui():
         args.debugmode  = debugmode.get()
         args.launch     = launchbrowser.get()==1
         args.highpriority = highpriority.get()==1
-        args.usemmap = usemmap.get()==1
+        args.usedirectio = usedirectio.get()==1
+        args.usemmap = (usemmap.get()==1 and not args.usedirectio)
         args.smartcontext = smartcontext_var.get()==1
         args.noflashattention = flashattention_var.get()==0
         args.noshift = contextshift_var.get()==0
@@ -13957,6 +13963,7 @@ def show_gui():
             args.noavx2 = True
             args.usecpu = True
             args.usemmap = False
+            args.usedirectio = False
             args.failsafe = True
         args.tensor_split = None
         if tensor_split_str_vars.get()!="":
@@ -14172,7 +14179,8 @@ def show_gui():
             debugmode.set(mydict["debugmode"])
         launchbrowser.set(1 if "launch" in mydict and mydict["launch"] else 0)
         highpriority.set(1 if "highpriority" in mydict and mydict["highpriority"] else 0)
-        usemmap.set(1 if "usemmap" in mydict and mydict["usemmap"] else 0)
+        usedirectio.set(1 if (("usedirectio" in mydict and mydict["usedirectio"]) or ("directio" in mydict and mydict["directio"])) else 0)
+        usemmap.set(1 if "usemmap" in mydict and mydict["usemmap"] and not usedirectio.get() else 0)
         smartcontext_var.set(1 if "smartcontext" in mydict and mydict["smartcontext"] else 0)
         flashattention_var.set(0 if "noflashattention" in mydict and mydict["noflashattention"] else 1)
         contextshift_var.set(0 if "noshift" in mydict and mydict["noshift"] else 1)
@@ -15149,6 +15157,7 @@ def convert_args_to_template(savdict):
     savdict["adminpassword"] = None
     savdict["usemmap"] = False
     savdict["usemlock"] = False
+    savdict["usedirectio"] = False
     savdict["debugmode"] = 0
     savdict["ssl"] = None
     savdict["usecuda"] = None
@@ -17332,6 +17341,7 @@ if __name__ == '__main__':
     advparser.add_argument("--usemlock","--mlock", help="Enables mlock, preventing the RAM used to load the model from being paged out. Not usually recommended.", action='store_true')
     compatgroup3 = advparser.add_mutually_exclusive_group()
     compatgroup3.add_argument("--usemmap", help="If set, uses mmap to load model.", action='store_true')
+    compatgroup3.add_argument("--usedirectio","--directio","--direct-io","-dio", help="Use direct I/O to load GGUF models if available. May improve cold-load times on some storage.", action='store_true')
     advparser.add_argument("--visionmaxres", metavar=('[max px]'), help="Clamp MMProj vision maximum allowed resolution. Allowed values are between 512 to 2048 px (default 1024).", type=int, default=default_visionmaxres)
     advparser.add_argument("--visionmaxtokens","--image-max-tokens", metavar=('[tokens]'), help="Override the maximum tokens for the MMProj embedding (default -1).", type=int, default=-1)
     advparser.add_argument("--visionmintokens","--image-min-tokens", metavar=('[tokens]'), help="Override the minimum tokens for the MMProj embedding (default -1).", type=int, default=-1)

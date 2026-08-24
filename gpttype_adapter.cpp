@@ -3274,11 +3274,22 @@ ModelLoadResult gpttype_load_model(const load_model_inputs inputs, FileFormat in
             // Match llama-server's target rollback slots for speculative verification.
             llama_ctx_params.n_rs_seq = inputs.draft_amount;
         }
-        model_params.load_mode = inputs.use_mlock ? LLAMA_LOAD_MODE_MLOCK : (inputs.use_mmap ? LLAMA_LOAD_MODE_MMAP : LLAMA_LOAD_MODE_NONE);
+        if(inputs.use_direct_io)
+        {
+            model_params.load_mode = LLAMA_LOAD_MODE_DIRECT_IO;
+        }
+        else if(inputs.use_mlock)
+        {
+            model_params.load_mode = inputs.use_mmap ? LLAMA_LOAD_MODE_MMAP_MLOCK : LLAMA_LOAD_MODE_MLOCK;
+        }
+        else
+        {
+            model_params.load_mode = inputs.use_mmap ? LLAMA_LOAD_MODE_MMAP : LLAMA_LOAD_MODE_NONE;
+        }
         model_params.n_gpu_layers = inputs.gpulayers;
         model_params.no_host = inputs.no_host;
         model_params.load_mtp = inputs.use_mtp;
-        kcpp_permit_any_repack = (inputs.use_mmap?false:true);
+        kcpp_permit_any_repack = !(inputs.use_mmap || inputs.use_direct_io);
 
         //set device overrides if needed
         std::vector<ggml_backend_dev_t> devices_override;

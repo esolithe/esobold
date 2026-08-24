@@ -51,6 +51,7 @@ struct load_model_inputs
     const int visionmaxtokens = -1;
     const bool use_mmap = false;
     const bool use_mlock = false;
+    const bool use_direct_io = false;
     const bool no_host = false;
     const bool use_mtp = false;
     const bool use_smartcontext = false;
