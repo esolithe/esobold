@@ -119,6 +119,43 @@ let generateAndStreamFromKCPP = async (prompt, grammar, bannedTokens, onToken) =
     return accum
 }
 
+let addReasoningToOAIPayload = (payload) => {
+    if (custom_oai_endpoint && oai_submit_endpoint) {
+        let targetep = apply_proxy_url(custom_oai_endpoint + oai_submit_endpoint);
+        let cannotreason = (targetep.toLowerCase().includes("text.pollinations.ai") || targetep.toLowerCase().includes("api.novita.ai"));
+        if(!cannotreason)
+        {
+            let reasoneffort = localsettings.reasoning_effort;
+            if (targetep.toLowerCase().includes("api.nvidia.com")) {
+                if (reasoneffort=="minimal")
+                {
+                    reasoneffort = "low";
+                }
+                if (reasoneffort != "low" && reasoneffort != "medium" && reasoneffort != "high") //only accepts low, medium and high
+                {
+                    reasoneffort = "";
+                }
+            }
+            if(reasoneffort && reasoneffort!="")
+            {
+                if(targetep.toLowerCase().includes("openrouter.ai"))
+				{
+					payload.reasoning = {"enabled":(reasoneffort=="none"?false:true)};
+                    if(reasoneffort!="none")
+                    {
+                        payload.reasoning.effort = reasoneffort;
+                    }
+				}
+                else
+                {
+                    payload.reasoning_effort = reasoneffort;
+                }
+            }
+        }
+    }
+    return payload
+}
+
 let callOAIChatCompletions = async (messages, tools, toolChoice) => {
     let payload = {
         model: (localsettings.custom_oai_model || ""),
@@ -129,7 +166,7 @@ let callOAIChatCompletions = async (messages, tools, toolChoice) => {
         max_tokens: localsettings.max_length,
         stream: false
     }
-    finalize_submit_payload(payload, true)
+    payload = addReasoningToOAIPayload(payload)
     let reqOpt = {
         method: 'POST',
         headers: get_kobold_header(),
@@ -338,7 +375,7 @@ let callOAIChatCompletionsStream = async (messages, tools, toolChoice, onToken =
         max_tokens: localsettings.max_length,
         stream: true
     }
-    finalize_submit_payload(payload, true)
+    payload = addReasoningToOAIPayload(payload)
     let reqOpt = {
         method: 'POST',
         headers: get_kobold_header(),
