@@ -129,6 +129,7 @@ let callOAIChatCompletions = async (messages, tools, toolChoice) => {
         max_tokens: localsettings.max_length,
         stream: false
     }
+    finalize_submit_payload(payload, true)
     let reqOpt = {
         method: 'POST',
         headers: get_kobold_header(),
@@ -337,6 +338,7 @@ let callOAIChatCompletionsStream = async (messages, tools, toolChoice, onToken =
         max_tokens: localsettings.max_length,
         stream: true
     }
+    finalize_submit_payload(payload, true)
     let reqOpt = {
         method: 'POST',
         headers: get_kobold_header(),
@@ -973,11 +975,73 @@ repack_instruct_turns = (input, usertag, aitag, systag, allow_blank, filterOutAc
     }
 };
 
+let handleReasoningStripping = (text) => {
+    let truncated_context = text;
+    //remove past thoughts
+    if(get_thinking_regex()!="") //removal of cot
+    {
+        if(localsettings.strip_thinking_mode==2) //strip all thinking
+        {
+            let pat = new RegExp(get_thinking_regex(), "gm");
+            truncated_context = truncated_context.replace(pat, "");
+
+            //fallback, check for orphaned think tags and remove those as well
+            if(localsettings.opmode==4)
+            {
+                let orphans = hardcoded_think_closers.slice();
+                orphans.push(localsettings.stop_thinking_tag);
+                for(let t=0;t<orphans.length;++t)
+                {
+                    let currtag = orphans[t];
+                    if(localsettings.opmode==4 && currtag && truncated_context.includes(currtag))
+                    {
+                        let endmatcher = get_instructendplaceholder();
+                        let pat = new RegExp(get_orphaned_thinking_regex(currtag), "gm");
+                        truncated_context = truncated_context.replace(pat, endmatcher);
+                        break;
+                    }
+                }
+            }
+        }
+        else if(localsettings.strip_thinking_mode==1) //strip except recent
+        {
+            let endmatcher = get_instructendplaceholder();
+            let lastInstructIdx = truncated_context.lastIndexOf(endmatcher);
+            if (lastInstructIdx !== -1) {
+                let beforePart = truncated_context.slice(0, lastInstructIdx); // Split into two parts
+                let afterPart = truncated_context.slice(lastInstructIdx);
+                let pat = new RegExp(get_thinking_regex(), "gm");	// Remove all thinking before splitpoint
+                beforePart = beforePart.replace(pat, "");
+
+                if(localsettings.opmode==4)
+                {
+                    //fallback, check for orphaned think tags and remove those as well
+                    let orphans = hardcoded_think_closers.slice();
+                    orphans.push(localsettings.stop_thinking_tag);
+                    for(let t=0;t<orphans.length;++t)
+                    {
+                        let currtag = orphans[t];
+                        if(localsettings.opmode==4 && currtag && beforePart.includes(currtag))
+                        {
+                            let pat = new RegExp(get_orphaned_thinking_regex(currtag), "gm");
+                            beforePart = beforePart.replace(pat, endmatcher);
+                            break;
+                        }
+                    }
+                }
+
+                truncated_context = beforePart + afterPart; // Combine and done
+            }
+        }
+    }
+    return truncated_context;
+}
+
 let getLastActions = (amountOfActions = 10, excludeSpecificMessagePrefixes = []) => {
     let exclusions = ["Chain of thought repetition detected - ending", "Chain of thought complete", "plan_actions"]
     // , "Action: {", "Action (words =", "Action taken: ", "Action taken (words ="
     // "Action: {", "Action (words =", "Action taken: ", "Action taken (words ="
-    return repack_instruct_turns(concat_gametext(true), `{{[INPUT]}}`, `{{[OUTPUT]}}`, `{{[SYSTEM]}}`, true, false, excludeSpecificMessagePrefixes).map(msg => {
+    return repack_instruct_turns(handleReasoningStripping(concat_gametext(true)), `{{[INPUT]}}`, `{{[OUTPUT]}}`, `{{[SYSTEM]}}`, true, false, excludeSpecificMessagePrefixes).map(msg => {
         msg.msg = msg.msg.replaceAll("{{[SYSTEM_END]}}", "").replaceAll("{{[INPUT_END]}}", "").replaceAll("{{[OUTPUT_END]}}", "").trim();
         return msg
     }).filter(msg => !/^\n*$/.test(msg.msg) && !!msg.msg && !exclusions.find(exclusion => msg.msg.indexOf(exclusion) !== -1)).splice(-amountOfActions)
@@ -1907,11 +1971,11 @@ let runAgentCycle = async (agentRunState = {}) => {
                 return toolResultText
             }
 
-            let planningPrompt = "The last action from the user is the instruction. If you need to ask the user for a response, use userInput as the final action. Produce a list of actions to respond to this instruction."
+            let planningPrompt = "The last action from the user is the instruction. Produce a list of actions to respond to this instruction."
             if (!!agentRunState?.agentName) {
-                planningPrompt += ` You must respond as ${agentRunState.agentName} when using the send_message or userInput actions.`
+                planningPrompt += ` You must respond as ${agentRunState.agentName}.`
             } else if (localsettings.inject_chatnames_instruct) {
-                planningPrompt += ` You must respond as ${localsettings.chatopponent.split("||$||").join(" or ")} when using the send_message or userInput actions.`
+                planningPrompt += ` You must respond as ${localsettings.chatopponent.split("||$||").join(" or ")}.`
             }
 
             if (!agentRunState?.planToUse && !shouldSkipPlanningStep) {
@@ -2025,7 +2089,7 @@ let runAgentCycle = async (agentRunState = {}) => {
                 }
 
                 let promptOverview = currentOrderOfActionDescriptionsOverall.length > i ? currentOrderOfActionDescriptionsOverall[i] : null
-                if (!promptOverview && i === 0 && currentOrderOfActionsOverall.length === 0) {
+                if (!promptOverview && i === 0 && currentOrderOfActionsOverall.length === 0 && !shouldSkipPlanningStep) {
                     promptOverview = planningPrompt
                 }
                 currentChainOfThought = currentChainOfThought.splice(-localsettings.agentMaxActionsInHistory)
@@ -2061,8 +2125,15 @@ let runAgentCycle = async (agentRunState = {}) => {
                 if (typeof execResult?.thinking_text === "string" && execResult.thinking_text.trim().length > 0) {
                     addThought(currentChainOfThought, createAIPrompt, execResult.thinking_text, true)
                 }
+                if (typeof agentRunState?.agentVisualiser === "function") {
+                    await agentRunState.agentVisualiser(objRefAssign({ agentRunState }, agentRunState))
+                }
+                if (!!agentRunState?.printToConsole && agentRunState?.logger !== undefined)
+                {
+                    agentRunState.logger.printPendingLogs()
+                }
 
-                if (execResult.content && (!execResult.tool_calls || execResult.tool_calls.length === 0)) {
+                if (execResult.content && (execResult.tool_calls === undefined || !Array.isArray(execResult.tool_calls) || execResult.tool_calls.length === 0)) {
                     if (execResult.finish_reason === "length") {
                         addThought(currentChainOfThought, createSysPrompt, "Response cut off due to length. Ending chain of thought.", true)
                     }
@@ -2071,13 +2142,7 @@ let runAgentCycle = async (agentRunState = {}) => {
                         addThought(currentChainOfThought, createAIPrompt, execResult.content)
                         oaiPersistedMessages.push({ role: "assistant", content: execResult.content })
                     }
-                    if (typeof agentRunState?.agentVisualiser === "function") {
-                        await agentRunState.agentVisualiser(objRefAssign({ agentRunState }, agentRunState))
-                    }
-                    if (!!agentRunState?.printToConsole && agentRunState?.logger !== undefined)
-                    {
-                        agentRunState.logger.printPendingLogs()
-                    }
+
                     isCompleted = true
                     break
                 }
@@ -2104,6 +2169,20 @@ let runAgentCycle = async (agentRunState = {}) => {
                                 argsLen: tc?.function?.arguments?.length || 0,
                                 argsPreview: (tc?.function?.arguments || "")
                             })
+                            addThought(currentChainOfThought, createSysPrompt, `[OAI stream] failed to parse execution tool arguments: ${objToText({
+                                error: `${e}`,
+                                toolCallId: tc?.id || null,
+                                functionName: tc?.function?.name || null,
+                                argsLen: tc?.function?.arguments?.length || 0,
+                                argsPreview: (tc?.function?.arguments || "")
+                            })}`)
+                            if (typeof agentRunState?.agentVisualiser === "function") {
+                                await agentRunState.agentVisualiser(objRefAssign({ agentRunState }, agentRunState))
+                            }
+                            if (!!agentRunState?.printToConsole && agentRunState?.logger !== undefined)
+                            {
+                                agentRunState.logger.printPendingLogs()
+                            }
                         }
                     }
 
@@ -2115,6 +2194,13 @@ let runAgentCycle = async (agentRunState = {}) => {
 
                     if (!validCommands.includes(tc.function.name) && tc.function.name !== "plan_actions" && tc.function.name !== "stop_thinking") {
                         addThought(currentChainOfThought, createSysPrompt, `Invalid command requested: ${tc.function.name}`)
+                        if (typeof agentRunState?.agentVisualiser === "function") {
+                            await agentRunState.agentVisualiser(objRefAssign({ agentRunState }, agentRunState))
+                        }
+                        if (!!agentRunState?.printToConsole && agentRunState?.logger !== undefined)
+                        {
+                            agentRunState.logger.printPendingLogs()
+                        }
                         shouldAbortExecution = true
                         break
                     }
@@ -2209,7 +2295,7 @@ let runAgentCycle = async (agentRunState = {}) => {
             objRefOverride(agentRunState, { currentChainOfThought, recentActions })
 
             let promptOverview = currentOrderOfActionDescriptionsOverall.length > 0 ? currentOrderOfActionDescriptionsOverall[i - 1] : null
-            if (i === 0) {
+            if (i === 0 && !shouldSkipPlanningStep) {
                 let planningPrompt = "The last action from the user is the instruction. If you need to ask the user for a response, the action userInput must be used and be put as the final action in the order. When handling images always use actions to get information when needed especially for descriptions. Use describe_clicked_image only for images the user clicks in chat, and use describe_fs_image only when a fs file path is available. Produces a list of actions to respond to this instruction."
                 if (!!agentRunState?.agentName) {
                     planningPrompt += ` You must respond as ${agentRunState.agentName} when using the send_message or userInput actions. Choose the person based on the user's instruction.`
