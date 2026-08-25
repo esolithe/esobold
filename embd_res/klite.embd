@@ -35092,6 +35092,7 @@ Current version indicated by LITEVER below.
 <script src="static/js/agentUtils.js"></script>
 <script src="static/js/reloadUtils.js"></script>
 <link rel="stylesheet" type="text/css" href="static/css/agent.css" />
+<script src="static/js/agent/agent_stream_visualizer.js"></script>
 <script src="static/js/agent.js"></script>
 <script src="static/js/newMenuOptions.js"></script>
 <script src="static/js/newMediaButtons.js"></script>
