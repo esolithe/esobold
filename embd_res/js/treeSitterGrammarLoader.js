@@ -74,6 +74,11 @@ export async function loadGrammar(languageName) {
 
 export async function prepParserForLanguage(languageName) {
     let language = await loadGrammar(languageName);
+    let languageLoadErrored = await language.then(s => false, e => true);
+    if (languageLoadErrored) {
+        console.error(`Failed to load language grammar for ${languageName}`, languageLoadErrored);
+        throw new Error(`Failed to load language grammar for ${languageName}`);
+    }
     parser.setLanguage(language);
     return parser;
 }
