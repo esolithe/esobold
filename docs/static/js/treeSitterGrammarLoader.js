@@ -52,9 +52,15 @@ const parser = new Parser();
 let languageLoadPromises = {};
 
 export async function loadGrammar(languageName) {
+    setupGlobalThisPolyfill()
     const wasmPath = `static/js/ext/wasm/tree-sitter-${languageName}.wasm`;
     if (languageLoadPromises[wasmPath]) {
-        return languageLoadPromises[wasmPath];
+        let errored = await languageLoadPromises[wasmPath].then(s => false, e => true);
+        if (errored) {
+            delete languageLoadPromises[wasmPath];
+        } else {
+            return languageLoadPromises[wasmPath];
+        }
     }
 
     const loadPromise = Language.load(wasmPath).then((Language) => {
@@ -68,6 +74,11 @@ export async function loadGrammar(languageName) {
 
 export async function prepParserForLanguage(languageName) {
     let language = await loadGrammar(languageName);
+    let languageLoadErrored = await language.then(s => false, e => true);
+    if (languageLoadErrored) {
+        console.error(`Failed to load language grammar for ${languageName}`, languageLoadErrored);
+        throw new Error(`Failed to load language grammar for ${languageName}`);
+    }
     parser.setLanguage(language);
     return parser;
 }
@@ -270,11 +281,15 @@ window.detectWarnings = detectWarnings;
 
 // await getSymbols(fileExtensionToLanguageName("js"), test)
 
-window.addEventListener('load', async () => {
+function setupGlobalThisPolyfill() {
     // Polyfill for globalThis.process.versions.node in browsers (used by tree-sitter)
     if (typeof globalThis?.process?.versions === 'undefined') {
         window.globalThis = window.globalThis || {};
         globalThis.process = globalThis.process || {};
         globalThis.process.versions = {node: false};
     }
+}
+
+window.addEventListener('load', async () => {
+    setupGlobalThisPolyfill()
 });

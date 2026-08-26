@@ -715,10 +715,10 @@ window.addEventListener('load', () => {
     ])
     agentElems.push(settingLabelElem)
 
-    settingLabelElem = createSettingElemBool("agentUseOAITools", "Use OpenAI tools for command selection", "When enabled, the agent uses the OpenAI-compatible /v1/chat/completions endpoint with tool calling to select commands, instead of grammar-constrained generation. Requires a KoboldCpp endpoint that supports the OpenAI tools API. The agent performs a planning step (using plan_actions as a tool) followed by executing each planned step.")
+    settingLabelElem = createSettingElemBool("agentUseOAITools", "Use OpenAI tools for command selection", "When enabled, the agent uses the OpenAI-compatible /v1/chat/completions endpoint with tool calling to select commands, instead of grammar-constrained generation. Requires a KoboldCpp endpoint that supports the OpenAI tools API. Stream rendering supports interleaved thinking, text, and multiple tool-call deltas.")
     agentElems.push(settingLabelElem)
 
-    settingLabelElem = createSettingElemBool("agentSkipPlanningStep", "Skip agent planning step", "When enabled, the agent skips the initial plan_actions step and selects commands directly each cycle. Explicit plans provided by macros still run normally.")
+    settingLabelElem = createSettingElemBool("agentSkipPlanningStep", "Skip agent planning step", "When enabled, the agent skips the initial plan_actions step and selects commands directly from the user prompt each cycle. The model can either call tools or return direct text. Explicit plans provided by macros still run normally.")
     agentElems.push(settingLabelElem)
 
     settingLabelElem = createSettingElemRange("agentMaxActionsInHistory", "Maximum actions in history", "Defines the maximum number of previous actions to load into the current context. This value should be higher than the 'Maximum agent actions per plan' option to maintain history.", 0, 50, 1, 30)
