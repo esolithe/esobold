@@ -9055,6 +9055,27 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                                             await self.send_oai_sse_event('[DONE]')
                                             await asyncio.sleep(async_sleep_short)
                                             self.wfile.flush()
+
+                                            # If generation is still running, abort it now so the request
+                                            # handler does not wait for a long tail before socket close.
+                                            if not streamDone:
+                                                try:
+                                                    if using_batch_stream:
+                                                        handle.batch_generate_abort(batch_request_id)
+                                                    else:
+                                                        handle.abort_generate()
+                                                except Exception as _tc_abort_err:
+                                                    if args.developerMode and args.debugmode >= 1:
+                                                        print(f"[TC] early stream abort failed: {_tc_abort_err}")
+
+                                                # Briefly wait for upstream stop acknowledgement to reduce
+                                                # racey tail delays before the request coroutine unwinds.
+                                                for _ in range(75):
+                                                    _aborted_done = handle.batch_generate_has_finished(batch_request_id) if using_batch_stream else handle.has_finished()
+                                                    if _aborted_done:
+                                                        break
+                                                    await asyncio.sleep(async_sleep_short)
+
                                             await asyncio.sleep(0.1)
                                             self.close_connection = True
                                             await asyncio.sleep(0.05)

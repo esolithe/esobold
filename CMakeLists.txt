@@ -513,6 +513,8 @@ set_target_properties(ggml_v3 PROPERTIES POSITION_INDEPENDENT_CODE ON)
 add_library(common2
             common/common.cpp
             common/common.h
+            common/json.cpp
+            common/json.h
             common/speculative.cpp
             common/speculative.h
             common/sampling.cpp

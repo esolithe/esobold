@@ -119,6 +119,43 @@ let generateAndStreamFromKCPP = async (prompt, grammar, bannedTokens, onToken) =
     return accum
 }
 
+let addReasoningToOAIPayload = (payload) => {
+    if (custom_oai_endpoint && oai_submit_endpoint) {
+        let targetep = apply_proxy_url(custom_oai_endpoint + oai_submit_endpoint);
+        let cannotreason = (targetep.toLowerCase().includes("text.pollinations.ai") || targetep.toLowerCase().includes("api.novita.ai"));
+        if(!cannotreason)
+        {
+            let reasoneffort = localsettings.reasoning_effort;
+            if (targetep.toLowerCase().includes("api.nvidia.com")) {
+                if (reasoneffort=="minimal")
+                {
+                    reasoneffort = "low";
+                }
+                if (reasoneffort != "low" && reasoneffort != "medium" && reasoneffort != "high") //only accepts low, medium and high
+                {
+                    reasoneffort = "";
+                }
+            }
+            if(reasoneffort && reasoneffort!="")
+            {
+                if(targetep.toLowerCase().includes("openrouter.ai"))
+				{
+					payload.reasoning = {"enabled":(reasoneffort=="none"?false:true)};
+                    if(reasoneffort!="none")
+                    {
+                        payload.reasoning.effort = reasoneffort;
+                    }
+				}
+                else
+                {
+                    payload.reasoning_effort = reasoneffort;
+                }
+            }
+        }
+    }
+    return payload
+}
+
 let callOAIChatCompletions = async (messages, tools, toolChoice) => {
     let payload = {
         model: (localsettings.custom_oai_model || ""),
@@ -129,6 +166,7 @@ let callOAIChatCompletions = async (messages, tools, toolChoice) => {
         max_tokens: localsettings.max_length,
         stream: false
     }
+    payload = addReasoningToOAIPayload(payload)
     let reqOpt = {
         method: 'POST',
         headers: get_kobold_header(),
@@ -163,7 +201,164 @@ let getToolCallDebugSummary = (tc) => {
     }
 }
 
-let callOAIChatCompletionsStream = async (messages, tools, toolChoice, onToken, logger = null) => {
+let parseDeltaContentSegments = (deltaContent) => {
+    if (typeof deltaContent === "string") {
+        return [{ type: "content", text: deltaContent }]
+    }
+
+    if (!Array.isArray(deltaContent)) {
+        if (typeof deltaContent?.text === "string") {
+            return [{ type: "content", text: deltaContent.text }]
+        }
+        return []
+    }
+
+    let segments = []
+    deltaContent.forEach(part => {
+        if (typeof part === "string") {
+            segments.push({ type: "content", text: part })
+            return
+        }
+
+        let partType = `${part?.type || ""}`.toLowerCase()
+        if (partType === "thinking") {
+            let thinkText = ""
+            if (typeof part?.thinking === "string") {
+                thinkText = part.thinking
+            }
+            else if (Array.isArray(part?.thinking)) {
+                thinkText = part.thinking
+                    .map(elem => typeof elem?.text === "string" ? elem.text : (typeof elem === "string" ? elem : ""))
+                    .join("")
+            }
+            else if (typeof part?.thinking?.text === "string") {
+                thinkText = part.thinking.text
+            }
+            if (!thinkText && typeof part?.text === "string") {
+                thinkText = part.text
+            }
+            if (thinkText) {
+                segments.push({ type: "thinking", text: thinkText })
+            }
+            return
+        }
+
+        if (typeof part?.text === "string" && part.text) {
+            segments.push({ type: "content", text: part.text })
+            return
+        }
+
+        if (typeof part?.content === "string" && part.content) {
+            segments.push({ type: "content", text: part.content })
+        }
+    })
+
+    return segments
+}
+
+let extractStreamContentAndReasoning = (choice) => {
+    let contentText = ""
+    let reasoningText = ""
+    let delta = choice?.delta || {}
+
+    if (typeof choice?.reasoning_content === "string") {
+        reasoningText += choice.reasoning_content
+    }
+    if (typeof choice?.reasoning === "string") {
+        reasoningText += choice.reasoning
+    }
+    if (typeof choice?.text === "string") {
+        contentText += choice.text
+    }
+
+    if (typeof delta?.reasoning_content === "string") {
+        reasoningText += delta.reasoning_content
+    }
+    if (typeof delta?.reasoning === "string") {
+        reasoningText += delta.reasoning
+    }
+
+    parseDeltaContentSegments(delta?.content).forEach(segment => {
+        if (segment.type === "content") {
+            contentText += segment.text
+            return
+        }
+        reasoningText += segment.text
+    })
+
+    return {
+        contentText,
+        reasoningText,
+    }
+}
+
+let createToolCallAccumulatorState = () => {
+    return {
+        byKey: {},
+        order: [],
+        lastAnonymousKey: null,
+        anonymousCounter: 0,
+    }
+}
+
+let resolveToolCallAccumulatorKey = (state, deltaToolCall) => {
+    if (Number.isInteger(deltaToolCall?.index)) {
+        return `idx:${deltaToolCall.index}`
+    }
+    if (deltaToolCall?.id) {
+        return `id:${deltaToolCall.id}`
+    }
+    if (state.lastAnonymousKey) {
+        return state.lastAnonymousKey
+    }
+    let key = `anon:${state.anonymousCounter++}`
+    state.lastAnonymousKey = key
+    return key
+}
+
+let appendToolCallAccumulatorChunk = (state, deltaToolCall) => {
+    let key = resolveToolCallAccumulatorKey(state, deltaToolCall)
+    if (!state.byKey[key]) {
+        state.byKey[key] = {
+            id: "",
+            type: "function",
+            function: {
+                name: "",
+                arguments: "",
+            }
+        }
+        state.order.push(key)
+    }
+
+    let entry = state.byKey[key]
+    if (deltaToolCall?.id) {
+        entry.id = deltaToolCall.id
+    }
+    if (deltaToolCall?.function?.name) {
+        entry.function.name += `${deltaToolCall.function.name}`
+    }
+    if (deltaToolCall?.function?.arguments !== undefined && deltaToolCall?.function?.arguments !== null) {
+        entry.function.arguments += `${deltaToolCall.function.arguments}`
+    }
+}
+
+let collectToolCallsFromAccumulator = (state) => {
+    return state.order
+        .map(key => state.byKey[key])
+        .filter(call => !!call)
+        .map((call, idx) => {
+            return {
+                id: call.id || `tool_call_${idx}`,
+                type: "function",
+                function: {
+                    name: call?.function?.name || "",
+                    arguments: call?.function?.arguments || "",
+                }
+            }
+        })
+}
+
+let callOAIChatCompletionsStream = async (messages, tools, toolChoice, onToken = null, logger = null) => {
     let shouldDebug = !!(window.eso?.debugStreamingToolcalls)
     let debugLog = (...args) => {
         if (shouldDebug && logger && typeof logger.debug === "function") {
@@ -180,6 +375,7 @@ let callOAIChatCompletionsStream = async (messages, tools, toolChoice, onToken, 
         max_tokens: localsettings.max_length,
         stream: true
     }
+    payload = addReasoningToOAIPayload(payload)
     let reqOpt = {
         method: 'POST',
         headers: get_kobold_header(),
@@ -188,10 +384,112 @@ let callOAIChatCompletionsStream = async (messages, tools, toolChoice, onToken, 
     if (globalabortcontroller) reqOpt.signal = globalabortcontroller.signal
 
     let content = ""
-    let tool_calls_accum = []
+    let toolCallAccumulator = createToolCallAccumulatorState()
+    let normalizedToolCalls = []
     let finish_reason = null
     let eventCount = 0
     let doneSeen = false
+    let fallbackThinkingTranscript = ""
+    let finalStreamText = ""
+    let finalThinkingText = ""
+    let streamVisualizer = window.eso?.agentStreamVisualizer
+    let hasStructuredVisualizer = !!(
+        streamVisualizer
+        && typeof streamVisualizer.createState === "function"
+        && typeof streamVisualizer.applyChoiceChunk === "function"
+        && typeof streamVisualizer.getRenderableHtml === "function"
+        && typeof streamVisualizer.finalize === "function"
+    )
+    let streamVisualizerState = hasStructuredVisualizer
+        ? streamVisualizer.createState()
+        : null
+    let normalizeThinkTag = (tagValue) => `${tagValue || ""}`.replaceAll("\\n", "\n")
+    let fallbackThinkTags = {
+        start: normalizeThinkTag(`${localsettings?.start_thinking_tag || "<think>"}`),
+        stop: normalizeThinkTag(`${localsettings?.stop_thinking_tag || "</think>"}`),
+    }
+
+    let extractToolCallDeltaTokenText = (deltaToolCalls = []) => {
+        if (!Array.isArray(deltaToolCalls) || deltaToolCalls.length === 0) {
+            return ""
+        }
+
+        let tokens = []
+        deltaToolCalls.forEach(tc => {
+            let nameFragment = `${tc?.function?.name || ""}`
+            if (nameFragment) {
+                tokens.push(nameFragment)
+            }
+
+            // Argument fragments are streamed token chunks.
+            let argFragment = `${tc?.function?.arguments || ""}`
+            if (argFragment) {
+                tokens.push(argFragment)
+            }
+        })
+
+        return tokens.join("")
+    }
+
+    let extractThinkingBlocksFromText = (text = "") => {
+        let source = `${text || ""}`
+        if (!source) {
+            return ""
+        }
+
+        let start = `${fallbackThinkTags.start || ""}`
+        let stop = `${fallbackThinkTags.stop || ""}`
+        if (!start || !stop) {
+            return ""
+        }
+
+        let blocks = []
+        let cursor = 0
+        while (cursor < source.length) {
+            let startPos = source.indexOf(start, cursor)
+            if (startPos < 0) {
+                break
+            }
+            let stopPos = source.indexOf(stop, startPos + start.length)
+            if (stopPos < 0) {
+                break
+            }
+            blocks.push(source.substring(startPos, stopPos + stop.length))
+            cursor = stopPos + stop.length
+        }
+
+        return blocks.join("\n")
+    }
+
+    let emitFallbackChunk = (chunk, isThinking = false) => {
+        if (hasStructuredVisualizer || typeof onToken !== "function") {
+            return
+        }
+        let text = `${chunk || ""}`
+        if (!text) {
+            return
+        }
+        if (isThinking) {
+            let wrappedThinking = `${fallbackThinkTags.start}${text}${fallbackThinkTags.stop}`
+            fallbackThinkingTranscript += wrappedThinking
+            onToken(wrappedThinking)
+            return
+        }
+        onToken(text)
+    }
+
+    let updateStreamDisplay = () => {
+        if (!hasStructuredVisualizer || !streamVisualizerState || !streamVisualizer || typeof streamVisualizer.getRenderableHtml !== "function") {
+            return
+        }
+        let html = streamVisualizer.getRenderableHtml(streamVisualizerState)
+        let streamText = ""
+        if (typeof streamVisualizer.getRenderableText === "function") {
+            streamText = `${streamVisualizer.getRenderableText(streamVisualizerState) || ""}`
+        }
+        finalStreamText = streamText
+        updateAgentStreamingDisplay(html, { asHtml: true })
+    }
 
     debugLog("[OAI stream] starting", {
         model: payload.model,
@@ -243,68 +541,87 @@ let callOAIChatCompletionsStream = async (messages, tools, toolChoice, onToken, 
                         write(events) {
                             for (let ev of events) {
                                 eventCount++
-                                let delta = ev?.choices?.[0]?.delta
-                                if (!delta) {
+                                let choice = ev?.choices?.[0]
+                                if (!choice) {
                                     debugLog("[OAI stream] event without delta", {
                                         eventCount,
-                                        finishReason: ev?.choices?.[0]?.finish_reason || null
+                                        finishReason: null
                                     })
                                     continue
                                 }
-                                if (delta.content) {
-                                    content += delta.content
+                                let delta = choice?.delta || {}
+                                let extracted = extractStreamContentAndReasoning(choice)
+
+                                if (extracted.contentText) {
+                                    content += extracted.contentText
                                     debugLog("[OAI stream] content delta", {
                                         eventCount,
-                                        deltaLen: delta.content.length,
+                                        deltaLen: extracted.contentText.length,
                                         totalContentLen: content.length
                                     })
-                                    if (typeof onToken === 'function') onToken(delta.content)
                                 }
-                                if (delta.tool_calls) {
+                                if (extracted.reasoningText) {
+                                    emitFallbackChunk(extracted.reasoningText, true)
+                                }
+                                if (extracted.contentText) {
+                                    emitFallbackChunk(extracted.contentText)
+                                }
+
+                                if (Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0) {
                                     debugLog("[OAI stream] tool_call deltas", {
                                         eventCount,
                                         count: delta.tool_calls.length,
                                         toolCalls: delta.tool_calls.map(getToolCallDebugSummary)
                                     })
+                                    let toolTokenText = extractToolCallDeltaTokenText(delta.tool_calls)
+                                    if (toolTokenText) {
+                                        emitFallbackChunk(toolTokenText)
+                                    }
                                     for (let tc of delta.tool_calls) {
-                                        let idx = tc.index || 0
-                                        if (!tool_calls_accum[idx]) {
-                                            tool_calls_accum[idx] = {
-                                                id: tc.id || "",
-                                                type: "function",
-                                                function: { name: "", arguments: "" }
-                                            }
-                                        }
-                                        if (tc.id) tool_calls_accum[idx].id = tc.id
-                                        if (tc.function?.name) tool_calls_accum[idx].function.name += tc.function.name
-                                        if (tc.function?.arguments !== undefined && tc.function?.arguments !== null) {
-                                            let argFragment = `${tc.function.arguments}`
-                                            tool_calls_accum[idx].function.arguments += argFragment
-                                            if (typeof onToken === 'function') onToken(argFragment)
-                                            debugLog("[OAI stream] appended argument fragment", {
-                                                eventCount,
-                                                index: idx,
-                                                fragmentLen: argFragment.length,
-                                                totalArgsLen: tool_calls_accum[idx].function.arguments.length,
-                                                fragmentPreview: argFragment
-                                            })
-                                        }
+                                        appendToolCallAccumulatorChunk(toolCallAccumulator, tc)
                                     }
                                 }
-                                if (ev?.choices?.[0]?.finish_reason) {
-                                    finish_reason = ev.choices[0].finish_reason
+
+                                if (hasStructuredVisualizer && streamVisualizerState && streamVisualizer && typeof streamVisualizer.applyChoiceChunk === "function") {
+                                    try {
+                                        streamVisualizer.applyChoiceChunk(streamVisualizerState, choice)
+                                        updateStreamDisplay()
+                                    }
+                                    catch (visualErr) {
+                                        debugLog("[OAI stream] visualizer update failed", { error: `${visualErr}` })
+                                    }
+                                }
+
+                                if (choice?.finish_reason) {
+                                    finish_reason = choice.finish_reason
                                     debugLog("[OAI stream] finish reason set", { eventCount, finishReason: finish_reason })
                                 }
                             }
                         },
                         close() {
+                            if (hasStructuredVisualizer && streamVisualizerState && streamVisualizer && typeof streamVisualizer.finalize === "function") {
+                                try {
+                                    streamVisualizer.finalize(streamVisualizerState, finish_reason)
+                                    updateStreamDisplay()
+                                }
+                                catch (visualErr) {
+                                    debugLog("[OAI stream] visualizer finalize failed", { error: `${visualErr}` })
+                                }
+                            }
+
+                            normalizedToolCalls = collectToolCallsFromAccumulator(toolCallAccumulator)
+                            finalThinkingText = extractThinkingBlocksFromText(finalStreamText)
+                            if (!finalThinkingText && fallbackThinkingTranscript) {
+                                finalThinkingText = fallbackThinkingTranscript
+                            }
+
                             debugLog("[OAI stream] closed", {
                                 eventCount,
                                 doneSeen,
                                 finishReason: finish_reason,
                                 contentLen: content.length,
-                                toolCallCount: tool_calls_accum.length,
-                                toolCalls: tool_calls_accum.map(tc => ({
+                                toolCallCount: normalizedToolCalls.length,
+                                toolCalls: normalizedToolCalls.map(tc => ({
                                     id: tc?.id || null,
                                     name: tc?.function?.name || null,
                                     argsLen: tc?.function?.arguments?.length || 0,
@@ -321,7 +638,9 @@ let callOAIChatCompletionsStream = async (messages, tools, toolChoice, onToken, 
 
     return {
         content: content || null,
-        tool_calls: tool_calls_accum.length > 0 ? tool_calls_accum : null,
+        stream_text: finalStreamText || null,
+        thinking_text: finalThinkingText || null,
+        tool_calls: normalizedToolCalls.length > 0 ? normalizedToolCalls : null,
         finish_reason
     }
 }
@@ -546,6 +865,43 @@ render_aesthetic_ui = (input, isPreview) => {
     return aestheticHTML.innerHTML
 }
 
+function repack_mark_tool_call_payloads(chatunits)
+{
+    if(!Array.isArray(chatunits) || chatunits.length==0)
+    {
+        return chatunits;
+    }
+
+    for(let i=0;i<chatunits.length;++i)
+    {
+        if(chatunits[i].myturn || chatunits[i].issystem)
+        {
+            continue;
+        }
+
+        let msg = `${chatunits[i].msg || ""}`;
+        if(msg.indexOf("tool_call_id")<0 && msg.indexOf("tool_calls")<0)
+        {
+            continue;
+        }
+
+        try {
+            let unsc = unescape_html(msg).trim();
+            let parsed_payload = JSON.parse(unsc);
+            if(parsed_payload.tool_calls && parsed_payload.tool_calls.length>0)
+            {
+                chatunits[i].tool_calls = parsed_payload.tool_calls;
+            }
+            else if(parsed_payload.role=="tool")
+            {
+                chatunits[i].tool_results = parsed_payload;
+            }
+        } catch (e) {}
+    }
+
+    return chatunits;
+}
+
 var loadingNewGame = true
 let originalRepackInstructTurns = repack_instruct_turns, cotOverrideRepack = false;
 
@@ -639,7 +995,7 @@ repack_instruct_turns = (input, usertag, aitag, systag, allow_blank, filterOutAc
         combined_chunks = combined_chunks
             .filter(elem => !excludeSpecificMessagePrefixes.find(excludedStart => elem.message.trim().indexOf(excludedStart) === 0))
 
-        return combined_chunks.map(elem => {
+        let updatedChunks = combined_chunks.map(elem => {
             if (allow_blank || elem.message.trim() != "") {
                 return {
                     msg: elem.message,
@@ -649,17 +1005,80 @@ repack_instruct_turns = (input, usertag, aitag, systag, allow_blank, filterOutAc
             }
             return null
         }).filter(elem => elem !== null)
+        return repack_mark_tool_call_payloads(updatedChunks);
     }
     else {
         return originalRepackInstructTurns(input, usertag, aitag, systag, allow_blank)
     }
 };
 
+let handleReasoningStripping = (text) => {
+    let truncated_context = text;
+    //remove past thoughts
+    if(get_thinking_regex()!="") //removal of cot
+    {
+        if(localsettings.strip_thinking_mode==2) //strip all thinking
+        {
+            let pat = new RegExp(get_thinking_regex(), "gm");
+            truncated_context = truncated_context.replace(pat, "");
+
+            //fallback, check for orphaned think tags and remove those as well
+            if(localsettings.opmode==4)
+            {
+                let orphans = hardcoded_think_closers.slice();
+                orphans.push(localsettings.stop_thinking_tag);
+                for(let t=0;t<orphans.length;++t)
+                {
+                    let currtag = orphans[t];
+                    if(localsettings.opmode==4 && currtag && truncated_context.includes(currtag))
+                    {
+                        let endmatcher = get_instructendplaceholder();
+                        let pat = new RegExp(get_orphaned_thinking_regex(currtag), "gm");
+                        truncated_context = truncated_context.replace(pat, endmatcher);
+                        break;
+                    }
+                }
+            }
+        }
+        else if(localsettings.strip_thinking_mode==1) //strip except recent
+        {
+            let endmatcher = get_instructendplaceholder();
+            let lastInstructIdx = truncated_context.lastIndexOf(endmatcher);
+            if (lastInstructIdx !== -1) {
+                let beforePart = truncated_context.slice(0, lastInstructIdx); // Split into two parts
+                let afterPart = truncated_context.slice(lastInstructIdx);
+                let pat = new RegExp(get_thinking_regex(), "gm");	// Remove all thinking before splitpoint
+                beforePart = beforePart.replace(pat, "");
+
+                if(localsettings.opmode==4)
+                {
+                    //fallback, check for orphaned think tags and remove those as well
+                    let orphans = hardcoded_think_closers.slice();
+                    orphans.push(localsettings.stop_thinking_tag);
+                    for(let t=0;t<orphans.length;++t)
+                    {
+                        let currtag = orphans[t];
+                        if(localsettings.opmode==4 && currtag && beforePart.includes(currtag))
+                        {
+                            let pat = new RegExp(get_orphaned_thinking_regex(currtag), "gm");
+                            beforePart = beforePart.replace(pat, endmatcher);
+                            break;
+                        }
+                    }
+                }
+
+                truncated_context = beforePart + afterPart; // Combine and done
+            }
+        }
+    }
+    return truncated_context;
+}
+
 let getLastActions = (amountOfActions = 10, excludeSpecificMessagePrefixes = []) => {
     let exclusions = ["Chain of thought repetition detected - ending", "Chain of thought complete", "plan_actions"]
     // , "Action: {", "Action (words =", "Action taken: ", "Action taken (words ="
     // "Action: {", "Action (words =", "Action taken: ", "Action taken (words ="
-    return repack_instruct_turns(concat_gametext(true), `{{[INPUT]}}`, `{{[OUTPUT]}}`, `{{[SYSTEM]}}`, true, false, excludeSpecificMessagePrefixes).map(msg => {
+    return repack_instruct_turns(handleReasoningStripping(concat_gametext(true)), `{{[INPUT]}}`, `{{[OUTPUT]}}`, `{{[SYSTEM]}}`, true, false, excludeSpecificMessagePrefixes).map(msg => {
         msg.msg = msg.msg.replaceAll("{{[SYSTEM_END]}}", "").replaceAll("{{[INPUT_END]}}", "").replaceAll("{{[OUTPUT_END]}}", "").trim();
         return msg
     }).filter(msg => !/^\n*$/.test(msg.msg) && !!msg.msg && !exclusions.find(exclusion => msg.msg.indexOf(exclusion) !== -1)).splice(-amountOfActions)
@@ -1478,22 +1897,107 @@ let runAgentCycle = async (agentRunState = {}) => {
             let oaiPersistedMessages = []
             let isCompleted = false
 
-            let executeOAICommand = async (commandName, commandArgs, toolCallId, promptOverview) => {
+            let executeOAICommand = async (commandName, commandArgs, toolCallId, promptOverview, rawArguments = "") => {
                 let action = { name: commandName, args: commandArgs }
                 let command = [...getReasoningCommand(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist), ...getCommands(agentRunState)].find(c => c.name === commandName)
-                addThought(currentChainOfThought, createAIPrompt, getActionSummaryText(action, promptOverview, !!agentRunState?.wordCountEnabled))
+
+                let isWrappedSystemThought = (wrappedPrompt = "") => {
+                    let sysStart = `${instructsysplaceholder || ""}`
+                    let sysEnd = `${instructsysplaceholder_end || ""}`
+                    let wrapped = `${wrappedPrompt || ""}`
+                    return wrapped.startsWith(sysStart) && wrapped.endsWith(sysEnd)
+                }
+
+                let extractSystemThoughtText = (thoughtObj) => {
+                    let promptText = `${thoughtObj?.prompt || ""}`.trim()
+                    if (promptText) {
+                        return promptText
+                    }
+                    let sysStart = `${instructsysplaceholder || ""}`
+                    let sysEnd = `${instructsysplaceholder_end || ""}`
+                    let wrapped = `${thoughtObj?.wrappedPrompt || ""}`
+                    if (wrapped.startsWith(sysStart) && wrapped.endsWith(sysEnd)) {
+                        return wrapped.substring(sysStart.length, wrapped.length - sysEnd.length).trim()
+                    }
+                    return ""
+                }
+
+                let visualToolCallId = (toolCallId || `tool_call_${window.crypto.randomUUID()}`)
+                let argsForVisual = "{}"
+                if (typeof rawArguments === "string" && rawArguments.trim() !== "") {
+                    argsForVisual = rawArguments
+                }
+                else {
+                    try {
+                        argsForVisual = JSON.stringify(commandArgs || {})
+                    }
+                    catch (e) {
+                        argsForVisual = "{}"
+                    }
+                }
+
+                let visualToolCallPayload = {
+                    tool_calls: [
+                        {
+                            id: visualToolCallId,
+                            type: "function",
+                            function: {
+                                name: commandName,
+                                arguments: argsForVisual,
+                            }
+                        }
+                    ]
+                }
+                addThought(currentChainOfThought, createAIPrompt, JSON.stringify(visualToolCallPayload))
 
                 let toolResultText = "Done."
+                let hasExplicitToolResult = false
+                let preExecutionThoughtCount = currentChainOfThought.length
                 if (!!command && command?.executor !== undefined) {
                     try {
                         let res = await command.executor(action)
                         if (res === true) isCompleted = true
-                        if (typeof res === "string") toolResultText = res
+                        if (typeof res === "string") {
+                            toolResultText = res
+                            hasExplicitToolResult = true
+                        }
                     } catch (e) {
                         toolResultText = `Error: ${e}`
+                        hasExplicitToolResult = true
                         agentRunState.errors.push(e)
                     }
                 }
+
+                // Convert command-produced system thoughts into the tool result payload
+                // so tool output is rendered as a tool result (lite-style) instead of a separate system turn.
+                let executionThoughts = currentChainOfThought.splice(preExecutionThoughtCount)
+                let thoughtsToKeep = []
+                let systemThoughtsForToolResult = []
+                executionThoughts.forEach(thought => {
+                    if (isWrappedSystemThought(thought?.wrappedPrompt)) {
+                        let txt = extractSystemThoughtText(thought)
+                        if (txt) {
+                            systemThoughtsForToolResult.push(txt)
+                        }
+                    }
+                    else {
+                        thoughtsToKeep.push(thought)
+                    }
+                })
+                currentChainOfThought.push(...thoughtsToKeep)
+
+                if ((!hasExplicitToolResult || toolResultText === "Done.") && systemThoughtsForToolResult.length > 0) {
+                    toolResultText = systemThoughtsForToolResult.join("\n\n")
+                }
+
+                let visualToolResultPayload = {
+                    role: "tool",
+                    name: commandName,
+                    content: `${toolResultText || ""}`,
+                    tool_call_id: visualToolCallId,
+                }
+                addThought(currentChainOfThought, createAIPrompt, JSON.stringify(visualToolResultPayload))
+
                 if (typeof agentRunState?.agentVisualiser === "function") {
                     await agentRunState.agentVisualiser(objRefAssign({ agentRunState }, agentRunState))
                 }
@@ -1504,11 +2008,11 @@ let runAgentCycle = async (agentRunState = {}) => {
                 return toolResultText
             }
 
-            let planningPrompt = "The last action from the user is the instruction. If you need to ask the user for a response, use userInput as the final action. Produce a list of actions to respond to this instruction."
+            let planningPrompt = "The last action from the user is the instruction. Produce a list of actions to respond to this instruction."
             if (!!agentRunState?.agentName) {
-                planningPrompt += ` You must respond as ${agentRunState.agentName} when using the send_message or userInput actions.`
+                planningPrompt += ` You must respond as ${agentRunState.agentName}.`
             } else if (localsettings.inject_chatnames_instruct) {
-                planningPrompt += ` You must respond as ${localsettings.chatopponent.split("||$||").join(" or ")} when using the send_message or userInput actions.`
+                planningPrompt += ` You must respond as ${localsettings.chatopponent.split("||$||").join(" or ")}.`
             }
 
             if (!agentRunState?.planToUse && !shouldSkipPlanningStep) {
@@ -1541,11 +2045,15 @@ let runAgentCycle = async (agentRunState = {}) => {
                 await contextUsage.triggerRerenderFromServerPerfEndpoint()
                 clearAgentStreamingDisplay()
 
+                if (typeof planResult?.thinking_text === "string" && planResult.thinking_text.trim().length > 0) {
+                    addThought(currentChainOfThought, createAIPrompt, planResult.thinking_text, true)
+                }
+
                 if (!planResult || !planResult.tool_calls || planResult.tool_calls.length === 0) {
                     addThought(currentChainOfThought, createSysPrompt, "Chain of thought complete", true)
                     isCompleted = true
                 } else {
-                    let tc = planResult.tool_calls[0]
+                    let tc = planResult.tool_calls.find(call => call?.function?.name === "plan_actions") || planResult.tool_calls[0]
                     let planArgs = {}
                     try {
                         planArgs = JSON.parse(tc.function.arguments)
@@ -1618,6 +2126,9 @@ let runAgentCycle = async (agentRunState = {}) => {
                 }
 
                 let promptOverview = currentOrderOfActionDescriptionsOverall.length > i ? currentOrderOfActionDescriptionsOverall[i] : null
+                if (!promptOverview && i === 0 && currentOrderOfActionsOverall.length === 0 && !shouldSkipPlanningStep) {
+                    promptOverview = planningPrompt
+                }
                 currentChainOfThought = currentChainOfThought.splice(-localsettings.agentMaxActionsInHistory)
                 recentActions = recentActions.splice(-localsettings.agentMaxActionsInHistory)
                 objRefOverride(agentRunState, { currentChainOfThought, recentActions })
@@ -1648,7 +2159,18 @@ let runAgentCycle = async (agentRunState = {}) => {
 
                 if (!execResult) break
 
-                if (execResult.content && (!execResult.tool_calls || execResult.tool_calls.length === 0)) {
+                if (typeof execResult?.thinking_text === "string" && execResult.thinking_text.trim().length > 0) {
+                    addThought(currentChainOfThought, createAIPrompt, execResult.thinking_text, true)
+                }
+                if (typeof agentRunState?.agentVisualiser === "function") {
+                    await agentRunState.agentVisualiser(objRefAssign({ agentRunState }, agentRunState))
+                }
+                if (!!agentRunState?.printToConsole && agentRunState?.logger !== undefined)
+                {
+                    agentRunState.logger.printPendingLogs()
+                }
+
+                if (execResult.content && (execResult.tool_calls === undefined || !Array.isArray(execResult.tool_calls) || execResult.tool_calls.length === 0)) {
                     if (execResult.finish_reason === "length") {
                         addThought(currentChainOfThought, createSysPrompt, "Response cut off due to length. Ending chain of thought.", true)
                     }
@@ -1657,49 +2179,86 @@ let runAgentCycle = async (agentRunState = {}) => {
                         addThought(currentChainOfThought, createAIPrompt, execResult.content)
                         oaiPersistedMessages.push({ role: "assistant", content: execResult.content })
                     }
-                    if (typeof agentRunState?.agentVisualiser === "function") {
-                        await agentRunState.agentVisualiser(objRefAssign({ agentRunState }, agentRunState))
-                    }
-                    if (!!agentRunState?.printToConsole && agentRunState?.logger !== undefined)
-                    {
-                        agentRunState.logger.printPendingLogs()
-                    }
+
                     isCompleted = true
                     break
                 }
 
                 if (!execResult.tool_calls || execResult.tool_calls.length === 0) break
+                oaiPersistedMessages.push({ role: "assistant", content: execResult.content || null, tool_calls: execResult.tool_calls })
 
-                let tc = execResult.tool_calls[0]
-                let cmdArgs = {}
-                try {
-                    cmdArgs = JSON.parse(tc.function.arguments)
-                } catch (e) {
-                    if (!!agentRunState?.logger) {
-                        agentRunState.logger.debug("[OAI stream] failed to parse execution tool arguments", {
-                            error: `${e}`,
-                            toolCallId: tc?.id || null,
-                            functionName: tc?.function?.name || null,
-                            argsLen: tc?.function?.arguments?.length || 0,
-                            argsPreview: (tc?.function?.arguments || "")
-                        })
+                let shouldAbortExecution = false
+                for (let tci = 0; tci < execResult.tool_calls.length; tci++) {
+                    let tc = execResult.tool_calls[tci]
+                    if (!tc?.function?.name) {
+                        continue
+                    }
+
+                    let cmdArgs = {}
+                    try {
+                        cmdArgs = JSON.parse(tc.function.arguments)
+                    } catch (e) {
+                        if (!!agentRunState?.logger) {
+                            agentRunState.logger.debug("[OAI stream] failed to parse execution tool arguments", {
+                                error: `${e}`,
+                                toolCallId: tc?.id || null,
+                                functionName: tc?.function?.name || null,
+                                argsLen: tc?.function?.arguments?.length || 0,
+                                argsPreview: (tc?.function?.arguments || "")
+                            })
+                            addThought(currentChainOfThought, createSysPrompt, `[OAI stream] failed to parse execution tool arguments: ${objToText({
+                                error: `${e}`,
+                                toolCallId: tc?.id || null,
+                                functionName: tc?.function?.name || null,
+                                argsLen: tc?.function?.arguments?.length || 0,
+                                argsPreview: (tc?.function?.arguments || "")
+                            })}`)
+                            if (typeof agentRunState?.agentVisualiser === "function") {
+                                await agentRunState.agentVisualiser(objRefAssign({ agentRunState }, agentRunState))
+                            }
+                            if (!!agentRunState?.printToConsole && agentRunState?.logger !== undefined)
+                            {
+                                agentRunState.logger.printPendingLogs()
+                            }
+                        }
+                    }
+
+                    if (tc.function.name === "stop_thinking") {
+                        isCompleted = true
+                        shouldAbortExecution = true
+                        break
+                    }
+
+                    if (!validCommands.includes(tc.function.name) && tc.function.name !== "plan_actions" && tc.function.name !== "stop_thinking") {
+                        addThought(currentChainOfThought, createSysPrompt, `Invalid command requested: ${tc.function.name}`)
+                        if (typeof agentRunState?.agentVisualiser === "function") {
+                            await agentRunState.agentVisualiser(objRefAssign({ agentRunState }, agentRunState))
+                        }
+                        if (!!agentRunState?.printToConsole && agentRunState?.logger !== undefined)
+                        {
+                            agentRunState.logger.printPendingLogs()
+                        }
+                        shouldAbortExecution = true
+                        break
+                    }
+
+                    let visualToolCallId = (tc.id || `tool_call_${i}_${tci}`)
+                    let toolResult = await executeOAICommand(tc.function.name, cmdArgs, visualToolCallId, promptOverview, `${tc?.function?.arguments || ""}`)
+                    oaiPersistedMessages.push({ role: "tool", content: toolResult, tool_call_id: visualToolCallId })
+
+                    if (agentRunState.endCurrent === true) {
+                        shouldAbortExecution = true
+                        break
+                    }
+                    if (isCompleted) {
+                        shouldAbortExecution = true
+                        break
                     }
                 }
 
-                if (tc.function.name === "stop_thinking") {
-                    isCompleted = true
+                if (shouldAbortExecution) {
                     break
                 }
-
-                if (!validCommands.includes(tc.function.name) && tc.function.name !== "plan_actions" && tc.function.name !== "stop_thinking") {
-                    addThought(currentChainOfThought, createSysPrompt, `Invalid command requested: ${tc.function.name}`)
-                    break
-                }
-
-                let toolResult = await executeOAICommand(tc.function.name, cmdArgs, tc.id, promptOverview)
-
-                oaiPersistedMessages.push({ role: "assistant", content: execResult.content || null, tool_calls: execResult.tool_calls })
-                oaiPersistedMessages.push({ role: "tool", content: toolResult, tool_call_id: tc.id || "tool_call" })
 
                 if (!!agentRunState?.printToConsole && agentRunState?.logger !== undefined)
                 {
@@ -1773,7 +2332,7 @@ let runAgentCycle = async (agentRunState = {}) => {
             objRefOverride(agentRunState, { currentChainOfThought, recentActions })
 
             let promptOverview = currentOrderOfActionDescriptionsOverall.length > 0 ? currentOrderOfActionDescriptionsOverall[i - 1] : null
-            if (i === 0) {
+            if (i === 0 && !shouldSkipPlanningStep) {
                 let planningPrompt = "The last action from the user is the instruction. If you need to ask the user for a response, the action userInput must be used and be put as the final action in the order. When handling images always use actions to get information when needed especially for descriptions. Use describe_clicked_image only for images the user clicks in chat, and use describe_fs_image only when a fs file path is available. Produces a list of actions to respond to this instruction."
                 if (!!agentRunState?.agentName) {
                     planningPrompt += ` You must respond as ${agentRunState.agentName} when using the send_message or userInput actions. Choose the person based on the user's instruction.`
@@ -2206,9 +2765,15 @@ let createStopThinkingButton = () => {
     })
 }
 
-let updateAgentStreamingDisplay = (text) => {
+let updateAgentStreamingDisplay = (text, options = {}) => {
+    let asHtml = !!options?.asHtml
     document.querySelectorAll(".agentStreamingDisplay").forEach(elem => {
-        elem.textContent = text || ""
+        if (asHtml) {
+            elem.innerHTML = text || ""
+        }
+        else {
+            elem.textContent = text || ""
+        }
         if (text) {
             elem.classList.remove("hidden")
             elem.scrollTop = elem.scrollHeight

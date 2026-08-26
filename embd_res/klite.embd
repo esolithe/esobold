@@ -12133,7 +12133,7 @@ Current version indicated by LITEVER below.
 			{
 				sysprompt = sysprompt+"\n";
 			}
-			let combinedmem = sysprompt + memory + scenario + posthistoryinstructions + examplemsg;
+			let combinedmem = sysprompt + memory + scenario + posthistoryinstructions;
 			let agnaidatafieldsempty = scenario + examplemsg + (obj.personality?obj.personality:"") + greeting;
 			let has_tav_wi_check = has_tavern_wi_check(obj);
 			//check if it's a world info only card, if so, do not restart game
@@ -35092,6 +35092,7 @@ Current version indicated by LITEVER below.
 <script src="static/js/agentUtils.js"></script>
 <script src="static/js/reloadUtils.js"></script>
 <link rel="stylesheet" type="text/css" href="static/css/agent.css" />
+<script src="static/js/agent/agent_stream_visualizer.js"></script>
 <script src="static/js/agent.js"></script>
 <script src="static/js/newMenuOptions.js"></script>
 <script src="static/js/newMediaButtons.js"></script>
