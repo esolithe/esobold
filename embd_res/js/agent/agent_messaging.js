@@ -30,7 +30,7 @@ export const buildMessagingCommands = (ctx) => {
 			"enabled": true,
 			"outputVisibleToUser": true,
 			"executor": (action) => {
-				if (!!action?.args?.messages) {
+				if (!!action?.args?.messages && Array.isArray(action?.args?.messages)) {
 					action?.args?.messages.forEach(message => {
 						if (!!message && message.trim().length > 0)
 						{
