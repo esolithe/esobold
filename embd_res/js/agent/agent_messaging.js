@@ -32,7 +32,7 @@ export const buildMessagingCommands = (ctx) => {
 			"executor": (action) => {
 				if (!!action?.args?.messages && Array.isArray(action?.args?.messages)) {
 					action?.args?.messages.forEach(message => {
-						if (!!message && message.trim().length > 0)
+						if (!!message && typeof message === "string" && message.trim().length > 0)
 						{
 							addThought(currentChainOfThought, createAIPrompt, agentRunState?.agentName ? `${agentRunState?.agentName}: ${message}` : message)
 						}
