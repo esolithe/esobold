@@ -4,7 +4,7 @@
 
 // note: the json dependency is only for defining input in a convenient way
 // we can remove it in the future when we figure out a better way to define inputs using jinja::value
-#include <nlohmann/json.hpp>
+#include "json.h"
 
 #include <functional>
 #include <sstream>
@@ -14,7 +14,7 @@
 #endif
 #define FILENAME "jinja-caps"
 
-using json = nlohmann::ordered_json;
+using json = common_json;
 
 namespace jinja {
 

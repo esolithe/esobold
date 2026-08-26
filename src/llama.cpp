@@ -12,6 +12,7 @@
 #include "llama-sampler.cpp"
 #include "llama-kv-cache.cpp"
 #include "llama-kv-cache-dsa.cpp"
+#include "llama-kv-cache-dsa-iswa.cpp"
 #include "llama-kv-cache-dsv4.cpp"
 #include "llama-kv-cache-iswa.cpp"
 #include "llama-kv-cache-msa.cpp"
