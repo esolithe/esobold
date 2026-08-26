@@ -156,6 +156,10 @@ let addReasoningToOAIPayload = (payload) => {
     return payload
 }
 
+function getOAIChatEndpointToUse() {
+    return !!custom_oai_endpoint ? apply_proxy_url(custom_oai_endpoint + oai_submit_endpoint_chat) : apply_proxy_url(custom_kobold_endpoint + "/v1" + oai_submit_endpoint_chat)
+}
+
 let callOAIChatCompletions = async (messages, tools, toolChoice) => {
     let payload = {
         model: (localsettings.custom_oai_model || ""),
@@ -174,7 +178,7 @@ let callOAIChatCompletions = async (messages, tools, toolChoice) => {
     }
     if (globalabortcontroller) reqOpt.signal = globalabortcontroller.signal
 
-    let resp = await fetch(apply_proxy_url((custom_oai_endpoint || custom_kobold_endpoint) + "/v1/chat/completions"), reqOpt)
+    let resp = await fetch(getOAIChatEndpointToUse(), reqOpt)
         .then(r => r.json())
 
     if (!resp?.choices || !resp.choices.length) return null
@@ -499,7 +503,7 @@ let callOAIChatCompletionsStream = async (messages, tools, toolChoice, onToken =
     })
 
     await new Promise((resolve, reject) => {
-        fetch(apply_proxy_url((custom_oai_endpoint || custom_kobold_endpoint) + "/v1/chat/completions"), reqOpt)
+        fetch(getOAIChatEndpointToUse(), reqOpt)
             .then(resp => {
                 if (!resp.ok) return resp.text().then(t => { throw new Error("OAI stream failed: " + t) })
                 return resp
