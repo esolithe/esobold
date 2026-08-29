@@ -345,5 +345,16 @@
 		"assistant_start": "<|start|>assistant to=user<|message|>",
 		"assistant_end": "<|eot|>"
     }
+}, {
+    "search": ["<role>SYSTEM</role>","<|role_end|>"],
+    "name": "Ling 3.0 Flash",
+    "adapter": {
+		"system_start": "<role>SYSTEM</role>",
+		"system_end": "<|role_end|>",
+		"user_start": "<role>HUMAN</role>",
+		"user_end": "<|role_end|>",
+		"assistant_start": "<role>ASSISTANT</role>",
+		"assistant_end": "<|role_end|>"
+    }
 }
 ]
