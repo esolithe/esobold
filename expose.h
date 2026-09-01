@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include <cstdint>
 
 const int tensor_split_max = 16;
@@ -225,10 +226,12 @@ struct sd_generation_inputs
     const char * negative_prompt = nullptr;
     const char * init_images = "";
     const char * mask = "";
-    const char * audio_data = "";
+    const char * video_start_frame = "";
+    const char * video_end_frame = "";
     const int extra_images_len = 0;
     const char ** extra_images = nullptr;
-    const bool reverse_refimg = false;
+    const int ref_audios_len = 0;
+    const char ** ref_audios = nullptr;
     const bool flip_mask = false;
     const float denoising_strength = 0.0f;
     const float cfg_scale = 0.0f;
@@ -394,7 +397,7 @@ extern std::string lora_filename;
 extern std::string mmproj_filename;
 extern std::string draftmodel_filename;
 extern std::vector<std::string> generated_tokens;
-extern bool generation_finished;
+extern std::atomic<bool> generation_finished;
 extern bool audio_multimodal_supported;
 extern bool vision_multimodal_supported;
 extern float last_eval_time;
