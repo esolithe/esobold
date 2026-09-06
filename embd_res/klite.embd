@@ -35205,5 +35205,6 @@ Current version indicated by LITEVER below.
 <script src="static/js/editorPopup.js" type="module"></script>
 <script src="static/js/webContainer.js" type="module"></script>
 <script src="static/js/webContainerUtils.js"></script>
+<script src="static/js/hearthfireContext.js"></script>
 <!-- EsoLite modifications end -->
 </html>
