@@ -21213,6 +21213,25 @@ Current version indicated by LITEVER below.
 		chars_per_token = chars_per_token * (localsettings.token_count_multiplier * 0.01);
 		return Math.max(1, Math.floor(((maxctxlen - maxgenamt)) * chars_per_token) - 12);
 	}
+	function getCharactersPerToken(content) {
+		//this is a hack since we dont have a proper tokenizer, but we can estimate 1 token per 3 characters
+		let chars_per_token = 3.0;
+		//we try to detect attempts at coding which tokenize poorly. This usually happens when the average word length is high.
+		let avgwordlen = (1.0 + content.length) / (1.0 + count_words(content));
+		if (avgwordlen >= 7.8) {
+			chars_per_token = 2.7;
+		}
+		if (current_memory == null || current_memory.trim() == "") {
+			//if there is no memory, then we can be a lot of lenient with the character counts since the backend will truncate excess anyway
+			chars_per_token = 4.8;
+		}
+		if (is_using_kcpp_with_added_memory()) //easily handle overflow
+		{
+			chars_per_token = 6;
+		}
+		chars_per_token = chars_per_token * (localsettings.token_count_multiplier * 0.01);
+		return chars_per_token
+	}
 
 	function wrap_newgen_instruct_format(newgen, addendtag)
 	{
@@ -21496,10 +21515,9 @@ Current version indicated by LITEVER below.
 			if (!current_temp_memory) {
 				current_temp_memory = "";
 			}
-			let truncated_context = `${current_temp_memory}${concat_gametext(true, "","","",false,true)}`; //no need to truncate if memory is empty
-			truncated_context = truncated_context.replace(/\xA0/g,' '); //replace non breaking space nbsp
 
-			contextUsage.setUsage("tempMemory", current_temp_memory.length);
+			let truncated_context = concat_gametext(true, "","","",false,true); //no need to truncate if memory is empty
+			truncated_context = truncated_context.replace(/\xA0/g,' '); //replace non breaking space nbsp
 
 			//remove past thoughts
 			if(get_thinking_regex()!="") //removal of cot
@@ -21560,6 +21578,60 @@ Current version indicated by LITEVER below.
 			}
 
 			let max_allowed_characters = getMaxAllowedCharacters(truncated_context, maxctxlen, maxgenamt);
+
+			/**
+			 * Context content padding is the amount of context held back to reduce full regeneration of the context when using models which cannot shift (such as RNN). Mostly helpful on large MOEs.
+			 * The specific steps followed are:
+			 * 1. Prepend the current temporary memory to the truncated context.
+			 * 2. Calculate the number of characters to hold back based on the context content padding setting.
+			 * 3. Determine the split point in the truncated context based on the calculated padding.
+			 * 4. Examine the delimiters to find the best split point.
+			 * 5. Split the truncated context at the determined split point. */
+			truncated_context = `${current_temp_memory}${truncated_context}`;
+			contextUsage.setUsage("tempMemory", current_temp_memory.length);
+			let contextContentPadding = Number(localsettings.contextContentPadding)
+			if (contextContentPadding !== 0) {
+				let charactersPerToken = getCharactersPerToken(truncated_context)
+				let charactersForPadding = contextContentPadding * charactersPerToken;
+				let splitPointInterval = charactersForPadding;
+				let contentLength = truncated_context.length
+				let thresholdForLegalSplit = 0.4 * max_allowed_characters;
+				
+				let splitPoint = 0;
+				if (contentLength > splitPointInterval) {
+					let possibleSplits = []
+					for (let i = 0; i < contentLength; i = i + splitPointInterval) {
+						possibleSplits.push(i)
+					}
+					for (let i = possibleSplits.length - 1; i >= 0; --i) {
+						let potentialSplitPoint = possibleSplits[i];
+						let distanceToEnd = contentLength - potentialSplitPoint;
+						let charactersLeftAfterSplit = max_allowed_characters - distanceToEnd;
+						if (charactersLeftAfterSplit >= thresholdForLegalSplit) {
+							splitPoint = potentialSplitPoint;
+							break;
+						}
+					}
+				}
+				
+				if (splitPoint > 0) {
+					let delimitersToSplitOn = getTurnDelimiters();
+					let delimiterSplits = []
+					// Find all potential splits based on the delimiter positions, pushing the index before the last occurence of the delimiter (before the split point) into delimiterSplits
+					for (let delimiter of delimitersToSplitOn) {
+						let index = truncated_context.lastIndexOf(delimiter, splitPoint);
+						if (index !== -1) {
+							delimiterSplits.push(index);
+						}
+					}
+					let furthestDelimiter = delimiterSplits.length > 0 ? Math.max(...delimiterSplits) : -1;
+					if (furthestDelimiter !== -1) {
+						splitPoint = furthestDelimiter;
+					}
+					console.log(`Split point: ${splitPoint}, context around split: ${truncated_context.slice(splitPoint - 100, splitPoint)}`)
+					truncated_context = truncated_context.slice(splitPoint);
+				}
+			}
 
 			//allow autogen images
 			if (localsettings.img_autogen_type == 2 && localsettings.generate_images_mode != 0)
@@ -35133,5 +35205,6 @@ Current version indicated by LITEVER below.
 <script src="static/js/editorPopup.js" type="module"></script>
 <script src="static/js/webContainer.js" type="module"></script>
 <script src="static/js/webContainerUtils.js"></script>
+<script src="static/js/hearthfireContext.js"></script>
 <!-- EsoLite modifications end -->
 </html>

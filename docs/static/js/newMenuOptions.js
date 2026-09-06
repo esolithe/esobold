@@ -286,6 +286,8 @@ display_settings = () => {
     document.getElementById("fullScreenEditorForInputs").checked = localsettings.fullScreenEditorForInputs;
     document.getElementById("corpoHideLeftPanel").checked = localsettings.corpoHideLeftPanel;
     document.getElementById("agentSavedMacros").value = JSON.stringify(localsettings?.agentSavedMacros || window.eso.agentMacros, null, 2)
+    document.getElementById("contextContentPadding").value = localsettings.contextContentPadding;
+    document.getElementById("hearthfireContext").checked = !!localsettings.hearthfireContext;
     renderEsoboldAgentTools()
     window.updateLumaraListenerStatusIndicator()
 }
@@ -328,6 +330,8 @@ confirm_settings = () => {
     localsettings.showContextUsageChart = (document.getElementById("showContextUsageChart").checked ? true : false);
     localsettings.fullScreenEditorForInputs = (document.getElementById("fullScreenEditorForInputs").checked ? true : false);
     localsettings.corpoHideLeftPanel = (document.getElementById("corpoHideLeftPanel").checked ? true : false);
+    localsettings.contextContentPadding = document.getElementById("contextContentPadding").value;
+    localsettings.hearthfireContext = (document.getElementById("hearthfireContext").checked ? true : false);
     try
     {
         localsettings.disabled_agent_tools = [...document.querySelectorAll("#esobold_agent_tools_list_container input[data-agent-tool-checkbox='true']")].filter(elem => !elem.checked).map(elem => elem.value)
@@ -461,7 +465,12 @@ window.addEventListener('load', () => {
     if (localsettings?.lastMessageProcessedFromLumara == undefined) {
         localsettings.lastMessageProcessedFromLumara = 0
     }
-
+    if (localsettings?.contextContentPadding == undefined) {
+        localsettings.contextContentPadding = 0
+    }
+    if (localsettings?.hearthfireContext == undefined) {
+        localsettings.hearthfireContext = false
+    }
     // Overwrite the switching to handle new dynamically added menus
     window.display_settings_tab = (tabIndex) => {
         let settingNav = document.querySelector("#settingscontainer .settingsnav"), settingBody = document.querySelector("#settingscontainer .settingsbody")
@@ -788,6 +797,14 @@ window.addEventListener('load', () => {
     settingsBox.appendChild(createNewSubSection("Misc settings"))
 
     settingLabelElem = createSettingElemButton("libraryMods", "Mods", "Open the third-party mods manager to browse and apply community mods.", () => modManager.showModListWarning())
+    settingsBox.append(settingLabelElem)
+
+    settingsBox.appendChild(createNewSubSection("Context settings", false))
+
+    settingLabelElem = createSettingElemRange("contextContentPadding", "Context content padding", "The max context defines the entire window the AI can see. The padding defines an amount of context which is held back to reduces full regeneration of the context when using models which cannot shift (such as RNN). Mostly helpful on large MOEs.", 0, 131072, 1024, 0)
+    settingsBox.append(settingLabelElem)
+
+    settingLabelElem = createSettingElemBool("hearthfireContext", "Hearthfire context", "When this flag is set to true, after a user gets a reply another request will be automatically triggered. The second request preps the context for future interactions which should reduce the wait time (essentially prompt processing while you start to type your reply).")
     settingsBox.append(settingLabelElem)
 
     toolsSettingsBox.appendChild(createNewSubSection("Esobold Agent Tools"))
