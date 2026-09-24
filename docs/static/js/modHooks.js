@@ -54,12 +54,16 @@ class EsoExtensionType {
     }
     
     static QUICK_START = new EsoExtensionType("QUICK_START");
+    static SETTINGS = new EsoExtensionType("SETTINGS");
+    static GUIDE = new EsoExtensionType("GUIDE");
 }
 
 /*
  * EsoExtension and QuickStartExtension classes
  * EsoExtension is the base class for all extensions.
  * QuickStartExtension extends EsoExtension for Quick Start specific extensions.
+ * SettingsExtension extends EsoExtension for a mod's own tab in the settings dialog.
+ * GuideExtension extends EsoExtension for a mod's own tab in the guide.
  * 
  * @type {EsoExtension}
  */
@@ -157,6 +161,69 @@ class QuickStartExtension extends EsoExtension {
 
     clear() {
         return this.invokeIfPresent("_clear")
+    }
+}
+
+/*
+ * Adds a tab to the settings dialog.
+ * render(containerElem, ui) is called once when the tab is built. ui holds the helpers Esobold uses for its own settings
+ * (ui.subSection, ui.bool, ui.range, ui.select, ui.text, ui.textArea, ui.button), so a mod's page looks like the rest of
+ * the dialog. Note that their labelTitle and labelText are inserted as HTML.
+ * load() is called each time the dialog opens (fill the inputs from localsettings), save() when it is confirmed (write
+ * localsettings back); Cancel calls neither.
+ */
+class SettingsExtension extends EsoExtension {
+    label = null
+    _render = null
+    _load = null
+    _save = null
+
+    constructor(id, label = null, render = null, load = null, save = null) {
+        super(id, EsoExtensionType.SETTINGS)
+        this.label = label
+        this._render = render
+        this._load = load
+        this._save = save
+    }
+
+    getLabel() {
+        return this.label || this.id
+    }
+
+    render(containerElem, ui) {
+        return this.invokeIfPresent("_render", containerElem, ui)
+    }
+
+    load() {
+        return this.invokeIfPresent("_load")
+    }
+
+    save() {
+        return this.invokeIfPresent("_save")
+    }
+}
+
+/*
+ * Adds a tab to the guide (top bar "Guide", see esoGuide.js for the chapter format).
+ * chapters is an array of chapters, or a function returning one (called each time the tab is shown).
+ */
+class GuideExtension extends EsoExtension {
+    label = null
+    _chapters = null
+
+    constructor(id, label = null, chapters = null) {
+        super(id, EsoExtensionType.GUIDE)
+        this.label = label
+        this._chapters = chapters
+    }
+
+    getLabel() {
+        return this.label || this.id
+    }
+
+    getChapters() {
+        let chapters = typeof this._chapters === "function" ? this.invokeIfPresent("_chapters") : this._chapters
+        return Array.isArray(chapters) ? chapters : []
     }
 }
 
