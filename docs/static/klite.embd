@@ -6324,6 +6324,22 @@ Current version indicated by LITEVER below.
 		}
 	}
 
+	// Reserve a new library name at once, before the asynchronous save. Imports that run at the
+	// same time ("Upload all" restores every file of an archive in parallel) otherwise all resolve
+	// to the same free name and overwrite each other, so a character is lost. An existing entry
+	// (overwrite on name collision) is left as it is. Returns a function that drops the
+	// reservation again if the save fails.
+	function reserveCharacterMetadata(resolved, type)
+	{
+		if (!resolved?.id || !resolved?.name || !!resolved.existingMeta) {
+			return () => {};
+		}
+		upsertCharacterMetadata({ id: resolved.id, name: resolved.name, type: type });
+		return () => {
+			allCharacterNames = (allCharacterNames || []).filter(meta => `${meta?.id || ""}` !== `${resolved.id}`);
+		};
+	}
+
 	async function migrateCharacterStorageToIds()
 	{
 		let migratedEntries = [];
@@ -6381,6 +6397,7 @@ Current version indicated by LITEVER below.
 			let resolved = resolveCharacterNameAndId(rawName, "No character name");
 			let charName = resolved.name;
 			let characterId = resolved.id;
+			let releaseName = reserveCharacterMetadata(resolved, "Character");
 			charData.name = originalCharacterName;
 			if (!!data)
 			{
@@ -6393,10 +6410,12 @@ Current version indicated by LITEVER below.
 						data: charData,
 						image: b64Url
 					}
-					indexeddb_save(getCharacterStorageKey(characterId), JSON.stringify(dataToSave)).then(() => {
-						upsertCharacterMetadata({ id: characterId, name: charName, thumbnail: dataUrl, type: "Character" })
-						updateCharacterListFromAllDe();
-					})
+					await indexeddb_save(getCharacterStorageKey(characterId), JSON.stringify(dataToSave))
+					upsertCharacterMetadata({ id: characterId, name: charName, thumbnail: dataUrl, type: "Character" })
+					updateCharacterListFromAllDe();
+				}).catch((e) => {
+					releaseName();
+					console.error(e);
 				})
 			}
 			else
@@ -6409,6 +6428,9 @@ Current version indicated by LITEVER below.
 				indexeddb_save(getCharacterStorageKey(characterId), JSON.stringify(dataToSave)).then(() => {
 					upsertCharacterMetadata({ id: characterId, name: charName, type: "Character" })
 					updateCharacterListFromAllDe();
+				}).catch((e) => {
+					releaseName();
+					console.error(e);
 				})
 			}
 		}
@@ -6428,6 +6450,7 @@ Current version indicated by LITEVER below.
 				let resolved = resolveCharacterNameAndId(rawName, "No document name");
 				let charName = resolved.name;
 				let characterId = resolved.id;
+				let releaseName = reserveCharacterMetadata(resolved, "Document");
 				let dataToSave = {
 					id: characterId,
 					name: charName,
@@ -6437,6 +6460,9 @@ Current version indicated by LITEVER below.
 				indexeddb_save(getCharacterStorageKey(characterId), JSON.stringify(dataToSave)).then(() => {
 					upsertCharacterMetadata({ id: characterId, name: charName, type: "Document" })
 					updateCharacterListFromAllDe();
+				}).catch((e) => {
+					releaseName();
+					console.error(e);
 				})
 			})
 		}
@@ -6451,6 +6477,7 @@ Current version indicated by LITEVER below.
 		let resolved = resolveCharacterNameAndId(filename, "No world info name");
 		let charName = resolved.name;
 		let characterId = resolved.id;
+		let releaseName = reserveCharacterMetadata(resolved, "World Info");
 		let dataToSave = {
 			id: characterId,
 			name: charName,
@@ -6460,6 +6487,9 @@ Current version indicated by LITEVER below.
 		indexeddb_save(getCharacterStorageKey(characterId), JSON.stringify(dataToSave)).then(() => {
 			upsertCharacterMetadata({ id: characterId, name: charName, type: "World Info" })
 			updateCharacterListFromAllDe();
+		}).catch((e) => {
+			releaseName();
+			console.error(e);
 		})
 	}
 
@@ -6468,6 +6498,7 @@ Current version indicated by LITEVER below.
 		let resolved = resolveCharacterNameAndId(filename, "No save name");
 		let charName = resolved.name;
 		let characterId = resolved.id;
+		let releaseName = reserveCharacterMetadata(resolved, "Save");
 		let dataToSave = {
 			id: characterId,
 			name: charName,
@@ -6476,6 +6507,9 @@ Current version indicated by LITEVER below.
 		indexeddb_save(getCharacterStorageKey(characterId), JSON.stringify(dataToSave)).then(() => {
 			upsertCharacterMetadata({ id: characterId, name: charName, type: "Save" })
 			updateCharacterListFromAllDe();
+		}).catch((e) => {
+			releaseName();
+			console.error(e);
 		})
 	}
 
@@ -6497,6 +6531,7 @@ Current version indicated by LITEVER below.
 		let resolved = resolveCharacterNameAndId(filename, "No scenario name");
 		let charName = resolved.name;
 		let characterId = resolved.id;
+		let releaseName = reserveCharacterMetadata(resolved, "Scenario");
 		let dataToSave = {
 			id: characterId,
 			name: charName,
@@ -6505,6 +6540,9 @@ Current version indicated by LITEVER below.
 		indexeddb_save(getCharacterStorageKey(characterId), JSON.stringify(dataToSave)).then(() => {
 			upsertCharacterMetadata({ id: characterId, name: charName, type: "Scenario" })
 			updateCharacterListFromAllDe();
+		}).catch((e) => {
+			releaseName();
+			console.error(e);
 		})
 	}
 

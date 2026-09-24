@@ -819,7 +819,10 @@ let managerUploadHandler = function (result) {
         }
         else {
             let wiToAdd = data, has_tav_wi_check = has_tavern_wi_check(wiToAdd), wiName = fileName;
-            let checkForIfCharData = (node) => !node.scenarioVersion && (!!node?.name && ((!!node?.description || !!node?.personality) || (node.spec == "chara_card_v2" || node.spec == "chara_card_v3")))
+            // A character card: a name plus some card text. Older "Download all" archives hold characters
+            // without a portrait as the bare card object; one with an empty description and personality
+            // (e.g. only a first message) must still restore as a character.
+            let checkForIfCharData = (node) => !node.scenarioVersion && (!!node?.name && ((!!node?.description || !!node?.personality || !!node?.first_mes || !!node?.scenario || !!node?.mes_example) || (node.spec == "chara_card_v2" || node.spec == "chara_card_v3")))
             if (!!data?.data) {
                 let nestedData = data.data
                 if (checkForIfCharData(nestedData)) {
