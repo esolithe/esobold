@@ -18,6 +18,9 @@ window.addEventListener('load', () => {
     topButton += `<li class="nav-item" id="topbtn_quick_start">
 			<a class="nav-link mainnav" href="#" onclick="closeTopNav(); showQuickStartPopup();" tabindex="0">Quick Start</a>
 		</li>`
+    topButton += `<li class="nav-item" id="topbtn_guide">
+			<a class="nav-link mainnav" href="#" onclick="closeTopNav(); window.eso.guide.open();" tabindex="0">Guide</a>
+		</li>`
 
     document.querySelector("#navbarNavDropdown > ul").innerHTML += topButton;
     treeViewer.showOpenButton();

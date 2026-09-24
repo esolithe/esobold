@@ -253,7 +253,32 @@ let renderEsoboldAgentTools = () => {
     orderedGroups.forEach(groupKey => refreshGroupState(groupKey))
 }
 
+// Tabs added by mods (SettingsExtension, see modHooks.js). Built lazily so extensions registered after page load
+// still get their tab; the tab of an unregistered extension is removed.
+let settingsExtensionTabs = new Map()
+let syncSettingsExtensionTabs = () => {
+    let ui = window.eso.settingsUi
+    if (!ui) {
+        return
+    }
+    let extensions = window.eso.extensions.getByType(EsoExtensionType.SETTINGS)
+    settingsExtensionTabs.forEach((tab, id) => {
+        if (!extensions.includes(tab.ext)) {
+            tab.sectionButton.remove()
+            tab.sectionBody.remove()
+            settingsExtensionTabs.delete(id)
+        }
+    })
+    extensions.filter(ext => !settingsExtensionTabs.has(ext.getId())).forEach(ext => {
+        let section = ui.section(`ext_${String(ext.getId()).replace(/[^\w-]/g, "_")}`, ext.getLabel())
+        section.sectionBody.dataset.settingsExtension = ext.getId()
+        ext.render(section.settingsBox, ui)
+        settingsExtensionTabs.set(ext.getId(), { ext, sectionButton: section.sectionButton, sectionBody: section.sectionBody })
+    })
+}
+
 display_settings = () => {
+    syncSettingsExtensionTabs()
     originalDisplaySettings()
     document.getElementById("agentBehaviour").checked = localsettings.agentBehaviour;
     document.getElementById("agentHideCOT").checked = localsettings.agentHideCOT;
@@ -291,6 +316,7 @@ display_settings = () => {
     document.getElementById("hearthfireContext").checked = !!localsettings.hearthfireContext;
     renderEsoboldAgentTools()
     window.updateLumaraListenerStatusIndicator()
+    settingsExtensionTabs.forEach(tab => tab.ext.load())
 }
 
 updateLegacySaveButtonState = () => {
@@ -347,6 +373,8 @@ confirm_settings = () => {
             let obj = JSON.parse(document.getElementById("agentSavedMacros").value)
             localsettings.agentSavedMacros = obj;
         }
+
+        settingsExtensionTabs.forEach(tab => tab.ext.save())
 
         updateEditorState();
         originalConfirmSettings();
@@ -488,6 +516,9 @@ window.addEventListener('load', () => {
         })
 
 
+        if (!settingNav.children[tabIndex]) {
+            tabIndex = 0
+        }
         current_settings_tab_idx = tabIndex
         let sectionButton = document.querySelector(`#settingscontainer .settingsnav :nth-child(${tabIndex + 1})`), sectionBody = document.querySelector(`#${sectionButton.id.replace(/_tab$/, "")}`)
         sectionBody.classList.remove("hidden")
@@ -515,8 +546,7 @@ window.addEventListener('load', () => {
         let sectionLink = document.createElement("a")
         sectionLink.innerText = buttonText
         sectionLink.title = buttonText
-        let currentNumberOfTabs = settingNav.querySelectorAll("li").length
-        sectionLink.onclick = () => display_settings_tab(currentNumberOfTabs - 1)
+        sectionLink.onclick = () => display_settings_tab([...settingNav.children].indexOf(sectionButton))
         sectionButton.appendChild(sectionLink)
 
         return { sectionButton, sectionBody, settingsBox }
@@ -849,6 +879,19 @@ window.addEventListener('load', () => {
     settingsBox.append(settingLabelElem)
 
     createStopThinkingButton()
+
+    // Helpers for SettingsExtension pages (see modHooks.js)
+    window.eso.settingsUi = {
+        section: createNewSettingsSection,
+        subSection: createNewSubSection,
+        text: createSettingElementText,
+        textArea: createSettingElementTextArea,
+        button: createSettingElemButton,
+        bool: createSettingElemBool,
+        select: createSettingElemSelect,
+        range: createSettingElemRange
+    }
+    syncSettingsExtensionTabs()
 })
 
 window.eso.afterKoboldCppVersionCheck = async () => {
