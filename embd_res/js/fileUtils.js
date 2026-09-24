@@ -26,6 +26,25 @@ let textToBytesToB64 = (text) => {
 let b64ToBytesToText = (b64) => {
     return new TextDecoder().decode(new Uint8Array(atob(b64).split(",").map(Number)));
 }
+// A character without a portrait is downloaded as a TavernCard V2 JSON ({ spec, spec_version, data },
+// V1 fields mirrored at the top), the same card format as inside a portrait PNG. The bare inner object
+// was read as a V1 card by SillyTavern and others, which then dropped system_prompt,
+// post_history_instructions, alternate_greetings, character_book and extensions.
+// The stored data goes into `data` unchanged; only required V2 fields that are missing are added
+// (empty). Esolite's own import (managerUploadHandler, also "Upload all") unwraps `data` again.
+let characterToTavernV2 = (inner) => {
+    if (!!inner?.spec && !!inner?.data) {
+        return inner
+    }
+    let data = Object.assign({}, inner || {})
+    let required = { name: "", description: "", personality: "", scenario: "", first_mes: "", mes_example: "", creator_notes: "", system_prompt: "", post_history_instructions: "", alternate_greetings: [], tags: [], creator: "", character_version: "", extensions: {} }
+    for (let [key, value] of Object.entries(required)) {
+        if (data[key] === undefined) {
+            data[key] = Array.isArray(value) ? [] : (typeof value === "object" ? {} : value)
+        }
+    }
+    return { spec: "chara_card_v2", spec_version: "2.0", name: data.name, description: data.description, personality: data.personality, scenario: data.scenario, first_mes: data.first_mes, mes_example: data.mes_example, data }
+}
 let getDownloadDataFromManager = async (charName) => {
     let normalizedName = `${charName || ""}`.replaceAll(/[^\w()_\-'",!\[\].]/g, " ").replaceAll(/\s+/g, " ").trim()
     let characterMeta = (allCharacterNames || []).find(c => `${c?.name || ""}`.replaceAll(/[^\w()_\-'",!\[\].]/g, " ").replaceAll(/\s+/g, " ").trim() === normalizedName)
@@ -45,7 +64,7 @@ let getDownloadDataFromManager = async (charName) => {
                     else {
                         try {
                             fileName = `${charName}.json`
-                            b64Url = `data:application/json;base64,${btoa(jsObjToBytes(charData.data))}`
+                            b64Url = `data:application/json;base64,${btoa(jsObjToBytes(characterToTavernV2(charData.data)))}`
                         }
                         catch (e) {
                             handleError(e)
