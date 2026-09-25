@@ -7,6 +7,13 @@ on:
         description: 'Optional commit hash to build from'
         required: false
         default: ''
+  workflow_call:
+    inputs:
+      commit_hash:
+        description: 'Optional commit hash to build from'
+        required: false
+        type: string
+        default: ''
 
 env:
   BRANCH_NAME: ${{ github.head_ref || github.ref_name }}

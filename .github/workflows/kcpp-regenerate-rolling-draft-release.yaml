@@ -1,0 +1,177 @@
+name: Koboldcpp Regenerate Rolling And Draft Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_hash:
+        description: Optional commit hash to build from
+        required: false
+        default: ''
+      draft_tag:
+        description: Optional draft release tag (default is auto-generated)
+        required: false
+        default: ''
+      draft_name:
+        description: Optional draft release name (default is auto-generated)
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: rolling-regenerate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build_linux:
+    name: Linux
+    uses: ./.github/workflows/kcpp-build-release-linux.yaml
+    with:
+      commit_hash: ${{ inputs.commit_hash }}
+    secrets: inherit
+
+  build_linux_rocm:
+    name: Linux ROCm
+    uses: ./.github/workflows/kcpp-build-release-linux-rocm.yaml
+    with:
+      commit_hash: ${{ inputs.commit_hash }}
+      tag_name: ''
+    secrets: inherit
+
+  build_mac:
+    name: Mac
+    uses: ./.github/workflows/kcpp-build-release-macos.yaml
+    with:
+      commit_hash: ${{ inputs.commit_hash }}
+    secrets: inherit
+
+  build_windows:
+    name: Windows
+    uses: ./.github/workflows/kcpp-build-release-win.yaml
+    with:
+      commit_hash: ${{ inputs.commit_hash }}
+    secrets: inherit
+
+  create_draft_release:
+    name: Create Draft Release
+    needs:
+      - build_linux
+      - build_linux_rocm
+      - build_mac
+      - build_windows
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      INPUT_COMMIT_HASH: ${{ inputs.commit_hash }}
+      INPUT_DRAFT_TAG: ${{ inputs.draft_tag }}
+      INPUT_DRAFT_NAME: ${{ inputs.draft_name }}
+    steps:
+      - name: Resolve release metadata
+        id: meta
+        run: |
+          set -euo pipefail
+
+          if [[ -n "${INPUT_COMMIT_HASH}" ]]; then
+            target_commit="${INPUT_COMMIT_HASH}"
+          else
+            target_commit="${GITHUB_SHA}"
+          fi
+
+          timestamp="$(date -u +'%Y%m%d-%H%M%S')"
+
+          if [[ -n "${INPUT_DRAFT_TAG}" ]]; then
+            draft_tag="${INPUT_DRAFT_TAG}"
+          else
+            draft_tag="draft-${timestamp}-${GITHUB_RUN_ID}"
+          fi
+
+          if [[ -n "${INPUT_DRAFT_NAME}" ]]; then
+            draft_name="${INPUT_DRAFT_NAME}"
+          else
+            draft_name="Draft ${timestamp} (${GITHUB_SHA::8})"
+          fi
+
+          {
+            echo "target_commit=${target_commit}"
+            echo "draft_tag=${draft_tag}"
+            echo "draft_name=${draft_name}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Download rolling release assets
+        run: |
+          set -euo pipefail
+
+          mkdir -p rolling-assets
+
+          mapfile -t assets < <(gh release view rolling --repo "${GITHUB_REPOSITORY}" --json assets --jq '.assets[].name')
+
+          if [[ "${#assets[@]}" -eq 0 ]]; then
+            echo "Rolling release has no assets to copy."
+            exit 1
+          fi
+
+          for asset in "${assets[@]}"; do
+            echo "Downloading ${asset}"
+            gh release download rolling \
+              --repo "${GITHUB_REPOSITORY}" \
+              --pattern "${asset}" \
+              --dir rolling-assets \
+              --clobber
+          done
+
+      - name: Ensure draft tag does not exist
+        run: |
+          set -euo pipefail
+
+          draft_tag="${{ steps.meta.outputs.draft_tag }}"
+          if gh release view "${draft_tag}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "Release tag already exists: ${draft_tag}"
+            exit 1
+          fi
+
+      - name: Create draft release from rolling assets
+        id: create_release
+        run: |
+          set -euo pipefail
+
+          draft_tag="${{ steps.meta.outputs.draft_tag }}"
+          draft_name="${{ steps.meta.outputs.draft_name }}"
+          target_commit="${{ steps.meta.outputs.target_commit }}"
+
+          mapfile -d '' -t release_files < <(find rolling-assets -mindepth 1 -maxdepth 1 -type f -print0 | sort -z)
+
+          if [[ "${#release_files[@]}" -eq 0 ]]; then
+            echo "No files found after downloading rolling assets."
+            exit 1
+          fi
+
+          notes_file="$(mktemp)"
+          {
+            echo "Draft release generated from the current rolling release assets."
+            echo
+            echo "Validated workflows:"
+            echo "- Koboldcpp Linux"
+            echo "- KoboldCpp Linux ROCm"
+            echo "- Koboldcpp Mac"
+            echo "- Koboldcpp Windows"
+            echo
+            echo "Source workflow run:"
+            echo "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          } > "${notes_file}"
+
+          gh release create "${draft_tag}" "${release_files[@]}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --target "${target_commit}" \
+            --title "${draft_name}" \
+            --draft \
+            --notes-file "${notes_file}"
+
+          release_url="$(gh release view "${draft_tag}" --repo "${GITHUB_REPOSITORY}" --json url --jq '.url')"
+          echo "release_url=${release_url}" >> "${GITHUB_OUTPUT}"
+
+      - name: Print draft release URL
+        run: echo "Created draft release at ${{ steps.create_release.outputs.release_url }}"

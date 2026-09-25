@@ -11,9 +11,22 @@ on:
         description: 'Optional version tag (e.g. v1.57.1) for stable release file'
         required: false
         default: ''
+  workflow_call:
+    inputs:
+      commit_hash:
+        description: 'Optional commit hash to build from'
+        required: false
+        type: string
+        default: ''
+      tag_name:
+        description: 'Optional version tag (e.g. v1.57.1) for stable release file'
+        required: false
+        type: string
+        default: ''
 
 env:
   BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
+  KCPP_PYTHON_VERSION: ''
 
 jobs:
   linux:
