@@ -17,8 +17,7 @@ on:
         default: ''
 
 permissions:
-  contents: write
-  actions: read
+  write-all
 
 concurrency:
   group: rolling-regenerate-${{ github.ref }}
