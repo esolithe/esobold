@@ -26,7 +26,7 @@
     {
         "id": "KLITE-RPmod",
         "name": "KLITE RP Mod",
-        "url": "https://raw.githubusercontent.com/PeterPeet/KLITE-RPmod/refs/heads/main/KLITE-RPmod_ALPHA.js",
+        "url": "https://raw.githubusercontent.com/PeterPeet/rp-lite.koboldai.net/refs/heads/redirect/KLITE-RPmod.js",
         "conflicts": []
     }
 ]
