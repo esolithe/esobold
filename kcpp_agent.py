@@ -12,7 +12,8 @@ Nine built-in tools, plus tools exposed by KoboldCpp's MCP proxy:
   - view_image
   - ask_user
 
-By default, every tool call requires confirmation and its arguments are shown.
+By default, tool calls require confirmation (ask_user prompts directly).
+Per-tool /confirm overrides take precedence over the global confirmation mode.
 Uses only the Python standard library.
 """
 
@@ -53,7 +54,7 @@ DEFAULT_MAX_TOOL_RESULT_CHARS = 20000
 MAX_TOOL_RESULT_CHARS = DEFAULT_MAX_TOOL_RESULT_CHARS
 NORMAL_TOOL_RESULT_DISPLAY_CHARS = 8000
 COMPACT_TOOL_RESULT_DISPLAY_CHARS = 600
-MAX_AGENT_STEPS = 32
+MAX_AGENT_STEPS = 48
 MAX_FETCH_BYTES = 4000000
 MAX_VIEW_IMAGE_BYTES = 32 * 1024 * 1024
 MAX_PROJECT_INSTRUCTION_CHARS = 10000
@@ -69,6 +70,9 @@ ESCAPE_DISAMBIGUATION_SECONDS = 0.05
 ESCAPE_SEQUENCE_QUIET_SECONDS = 0.01
 ESCAPE_SEQUENCE_DRAIN_SECONDS = 0.10
 INTERRUPTED_TASK_NOTICE = "[Task was interrupted before the agent finished. Follow the new instruction below.]"
+# Older agents must reject sessions whose confirmation overrides they cannot enforce.
+SESSION_FORMAT_VERSION = 2
+CONFIRMATION_MODES = ("on", "off", "auto")
 
 ANSI_RESET = "\033[0m"
 ANSI_BOLD_CYAN = "\033[1;36m"
@@ -89,7 +93,7 @@ class APIResponseError(RuntimeError):
 
 
 class AgentInterrupted(Exception):
-    """The user stopped the current model request."""
+    """The user stopped the current model request or pending tool approval."""
 
 
 class RequestCancellation:
@@ -265,6 +269,30 @@ class Throbber:
         self.stream.flush()
 
 
+def standalone_escape(fd: int) -> bool:
+    """After reading ESC on POSIX, discard key sequences and detect Escape alone."""
+    import select
+
+    ready, _, _ = select.select([fd], [], [], ESCAPE_DISAMBIGUATION_SECONDS)
+    if not ready:
+        return True
+
+    # Arrow, function, and Alt keys also start with ESC. Drain the sequence so
+    # its remaining characters cannot leak into the next prompt.
+    deadline = time.monotonic() + ESCAPE_SEQUENCE_DRAIN_SECONDS
+    while time.monotonic() < deadline:
+        os.read(fd, 1)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        ready, _, _ = select.select(
+            [fd], [], [], min(ESCAPE_SEQUENCE_QUIET_SECONDS, remaining)
+        )
+        if not ready:
+            break
+    return False
+
+
 def run_interruptible_request(
     operation: Callable[[], Any], on_interrupt: Callable[[], None] | None = None
 ) -> Any:
@@ -302,29 +330,7 @@ def run_interruptible_request(
             if not ready or os.read(fd, 1) != b"\x1b":
                 return False
 
-            # Escape prefixes arrow, function, and Alt-key sequences on POSIX
-            # terminals. Only treat it as an interrupt when it arrives alone.
-            ready, _, _ = select.select(
-                [fd], [], [], ESCAPE_DISAMBIGUATION_SECONDS
-            )
-            if not ready:
-                return True
-
-            # Discard the rest of the terminal-generated sequence so fragments
-            # such as "[A" cannot leak into the next input prompt. Stop after a
-            # short quiet period, with a hard deadline for unusual terminals.
-            deadline = time.monotonic() + ESCAPE_SEQUENCE_DRAIN_SECONDS
-            while time.monotonic() < deadline:
-                os.read(fd, 1)
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    break
-                ready, _, _ = select.select(
-                    [fd], [], [], min(ESCAPE_SEQUENCE_QUIET_SECONDS, remaining)
-                )
-                if not ready:
-                    break
-            return False
+            return standalone_escape(fd)
 
         def restore_input() -> None:
             termios.tcsetattr(fd, termios.TCSADRAIN, previous_mode)
@@ -1141,6 +1147,64 @@ def tool_arguments_preview(
     return limit_text(rendered, "argument preview", limit)
 
 
+def read_tool_approval(prompt: str) -> str:
+    """Read a yes/no line, but let Escape interrupt without waiting for Enter."""
+    if not (stream_is_interactive(sys.stdin) and stream_is_interactive(sys.stdout)):
+        return input(prompt)
+
+    if os.name == "nt":
+        import msvcrt
+
+        def read_key() -> str:
+            key = msvcrt.getwch()
+            if key in ("\x00", "\xe0"):
+                msvcrt.getwch()  # Consume Windows arrow/function key codes.
+                return ""
+            return key
+
+        def restore_input() -> None:
+            pass
+
+    else:
+        import termios
+        import tty
+
+        fd = sys.stdin.fileno()
+        previous_mode = termios.tcgetattr(fd)
+        tty.setcbreak(fd)
+
+        def read_key() -> str:
+            key = os.read(fd, 1)
+            if not key:
+                raise EOFError
+            if key == b"\x1b" and not standalone_escape(fd):
+                return ""
+            return key.decode("ascii", errors="ignore")
+
+        def restore_input() -> None:
+            termios.tcsetattr(fd, termios.TCSADRAIN, previous_mode)
+
+    try:
+        print(prompt, end="", flush=True)
+        answer: list[str] = []
+        while True:
+            key = read_key()
+            if key in ("\x1b", "\x03", "\x04", "\x1a"):
+                raise AgentInterrupted
+            if key in ("\r", "\n"):
+                return "".join(answer)
+            if key in ("\b", "\x7f"):
+                if answer:
+                    answer.pop()
+                    print("\b \b", end="", flush=True)
+            elif key.isprintable():
+                answer.append(key)
+                print(key, end="", flush=True)
+    finally:
+        restore_input()
+        print()
+
+
 def confirm_tool_call(
     name: str,
     args: dict[str, Any],
@@ -1165,15 +1229,18 @@ def confirm_tool_call(
 
     while True:
         try:
-            answer = input("Run this tool? [y/N]: ").strip().lower()
+            answer = read_tool_approval(
+                "Run this tool? [y/N, Esc to halt]: "
+            ).strip().lower()
         except (EOFError, KeyboardInterrupt):
-            print("\n" + color("Denied.", ANSI_RED))
-            return False
+            raise AgentInterrupted from None
+        if "\x1b" in answer or answer in ("esc", "escape"):
+            raise AgentInterrupted
         if answer in ("y", "yes"):
             return True
         if answer in ("", "n", "no"):
             return False
-        print("Please enter y or n.")
+        print("Enter y to approve, n to deny and continue, or press Esc to halt.")
 
 
 def print_tool_result(name: str, result: str, verbose: bool) -> None:
@@ -1357,8 +1424,11 @@ def tool_view_image(
         api_key=api_key,
         model=model,
         messages=[
+            {
+                "role": "system",
+                "content": "You are a computer vision inspection tool. Answer from the supplied image (if any) only.",
+            },
             {"role": "user", "content": [
-                {"role": "system", "content": "You are a computer vision inspection tool. Answer from the supplied image (if any) only."},
                 {"type": "text", "text": prompt},
                 {"type": "image_url", "image_url": {"url": image_url}},
             ]},
@@ -1615,6 +1685,146 @@ def confirmation_status(mode: str) -> str:
     return color(mode.upper(), ANSI_GREEN if mode == "on" else ANSI_YELLOW)
 
 
+def tool_confirmation_status(name: str, mode: str, overrides: dict[str, str]) -> str:
+    if name in overrides:
+        return f"confirmation {overrides[name]} (override)"
+    if name == "ask_user":
+        return "prompts directly"
+    return f"confirmation {mode} (default)"
+
+
+def print_confirmation_settings(mode: str, overrides: dict[str, str]) -> None:
+    print(f"Default confirmation: {mode}. Per-tool overrides take precedence.")
+    for name, setting in sorted(overrides.items()):
+        print(f"  {name}: {setting}")
+    if not overrides:
+        print("  No per-tool overrides.")
+    print()
+
+
+def session_path(command_arg: str) -> Path:
+    """Parse a path argument and add a .json extension when none is supplied."""
+    requested = command_arg.strip()
+    if len(requested) >= 2 and requested[0] == requested[-1] and requested[0] in "\"'":
+        requested = requested[1:-1]
+    if not requested:
+        raise ValueError("a file path is required")
+    path = Path(requested).expanduser()
+    if not path.suffix:
+        path = path.with_suffix(".json")
+    return path
+
+
+def save_session_file(
+    path: Path,
+    *,
+    messages: list[dict[str, Any]],
+    temperature: float,
+    max_tokens: int | None,
+    disabled_tools: set[str],
+    confirmation_mode: str,
+    show_reasoning: bool,
+    verbose: bool,
+    no_color: bool,
+    request_timeout: int,
+    max_tool_result_chars: int,
+    pending_interruption: bool,
+    workdir: Path,
+    tool_confirmation: dict[str, str] | None = None,
+    max_agent_steps: int = MAX_AGENT_STEPS,
+) -> None:
+    """Save all session state except model endpoint credentials."""
+    session = {
+        "session_format": "koboldcpp-agent",
+        "session_format_version": SESSION_FORMAT_VERSION,
+        # These fields intentionally resemble a stateless Chat Completions request.
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        # Agent-only state follows. Never add base_url, api_key, or model here.
+        "max_agent_steps": max_agent_steps,
+        "disabled_tools": sorted(disabled_tools),
+        "workdir": str(workdir),
+        "confirmation_mode": confirmation_mode,
+        "tool_confirmation": dict(tool_confirmation or {}),
+        "show_reasoning": show_reasoning,
+        "verbose": verbose,
+        "no_color": no_color,
+        "request_timeout": request_timeout,
+        "max_tool_result_chars": max_tool_result_chars,
+        "pending_interruption": pending_interruption,
+    }
+    with path.open("w", encoding="utf-8", newline="\n") as destination:
+        json.dump(session, destination, ensure_ascii=False, indent=2)
+        destination.write("\n")
+
+
+def load_session_file(path: Path) -> dict[str, Any]:
+    """Read and validate session state without applying it."""
+    with path.open(encoding="utf-8-sig") as source:
+        session = json.load(source)
+    if not isinstance(session, dict):
+        raise ValueError("session root must be a JSON object")
+    if session.get("session_format") != "koboldcpp-agent":
+        raise ValueError("not a KoboldCpp Agent session")
+    if session.get("session_format_version") not in (1, SESSION_FORMAT_VERSION):
+        raise ValueError(
+            f"unsupported session format version: {session.get('session_format_version')!r}"
+        )
+
+    messages = session.get("messages")
+    if not isinstance(messages, list) or not messages:
+        raise ValueError("messages must be a non-empty array")
+    if not all(
+        isinstance(message, dict) and isinstance(message.get("role"), str)
+        for message in messages
+    ):
+        raise ValueError("every message must be an object with a string role")
+    if not isinstance(session.get("temperature"), (int, float)) or isinstance(
+        session.get("temperature"), bool
+    ):
+        raise ValueError("temperature must be a number")
+    if not 0.0 <= session["temperature"] <= 2.0:
+        raise ValueError("temperature must be between 0 and 2")
+    max_tokens = session.get("max_tokens")
+    if max_tokens is not None and (
+        not isinstance(max_tokens, int) or isinstance(max_tokens, bool) or max_tokens < 1
+    ):
+        raise ValueError("max_tokens must be null or a positive integer")
+    disabled_tools = session.get("disabled_tools")
+    if not isinstance(disabled_tools, list) or not all(
+        isinstance(name, str) and name for name in disabled_tools
+    ):
+        raise ValueError("disabled_tools must be an array of non-empty strings")
+    if len(set(disabled_tools)) != len(disabled_tools):
+        raise ValueError("disabled_tools must not contain duplicates")
+    if session.get("confirmation_mode") not in {"on", "off", "auto"}:
+        raise ValueError("confirmation_mode must be on, off, or auto")
+    if session["session_format_version"] == 1:
+        session.setdefault("tool_confirmation", {})
+    overrides = session.get("tool_confirmation")
+    if not isinstance(overrides, dict) or not all(
+        isinstance(name, str) and name and isinstance(mode, str)
+        and mode in CONFIRMATION_MODES
+        for name, mode in overrides.items()
+    ):
+        raise ValueError("tool_confirmation must map tool names to on, off, or auto")
+    for field in ("show_reasoning", "verbose", "no_color", "pending_interruption"):
+        if not isinstance(session.get(field), bool):
+            raise ValueError(f"{field} must be a boolean")
+    session.setdefault("max_agent_steps", MAX_AGENT_STEPS)
+    for field in ("request_timeout", "max_tool_result_chars", "max_agent_steps"):
+        value = session.get(field)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+            raise ValueError(f"{field} must be a positive integer")
+    workdir = session.get("workdir")
+    if not isinstance(workdir, str) or not workdir:
+        raise ValueError("workdir must be a non-empty string")
+    if not Path(workdir).is_dir():
+        raise ValueError(f"saved working directory is unavailable: {workdir}")
+    return session
+
+
 def print_runtime_status(
     base_url: str,
     model: str,
@@ -1622,6 +1832,8 @@ def print_runtime_status(
     show_reasoning: bool,
     verbose: bool,
     max_tokens: int | None,
+    tool_confirmation: dict[str, str] | None = None,
+    max_agent_steps: int = MAX_AGENT_STEPS,
 ) -> None:
     max_tokens_status = str(max_tokens) if max_tokens is not None else "server default"
     print(color("Current status:", ANSI_BOLD_CYAN))
@@ -1629,7 +1841,11 @@ def print_runtime_status(
     print(color("Endpoint:", ANSI_CYAN) + f" {base_url}")
     print(color("Working directory:", ANSI_CYAN) + f" {Path.cwd()}")
     print(color("Max output tokens:", ANSI_CYAN) + f" {max_tokens_status}")
-    print(color("Confirmation:", ANSI_CYAN) + f" {confirmation_status(confirmation_mode)}")
+    print(color("Max agent steps:", ANSI_CYAN) + f" {max_agent_steps}")
+    print(color("Default confirmation:", ANSI_CYAN) + f" {confirmation_status(confirmation_mode)}")
+    if tool_confirmation:
+        settings = ", ".join(f"{name}={mode}" for name, mode in sorted(tool_confirmation.items()))
+        print(color("Confirmation overrides:", ANSI_CYAN) + f" {settings}")
     print(color("Reasoning display:", ANSI_CYAN) + f" {toggle_status(show_reasoning)}")
     print(color("Verbose tool display:", ANSI_CYAN) + f" {toggle_status(verbose)}")
 
@@ -1641,31 +1857,42 @@ def print_runtime_help(
     show_reasoning: bool,
     verbose: bool,
     max_tokens: int | None,
+    tool_confirmation: dict[str, str] | None = None,
+    max_agent_steps: int = MAX_AGENT_STEPS,
 ) -> None:
-    print(
-        "\n" + color("Runtime commands:", ANSI_BOLD_CYAN) + "\n"
-        "  /help               Show this help\n"
-        "  /clear              Clear history and refresh MCP tools\n"
-        "  /tools              List available tools and their status\n"
-        "  /tools NAME on|off  Enable or disable a tool, then clear the session\n"
-        "  /compact            Summarize history to save context space\n"
-        "  /workdir            Show the current working directory\n"
-        "  /workdir PATH       Change directory and clear the session\n"
-        "  /confirm            Show confirmation status\n"
-        "  /confirm on         Require approval for every tool call\n"
-        "  /confirm off        Auto-approve all tool calls\n"
-        "  /confirm auto       Agent will decide if approval is needed\n"
-        "  /reasoning          Show reasoning display status\n"
-        "  /reasoning on       Display model reasoning\n"
-        "  /reasoning off      Hide model reasoning\n"
-        "  /verbose            Show verbose display status\n"
-        "  /verbose on         Expand arguments and show result contents\n"
-        "  /verbose off        Use compact tool displays\n"
-        "  /connect            Set endpoint, API key, and model interactively\n"
-        "  /exit or /quit      Stop the agent\n"
+    rows = (
+        ("/help", "Show this help"),
+        ("/save FILE", "Save conversation and settings as JSON"),
+        ("/load FILE", "Load conversation and settings from JSON"),
+        ("/clear", "Clear history and refresh MCP tools"),
+        ("/tools", "List tools and confirmation settings (/tool is an alias)"),
+        ("/tools NAME on|off", "Enable or disable a tool, then clear the session"),
+        ("/compact", "Summarize history to save context space"),
+        ("/maxsteps [N]", "Show or set the maximum model turns per user message (N >= 1)"),
+        ("/workdir", "Show the current working directory"),
+        ("/workdir PATH", "Change directory and clear the session"),
+        ("/confirm", "Show global default confirmation and tool overrides"),
+        ("/confirm on|off|auto", "Set global default: ask, approve, or automatic review"),
+        ("/confirm NAME", "Show a tool's confirmation setting"),
+        ("/confirm NAME on|off|auto", "Override confirmation for a tool. Overrides win over the default"),
+        ("/confirm NAME default", "Remove the tool's override"),
+        ("/reasoning", "Show reasoning display status"),
+        ("/reasoning on", "Display model reasoning"),
+        ("/reasoning off", "Hide model reasoning"),
+        ("/verbose", "Show verbose display status"),
+        ("/verbose on", "Expand arguments and show result contents"),
+        ("/verbose off", "Use compact tool displays"),
+        ("/connect", "Set endpoint, API key, and model interactively"),
+        ("/exit or /quit", "Stop the agent"),
     )
+    command_width = max(len(command) for command, _ in rows)
+    print("\n" + color("Runtime commands:", ANSI_BOLD_CYAN))
+    for command, description in rows:
+        print(f"  {command:<{command_width}}  {description}")
+    print()
     print_runtime_status(
-        base_url, model, confirmation_mode, show_reasoning, verbose, max_tokens
+        base_url, model, confirmation_mode, show_reasoning, verbose, max_tokens,
+        tool_confirmation, max_agent_steps,
     )
     print()
 
@@ -1734,7 +1961,12 @@ def run_agent(
     temperature: float,
     max_tokens: int | None,
     request_timeout: int,
+    no_color: bool = False,
+    tool_confirmation: dict[str, str] | None = None,
+    max_agent_steps: int = MAX_AGENT_STEPS,
 ) -> None:
+    global MAX_TOOL_RESULT_CHARS
+
     base_url = normalize_base_url(base_url)
     show_reasoning = False
     verbose = False
@@ -1752,6 +1984,7 @@ def run_agent(
         base_url, api_key, model = connection
 
     disabled_tools: set[str] = set()
+    tool_confirmation = dict(tool_confirmation or {})
     all_tools = list(TOOLS)
     available_tools = list(TOOLS)
     mcp_tool_names: set[str] = set()
@@ -1775,6 +2008,10 @@ def run_agent(
             tool for tool in all_tools
             if tool["function"]["name"] not in disabled_tools
         ]
+        known_names = {tool["function"]["name"] for tool in all_tools}
+        for name in sorted(tool_confirmation.keys() - known_names):
+            print(color("Confirmation warning:", ANSI_YELLOW) +
+                  f" {name} is unavailable. Its override is retained but has no effect until the tool is available.")
 
     refresh_mcp_tools()
 
@@ -1784,7 +2021,8 @@ def run_agent(
     pending_interruption = False
 
     print_runtime_status(
-        base_url, model, confirmation_mode, show_reasoning, verbose, max_tokens
+        base_url, model, confirmation_mode, show_reasoning, verbose, max_tokens,
+        tool_confirmation, max_agent_steps,
     )
     print("\nKoboldCpp Agent has full shell access, exercise caution when approving commands.")
     print("Type " + color("/help", ANSI_YELLOW) + " for runtime commands.\n")
@@ -1807,10 +2045,76 @@ def run_agent(
         if command == "/help":
             print_runtime_help(
                 base_url, model, confirmation_mode, show_reasoning, verbose,
-                max_tokens,
+                max_tokens, tool_confirmation, max_agent_steps,
             )
             continue
-        if command == "/tools":
+        if command == "/maxsteps":
+            if command_arg:
+                try:
+                    max_agent_steps = positive_int(command_arg)
+                except (ValueError, argparse.ArgumentTypeError):
+                    print("Usage: /maxsteps [N] (N must be a positive integer)\n")
+                    continue
+            print(f"Max agent steps: {max_agent_steps}\n")
+            continue
+        if command == "/save":
+            try:
+                path = session_path(command_arg)
+                save_session_file(
+                    path,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    max_agent_steps=max_agent_steps,
+                    disabled_tools=disabled_tools,
+                    confirmation_mode=confirmation_mode,
+                    tool_confirmation=tool_confirmation,
+                    show_reasoning=show_reasoning,
+                    verbose=verbose,
+                    no_color=no_color,
+                    request_timeout=request_timeout,
+                    max_tool_result_chars=MAX_TOOL_RESULT_CHARS,
+                    pending_interruption=pending_interruption,
+                    workdir=Path.cwd(),
+                )
+            except (OSError, TypeError, ValueError) as exc:
+                print(f"Cannot save session: {exc}\n")
+                continue
+            print(f"Session saved: {path.resolve()}\n")
+            continue
+        if command == "/load":
+            try:
+                path = session_path(command_arg)
+                loaded_path = path.resolve()
+                session = load_session_file(path)
+                os.chdir(session["workdir"])
+            except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+                print(f"Cannot load session: {exc}\n")
+                continue
+            messages[:] = session["messages"]
+            temperature = float(session["temperature"])
+            max_tokens = session["max_tokens"]
+            max_agent_steps = session["max_agent_steps"]
+            disabled_tools.clear()
+            disabled_tools.update(session["disabled_tools"])
+            confirmation_mode = session["confirmation_mode"]
+            tool_confirmation = session["tool_confirmation"]
+            show_reasoning = session["show_reasoning"]
+            verbose = session["verbose"]
+            no_color = session["no_color"]
+            configure_colors(disabled=no_color)
+            request_timeout = session["request_timeout"]
+            MAX_TOOL_RESULT_CHARS = session["max_tool_result_chars"]
+            pending_interruption = session["pending_interruption"]
+            refresh_mcp_tools()
+            print(f"Session loaded: {loaded_path}")
+            print_runtime_status(
+                base_url, model, confirmation_mode, show_reasoning, verbose,
+                max_tokens, tool_confirmation, max_agent_steps,
+            )
+            print()
+            continue
+        if command in {"/tool", "/tools"}:
             parts = command_arg.split()
             if not parts:
                 print("\nAvailable tools:")
@@ -1818,7 +2122,8 @@ def run_agent(
                     name = tool["function"]["name"]
                     source = "MCP" if name in mcp_tool_names else "built-in"
                     state = "off" if name in disabled_tools else "on"
-                    print(f"  {name} ({source}): {state}")
+                    approval = tool_confirmation_status(name, confirmation_mode, tool_confirmation)
+                    print(f"  {name} ({source}): {state}; {approval}")
                 print()
                 continue
             if len(parts) != 2 or parts[1].lower() not in {"on", "off"}:
@@ -1893,20 +2198,32 @@ def run_agent(
             print("Conversation cleared (/clear fresh session).\n")
             continue
         if command == "/confirm":
-            setting = command_arg.lower()
-            if not setting:
-                print(f"Confirmation is {confirmation_mode}.\n")
-            elif setting == "on":
-                confirmation_mode = "on"
-                print("Confirmation enabled; tool calls now require approval.\n")
-            elif setting == "off":
-                confirmation_mode = "off"
-                print("Confirmation disabled; tool calls will be auto-approved.\n")
-            elif setting == "auto":
-                confirmation_mode = "auto"
-                print("Automatic review enabled; uncertain tool calls will require approval.\n")
+            parts = command_arg.split()
+            if not parts:
+                print_confirmation_settings(confirmation_mode, tool_confirmation)
+            elif len(parts) == 1 and parts[0].lower() in CONFIRMATION_MODES:
+                confirmation_mode = parts[0].lower()
+                print_confirmation_settings(confirmation_mode, tool_confirmation)
+            elif len(parts) <= 2:
+                name = parts[0]
+                known_names = {tool["function"]["name"] for tool in all_tools}
+                if name not in known_names and name not in tool_confirmation:
+                    print(f"Unknown tool: {name}. Use /tools to list available tools.\n")
+                    continue
+                if len(parts) == 2:
+                    setting = parts[1].lower()
+                    if setting == "default":
+                        tool_confirmation.pop(name, None)
+                    elif setting in CONFIRMATION_MODES:
+                        tool_confirmation[name] = setting
+                    else:
+                        print("Usage: /confirm NAME [on|off|auto|default]\n")
+                        continue
+                state = "unavailable" if name not in known_names else "off" if name in disabled_tools else "on"
+                approval = tool_confirmation_status(name, confirmation_mode, tool_confirmation)
+                print(f"{name}: {state}; {approval}\n")
             else:
-                print("Usage: /confirm [on|off|auto]\n")
+                print("Usage: /confirm [on|off|auto] or /confirm NAME [on|off|auto|default]\n")
             continue
         if command == "/reasoning":
             setting = command_arg.lower()
@@ -1968,7 +2285,7 @@ def run_agent(
             messages.append({"role": "user", "content": user_text})
 
         # Continue calling the model until it returns a normal assistant answer.
-        for _ in range(MAX_AGENT_STEPS):
+        for _ in range(max_agent_steps):
             try:
                 cancellation = RequestCancellation()
                 request_args = dict(
@@ -2072,7 +2389,9 @@ def run_agent(
                 display_name = f"MCP: {name}" if name in mcp_tool_names else name
                 raw_args = function.get("arguments", "{}")
 
-                if name in disabled_tools:
+                if pending_interruption:
+                    result = "SKIPPED: The user interrupted the turn before this tool could run."
+                elif name in disabled_tools:
                     result = f"DENIED: tool {name} is disabled by /tools."
                 elif awaiting_answer and name != "ask_user":
                     result = "SKIPPED: The model must read the user's answer before making another tool call."
@@ -2086,14 +2405,15 @@ def run_agent(
                     else:
                         if name not in TOOL_IMPL and name not in mcp_tool_names and name != "view_image":
                             result = f"ERROR: unknown tool: {name}"
-                        elif name == "ask_user":
+                        elif name == "ask_user" and name not in tool_confirmation:
                             try:
                                 result = tool_ask_user(args)
                             except Exception as exc:
                                 result = f"ERROR: {type(exc).__name__}: {exc}"
                         else:
+                            effective_mode = tool_confirmation.get(name, confirmation_mode)
                             reviewed_safe = False
-                            if confirmation_mode == "auto":
+                            if effective_mode == "auto":
                                 try:
                                     with Throbber("Reviewing tool call"):
                                         reviewed_safe = review_tool_call(
@@ -2105,16 +2425,25 @@ def run_agent(
                                     print(f"Automatic review unavailable: {exc}")
                                 if not reviewed_safe:
                                     print("Automatic review requests confirmation.")
-                            approved = confirm_tool_call(
-                                display_name, args,
-                                confirmation_mode == "off" or reviewed_safe,
-                                verbose,
-                                approval_label=(
-                                    "Approved by automatic review."
-                                    if reviewed_safe else "Approved automatically (confirm off)."
-                                ),
-                            )
-                            if not approved:
+                            try:
+                                approved = confirm_tool_call(
+                                    display_name, args,
+                                    effective_mode == "off" or reviewed_safe,
+                                    verbose,
+                                    approval_label=(
+                                        "Approved by automatic review."
+                                        if reviewed_safe else (
+                                            f"Approved automatically (/confirm {name} off)."
+                                            if name in tool_confirmation else "Approved automatically (confirm off)."
+                                        )
+                                    ),
+                                )
+                            except AgentInterrupted:
+                                pending_interruption = True
+                                approved = False
+                            if pending_interruption:
+                                result = "CANCELLED BY USER: The user halted the turn. This tool was not run."
+                            elif not approved:
                                 result = "DENIED BY USER: The user did not approve this tool call."
                             else:
                                 try:
@@ -2149,8 +2478,11 @@ def run_agent(
                         "content": result,
                     }
                 )
+            if pending_interruption:
+                print("\nInterrupted. Enter new instruction.\n")
+                break
         else:
-            print("Agent stopped: too many consecutive tool/model turns.\n")
+            print(f"Agent stopped: reached the limit of {max_agent_steps} consecutive tool/model turns.\n")
 
 
 def parse_args() -> argparse.Namespace:
@@ -2191,6 +2523,13 @@ def parse_args() -> argparse.Namespace:
         help="Maximum output tokens per model response (omitted by default)",
     )
     parser.add_argument(
+        "--max-agent-steps",
+        type=positive_int,
+        default=MAX_AGENT_STEPS,
+        metavar="STEPS",
+        help="Maximum model turns per user message (default: %(default)s)",
+    )
+    parser.add_argument(
         "--request-timeout",
         type=positive_int,
         default=600,
@@ -2199,13 +2538,21 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--confirmation",
-        choices=("on", "off", "auto"),
+        choices=CONFIRMATION_MODES,
         default="on",
         help=(
-            "Tool confirmation mode: 'on' asks for every tool call, 'off' approves "
-            "all calls, and 'auto' asks only when automatic review does not approve "
-            "the call (default: %(default)s)."
+            "Default tool confirmation: 'on' asks, 'off' approves, and 'auto' asks "
+            "when automatic review does not approve (default: %(default)s). "
+            "Per-tool overrides take precedence; ask_user prompts directly unless overridden."
         ),
+    )
+    parser.add_argument(
+        "--tool-confirmation",
+        type=tool_confirmation_value,
+        action="append",
+        default=[],
+        metavar="NAME=MODE",
+        help="Override a tool's confirmation with on, off, or auto. Repeat for multiple tools; last value wins.",
     )
     parser.add_argument(
         "--no-color",
@@ -2213,6 +2560,14 @@ def parse_args() -> argparse.Namespace:
         help="Disable colored terminal output.",
     )
     return parser.parse_args()
+
+
+def tool_confirmation_value(value: str) -> tuple[str, str]:
+    name, separator, mode = value.partition("=")
+    mode = mode.lower()
+    if not separator or not name or any(char.isspace() for char in name) or mode not in CONFIRMATION_MODES:
+        raise argparse.ArgumentTypeError("expected NAME=on, NAME=off, or NAME=auto")
+    return name, mode
 
 
 def positive_int(value: str) -> int:
@@ -2246,9 +2601,12 @@ def main() -> None:
             api_key=args.api_key,
             model=args.model,
             confirmation_mode=args.confirmation,
+            tool_confirmation=dict(args.tool_confirmation),
             temperature=args.temperature,
             max_tokens=args.max_tokens,
+            max_agent_steps=args.max_agent_steps,
             request_timeout=args.request_timeout,
+            no_color=args.no_color,
         )
     except KeyboardInterrupt:
         print("\nExiting.")
