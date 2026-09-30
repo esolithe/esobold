@@ -1,6 +1,7 @@
 /*
  * Guide: a tabbed help window with short chapters (top bar "Guide"). Esobold's chapters are the first tab;
  * mods add their own tabs with GuideExtension (see modHooks.js).
+ * Native chapter content lives in js/docs/*.js, loaded after this renderer in klite.embd.
  *
  * Chapter: { id, title, blocks: [...], show: [{ label, run(ctx) }] }
  * Blocks:  { p: "text" }                           paragraph
@@ -18,152 +19,7 @@
  *
  * window.eso.guide.open(tabId, chapterId) opens the guide, optionally on a tab / chapter.
  */
-let ESO_GUIDE_CHAPTERS = [
-    {
-        id: "welcome", title: "Welcome to Eso Lite",
-        blocks: [
-            { p: "Eso Lite is Esobold's version of KoboldAI Lite: a browser app for writing stories, chatting and working with an AI. It adds a Library, Quick Start, a world tree of your story's branches, agent mode and more." },
-            { p: "The chapters are short. Read them in order the first time; the \"Show me\" buttons point at the part of the screen being explained." },
-            { tip: "You can come back at any time with Guide in the top bar. Mods can add their own tabs to this window." },
-        ],
-        show: [
-            { label: "Where is the Guide?", run: (ctx) => ctx.highlight("#topbtn_guide", "Opens this guide") },
-        ],
-    },
-    {
-        id: "connect", title: "Connect an AI",
-        blocks: [
-            { p: "Eso Lite does not run a model itself; it talks to one. Use AI in the top bar to choose where the AI runs:" },
-            { list: [
-                "KoboldCpp or Esobold running on your computer or server (usually connected automatically when Eso Lite is opened from it).",
-                "AI Horde: free models run by volunteers; no setup, but slower and with a queue.",
-                "Online providers with an API key, such as OpenAI-compatible services or Claude.",
-            ] },
-            { p: "The connection status is shown on the right of the top bar." },
-        ],
-        show: [
-            { label: "AI", run: (ctx) => ctx.highlight(ctx.navLink("AI"), "Choose where the AI runs") },
-            { label: "Connection status", run: (ctx) => ctx.highlight("#connectstatusdiv", "Shows which AI you are connected to") },
-        ],
-    },
-    {
-        id: "first-message", title: "Modes and your first message",
-        blocks: [
-            { p: "Settings → General → Usage mode decides how the AI answers:" },
-            { table: [
-                ["Mode", "Use it for"],
-                ["Instruct", "Giving the AI tasks or questions, like an assistant. Generally, this mode can also be used for chatting with a character - especially if models focus on instruction following (which is many modern models)."],
-                ["Chat", "Talking with a character."],
-                ["Adventure", "Text adventures: you describe actions, the AI tells what happens."],
-                ["Story", "Writing a story together; the AI acts as your cowriter, continuing your text in a freeform way."],
-            ] },
-            { p: "Type into the box at the bottom and press Submit. Undo removes the last step, Redo brings it back and Retry asks for a new answer. Tick Allow Editing to change the story text directly." },
-        ],
-        show: [
-            { label: "Input box", run: (ctx) => ctx.highlight("#input_text", "Type here, then press Submit") },
-            { label: "Undo, Redo, Retry", run: (ctx) => ctx.highlight("#btn_actundo", "Undo, Redo and Retry sit together here") },
-            { label: "Open Settings → General", run: (ctx) => ctx.openSettings("general") },
-        ],
-    },
-    {
-        id: "library", title: "Library and saves",
-        blocks: [
-            { p: "The Library keeps your characters, saves and lorebooks in the browser, and on the server when Esobold stores data there (Server saves)." },
-            { list: [
-                "Import character cards (PNG or JSON), lorebooks, saves and even certain document types. You can also download characters from third party sources, or create a new character yourself!",
-                "Hover over Library for shortcuts: Q.Save (quick save), Download, Load, New Character and Share.",
-                "Items in the Library can be picked in Quick Start.",
-            ] },
-        ],
-        show: [
-            { label: "Library", run: (ctx) => ctx.highlight(ctx.navLink("Library"), "Characters, saves and lorebooks; hover for shortcuts") },
-            { label: "Open the Library", run: (ctx) => ctx.run(() => showCharacterList()) },
-        ],
-    },
-    {
-        id: "quick-start", title: "Quick Start",
-        blocks: [
-            { p: "Quick Start sets up a session in one step. All choices are optional:" },
-            { list: [
-                "a save to start from,",
-                "a main character and additional characters,",
-                "your player character,",
-                "world info / lorebook entries.",
-            ] },
-            { p: "Pick items from the Library, then press Confirm. Mods can add their own sections to Quick Start." },
-        ],
-        show: [
-            { label: "Open Quick Start", run: (ctx) => ctx.run(() => showQuickStartPopup()) },
-        ],
-    },
-    {
-        id: "context", title: "Memory, world info and TextDB",
-        blocks: [
-            { p: "The Context button opens what the AI knows besides the story itself:" },
-            { list: [
-                "Memory: text that is always sent, such as a summary or the setting. This is one of the first things the AI always sees.",
-                "World Info: entries that are added when their keywords appear. Groups can be exported and imported as files. Similar to Lorebooks.",
-                "TextDB: documents the AI can search. Upload text, lorebooks or PDFs; with optional embedding support to improve the search.",
-            ] },
-            { p: "The context usage bar next to the connection status shows how full the AI's context is. Click it for details." },
-        ],
-        show: [
-            { label: "Context button", run: (ctx) => ctx.highlight("#btn_actmem", "Memory, World Info and TextDB") },
-            { label: "Context usage", run: (ctx) => ctx.highlight("#contextUsageInline", "How much of the context is used; click for details") },
-        ],
-    },
-    {
-        id: "world-tree", title: "The world tree",
-        blocks: [
-            { p: "Every reply is recorded in the world tree. When you retry or edit, the story branches; the tree keeps all branches." },
-            { p: "Open the tree with the tree icon in the top bar and click a point to load the story from there." },
-            { tip: "Settings → Esobold → World tree settings: prune branches, choose how many levels of branches are shown, or show the whole tree (occasionally may have issues on very large saves)." },
-        ],
-        show: [
-            { label: "Tree icon", run: (ctx) => ctx.highlight("#openTreeDiagram", "Opens the world tree") },
-        ],
-    },
-    {
-        id: "agent", title: "Agent mode (experimental)",
-        blocks: [
-            { p: "In agent mode the AI can take several steps and use tools before it answers: search the web, roll dice, evaluate formulas, generate or analyse images, speak through TTS, search the TextDB or ask you for input." },
-            { list: [
-                "Turn it on under Settings → Agent.",
-                "It needs an instruct model with separate start and end tags for all roles (for example ChatML).",
-                "Tools such as web search, image generation or TTS must be set up and enabled first.",
-                "This mode works well with Esobold (or KoboldCPP)'s Autoswap, allowing the AI to switch model types and tools seamlessly during its multi-step reasoning.",
-            ] },
-        ],
-        show: [
-            { label: "Open Settings → Agent", run: (ctx) => ctx.openSettings("esoboldAgent") },
-        ],
-    },
-    {
-        id: "settings", title: "Esobold settings",
-        blocks: [
-            { p: "Settings → Esobold collects Esobold's own options:" },
-            { list: [
-                "World tree and save settings, including running memory (experimental automatic summaries, stored in World Info).",
-                "Context settings: \"Turns max content\" and \"Turns old content ratio\" create a sliding window of turns. It helps large models with slow prompt processing.",
-                "Mods: open the third-party mods manager.",
-            ] },
-            { p: "Settings → GUI has options to customise the theme colours and font sizes, along with context usage bar and editor options." },
-        ],
-        show: [
-            { label: "Open Settings → Esobold", run: (ctx) => ctx.openSettings("esobold") },
-        ],
-    },
-    {
-        id: "mods", title: "Mods",
-        blocks: [
-            { p: "Mods extend Eso Lite. The mods manager (Settings → Esobold → Mods) lists community mods; read the warning before applying one, since a mod runs code in this page." },
-            { p: "Mods can add sections to Quick Start, tabs to the settings dialog and tabs to this guide." },
-        ],
-        show: [
-            { label: "Open Settings → Esobold", run: (ctx) => ctx.openSettings("esobold") },
-        ],
-    },
-]
+let ESO_GUIDE_CHAPTERS = []
 
 class EsoGuide {
     storageKey = "esoGuidePosition"
@@ -355,6 +211,7 @@ class EsoGuide {
         popup.append(titleBar, navWrap, body, footer)
         container.append(background, popup)
         container.classList.toggle("hidden", this.hiddenForSpotlight)
+        toc.querySelector("[aria-current]")?.scrollIntoView({ block: "nearest", inline: "nearest" })
     }
 
     renderBlock(block) {

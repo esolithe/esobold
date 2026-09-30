@@ -120,6 +120,25 @@ If you prefer the arguments:
 - To set the reloadable models directory (overriding the config model): --admintextmodelsdir "..."
 - To sets the data storage directory (where the database storing server side saves are stored): --admindatadir "..."
 
+## User guide
+
+Open **Guide** in the Lite top bar for the native, source-backed Esobold guide.
+It covers connections, Library/Quick Start and saving, context/TextDB, story
+branches, sampling, media, editors, filesystem operations, agents and all 80
+built-in tool definitions, macros, OpenLumara, WebContainer, MCP, remote
+administration, themes, mods and browser APIs.
+
+Chapter content is organized by functional area under
+[`embd_res/js/docs`](embd_res/js/docs/README.md). The renderer remains in
+`esoGuide.js`; the original chapter IDs, saved position and mod-guide tabs are
+preserved. Long chapter lists and articles scroll independently, including on
+narrow screens.
+
+The [source coverage manifest](embd_res/js/docs/source-map.json) records the 301
+existing JavaScript files reviewed at the pinned source revision, distinguishes
+first-party modules from bundled dependencies, and identifies the correct
+Concedo/KoboldCpp comparison baseline.
+
 ---
 
 # koboldcpp
