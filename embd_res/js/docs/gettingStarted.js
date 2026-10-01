@@ -3,7 +3,7 @@
  * Sources: esoWelcome.js, esoGlobals.js, enableAllEndpointsLocally.js, newTopMenuButtons.js.
  * Chapter/block contract and rendering live in ../esoGuide.js.
  */
-ESO_GUIDE_CHAPTERS.push(
+ESO_GUIDE_PARTS.gettingStarted.chapters.push(
     {
             id: "welcome", title: "Welcome to Esobold",
             blocks: [

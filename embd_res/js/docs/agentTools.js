@@ -3,7 +3,7 @@
  * Sources: agent/agent_groups_loader.js, agent/agent_library_utils.js, agent/agent_media.js, agent/agent_search_web.js, agent/agent_utilities.js, agent/agent_world_state.js.
  * Chapter/block contract and rendering live in ../esoGuide.js.
  */
-ESO_GUIDE_CHAPTERS.push(
+ESO_GUIDE_PARTS.agents.chapters.push(
     {
         "id": "tool-permissions",
         "title": "Choosing which tools the agent can use",

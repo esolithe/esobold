@@ -3,7 +3,7 @@
  * Sources: newMediaButtons.js, embeddedContentViewer.js.
  * Chapter/block contract and rendering live in ../esoGuide.js.
  */
-ESO_GUIDE_CHAPTERS.push(
+ESO_GUIDE_PARTS.media.chapters.push(
     {
         "id": "media-workflow",
         "title": "Images, audio and media controls",

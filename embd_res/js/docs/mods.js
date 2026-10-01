@@ -3,7 +3,7 @@
  * Sources: modHooks.js, modManager.js.
  * Chapter/block contract and rendering live in ../esoGuide.js.
  */
-ESO_GUIDE_CHAPTERS.push(
+ESO_GUIDE_PARTS.integrations.chapters.push(
     {
             id: "mods", title: "Mods",
             blocks: [

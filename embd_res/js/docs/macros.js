@@ -3,7 +3,7 @@
  * Sources: agent/agent_macros.js.
  * Chapter/block contract and rendering live in ../esoGuide.js.
  */
-ESO_GUIDE_CHAPTERS.push(
+ESO_GUIDE_PARTS.agents.chapters.push(
     {
         "id": "macro-workflow",
         "title": "Agent macros: creation, invocation and saved plans",

@@ -3,7 +3,7 @@
  * Sources: esoSampler.js.
  * Chapter/block contract and rendering live in ../esoGuide.js.
  */
-ESO_GUIDE_CHAPTERS.push(
+ESO_GUIDE_PARTS.writing.chapters.push(
     {
         "id": "generation-settings",
         "title": "Generation settings and model formatting",

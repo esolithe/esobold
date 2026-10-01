@@ -3,7 +3,7 @@
  * Sources: contextUsage.js, documentParser.js, embeddingPreset.js, authorNotePositioningUtils.js, runningMemory.js, hearthfireContext.js.
  * Chapter/block contract and rendering live in ../esoGuide.js.
  */
-ESO_GUIDE_CHAPTERS.push(
+ESO_GUIDE_PARTS.context.chapters.push(
     {
             id: "context", title: "Context: what the AI can see",
             blocks: [

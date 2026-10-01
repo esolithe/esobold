@@ -3,7 +3,7 @@
  * Sources: newMenuOptions.js, themeEditor.js, themes.js, april.js.
  * Chapter/block contract and rendering live in ../esoGuide.js.
  */
-ESO_GUIDE_CHAPTERS.push(
+ESO_GUIDE_PARTS.settings.chapters.push(
     {
             id: "settings", title: "Esobold settings",
             blocks: [

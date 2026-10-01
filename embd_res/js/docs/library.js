@@ -3,7 +3,7 @@
  * Sources: characterManager.js, tavernTool.js, fileUtils.js, autosaveToServer.js, serverSideSaving.js, encryptUtils.js.
  * Chapter/block contract and rendering live in ../esoGuide.js.
  */
-ESO_GUIDE_CHAPTERS.push(
+ESO_GUIDE_PARTS.library.chapters.push(
     {
             id: "library", title: "Library and saves",
             blocks: [

@@ -3,7 +3,7 @@
  * Sources: agent.js, agentUtils.js, agent/agent_planning_input.js, agent/agent_messaging.js, agent/agent_stream_visualizer.js.
  * Chapter/block contract and rendering live in ../esoGuide.js.
  */
-ESO_GUIDE_CHAPTERS.push(
+ESO_GUIDE_PARTS.agents.chapters.push(
     {
             id: "agent", title: "Agent mode (experimental)",
             blocks: [

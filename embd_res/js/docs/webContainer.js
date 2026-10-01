@@ -3,7 +3,7 @@
  * Sources: webContainer.js, webContainerUtils.js, agent/agent_webContainer.js.
  * Chapter/block contract and rendering live in ../esoGuide.js.
  */
-ESO_GUIDE_CHAPTERS.push(
+ESO_GUIDE_PARTS.development.chapters.push(
     {
         "id": "container-overview",
         "title": "WebContainer: an optional browser coding workspace",

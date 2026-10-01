@@ -3,7 +3,7 @@
  * Sources: esoGuide.js, agenticUtilitiesExt.js, execCodeBlocks.js, popupUtils.js, waitingToast.js, postSubmitHandler.js.
  * Chapter/block contract and rendering live in ../esoGuide.js.
  */
-ESO_GUIDE_CHAPTERS.push(
+ESO_GUIDE_PARTS.development.chapters.push(
     {
         "id": "guide-authoring",
         "title": "Maintaining the native guide and chapter modules",
@@ -13,10 +13,10 @@ ESO_GUIDE_CHAPTERS.push(
             },
             {
                 "list": [
-                    "esoGuide.js draws the guide and handles chapter navigation. Each js/docs/*.js file adds chapters for one feature area to ESO_GUIDE_CHAPTERS before the top-bar button becomes available.",
+                    "esoGuide.js draws the guide and handles chapter navigation. Each js/docs/*.js file adds chapters to its feature part with ESO_GUIDE_PARTS.<category>.chapters.push(...) before the top-bar button becomes available.",
                     "A chapter has {id, title, blocks, show}. Use p for paragraphs, list for steps, tip for a short note, and table with a header row. Text is inserted with textContent, not interpreted as HTML or Markdown.",
                     "show contains {label, run(ctx)} buttons. ctx.highlight(target, note) points at a control and restores the guide after click/Escape/timeout; ctx.run(fn) closes it to perform an action; ctx.openSettings(tabId) opens settings; ctx.navLink(text) finds a top-bar entry.",
-                    "window.eso.guide.open(tabId, chapterId) opens a chosen chapter. esoGuidePosition remembers it. Keep existing IDs and place Esobold before mod tabs."
+                    "window.eso.guide.open(tabId, chapterId) opens a chosen chapter, for example open(\"context\", \"turn-based-authors-note\"). esoGuidePosition remembers a chapter in each category. Keep existing chapter IDs and place the native feature parts before mod tabs."
                 ]
             },
             {

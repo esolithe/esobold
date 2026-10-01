@@ -1,5 +1,5 @@
 /*
- * Guide: a tabbed help window with short chapters (top bar "Guide"). Esobold's chapters are the first tab;
+ * Guide: a tabbed help window with short chapters (top bar "Guide"). Native feature parts come first;
  * mods add their own tabs with GuideExtension (see modHooks.js).
  * Native chapter content lives in js/docs/*.js, loaded after this renderer in klite.embd.
  *
@@ -19,12 +19,22 @@
  *
  * window.eso.guide.open(tabId, chapterId) opens the guide, optionally on a tab / chapter.
  */
-let ESO_GUIDE_CHAPTERS = []
+const ESO_GUIDE_PARTS = {
+    gettingStarted: { id: "getting-started", label: "Getting started", chapters: [] },
+    library: { id: "library", label: "Library & saves", chapters: [] },
+    context: { id: "context", label: "Context & memory", chapters: [] },
+    writing: { id: "writing", label: "Writing & story tree", chapters: [] },
+    agents: { id: "agents", label: "Agents & automation", chapters: [] },
+    media: { id: "media", label: "Media", chapters: [] },
+    development: { id: "development", label: "Files & development", chapters: [] },
+    integrations: { id: "integrations", label: "Connections & extensions", chapters: [] },
+    settings: { id: "settings", label: "Settings & administration", chapters: [] },
+}
 
 class EsoGuide {
     storageKey = "esoGuidePosition"
     containerId = "esoGuideContainer"
-    position = { tab: "esobold", chapters: {} }
+    position = { tab: "getting-started", chapters: {} }
     spotlight = null
     hiddenForSpotlight = false
 
@@ -32,7 +42,7 @@ class EsoGuide {
         try {
             let saved = JSON.parse(localStorage.getItem(this.storageKey) || "null")
             if (saved && typeof saved === "object") {
-                this.position = { tab: `${saved.tab || "esobold"}`, chapters: saved.chapters || {} }
+                this.position = { tab: `${saved.tab || "getting-started"}`, chapters: saved.chapters || {} }
             }
         }
         catch (e) {
@@ -41,11 +51,27 @@ class EsoGuide {
     }
 
     getTabs() {
-        let tabs = [{ id: "esobold", label: "Esobold", chapters: ESO_GUIDE_CHAPTERS }]
+        let tabs = Object.values(ESO_GUIDE_PARTS)
         window.eso.extensions.getByType(EsoExtensionType.GUIDE).forEach(ext => {
             tabs.push({ id: ext.getId(), label: ext.getLabel(), chapters: ext.getChapters() })
         })
         return tabs.filter(tab => tab.chapters.length > 0)
+    }
+
+    resolveTab(tabs) {
+        let tab = tabs.find(curr => curr.id === this.position.tab)
+        if (!tab) {
+            let previousTab = this.position.tab
+            let chapterId = this.position.chapters[previousTab]
+            tab = tabs.find(curr => curr.chapters.some(chapter => chapter.id === chapterId)) || tabs[0]
+            if (tab.chapters.some(chapter => chapter.id === chapterId)) {
+                this.position.chapters[tab.id] = chapterId
+            }
+            delete this.position.chapters[previousTab]
+            this.position.tab = tab.id
+            this.savePosition()
+        }
+        return tab
     }
 
     savePosition() {
@@ -63,11 +89,17 @@ class EsoGuide {
 
     open(tabId = null, chapterId = null) {
         this.clearHighlight()
+        let tabs = this.getTabs()
+        let tab = this.resolveTab(tabs)
         if (tabId) {
-            this.position.tab = tabId
+            tab = tabs.find(curr => curr.id === tabId) || tab
         }
+        if (chapterId && !tab.chapters.some(chapter => chapter.id === chapterId)) {
+            tab = tabs.find(curr => curr.chapters.some(chapter => chapter.id === chapterId)) || tab
+        }
+        this.position.tab = tab.id
         if (chapterId) {
-            this.position.chapters[this.position.tab] = chapterId
+            this.position.chapters[tab.id] = chapterId
         }
         this.savePosition()
         this.render()
@@ -81,7 +113,7 @@ class EsoGuide {
 
     render() {
         let tabs = this.getTabs()
-        let tab = tabs.find(curr => curr.id === this.position.tab) || tabs[0]
+        let tab = this.resolveTab(tabs)
         let chapterIndex = Math.max(0, tab.chapters.findIndex(curr => curr.id === this.position.chapters[tab.id]))
         let chapter = tab.chapters[chapterIndex]
         let goTo = (tabId, chapterId) => {

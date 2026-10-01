@@ -3,7 +3,7 @@
  * Sources: treeHandler.js, treeViewer.js.
  * Chapter/block contract and rendering live in ../esoGuide.js.
  */
-ESO_GUIDE_CHAPTERS.push(
+ESO_GUIDE_PARTS.writing.chapters.push(
     {
             id: "world-tree", title: "The world tree",
             blocks: [

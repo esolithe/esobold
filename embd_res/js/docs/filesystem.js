@@ -3,7 +3,7 @@
  * Sources: fs.js, fs_browser.js, agent/agent_filesystem.js, dev/fs_array_contract_console_test.js.
  * Chapter/block contract and rendering live in ../esoGuide.js.
  */
-ESO_GUIDE_CHAPTERS.push(
+ESO_GUIDE_PARTS.development.chapters.push(
     {
         "id": "filesystem-browser",
         "title": "Filesystem browser: list, tiles, uploads and downloads",

@@ -1,8 +1,25 @@
 # Esobold native guide
 
 Open **Guide** in the Lite top bar. These ordered classic scripts provide 75
-chapters in the existing Esobold tab; mods retain their separate guide tabs.
+chapters across nine native feature tabs; mods retain their separate guide tabs.
 There is no second help renderer or Markdown-to-HTML pipeline.
+
+## Native guide parts
+
+| Tab ID | Label | Topic modules |
+| --- | --- | --- |
+| `getting-started` | Getting started | `gettingStarted.js` |
+| `library` | Library & saves | `library.js` |
+| `context` | Context & memory | `context.js` |
+| `writing` | Writing & story tree | `storyTree.js`, `generation.js`, `editors.js` |
+| `agents` | Agents & automation | `agents.js`, `agentTools.js`, `macros.js` |
+| `media` | Media | `media.js` |
+| `development` | Files & development | `filesystem.js`, `webContainer.js`, `developerApi.js` |
+| `integrations` | Connections & extensions | `openLumara.js`, `mcp.js`, `mods.js` |
+| `settings` | Settings & administration | `administration.js`, `settings.js` |
+
+The native parts appear in this order, with each part retaining its modules'
+existing loader order. Chapter numbering and Back/Next/Done are local to a part.
 
 ## Functional areas
 
@@ -29,17 +46,26 @@ There is no second help renderer or Markdown-to-HTML pipeline.
 
 ## Content and integration contract
 
-- `../esoGuide.js` owns rendering and `ESO_GUIDE_CHAPTERS`. Each topic script
-  appends chapter objects after that renderer loads in `../../klite.embd`.
+- `../esoGuide.js` owns rendering and the `ESO_GUIDE_PARTS` native registry.
+  Each topic script appends chapter objects with, for example,
+  `ESO_GUIDE_PARTS.library.chapters.push(...)` after that renderer loads in
+  `../../klite.embd`. Registry keys match tab IDs except `gettingStarted`,
+  whose tab ID is `getting-started`.
 - Chapter shape: `{ id, title, blocks, show }`. Native block keys are `p`, `list`,
   `tip`, and `table`; the first table row is the header. Text is rendered through
   `textContent`, not executable HTML/Markdown.
 - Show-me callbacks use `ctx.highlight`, `ctx.run`, `ctx.openSettings` and
   `ctx.navLink`. Settings IDs are `general`, `appearance`, `samplers`, `media`,
   `tokens`, `tools`, `advanced`, `esoboldAgent`, and `esobold`.
-- Preserve stable chapter IDs, including the ten original IDs. Position is saved
-  under `esoGuidePosition`; use `window.eso.guide.open("esobold", chapterId)` for
-  an explicit deep link. Registered `GuideExtension` tabs follow Esobold.
+- Preserve stable chapter IDs, including the ten original IDs. Use
+  `window.eso.guide.open("context", "turn-based-authors-note")` for a named deep
+  link, or `window.eso.guide.open(null, chapterId)` to find a chapter's part.
+  A link to a removed tab resolves by chapter ID; no Esobold alias tab is kept.
+- `esoGuidePosition` remembers a chapter in each category. A remembered chapter
+  from the former single-tab layout moves to its current part when opened.
+  Registered `GuideExtension` tabs follow the nine native parts. An explicit
+  valid mod tab keeps ownership of its chapter even if a native chapter has the
+  same ID.
 - Keep controls, prerequisites, side effects and failure paths source-backed.
   Conditional capabilities are not promises that a backend/model is configured.
 - Lead with the purpose, explain unfamiliar terms, give visible control paths and
@@ -83,16 +109,25 @@ presented as a working generic tool bridge.
 
 ## Exercised verification
 
-The actual Esobold/KoboldCpp instance was exercised through its built-in
-Cloudflare remote tunnel, using `koboldcpp.py --nomodel --remotetunnel` and a
-disposable Chromium profile. There was no separate gateway or preview renderer.
+The original content review exercised the actual Esobold/KoboldCpp instance
+through its built-in Cloudflare remote tunnel, using
+`koboldcpp.py --nomodel --remotetunnel` and a disposable Chromium profile.
+The category regrouping was exercised on the same native no-model instance at
+`http://127.0.0.1:19266/`, not a separate gateway or preview renderer.
 
-- All 75 chapters were opened through the native sidebar at 1440×1000 and
-  390×844. Chapter titles matched their selections, with no article horizontal
-  overflow, outer-body overflow or offscreen current-chapter selection.
-- Native Back/Next, first-page Back disabling, Close and final-page Done worked.
-- The selected turn-based Author's Note chapter survived closing the guide and
-  a full page reload.
+- All 75 chapters were opened through the native sidebar across all nine feature
+  tabs at 1440×1000 and 390×844. Chapter titles, active categories and local
+  chapter counters matched each selection, with no article horizontal overflow,
+  outer-body overflow or offscreen current-chapter selection.
+- Native Back/Next, first-page Back disabling and last-page Done worked in every
+  category at both widths.
+- The saved single-tab turn-based Author's Note chapter migrated into
+  **Context & memory**. Library and Context retained independent chapter
+  selections across tab switches and a full page reload.
+- Named, chapter-only and former single-tab deep links selected the correct
+  native part. A disposable `GuideExtension` appeared after the native parts and
+  retained its own chapter when its ID matched a native chapter; it was removed
+  after the smoke check.
 - Hovering over the actual Library tab exposed Q.Save, Download, Load,
   New Character and Share.
 - The Media show-me shortcut previously pointed to a hidden panel. It now rings

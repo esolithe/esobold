@@ -3,7 +3,7 @@
  * Sources: openlumara_client.js, openlumaraAuthUtils.js, agent/agent_openlumara.js, agent/agent_openlumarapolling.js.
  * Chapter/block contract and rendering live in ../esoGuide.js.
  */
-ESO_GUIDE_CHAPTERS.push(
+ESO_GUIDE_PARTS.integrations.chapters.push(
     {
         "id": "lumara-connection",
         "title": "OpenLumara: connection, identity and status",

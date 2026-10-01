@@ -3,7 +3,7 @@
  * Sources: reloadUtils.js, hfModelSearcher.js.
  * Chapter/block contract and rendering live in ../esoGuide.js.
  */
-ESO_GUIDE_CHAPTERS.push(
+ESO_GUIDE_PARTS.settings.chapters.push(
     {
         "id": "backend-administration",
         "title": "Server administration: changing models and configuration",
