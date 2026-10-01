@@ -143,14 +143,14 @@ Concedo/KoboldCpp comparison baseline.
 
 # koboldcpp
 
-KoboldCpp is an easy-to-use AI text-generation software for GGML and GGUF models, inspired by the original **KoboldAI**. It's a single self-contained distributable that builds off **llama.cpp** and adds many additional powerful features. [Download Releases Here](https://github.com/LostRuins/koboldcpp/releases/latest).
+KoboldCpp is an easy-to-use AI text-generation software for GGML and GGUF models, inspired by the original **KoboldAI**. It's a single self-contained distributable that builds off **llama.cpp** and adds many additional powerful features.  [Download KoboldCPP Releases Here](https://github.com/LostRuins/koboldcpp/releases/latest).
 
-![Preview](media/preview.png)
-![Preview](media/preview2.png)
-![Preview](media/preview3.png)
-![Preview](media/preview4.png)
-![Preview](media/preview5.png)
-![Preview](media/preview6.png)
+![Integrated Web UI](media/preview.png)
+![Roleplay Chat Mode](media/preview2.png)
+![GUI Launcher](media/preview3.png)
+![Messenger Chat Mode](media/preview4.png)
+![Image Generation UI](media/preview5.png)
+![Assistant UI](media/preview6.png)
 
 ### Features
 - Single file executable, with no installation required and no external dependencies
@@ -163,6 +163,7 @@ KoboldCpp is an easy-to-use AI text-generation software for GGML and GGUF models
 - Music Generation (Ace Step 1.5, Ace Step XL)
 - Image Recognition (Multimodal Vision)
 - MCP Server support and tool calling
+- Integrated AI Agent (KoboldCpp Agent) that can write and edit code, run programs, schedule tasks
 - Provides many compatible APIs endpoints for many popular webservices (KoboldCppApi OpenAiApi OllamaApi A1111ForgeApi ComfyUiApi WhisperTranscribeApi XttsApi OpenAiSpeechApi)
 - Bundled KoboldAI Lite UI with editing tools, save formats, memory, world info, author's note, characters, scenarios.
 - Includes multiple modes (chat, adventure, instruct, storywriter) and UI Themes (aesthetic roleplay, classic writer, corporate assistant, messsenger)
@@ -215,11 +216,19 @@ Finally, obtain and load a GGUF model. See [here](#Obtaining-a-GGUF-model)
 - KoboldCpp allows you to run just the frontend without loading any model, and instead connect to a supported online AI provider. Currently, AI Horde, OpenAI Compatible, Anthropic, OpenRouter, Gemini, Grok, Mistral are among the supported services. To run without a model and connect to a third party endpoint, use the `--nomodel` flag or select "Allow Launch without Model" checkbox from the Files tab in the GUI launcher. Alternatively, you can also use the KoboldAI Lite WebUI to connect directly via https://lite.koboldai.net
 
 ## Obtaining a GGUF model
-- KoboldCpp uses GGUF models. They are not included with KoboldCpp, but you can download GGUF files from other places such as [Bartowski's Huggingface](https://huggingface.co/bartowski). Search for "GGUF" on huggingface.co for plenty of compatible models in the `.gguf` format.
-- For beginners, we recommend [Qwen3-VL-8B](https://huggingface.co/unsloth/Qwen3-VL-8B-Instruct-GGUF/resolve/main/Qwen3-VL-8B-Instruct-Q4_K_S.gguf) **(Most Recommended, best all rounder model)**
-- For creative writing and roleplay, you can try [L3-8B-Stheno-v3.2](https://huggingface.co/bartowski/L3-8B-Stheno-v3.2-GGUF/resolve/main/L3-8B-Stheno-v3.2-Q4_K_S.gguf) (old, smaller and weaker) or [Tiefighter 13B](https://huggingface.co/KoboldAI/LLaMA2-13B-Tiefighter-GGUF/resolve/main/LLaMA2-13B-Tiefighter.Q4_K_S.gguf) (old but very versatile model).
+- KoboldCpp uses GGUF models. They are not included with KoboldCpp, but you can download GGUF files from other places such as [Bartowski's Huggingface](https://huggingface.co/bartowski). Search for "GGUF" on huggingface.co for plenty of compatible models in the `.gguf` format. For image models, **CivitAI** has a good selection. Here are some to get you started. **You can also get them by clicking 'Help' in the GUI launcher and browsing the Newbie Templates**
+  - General Text Generation: [Qwen3-VL-8B](https://huggingface.co/unsloth/Qwen3-VL-8B-Instruct-GGUF/resolve/main/Qwen3-VL-8B-Instruct-Q4_K_S.gguf) **(Most Recommended, best all rounder model)**
+    - Optionally, add [Qwen3-VL-8B MMproj file](https://huggingface.co/unsloth/Qwen3-VL-8B-Instruct-GGUF/resolve/main/mmproj-BF16.gguf) if you also want Image Recognition vision capabilities.
+  - Creative Writing and Roleplay: [L3-8B-Stheno-v3.2](https://huggingface.co/bartowski/L3-8B-Stheno-v3.2-GGUF/resolve/main/L3-8B-Stheno-v3.2-Q4_K_S.gguf)
+  - If you just want a small and fast model to test (or for mobile users and old PCs), you can use [Gemma3-4B](https://huggingface.co/ggml-org/gemma-3-4b-it-GGUF/resolve/main/gemma-3-4b-it-Q4_K_M.gguf)
+  - Image Generation: [PicX Real](https://huggingface.co/koboldcpp/imgmodel/resolve/main/picx_real_q5_1.gguf)
+  - Speech Recognition: [Whisper models for Speech-To-Text](https://huggingface.co/koboldcpp/whisper/tree/main)
+  - Text-To-Speech: [TTS models for Narration](https://huggingface.co/koboldcpp/tts/tree/main)
+  - This is just a list for noobs to get started! There are hundreds more GGUFs out there!
+  - [more newbie templates](https://huggingface.co/koboldcpp/newbie-templates) - Contains premade KoboldCpp quick launch templates curated for newbies.
+  - [more popular templates](https://huggingface.co/koboldcpp/popular-templates) - Contains premade KoboldCpp quick launch templates curated for popularity.
+  - [more templates](https://huggingface.co/koboldcpp/kcppt/tree/main)
 - [Alternatively, you can download the tools to convert models to the GGUF format yourself here](https://kcpptools.concedo.workers.dev). Run `convert-hf-to-gguf.py` to convert them, then `quantize_gguf.exe` to quantize the result.
-- Other models for Whisper (speech recognition), Image Generation, Text to Speech or Image Recognition [can be found on the Wiki](https://github.com/LostRuins/koboldcpp/wiki#what-models-does-koboldcpp-support-what-architectures-are-supported)
 
 ## Improving Performance
 - **GPU Acceleration**: If you're on Windows with an Nvidia GPU you can get CUDA support out of the box using the `--usecuda`  flag (Nvidia Only), or `--usevulkan` (Any GPU), make sure you select the correct .exe with CUDA support.
@@ -261,9 +270,9 @@ If you want to build a universal binary that works on other systems like the one
   - To make your build sharable and capable of working on other devices, you must use `LLAMA_PORTABLE=1`
   - If you want to generate the .exe file, make sure you have the python module PyInstaller installed with pip (`pip install PyInstaller`). Then run the script `make_pyinstaller.bat`
   - The koboldcpp.exe file will be at your dist folder.
-- **Building with CUDA**: Visual Studio, CMake and CUDA Toolkit is required. Clone the repo, then open the CMake file and compile it in Visual Studio. Copy the `koboldcpp_cublas.dll` generated into the same directory as the `koboldcpp.py` file. If you are bundling executables, you may need to include CUDA dynamic libraries (such as `cublasLt64_11.dll` and `cublas64_11.dll`) in order for the executable to work correctly on a different PC.
+- **Building with CUDA**: Visual Studio, CMake and CUDA Toolkit is required. Clone the repo, then open the CMake file and compile it in Visual Studio. Copy the `koboldcpp_cublas.dll` generated into the same directory as the `koboldcpp.py` file. Portable executables must include matching CUDA dynamic libraries: `cublas`, `cublasLt`, and `cudart` from the same CUDA toolkit family used for the build.
 - **Replacing Libraries (Not Recommended)**: If you wish to use your own version of the additional Windows libraries (Vulkan), you can do it with:
-  - Move the respectives .lib files to the /lib folder of your project, overwriting the older files.
+  - Move the respective `.lib` files to the `/kcpp_src/lib` folder of your project, overwriting the older files.
   - Also, replace the existing versions of the corresponding .dll files located in the project directory root.
   - Make the KoboldCpp project using the instructions above.
 

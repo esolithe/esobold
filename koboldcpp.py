@@ -91,7 +91,7 @@ dry_seq_break_max = 128
 extra_images_max = 4 # for kontext/qwen img
 
 # global vars
-KcppVersion = "1.122.1"
+KcppVersion = "1.123"
 showdebug = True
 kcpp_instance = None #global running instance
 global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "currentBaseConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "base_config":"", "swapReqType": None, "loadedReqTypes": [], "autoswapmode": False, "autoswapSettings": {}, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}, "restart_override_base_config": "", "current_model_override": "", "OpenLumara": False}
@@ -221,6 +221,7 @@ tool_call_pairs = [ #third element is optional str to match in chat template bef
     ("<tool_calls>", "</tool_calls>", "[BEGIN FINAL RESPONSE]", True), #apriel
     ("<|START_ACTION|>", "<|END_ACTION|>", "<|START_OF_TURN_TOKEN|>", True), #cohere
     ("<atem:function_calls>", "</atem:function_calls>", "<|eom|>", True), #muse glimmer
+    ("[TOOL_CALLS]", "", None, True), #devstral, mistral
 ]
 
 address_header_formats = [
@@ -872,6 +873,13 @@ def getabspath():
 def file_exists(filename):
     return os.path.exists(os.path.join(getdirpath(), filename))
 
+def get_kcpp_bin_path(filename):
+    base_path = getattr(sys, '_MEIPASS', getabspath())
+    bundled_path = os.path.join(base_path, filename)
+    if os.path.exists(bundled_path):
+        return bundled_path
+    return os.path.join(base_path, "kcpp_src", "bin", filename)
+
 def suppress_stdout():
     global saved_stdout, saved_stderr, saved_stdout_py, saved_stderr_py, stdout_nullfile, stdout_nullfile_py
     if not saved_stdout and not saved_stderr and not saved_stdout_py and not saved_stderr_py and not stdout_nullfile and not stdout_nullfile_py:
@@ -1354,10 +1362,9 @@ def old_cpu_check(): #return -1 for pass, 0 if has avx2, 1 if has avx, 2 if has 
                 elif 'avx2' not in cpuinfo:
                     retflags = 1
         elif os.name == 'nt':
-            basepath = os.path.abspath(os.path.dirname(__file__))
             output = ""
             data = None
-            output = subprocess.run([os.path.join(basepath, "simplecpuinfo.exe")], capture_output=True, text=True, check=True, creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS, encoding='utf-8', timeout=6).stdout
+            output = subprocess.run([get_kcpp_bin_path("simplecpuinfo.exe")], capture_output=True, text=True, check=True, creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS, encoding='utf-8', timeout=6).stdout
             data = json.loads(output)
             if data["avx2"]==0 and data["avx"]==0:
                 retflags = 2
@@ -1530,7 +1537,10 @@ def truncate_long_json(data, max_length):
 
 def convert_json_to_gbnf(json_obj):
     try:
-        from json_to_gbnf import SchemaConverter
+        try:
+            from json_to_gbnf import SchemaConverter
+        except ModuleNotFoundError:
+            from kcpp_src.json_to_gbnf import SchemaConverter
         prop_order = []
         converter = SchemaConverter(
         prop_order={name: idx for idx, name in enumerate(prop_order)},
@@ -2363,6 +2373,7 @@ def generate(genparams, stream_flag=False):
             print(f"\n!!! ====== !!!\n(Warning! Request max_context_length={max_context_length} exceeds allocated context size of {maxctx}. It will be reduced to fit. Consider launching with increased --contextsize to avoid issues. This message will only show once per session.)\n!!! ====== !!!")
             showmaxctxwarning = False
         max_context_length = maxctx
+    rep_pen_range = max(0, min(rep_pen_range, max(1, max_context_length)))
     # Estimate the complete textual input before deciding how much of the
     # context may be used for output. Media token usage cannot be estimated by
     # token_count, so retain the more conservative limit for multimodal input.
@@ -4475,7 +4486,10 @@ def toolcall_to_normalized_json(text,start_tag,end_tag,required_match_txt): #con
         params = {}
         param_blocks = re.findall(r"<parameter=(.*?)>(.*?)</parameter>", text, re.DOTALL)
         for key, value in param_blocks:
-            params[key.strip()] = value.strip()
+            key = key.strip()
+            if not key: # Models may emit an empty parameter tag for no-argument tools.
+                continue
+            params[key] = value.strip()
         return json.dumps({"name": fn_name, "arguments": params})
     def parse_glm(text: str) -> str:
         text = text.strip()
@@ -15825,8 +15839,7 @@ def downloader_internal(input_url, output_filename, capture_output, min_file_siz
     download_url = resolve_huggingface_xet_url(input_url)
     aria2_candidates = []
     if os.name == 'nt':
-        basepath = os.path.abspath(os.path.dirname(__file__))
-        a2cexe = os.path.join(basepath, "aria2c-win.exe")
+        a2cexe = get_kcpp_bin_path("aria2c-win.exe")
         if os.path.exists(a2cexe):  # on windows try using embedded aria2c
             aria2_candidates.append((a2cexe, "aria2c-win"))
     if shutil.which("aria2c") is not None:
@@ -17877,7 +17890,11 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
                 lastturns.append({"role":"system","content":args.prompt})
                 print(f"System Prompt:\n{args.prompt}\n")
             while True:
-                lastuserinput = input("> ")
+                try:
+                    lastuserinput = input("> ")
+                except EOFError:
+                    print("\nTerminal input is unavailable or closed. Exiting CLI mode.", flush=True)
+                    break
                 if lastuserinput=="/quit" or lastuserinput=="/exit":
                     break
                 if not lastuserinput:
@@ -17893,6 +17910,8 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
                 result = (genout["text"] if "text" in genout else "")
                 if result:
                     lastturns.append({"role":"assistant","content":result})
+                    if args.debugmode >= 1:
+                        print() # native debug timing output does not end with a newline
                     print(result.strip() + "\n", flush=True)
                 else:
                     print("(No Response Received)\n", flush=True)

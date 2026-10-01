@@ -1,11 +1,11 @@
 #!/bin/bash
-chmod +x "./create_ver_file.sh"
-. create_ver_file.sh
+chmod +x "./kcpp_src/packaging/create_ver_file.sh"
+. "./kcpp_src/packaging/create_ver_file.sh"
 pyinstaller --noconfirm --onefile --clean --console --collect-all customtkinter --collect-all jinja2 --collect-all psutil --collect-all pdfplumber --collect-all pymupdf --collect-all fitz --collect-all tqdm --collect-all chardet --collect-all tree_sitter --collect-all tree_sitter_python --collect-all tree_sitter_javascript --collect-all tree_sitter_typescript --collect-all tree_sitter_html --collect-all tree_sitter_css --collect-all tree_sitter_cpp --collect-all tree_sitter_c_sharp --collect-all tree_sitter_rust --collect-all tree_sitter_ruby --collect-all tree_sitter_go --collect-all tree_sitter_java --collect-all openai --collect-all tiktoken --hidden-import=tiktoken_ext.openai_public --hidden-import=tiktoken_ext --collect-all prompt_toolkit --collect-all msgpack --collect-all numpy --collect-all asyncssh --collect-all yaml --collect-all json_repair --collect-all aiofiles --collect-all ulid --collect-all requests --collect-all httpx --collect-all fastapi --collect-all starlette --collect-all pydantic --collect-all anyio --collect-all uvicorn --collect-all itsdangerous --collect-all websockets --collect-all multipart --collect-all regex --collect-all trio --collect-all discord --collect-all telegram --collect-all nio --collect-all bs4 --collect-all ddgs --collect-all partial_json_parser --collect-all filetype --collect-all tree_sitter_language_pack --collect-all rich --collect-all flask --add-data "./esoExtras:./esoExtras" --icon "./niko.ico" \
 --add-data "./kcpp_adapters:./kcpp_adapters" \
 --add-data "./koboldcpp.py:." \
 --add-data "./kcpp_agent.py:." \
---add-data "./json_to_gbnf.py:." \
+--add-data "./kcpp_src/json_to_gbnf.py:." \
 --add-data "./LICENSE.md:."  \
 --add-data "./MIT_LICENSE_GGML_SDCPP_LLAMACPP_ONLY.md:." \
 --add-data "./embd_res:./embd_res" \
@@ -15,5 +15,5 @@ pyinstaller --noconfirm --onefile --clean --console --collect-all customtkinter 
 --add-data "./koboldcpp_vulkan_failsafe.so:." \
 --add-data "./koboldcpp_vulkan_noavx2.so:." \
 --add-data "./koboldcpp_vulkan.so:." \
---version-file "./version.txt" \
+--version-file "./kcpp_src/packaging/version.txt" \
 "./koboldcpp.py" -n "koboldcpp"

@@ -155,6 +155,8 @@ koboldcpp_hipblas.dll
 .tokenizer_configs
 
 bin/
+!kcpp_src/bin/
+!kcpp_src/bin/**
 conda/
 
 # Jetbrains idea folder
