@@ -600,6 +600,42 @@ ESO_GUIDE_PARTS.agents.chapters.push(
                 "tip": "Workspace files and server files are separate. In transfer tool names, Local means Esobold's server storage, not your desktop. Check both paths and each result before copying or replacing files."
             }
         ]
+    },
+    {
+        "id": "syntax-and-symbol-tools",
+        "title": "Code tools: finding symbols and syntax problems",
+        "blocks": [
+            {
+                "table": [
+                    [
+                        "Tool",
+                        "What it does"
+                    ],
+                    [
+                        "fs_code_get_symbols",
+                        "Finds named parts of a supported code file, such as functions, and reports their locations."
+                    ],
+                    [
+                        "fs_code_edit_symbol",
+                        "Replaces a named part of the code. Check the file and name, and keep a backup before using it."
+                    ],
+                    [
+                        "fs_code_detect_errors",
+                        "Reports places where the supported language parser cannot read the code's syntax."
+                    ],
+                    [
+                        "fs_code_detect_warnings",
+                        "Reports possible issues using simple code checks; it does not prove that the program works correctly."
+                    ]
+                ]
+            },
+            {
+                "p": "These are optional tools for working with code files. A parser reads the structure of a supported programming language to find names and syntax errors. Unsupported languages or a failed parser download produce an error instead of a code analysis."
+            },
+            {
+                "tip": "Run the program and its own checks after changing code. Agent → Block write on syntax error can prevent some broken-syntax writes, but it does not check every file format or whether the behavior is correct."
+            }
+        ]
     }
 )
 
