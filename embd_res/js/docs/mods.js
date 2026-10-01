@@ -73,3 +73,5 @@ ESO_GUIDE_PARTS.integrations.chapters.push(
         ]
     }
 )
+
+export default function load() {}   

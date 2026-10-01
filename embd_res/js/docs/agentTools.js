@@ -602,3 +602,5 @@ ESO_GUIDE_PARTS.agents.chapters.push(
         ]
     }
 )
+
+export default function load() {}   

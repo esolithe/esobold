@@ -132,3 +132,5 @@ ESO_GUIDE_PARTS.gettingStarted.chapters.push(
         ]
     }
 )
+
+export default function load() {}

@@ -35586,24 +35586,7 @@ Current version indicated by LITEVER below.
 <!-- EsoLite modifications -->
 <script src="static/js/modHooks.js"></script>
 <script src="static/js/esoGuide.js"></script>
-<script src="static/js/docs/gettingStarted.js"></script>
-<script src="static/js/docs/library.js"></script>
-<script src="static/js/docs/context.js"></script>
-<script src="static/js/docs/storyTree.js"></script>
-<script src="static/js/docs/generation.js"></script>
-<script src="static/js/docs/media.js"></script>
-<script src="static/js/docs/editors.js"></script>
-<script src="static/js/docs/filesystem.js"></script>
-<script src="static/js/docs/agents.js"></script>
-<script src="static/js/docs/agentTools.js"></script>
-<script src="static/js/docs/macros.js"></script>
-<script src="static/js/docs/openLumara.js"></script>
-<script src="static/js/docs/webContainer.js"></script>
-<script src="static/js/docs/mcp.js"></script>
-<script src="static/js/docs/administration.js"></script>
-<script src="static/js/docs/settings.js"></script>
-<script src="static/js/docs/mods.js"></script>
-<script src="static/js/docs/developerApi.js"></script>
+<script src="static/js/esoGuideLoader.js" type="module"></script>
 <script src="static/js/fs.js"></script>
 <script src="static/js/openlumara_client.js"></script>
 <script src="static/js/encryptUtils.js"></script>
