@@ -10,14 +10,14 @@ ESO_GUIDE_CHAPTERS.push(
         "blocks": [
             {
                 "list": [
-                    "When the backend advertises OpenLumara support, Add Media includes an OpenLumara entry. Authentication is a separate OpenLumara identity/session, not the model-provider key or server-save password.",
-                    "If login is required, the identity dialog validates a cached session or asks for username/password. Cancel leaves the requested action unperformed; concurrent requests share one in-flight authentication operation.",
-                    "OpenlumaraClient connects through HTTP endpoints and its websocket. getStatus, listModels, reconnect and disconnect report/control the service connection.",
-                    "A successful Esobold text-model connection does not prove that OpenLumara is connected, authenticated or using the same model. Check lumara_status and the listener status indicator."
+                    "OpenLumara is a separate service for chats and model operations. Click Media in the story/chat controls to find its entry when your Esobold server supports it. Its login is separate from your AI provider key or server Library password.",
+                    "If a login is needed, enter your OpenLumara username/password or use the saved session. Cancel leaves the requested action undone; simultaneous requests use the same login check.",
+                    "The client connects to the service and receives live updates. getStatus checks it, listModels lists its models, and reconnect/disconnect change the connection.",
+                    "Check lumara_status or the listener indicator before using it. Connecting to an Esobold text model does not also connect you to OpenLumara or select the same model there."
                 ]
             },
             {
-                "tip": "Do not share session tokens or debug request headers. Clearing the cached OpenLumara token forces a fresh identity check; it does not alter unrelated service credentials."
+                "tip": "Keep OpenLumara login details private, including the saved session token that keeps you signed in. Clearing that saved login asks you to sign in again without changing your other service keys."
             }
         ]
     },
@@ -33,35 +33,35 @@ ESO_GUIDE_CHAPTERS.push(
                     ],
                     [
                         "lumara_send / sendMessage / stream",
-                        "Send a message and receive/stream a response through the OpenLumara service."
+                        "Send a message to OpenLumara and receive its reply, optionally as text arrives."
                     ],
                     [
                         "lumara_get_messages / getMessagesSince",
-                        "Retrieve current history or newer turns; streamed tool requests/results are represented with the assistant turn."
+                        "Read the conversation or newer messages. Tool requests and results are included with the AI turn."
                     ],
                     [
                         "lumara_list_chats / lumara_load_chat",
-                        "List/select a remote chat. Loading changes the current remote conversation."
+                        "List chats or select one. Loading changes the conversation used by OpenLumara."
                     ],
                     [
                         "lumara_new_chat / lumara_rename_chat",
-                        "Create a conversation or change its title."
+                        "Start a new chat or change its title."
                     ],
                     [
                         "lumara_clear_chat / deleteChat",
-                        "Clear current messages or delete a chat via the client API; review before destructive use."
+                        "Clear messages or delete a chat. Keep anything you need before confirming."
                     ],
                     [
                         "editMessage / deleteMessage / upload",
-                        "Change remote message history or upload files, with the service’s own permissions."
+                        "Edit or delete remote messages, or upload a file using the service's permissions."
                     ]
                 ]
             },
             {
-                "p": "The client also exposes tags, settings and storage CRUD operations plus restartServer. These are service-state changes, not changes to Esobold’s local Library or the host model-provider settings."
+                "p": "The programming client can also create, read, change and delete tags, settings and stored data, or call restartServer. These actions affect OpenLumara, not your Esobold browser Library or a different provider's settings."
             },
             {
-                "tip": "Remote changes are not automatically undone by clearing the visible Esobold chat or stopping a generation."
+                "tip": "Clearing the visible Esobold conversation or stopping a reply does not undo changes already made in OpenLumara."
             }
         ]
     },
@@ -71,14 +71,14 @@ ESO_GUIDE_CHAPTERS.push(
         "blocks": [
             {
                 "list": [
-                    "Enable the OpenLumara listener under Settings → Agent to receive live websocket updates in the agent UI. Its status indicator distinguishes connection/listening state.",
-                    "The listener accumulates message/tool-call deltas into turn snapshots, collapses duplicate message indices and renders completed turns to chat. It is not a new generation request for every displayed fragment.",
-                    "Disconnects trigger scheduled reconnect attempts every 60 seconds while the listener is enabled. Turning the listener off stops its reconnect loop and visual stream state.",
-                    "Both command-triggered streaming and the background listener share service identity/connection state. Check current chat selection when responses appear in an unexpected conversation."
+                    "Enable the OpenLumara listener in Settings → Agent to show incoming service updates. The status indicator shows whether it is connected and listening.",
+                    "Updates arrive in small pieces and are combined into conversation turns. Repeated message entries are combined; displaying each piece does not generate a new reply.",
+                    "While enabled, the listener tries to reconnect every 60 seconds after a disconnect. Turn it off to stop reconnecting and showing live updates.",
+                    "The listener and command-triggered streaming share the same login and connection. Check the selected OpenLumara chat if messages appear in an unexpected conversation."
                 ]
             },
             {
-                "tip": "The hidden legacy polling-rate slider is not an independent live polling guarantee; this revision’s listener primarily uses websocket events."
+                "tip": "The old polling-rate slider is hidden. Live updates mainly arrive through the service connection rather than a separate polling interval."
             }
         ],
         "show": [

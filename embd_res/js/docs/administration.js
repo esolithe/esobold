@@ -6,8 +6,11 @@
 ESO_GUIDE_CHAPTERS.push(
     {
         "id": "backend-administration",
-        "title": "Backend administration and reload prerequisites",
+        "title": "Server administration: changing models and configuration",
         "blocks": [
+            {
+                "p": "Administration lets the server owner change loaded models and server settings from the browser. It is optional, affects everyone using that server and is separate from a Cloudflare remote tunnel. A no-model website or remote tunnel does not need admin enabled."
+            },
             {
                 "table": [
                     [
@@ -16,39 +19,39 @@ ESO_GUIDE_CHAPTERS.push(
                     ],
                     [
                         "--admin",
-                        "Enable remote management."
+                        "Enable administration controls on the server."
                     ],
                     [
                         "--adminpassword PASSWORD",
-                        "Set management authentication; do not put it in shared screenshots or saves."
+                        "Require a management password. Keep it out of screenshots and shared saves."
                     ],
                     [
                         "--admindir DIRECTORY",
-                        "Directory of reloadable .kcpps configs."
+                        "Choose the folder of selectable .kcpps server configuration files."
                     ],
                     [
                         "--admintextmodelsdir DIRECTORY",
-                        "Selectable text-model directory, allowing a model override on a config."
+                        "Choose the folder of selectable text models. A model can be used with a suitable existing configuration."
                     ],
                     [
                         "--admindatadir DIRECTORY",
-                        "Persistent server-side data database directory."
+                        "Choose the folder for persistent server Library data."
                     ],
                     [
                         "--adminallowhf",
-                        "Allow backend-controlled Hugging Face model downloading."
+                        "Allow the server to download models from Hugging Face."
                     ]
                 ]
             },
             {
                 "list": [
-                    "Configure the directories/password in the backend launcher’s admin tab or command line before using remote management. The frontend cannot grant itself missing admin capabilities.",
-                    "Config and model selections are related but distinct: a model override can reuse an appropriate configuration rather than requiring one config per file.",
-                    "Keep active requests and other users in mind before a reload; loading a model changes the backend for everyone using that service."
+                    "The server owner sets these folders and the password in the launcher's admin tab or command line. The browser cannot enable administration that is off at the server.",
+                    "A configuration contains server settings; a model file contains the AI weights. Select a compatible pair rather than assuming every model needs a separate configuration.",
+                    "Finish active requests and warn other users before reloading. Changing the model interrupts the shared server."
                 ]
             },
             {
-                "tip": "Exposing an admin-enabled service without suitable access controls risks model/state changes and data access. Use trusted configs and server-side authentication."
+                "tip": "Only enable administration for people who should manage the server. Use a password, restrict access and load configuration files you trust."
             }
         ]
     },
@@ -58,14 +61,14 @@ ESO_GUIDE_CHAPTERS.push(
         "blocks": [
             {
                 "list": [
-                    "Select the desired server config and optional model in the administration controls, then request reload. Review that the selected file belongs to the backend’s configured directory.",
-                    "ReloadUtils.waitForCompletion waits for outstanding requests; triggerReload posts filename/modelName to the admin reload route; reloadAndWait waits for the server to reconnect.",
-                    "The UI refreshes current config/model information and reconnects supported image-backend state after a successful reload. A temporary disconnected state is expected while the model changes.",
-                    "Rejected reloads, authentication errors and recovery timeouts are not success. Confirm the reported active config/model and connection before submitting another generation."
+                    "When administration is available, select the server configuration and optional model in its controls, then request Reload. The file must be in the server's configured selection folder.",
+                    "Reload waits for active requests to finish, sends your selected configuration and model to the server, then waits for the connection to return.",
+                    "After a successful reload, the interface refreshes the active configuration/model and supported image connection. A temporary disconnect is normal while the new model loads.",
+                    "If Reload is rejected, the password fails or reconnection times out, read the error. Check the reported active model and connection before sending another message."
                 ]
             },
             {
-                "tip": "This guide’s browser verification does not load or reload any model. Use the backend’s logs and actual connection state to verify an administration operation."
+                "tip": "Reloading really changes the server; it is not needed to read this guide. Check server logs and connection status if a reload fails."
             }
         ]
     },
@@ -75,14 +78,14 @@ ESO_GUIDE_CHAPTERS.push(
         "blocks": [
             {
                 "list": [
-                    "When backend HF downloading is enabled, enter a repository/model search term, choose a matching model/repository and select a quantized file. The helper constructs a direct download URL from that selection.",
-                    "Check the exact filename, file size, license and architecture before downloading. A text-name match is not evidence that the model fits memory or supports the selected backend/template.",
-                    "Choose a quant explicitly: the reviewed helper’s priority loop uses array indices rather than the intended quant-name values, so its default/preferred file choice is not reliable.",
-                    "The download destination belongs to the backend’s configured model directory, not the browser’s Library. Model downloads and later reloads are separate operations."
+                    "If the server owner allows Hugging Face downloads, search for a model or repository and choose the exact file to download.",
+                    "Check the filename, size, license and model type. A quantized model uses less memory than the full version; choose one that fits the server and is supported by its software.",
+                    "Select the quantized file yourself. The automatic preferred-file choice is unreliable in this version, so check the exact filename rather than accepting its suggestion.",
+                    "Downloads are saved in the server's model folder, not your browser Library. Downloading a file does not also load it as the active model."
                 ]
             },
             {
-                "tip": "Check server disk space first. Do not assume a download completed or a new model loaded merely because search returned a result."
+                "tip": "Check free server disk space before downloading. Wait for the download to finish, then load the model separately if needed."
             }
         ]
     }

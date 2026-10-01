@@ -9,15 +9,18 @@ ESO_GUIDE_CHAPTERS.push(
         "title": "Maintaining the native guide and chapter modules",
         "blocks": [
             {
+                "p": "Optional authoring reference: use this chapter if you are editing Esobold's help or writing a mod. The guide displays plain text and tables; the earlier chapters are for using the app."
+            },
+            {
                 "list": [
-                    "esoGuide.js owns rendering/navigation; js/docs/*.js append chapter objects to ESO_GUIDE_CHAPTERS before the top-bar Guide button is available. Each file groups one functional area.",
-                    "A chapter is {id, title, blocks, show}. Supported blocks are p, list, tip and table; tables use the first row as headers. Text is inserted with textContent, never as HTML or Markdown.",
-                    "show contains {label, run(ctx)} actions. ctx.highlight(target, note) temporarily hides the guide and restores it on click/Escape/timeout; ctx.run(fn) closes the guide and runs an action; ctx.openSettings(tabId) opens a settings tab; ctx.navLink(text) finds a top-bar entry.",
-                    "window.eso.guide.open(tabId, chapterId) can deep-link to a chapter. Position is stored under esoGuidePosition. Keep the original IDs and the Esobold-first/mod-tab ordering when changing content."
+                    "esoGuide.js draws the guide and handles chapter navigation. Each js/docs/*.js file adds chapters for one feature area to ESO_GUIDE_CHAPTERS before the top-bar button becomes available.",
+                    "A chapter has {id, title, blocks, show}. Use p for paragraphs, list for steps, tip for a short note, and table with a header row. Text is inserted with textContent, not interpreted as HTML or Markdown.",
+                    "show contains {label, run(ctx)} buttons. ctx.highlight(target, note) points at a control and restores the guide after click/Escape/timeout; ctx.run(fn) closes it to perform an action; ctx.openSettings(tabId) opens settings; ctx.navLink(text) finds a top-bar entry.",
+                    "window.eso.guide.open(tabId, chapterId) opens a chosen chapter. esoGuidePosition remembers it. Keep existing IDs and place Esobold before mod tabs."
                 ]
             },
             {
-                "tip": "Do not create a competing Markdown renderer or a second registry. Add a topic script in klite.embd’s existing ordered loader and use the existing native block schema."
+                "tip": "Explain the purpose first, define technical terms, give real visible control paths and use short examples. Add topics through the existing ordered loader and block format rather than another renderer or chapter registry."
             }
         ]
     },
@@ -26,6 +29,9 @@ ESO_GUIDE_CHAPTERS.push(
         "title": "Browser generation and agent helper APIs",
         "blocks": [
             {
+                "p": "Optional programming reference: these browser functions request AI output or start agent work. They use the currently configured services and models."
+            },
+            {
                 "table": [
                     [
                         "Helper",
@@ -33,39 +39,39 @@ ESO_GUIDE_CHAPTERS.push(
                     ],
                     [
                         "window.triggerAgentResponse(prompt, macro?)",
-                        "Starts execAgentCycle with the prompt, optionally prefixed by the named macro. The first argument is the prompt, not the macro name."
+                        "Start execAgentCycle with a prompt, optionally using a named macro. Pass the prompt first, not the macro name."
                     ],
                     [
                         "window.generateTextFromAI(prompt, keepThinkingTags = false)",
-                        "Formats an instruct request and returns generated text; strips configured reasoning tags unless requested otherwise."
+                        "Send an Instruct request and return text. Keep configured reasoning tags only when keepThinkingTags is true."
                     ],
                     [
                         "window.generateObjectFromAI(prompt, objectStructure)",
-                        "Converts an object structure through the backend JSON-to-GBNF route and parses generated structured text. Requires compatible grammar/backend behavior. Returns null if the generated response cannot be parsed as JSON."
+                        "Generate a JSON object in the requested shape using server grammar rules (JSON-to-GBNF), then parse it. Requires a compatible server; returns null if the result cannot be parsed."
                     ],
                     [
                         "window.generateImageFromAI(prompt, imageToStartFrom?)",
-                        "Uses the configured image-generation path, optionally with a starting image."
+                        "Generate an image using the configured service, optionally starting from an existing image."
                     ],
                     [
                         "window.prepareMusicFromAI / generateMusicFromAI",
-                        "Prepare music state and generate through the supported music backend."
+                        "Prepare the music settings and generate a track with the configured music model."
                     ],
                     [
                         "window.generateTTSFromAI / getAvailableVoicesFromAI",
-                        "Generate speech or obtain supported voice choices."
+                        "Generate speech or list the available voices."
                     ],
                     [
                         "window.execAgentCycle(argsObj)",
-                        "Starts a tracked agent cycle with the selected prompt/runtime options; stopAgentThinking cancels its active path."
+                        "Start a tracked agent run using argsObj. stopAgentThinking stops its active work."
                     ]
                 ]
             },
             {
-                "p": "window.eso.currentChatOpponentOverride is an optional request-time opponent override. window.eso.debugStreamingToolcalls enables verbose streaming-tool logging. These globals are application hooks, not isolated per-user secrets or server permission controls."
+                "p": "window.eso.currentChatOpponentOverride changes the opponent for a request. window.eso.debugStreamingToolcalls enables detailed tool-stream logging. These page-wide settings are not private storage or server access controls."
             },
             {
-                "tip": "Generation helpers consume the selected model/service and can incur requests/cost. Do not call them during a documentation-only check or on unreviewed private material."
+                "tip": "These functions make real service requests and may cost money. Do not call them just to inspect the guide or send private material you have not reviewed."
             }
         ]
     },
@@ -75,26 +81,26 @@ ESO_GUIDE_CHAPTERS.push(
         "blocks": [
             {
                 "list": [
-                    "Rendered JavaScript/js and HTML-family code blocks can receive an execution button. JavaScript runs through eval in the page; HTML opens a new window and writes the supplied document.",
-                    "Console output is redirected into grouped outPipe/outPipeLog/info/warn/error helpers. It is not a sandboxed diagnostic environment. Only execute code you have reviewed and trust.",
-                    "PopupUtils provides reset/title/content/button/buttonGroup/show, sizing, backdrop and draggable/resizable options. Its modal() helper actually enables a draggable/resizable window with no backdrop; do not assume that name enforces blocking isolation.",
-                    "WaitingToast tracks transient/locked status; abort hides it. postSubmitHandler checks request completion once per second, updates the world tree and invokes the optional Hearthfire hook."
+                    "Rendered JavaScript/js and HTML code blocks may have a Run button. JavaScript executes in the browser page; HTML opens a new window containing that document.",
+                    "Console output uses the page's grouped outPipe/outPipeLog/info/warn/error helpers. Only run code you have read and trust; it can access the app's data and functions.",
+                    "PopupUtils supplies reset/title/content/button/buttonGroup/show, size and backdrop options. Its modal() helper makes a movable, resizable window without a backdrop; the name does not mean it blocks the rest of the page.",
+                    "WaitingToast shows progress while an operation is pending and hides on abort. postSubmitHandler checks completion every second, updates the world tree and may request experimental context prewarming to prepare changed context."
                 ]
             },
             {
-                "tip": "A code block generated by a model is still untrusted code. It can access the same browser state and application APIs as other page scripts."
+                "tip": "Review AI-generated code before running it. Like other page scripts, it can read browser state and call the app's available services."
             }
         ]
     },
     {
         "id": "source-coverage",
-        "title": "Source coverage, upstream comparison and vendor boundaries",
+        "title": "About this guide and its sources",
         "blocks": [
             {
-                "p": "This guide was prepared from esolithe/esobold remoteManagement revision 9f88848c2c0a68c1dbef91f5534754736322f620. All 301 existing JavaScript files were structurally examined: 63 first-party modules and 238 bundled dependencies. source-map.json records each file, its area/vendor role, declarations, imports/exports, module IDs and tool schemas without copying prompt/sample literals."
+                "p": "This guide covers Esobold's features, based on esolithe/esobold remoteManagement revision 9f88848c2c0a68c1dbef91f5534754736322f620. Its source inventory includes 301 JavaScript files: 63 app modules and 238 bundled libraries. source-map.json records file roles, code declarations, imports/exports, module IDs and tool inputs without copying prompt or sample text."
             },
             {
-                "p": "The actual Cedo/KoboldCpp baseline is LostRuins/koboldcpp branch concedo, pinned to 4959b8d3695fcf740c1e2d508bedabdea70cbbd44 for this review. Esobold’s branch named upstream contains llama.cpp, not KoboldCpp/Lite, and is not the correct UI-diff baseline. klite.embd differs from the pinned Concedo version by +2,360 / −1,093 lines across 452 zero-context hunks; 330 requested embedded-resource files differ, including 301 JavaScript files."
+                "p": "Optional comparison for developers: the KoboldCpp/Lite baseline is LostRuins/koboldcpp branch concedo at 4959b8d3695fcf740c1e2d508bedabdea70cbbd44. Esobold's branch literally named upstream contains llama.cpp, so it is not that interface baseline. The recorded comparison has +2,360 / −1,093 klite.embd lines across 452 change blocks, and 330 differing requested resource files, including 301 JavaScript files."
             },
             {
                 "table": [
@@ -104,15 +110,15 @@ ESO_GUIDE_CHAPTERS.push(
                     ],
                     [
                         "Ace (210 files)",
-                        "Editor core, language modes, themes and web workers used by the popup/fullscreen editors."
+                        "Code editor, language highlighting, themes and background helpers for popup/fullscreen editing."
                     ],
                     [
                         "@webcontainer/api (18 files)",
-                        "Browser Node runtime bridge, file-tree support and preview message/reload protocol."
+                        "The browser coding workspace, its file tree and preview updates."
                     ],
                     [
                         "Other bundled libraries (10 files)",
-                        "Markdown/WYSIWYG rendering, Mermaid graphs, pan/zoom, colour picker/filter conversion, ZIP import/export, cryptographic compatibility, mathematical expressions and tree-sitter runtime."
+                        "Formatted-text editors, tree diagrams, pan/zoom, color tools, ZIP import/export, save encryption, calculations and code parsing."
                     ]
                 ]
             },
@@ -197,7 +203,7 @@ ESO_GUIDE_CHAPTERS.push(
                 ]
             },
             {
-                "tip": "Inventory and source comparison are not live-service tests. Browser checks for this documentation exercise rendering/navigation/shortcuts, not model generation, filesystem mutations, account login, WebContainer boot or admin reload."
+                "tip": "The source inventory describes coverage. Browser guide checks exercise the displayed chapters, navigation and shortcuts; they do not run AI generation, file changes, service logins, workspace startup or model reloads."
             }
         ]
     }

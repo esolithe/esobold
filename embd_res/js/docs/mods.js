@@ -7,8 +7,8 @@ ESO_GUIDE_CHAPTERS.push(
     {
             id: "mods", title: "Mods",
             blocks: [
-                { p: "Mods extend Eso Lite. The mods manager (Settings → Esobold → Mods) lists community mods; read the warning before applying one, since a mod runs code in this page." },
-                { p: "Mods can add sections to Quick Start, tabs to the settings dialog and tabs to this guide." },
+                { p: "Mods are optional add-ons that change or extend Esobold. Open Settings → Esobold → Third-party mods to browse them. Read the warning first: a mod runs code in your browser page." },
+                { p: "A mod can add Quick Start choices, settings tabs or extra tabs in this guide. Only enable add-ons from sources you trust." },
             ],
             show: [
                 { label: "Open Settings → Esobold", run: (ctx) => ctx.openSettings("esobold") },
@@ -20,14 +20,14 @@ ESO_GUIDE_CHAPTERS.push(
         "blocks": [
             {
                 "list": [
-                    "Open Settings → Esobold → Third-party mods. Read the warning before fetching/enabling community code. ModManager lists the available registry entries and fetches the selected mod source.",
-                    "Enable the intended selection. Selected code and enabled metadata are saved through browser IndexedDB and the persistent user-script route; applying nonempty code reloads the page.",
-                    "Reloading runs trusted selected mods in the page environment. Mods can inspect/alter UI state and use exposed generation, filesystem or service APIs with available permissions.",
-                    "To change/remove mods, return to the manager, revise the selection and verify behavior after a full page reload. Export important saves/settings before trying unknown code."
+                    "Open Settings → Esobold → Third-party mods and read the warning. The manager lists available community add-ons and fetches the ones you select.",
+                    "Enable the selection you want. The browser saves the selected code and choices for later visits; applying code reloads the page.",
+                    "Enabled mods run when the page loads. They can read or change interface data and use the page's available AI, file and service functions.",
+                    "To remove or change a mod, return to the manager, change the selection and reload the page. Download important saves before trying unfamiliar add-ons."
                 ]
             },
             {
-                "tip": "Mods are not sandboxed capability-limited plugins. Never enable code merely because an AI or imported document recommends it."
+                "tip": "A mod is executable code, not just a theme or note. Do not enable one solely because an AI or imported document tells you to."
             }
         ],
         "show": [
@@ -39,6 +39,9 @@ ESO_GUIDE_CHAPTERS.push(
         "title": "Extension API: Quick Start, Settings and Guide",
         "blocks": [
             {
+                "p": "Optional reference for people writing mods: these extension types add Quick Start choices, settings tabs or guide tabs. Ordinary users do not need to call them."
+            },
+            {
                 "table": [
                     [
                         "Extension type",
@@ -46,26 +49,26 @@ ESO_GUIDE_CHAPTERS.push(
                     ],
                     [
                         "QuickStartExtension",
-                        "new QuickStartExtension(id, label, helpText, render, hasSelection, apply, clear). render receives containerElem/rerender; apply can be async."
+                        "new QuickStartExtension(id, label, helpText, render, hasSelection, apply, clear). render gets containerElem/rerender; apply can finish asynchronously."
                     ],
                     [
                         "SettingsExtension",
-                        "new SettingsExtension(id, label, render, load, save). render receives container/ui; load/save run when settings are shown/confirmed."
+                        "new SettingsExtension(id, label, render, load, save). render gets container/ui; load and save run when settings open and are confirmed."
                     ],
                     [
                         "GuideExtension",
-                        "new GuideExtension(id, label, chapters). chapters is an array or a callback evaluated whenever guide tabs are collected."
+                        "new GuideExtension(id, label, chapters). Supply a chapter array or a callback that returns chapters when the guide collects its tabs."
                     ]
                 ]
             },
             {
-                "p": "Register with window.eso.extensions.register(extension); duplicate/missing IDs are rejected. Unregister by ID when removing a contribution. getByType returns contributions in the registered order; callbacks are wrapped by EsoExtension.invokeIfPresent and errors are recorded per extension."
+                "p": "Register with window.eso.extensions.register(extension) and unregister by ID to remove it. IDs must exist and be unique. getByType returns extensions in registration order; EsoExtension.invokeIfPresent runs callbacks and records errors for the affected extension."
             },
             {
-                "p": "Settings render helpers are exposed as window.eso.settingsUi: section, subSection, text, textArea, button, bool, select and range. Settings-extension tabs are created lazily after load and removed when an extension is unregistered."
+                "p": "window.eso.settingsUi supplies section, subSection, text, textArea, button, bool, select and range helpers. Settings tabs are created after loading when needed, and removed when their extension is unregistered."
             },
             {
-                "tip": "Use a unique stable ID. Guide chapter IDs are saved per tab; changing them breaks a user’s remembered chapter selection."
+                "tip": "Keep extension and chapter IDs unique and stable. The browser remembers the selected guide chapter by ID."
             }
         ]
     }

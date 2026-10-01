@@ -10,18 +10,18 @@ ESO_GUIDE_CHAPTERS.push(
         "blocks": [
             {
                 "list": [
-                    "Open Add Media for supported image, audio and other media actions. The filesystem button is injected only when the backend advertises filesystem support.",
-                    "Attach images for a vision-capable endpoint, or request image generation through the configured image backend. Image generation, image understanding and text generation are separate capabilities.",
-                    "Audio transcription requires the backend’s transcription capability. TTS requires supported voices/model data; music generation uses its own caption/lyrics and timing controls.",
-                    "Generated/displayed media can be kept in filesystem paths through the fs_generate_* tools, or shown through the chat/media controls. Choose persistent storage if you need the result after the session ends."
+                    "Click Media in the story/chat controls to attach or generate supported media. The filesystem button appears in that menu only when the server has file storage enabled.",
+                    "Attach a picture if you want an image-capable AI to describe it, or use a configured image model to generate one. Reading an image and creating an image require different model features.",
+                    "Transcription turns audio into text and needs a transcription model. Text-to-speech (TTS) reads text aloud using supported voices. Music generation has separate caption, lyrics and timing settings.",
+                    "Download media you want to keep. When filesystem tools are enabled, fs_generate_* actions can also save results to a server path."
                 ]
             },
             {
-                "tip": "A visible UI control is not proof that the matching model is loaded. Check capability/version reports and avoid sending private attachments to an unintended remote service."
+                "tip": "Check that the matching media model is available before starting. Attachments go to the selected service, so avoid sending private files to a service you did not intend to use."
             }
         ],
         "show": [
-            { label: "Media controls", run: (ctx) => ctx.highlight("#addmediacontainer", "Attach or generate supported media") }
+            { label: "Media controls", run: (ctx) => ctx.highlight(() => [...document.querySelectorAll("#btn_addmedia, #btn_addmedia2, #btn_addmedia3")].find(button => button.getClientRects().length > 0), "Click Media to attach or generate supported media") }
         ]
     },
     {
@@ -36,31 +36,31 @@ ESO_GUIDE_CHAPTERS.push(
                     ],
                     [
                         "describe_clicked_image",
-                        "Asks the user to select an image and sends a question plus image data to the model."
+                        "Lets you click an image and ask the AI a question about it."
                     ],
                     [
                         "describe_fs_image",
-                        "Reads an image from the backend filesystem and asks the vision model about it."
+                        "Asks an image-capable AI about an image stored on the server."
                     ],
                     [
                         "generate_image",
-                        "Generates a chat image; edit_existing_image can request an image-editing path."
+                        "Creates an image in chat. edit_existing_image requests editing an existing image when supported."
                     ],
                     [
                         "fs_generate_image",
-                        "Generates/edits an image and writes the result to fs_output_path, optionally using input image paths."
+                        "Creates or edits an image and saves it at fs_output_path. Existing images can be supplied by their server paths."
                     ],
                     [
                         "set_background_image_from_filesystem",
-                        "Uses a backend filesystem image as a persistent story/chat background."
+                        "Sets a server image as the story/chat background."
                     ]
                 ]
             },
             {
-                "p": "Aspect selection and the configured image backend determine output shape. Image preparation can ask an AI to refine a generation prompt; that is another model request, not a lossless transformation of the original image."
+                "p": "Choose the aspect ratio for the shape you want, such as a wide landscape. The image model determines supported sizes. Image preparation may ask an AI to refine your description first, which uses an extra request."
             },
             {
-                "tip": "A visual description or OCR-like answer can be wrong. Preserve the original file and verify important details independently."
+                "tip": "Image descriptions and text read from pictures can contain mistakes. Keep the original and check important details."
             }
         ]
     },
@@ -70,14 +70,14 @@ ESO_GUIDE_CHAPTERS.push(
         "blocks": [
             {
                 "list": [
-                    "fs_transcribe takes an input path plus optional context/language and non-speech suppression choices. The backend must support the selected transcription operation.",
-                    "generate_tts speaks text through the supported backend; fs_generate_tts additionally writes audio to a chosen path. Select a voice from the server-supported list or the available custom voice route.",
-                    "music_prepare prepares caption/music state. fs_generate_music accepts caption/lyrics, tempo, duration, key scale, time signature, vocal language and inference steps, plus optional input and an output path.",
-                    "Treat image/music/audio generation failures as failures: do not assume that an output path was written or that a chat media element means an export succeeded."
+                    "To transcribe a stored recording, fs_transcribe takes its path and optional language or background hints. Non-speech suppression can exclude sounds that are not words; the server must support transcription.",
+                    "generate_tts reads text aloud; fs_generate_tts also saves the audio to a path. Choose an available server voice or a supported custom voice.",
+                    "music_prepare helps prepare the music description. fs_generate_music creates a saved track using caption/lyrics, tempo, duration, key, time signature, vocal language and generation steps, with optional input audio.",
+                    "If generation fails, read the error before retrying. Check the reported saved path or download result before assuming you have a copy."
                 ]
             },
             {
-                "tip": "Media writes can consume filesystem quota/disk space. Read the operation result and download or back up wanted assets."
+                "tip": "Audio, images and music use storage space. Check the saved result and download or back up files you want to keep."
             }
         ]
     },
@@ -87,14 +87,14 @@ ESO_GUIDE_CHAPTERS.push(
         "blocks": [
             {
                 "list": [
-                    "The embedded-content viewer button appears alongside agent controls in supported presentations. It opens a filesystem picker in embedded-selection mode.",
-                    "Choose supported images, audio, video or other embeddable content. fs_open_embed creates a named floating viewer with position/size; fs_close_embed closes that name.",
-                    "Floating viewers can be moved, raised, expanded and closed. Reusing a name updates/replaces the viewer rather than creating unrelated permanent storage.",
-                    "Embedding a file displays it; it does not upload it into a model request or guarantee that active HTML/content is sandboxed."
+                    "Embedded content means a file displayed inside the page, such as an image in a small movable window. The embedded-content button beside supported agent controls opens a file picker for this.",
+                    "Choose a supported image, audio or video file. fs_open_embed opens a floating viewer with a name, position and size; fs_close_embed closes the viewer by name.",
+                    "Move, enlarge or close a viewer as needed. Opening the same name again updates that viewer; the viewer itself is not another saved copy of the file.",
+                    "Displaying a file does not send it to the AI. HTML or other active content may run code, so only open content you trust."
                 ]
             },
             {
-                "tip": "Use only trusted executable/HTML content. An embedded URL may expose a file through the backend’s normal authenticated file-serving route."
+                "tip": "Embedded files are served by the server using its normal access rules. Check what you are displaying before sharing a file link."
             }
         ]
     }

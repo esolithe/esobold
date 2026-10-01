@@ -6,18 +6,21 @@
 ESO_GUIDE_CHAPTERS.push(
     {
         "id": "mcp-workflow",
-        "title": "MCP tools and external-service trust",
+        "title": "MCP: connecting external tools",
         "blocks": [
             {
+                "p": "MCP (Model Context Protocol) connects an AI app to external tool services, such as a service that reads files. This integration is optional and currently has an important limitation."
+            },
+            {
                 "list": [
-                    "Enable the inherited tool-use setting, configure/connect MCP servers through the backend’s MCP configuration, and allow the intended tools. MCPUtils adapts discovered cached tools into Esobold commands.",
-                    "Discovery imports tool names/descriptions and inputSchema/parameter schemas, but the reviewed legacy browser adapter executes get_cpu_info with null arguments instead of the requested tool. Do not rely on it as a generic agent-tool bridge; verify the actual backend integration separately.",
-                    "Each server determines its own authentication, filesystem/network permissions and side effects. A frontend Allowed flag is not a replacement for server-side authorization.",
-                    "Inspect returned errors and external state. A model describing a successful MCP call is not proof that the remote operation succeeded."
+                    "Enable tool use, connect the desired MCP server through the backend's configuration, then allow the intended tools. Discovered tool names and inputs can appear as agent commands.",
+                    "In this version, the browser integration requests CPU information (get_cpu_info) with no inputs instead of running the chosen tool. Do not rely on it to run other MCP tools, even if they appear in the tool list.",
+                    "Each tool server has its own passwords, file/network access and ability to change data. Tick Allowed only for tools you need, and configure access at the server too.",
+                    "Read the actual tool result and check the destination after an action. An AI reply saying the call succeeded may not match what happened."
                 ]
             },
             {
-                "tip": "Connect only trusted servers and grant the narrowest permissions needed. Tool descriptions and results can contain untrusted instructions."
+                "tip": "Connect services you trust and give them only the access they need. Review instructions in tool descriptions or results before following them."
             }
         ],
         "show": [
@@ -30,10 +33,10 @@ ESO_GUIDE_CHAPTERS.push(
         "blocks": [
             {
                 "list": [
-                    "If no MCP tools appear, check enable_tool_use, backend MCP capability, connected server/tool cache and allowed flags before changing agent prompts.",
-                    "Discovered schema arguments are generated under toolCallArgs. The legacy adapter shows the requested arguments in its confirmation but does not correctly forward them to execution, as described above.",
-                    "MCP results are recorded as tool responses/agent context and can be hidden from the visible conversation by the adapter. Hidden UI output is not removed from processing or necessarily private.",
-                    "Not every caught adapter error forces replanning. Check the actual result and destination before retrying writes, sends or other non-idempotent operations."
+                    "If no MCP tools appear, check whether tool use is enabled (enable_tool_use) and inspect the Allowed checkboxes in Settings → Tools. The server also needs MCP support, a working connection and a discovered tool list.",
+                    "The confirmation shows the AI's requested inputs (toolCallArgs), but this version does not pass them correctly to the external tool, as described in the previous chapter.",
+                    "Tool results can be added to the agent's context while hidden from the visible conversation. Hidden output is still processed; hiding it does not make it private.",
+                    "Some adapter errors do not start a new plan. Check the result before repeating a write or send, because retrying may perform the action twice."
                 ]
             }
         ]

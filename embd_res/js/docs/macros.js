@@ -9,18 +9,21 @@ ESO_GUIDE_CHAPTERS.push(
         "title": "Agent macros: creation, invocation and saved plans",
         "blocks": [
             {
+                "p": "A macro is a saved plan you can reuse, such as reading a selected file and summarizing it. Creating one is optional and involves JSON, a text format for structured settings."
+            },
+            {
                 "list": [
-                    "Saved macros are edited in Settings → Agent as a JSON object keyed by macro name. Names accept letters, digits and underscores only. Keep an exported copy of important definitions.",
-                    "Invoke a macro using macroName::prompt, through run_macro, or through window.triggerAgentResponse(prompt, macroName). The default macro map is copied into local saved settings on first initialization.",
-                    "Each definition needs planToUse with a nonempty responsePlanOverview and nonempty orderOfActions. Each action has an available command name and a nonempty objective; whoToRespondAs, agentPrompt and agentName are optional metadata.",
-                    "create_macro validates the definition and refuses an existing name unless overwrite is enabled. The saved JSON setting is also editable directly, so use the validated creation route or carefully check direct edits."
+                    "Open Settings → Agent to edit saved macros. The JSON object uses each macro's name as a key; names allow letters, numbers and underscores. Keep a copy of plans you want to reuse.",
+                    "Start a macro with macroName::prompt, such as inspect_note::Read /notes.txt and summarize it. Scripts can also use run_macro or window.triggerAgentResponse(prompt, macroName).",
+                    "A definition needs planToUse, a nonempty responsePlanOverview, and a nonempty orderOfActions list. Each action needs an available command name and an objective describing what to do. whoToRespondAs, agentPrompt and agentName are optional.",
+                    "create_macro checks the definition before saving. It only replaces an existing name if overwrite is enabled. Direct JSON edits need the same care because they do not use that creation check."
                 ]
             },
             {
-                "p": "Minimal plan shape: {\"planToUse\":{\"responsePlanOverview\":\"Inspect a requested file\",\"orderOfActions\":[{\"action\":\"fs_content\",\"objective\":\"Read the requested path and report its contents\"}]}}. Actions describe objectives; the agent still chooses the actual command arguments."
+                "p": "Example plan: {\"planToUse\":{\"responsePlanOverview\":\"Inspect a selected note\",\"orderOfActions\":[{\"action\":\"fs_content\",\"objective\":\"Read the requested note and summarize it\"}]}}. The objective tells the agent what to do; the agent still chooses the file-reading arguments."
             },
             {
-                "tip": "A saved macro is executable automation. Review its complete plan and allowed commands before importing or invoking it."
+                "tip": "A macro can run tools and change data. Read its full plan and check its allowed commands before importing or starting it."
             }
         ],
         "show": [
@@ -29,18 +32,18 @@ ESO_GUIDE_CHAPTERS.push(
     },
     {
         "id": "macro-files-and-overrides",
-        "title": "Macros over files, whitelist behavior and results",
+        "title": "Running macros on files and limiting their tools",
         "blocks": [
             {
                 "list": [
-                    "run_macro_on_files takes a path array and a macro name, with an optional prompt. It tries to expand directory paths using listEntries, deduplicates resulting paths and runs the macro once per distinct file. A directory can therefore expand the scope beyond one file; review the selected paths first.",
-                    "get_macro_info lists available names or returns one definition. A missing/invalid macro is an error; overwriting requires an explicit choice.",
-                    "wordCountEnabled controls action-summary counts. surpressMessagesToUser can suppress a directly invoked macro's whole visualiser, but run_macro does not forward that macro flag in this revision; it is not a per-stage private-draft guarantee. isUsingWhitelist filters candidates, but hard-disabled names remain excluded.",
-                    "A macro can request another agent run; repeated automation, network calls and writes remain subject to the selected runtime limits and confirmations. Stop does not restore earlier file or context state."
+                    "run_macro_on_files takes an array of paths, a macro name and an optional prompt. It expands selected folders, removes duplicate paths and runs once per file. Check the resulting file selection before a batch run.",
+                    "Use get_macro_info to list saved names or inspect a definition. Correct missing or invalid definitions before starting; choose overwrite explicitly when replacing one.",
+                    "wordCountEnabled enables counts for action summaries. surpressMessagesToUser can hide the agent's progress view when a macro is invoked directly, but nested run_macro does not pass that flag along. isUsingWhitelist limits tool choices; tools that are disabled remain excluded.",
+                    "A macro may start another agent run. Repeat limits and confirmation dialogs still apply. Stopping a macro does not undo files or notes already changed."
                 ]
             },
             {
-                "tip": "Use narrow input paths and a read-only macro before trying a write-oriented batch. Check individual results and any truncation metadata."
+                "tip": "Try a read-only plan on one file before using a plan that writes several files. Check each result and any report of text being cut short."
             }
         ]
     }

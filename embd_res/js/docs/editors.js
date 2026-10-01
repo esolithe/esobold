@@ -10,14 +10,14 @@ ESO_GUIDE_CHAPTERS.push(
         "blocks": [
             {
                 "list": [
-                    "Enable Use new editor under Settings → Esobold. The editor adds Raw, Markdown and Render views to the story surface. Raw is the underlying text; the other views interpret or convert presentation.",
-                    "Enable Allow Editing to make direct story changes. Raw blur and view synchronization write changes back to the active story; generation, Undo, Redo and Retry keep the visible editor synchronized.",
-                    "Rendered Markdown/code/reasoning blocks are display transformations. HTML-to-Markdown conversion is not guaranteed to preserve every original formatting detail.",
-                    "Download/save before major edits. If precise delimiters, whitespace or code matter, verify them in Raw rather than trusting a rendered preview."
+                    "Enable Settings → Esobold → Use new editor. Raw shows the saved text directly, Markdown works with text formatting, and Render shows the formatted result.",
+                    "Tick Allow Editing to change existing story text. Leaving a Raw field or switching views updates the story; replies, Undo, Redo and Retry also update the editor.",
+                    "Markdown, code and reasoning can look different in Render. Converting a formatted view back into text may change some formatting.",
+                    "Download a save before major edits. Use Raw to check exact spacing, role tags or code rather than relying only on the formatted preview."
                 ]
             },
             {
-                "tip": "Do not paste untrusted executable code into a runnable block or mistake rich rendering for a security boundary."
+                "tip": "Only run code you trust. A nicely formatted code block can still change data or perform other actions if you execute it."
             }
         ],
         "show": [
@@ -31,14 +31,14 @@ ESO_GUIDE_CHAPTERS.push(
         "blocks": [
             {
                 "list": [
-                    "Settings → GUI → Full screen editor buttons adds expand buttons to eligible multiline controls. The expanded editor writes the resulting text back into the original field; still confirm/save the surrounding dialog as appropriate.",
-                    "The generic editor popup uses Ace with language selection, syntax highlighting and its normal editing commands. Highlighting is not proof that a program compiles.",
-                    "In the filesystem browser, editable nonbinary files have an Edit action. Saving writes through FsClient; errors are reported, and the listing refreshes on successful save.",
-                    "PopupUtils supports sizing, modal/backdrop modes, mobile navigation and optional draggable/resizable windows. Escape, Cancel and Close vary by the owning operation; cancelling a popup does not undo writes already completed."
+                    "Enable Settings → GUI → Full screen editor buttons to add expand buttons to supported multiline fields. Edit the larger view, return to the original field, then confirm or save its dialog.",
+                    "The popup code editor offers language selection, colored syntax and editing commands. Colored syntax helps reading but does not check whether a program works.",
+                    "In the filesystem browser, use Edit on a text file. Save writes the file to the server and refreshes the listing; read any error if saving fails.",
+                    "Some popups can be moved or resized and have mobile navigation. Use the popup's Cancel or Close control as appropriate. Closing a window does not undo a file already saved."
                 ]
             },
             {
-                "tip": "Filesystem edits target the backend filesystem, not an arbitrary local desktop file. Confirm the path before overwriting."
+                "tip": "Filesystem editing changes a server file, not a file on your desktop. Check the path and keep a copy before overwriting it."
             }
         ],
         "show": [
@@ -47,37 +47,37 @@ ESO_GUIDE_CHAPTERS.push(
     },
     {
         "id": "syntax-and-symbol-tools",
-        "title": "Syntax trees, symbols and static warnings",
+        "title": "Code tools: finding symbols and syntax problems",
         "blocks": [
             {
                 "table": [
                     [
                         "Tool",
-                        "Contract"
+                        "What it does"
                     ],
                     [
                         "fs_code_get_symbols",
-                        "Parses a supported file and returns named syntax-tree symbols and locations."
+                        "Finds named parts of a supported code file, such as functions, and reports their locations."
                     ],
                     [
                         "fs_code_edit_symbol",
-                        "Replaces the located symbol’s text; check the affected path/name and save a backup first."
+                        "Replaces a named part of the code. Check the file and name, and keep a backup before using it."
                     ],
                     [
                         "fs_code_detect_errors",
-                        "Returns syntax-tree parse error locations for a supported grammar."
+                        "Reports places where the supported language parser cannot read the code's syntax."
                     ],
                     [
                         "fs_code_detect_warnings",
-                        "Runs source heuristics, not a full language server, compiler or security audit."
+                        "Reports possible issues using simple code checks; it does not prove that the program works correctly."
                     ]
                 ]
             },
             {
-                "p": "treeSitterGrammarLoader maps filename extensions to bundled WASM grammars, caches loaded parsers, collects symbols/errors and applies heuristic warnings. Unsupported languages and failed grammar loads are reported rather than supplying a complete semantic analysis."
+                "p": "These are optional tools for working with code files. A parser reads the structure of a supported programming language to find names and syntax errors. Unsupported languages or a failed parser download produce an error instead of a code analysis."
             },
             {
-                "tip": "These checks cannot replace a real build or language-aware reference migration. Agent Block write on syntax error adds a supported-language guard; it does not validate all formats or all behavioral changes."
+                "tip": "Run the program and its own checks after changing code. Agent → Block write on syntax error can prevent some broken-syntax writes, but it does not check every file format or whether the behavior is correct."
             }
         ]
     }

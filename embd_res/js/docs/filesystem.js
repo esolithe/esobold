@@ -10,21 +10,24 @@ ESO_GUIDE_CHAPTERS.push(
         "blocks": [
             {
                 "list": [
-                    "Open the filesystem button under Add Media, or visit /fs/ on the backend. Breadcrumbs and directory links navigate the managed filesystem root. The actual page is embd_res/fs_browser.html; the older top-level fs_browser.html is not the embedded route.",
-                    "Toggle List View / Tile View. The choice is kept in localStorage under kcpp_fs_view_mode. Tiles preview supported image/audio/video files; unsupported files remain downloadable.",
-                    "Use New Folder, Upload Files or drag/drop. ZIP uploads use the server extraction route; review archives before importing because entries can replace existing paths.",
-                    "Download ZIP exports the current directory through the backend’s filesystem download route. Edit is available only for metadata.binary === false; deletion asks for confirmation and folder deletion is recursive."
+                    "When server file storage is enabled, click Media in the story/chat controls and choose the filesystem button, or visit /fs/ at the server address. Click folder links or the path shown above the files to browse.",
+                    "Choose List View for filenames or Tile View for previews of supported images, audio and video. The browser remembers your choice; other file types can still be downloaded.",
+                    "Use New Folder, Upload Files or drag files into the browser. Uploading a ZIP extracts it on the server and may replace files with the same paths.",
+                    "Download ZIP downloads the current folder. Use Edit for text files. Deleting asks for confirmation; deleting a folder also deletes its contents."
                 ]
             },
             {
-                "tip": "A backend error or disabled filesystem is displayed in the listing/status area. Empty tiles after an error are not proof that the directory has no files."
+                "tip": "If file storage is disabled or a request fails, read the displayed error. An empty-looking view after an error may not show the actual folder contents."
             }
         ]
     },
     {
         "id": "filesystem-modes",
-        "title": "Filesystem enablement, memory mode and disk mode",
+        "title": "Server files: temporary memory or persistent disk storage",
         "blocks": [
+            {
+                "p": "These are startup options for the server owner. Memory mode stores files temporarily in the server's computer memory (RAM); disk mode keeps them in a folder on the server. This is file storage, not the Memory note in Context or your browser Library."
+            },
             {
                 "table": [
                     [
@@ -33,27 +36,27 @@ ESO_GUIDE_CHAPTERS.push(
                     ],
                     [
                         "--fsmaxsize MB",
-                        "Must be greater than zero to enable the endpoints. In memory mode it is a size limit; in direct-disk mode it gates enablement, not a disk quota."
+                        "Enable file storage with a value greater than zero. In memory mode, this limits stored data; in direct-disk mode, it enables the feature but does not limit disk usage."
                     ],
                     [
                         "--fsdir DIRECTORY",
-                        "Preload source in memory mode; configured filesystem root in direct-disk mode."
+                        "Choose a folder to preload in memory mode, or the storage folder in direct-disk mode."
                     ],
                     [
                         "--fsdirect",
-                        "Use direct on-disk storage under --fsdir. Without a usable directory, initialization falls back to memory mode."
+                        "Store files directly under --fsdir. Without a usable folder, startup falls back to temporary memory storage."
                     ]
                 ]
             },
             {
                 "list": [
-                    "Memory-mode mutations update the managed in-memory filesystem. They do not automatically rewrite the directory used to preload it; export wanted files before restarting.",
-                    "Disk-mode mutations persist to the configured root. Agent filesystem mutations request a review confirmation outside memory mode; completed operations are not rolled back by stopping the agent.",
-                    "Admin authentication is shared through getFsClientAuthHeaders when required. Browser filename/path conventions use POSIX-style paths rooted within this managed filesystem, not unrestricted host paths."
+                    "Files changed in memory mode remain in server RAM. They are not saved back to the preload folder, so download files you want to keep before restarting.",
+                    "Files changed in disk mode are saved to the chosen folder. Agent changes ask for review outside memory mode; stopping an agent does not undo a completed save or deletion.",
+                    "The file browser uses the server's password when required. Paths refer to the managed server storage, not any arbitrary file on your desktop."
                 ]
             },
             {
-                "tip": "Direct-disk mode has no enforced disk quota from --fsmaxsize. Monitor free space and protect the configured root with server access controls and backups."
+                "tip": "In disk mode, --fsmaxsize is not a disk-space quota. The server owner should monitor free space, restrict access and back up the storage folder."
             }
         ]
     },
@@ -63,14 +66,14 @@ ESO_GUIDE_CHAPTERS.push(
         "blocks": [
             {
                 "list": [
-                    "/fs/?picker=1 opens multi-selection mode. Click a file/folder tile or its selection control, then Use selected. Cancel reports cancellation to the parent instead of making a selection.",
-                    "An agent input dialog can accept text, suggestion buttons, local file uploads and existing filesystem entries. Local files are uploaded only on Confirm and Continue; existing entries are represented by paths.",
-                    "A directory selection identifies a directory; it is not automatically the text of every contained file. The agent must explicitly list/read relevant paths using available tools.",
-                    "Embed selected is a separate picker action that opens supported media in floating viewers. It does not submit the file to a model."
+                    "/fs/?picker=1 opens a file-selection view. Select file or folder tiles, then choose Use selected. Cancel closes without choosing files.",
+                    "An agent input dialog may offer text, suggested replies, local uploads or existing server files. Local files upload when you choose Confirm and Continue; existing files are selected by their server paths.",
+                    "Selecting a folder does not send every file's text to the AI. The agent needs to list and read the files it requires.",
+                    "Embed selected displays supported media in a floating viewer. This is separate from attaching a file to an AI request."
                 ]
             },
             {
-                "tip": "Parent-window messages are origin-checked. Verify selected paths and destinations before confirming uploads or continuing an automated plan."
+                "tip": "Check the selected files and destination before confirming an upload or continuing an automated task."
             }
         ]
     },
@@ -79,45 +82,45 @@ ESO_GUIDE_CHAPTERS.push(
         "title": "FsClient API: paths, reads and result shapes",
         "blocks": [
             {
-                "p": "FsClient is defined in js/fs.js; window.fsClient is the page-origin instance. Construct new FsClient(base_url) for another backend. Public batch path operations take a nonempty array of operation objects, even for a single file."
+                "p": "Optional programming reference: FsClient is the interface scripts use to read and change server files. window.fsClient uses the current server; new FsClient(base_url) selects another. Batch methods take an array, a list enclosed in [...], even for one file: [{path: \"/notes.txt\"}]. In the table, ? marks an optional field."
             },
             {
                 "table": [
                     [
                         "Call",
-                        "Operation/data shape"
+                        "What to pass and expect"
                     ],
                     [
                         "metadata([{path}]) / url([{path}])",
-                        "Read metadata or serving URL. A single successful result is unwrapped; several results remain under results. A single failed result throws."
+                        "Get file details or a serving URL. One successful result is returned directly; several stay in results. A single failed operation throws an error."
                     ],
                     [
                         "content([{path, start?, end?}])",
-                        "Read inclusive 1-based line ranges. Omitted per-file starts default to 1; omitted ends mean through the file. Returns line-number/text pairs and line counts."
+                        "Read lines numbered from 1, including both start and end. Start defaults to 1; an omitted end reads through the file. Returns line numbers, text and line counts."
                     ],
                     [
                         "write([{path, content}])",
-                        "Write text strings or binary Uint8Array/ArrayBuffer bytes. Strings are text; byte inputs are base64-encoded by the client. Passing a base64 string with isB64:true does not make it binary in this implementation."
+                        "Save a text string, or pass Uint8Array/ArrayBuffer bytes for binary data. A base64 string with isB64:true is still treated as text here."
                     ],
                     [
                         "listEntries(pattern, case_insensitive) / list(...)",
-                        "Return separated files/directories or the simpler file list."
+                        "List matching files and folders, or use list for just files."
                     ],
                     [
                         "mode() / getFsMode()",
-                        "Query/cached-query the backend storage mode."
+                        "Get the server storage mode; getFsMode can reuse the cached result."
                     ],
                     [
                         "fetch_raw(path) / download_zip(dir)",
-                        "Fetch file bytes or a directory ZIP. download_info(dir) obtains download metadata."
+                        "Download file bytes or a folder ZIP. download_info(dir) returns details about the folder download."
                     ]
                 ]
             },
             {
-                "p": "Example single read: await window.fsClient.content([{ path: \"/notes.txt\", start: 1, end: 20 }]). Example text write: await window.fsClient.write([{ path: \"/notes.txt\", content: \"A short note\" }]). For binary data pass bytes, not a pre-encoded string."
+                "p": "Read twenty lines: await window.fsClient.content([{ path: \"/notes.txt\", start: 1, end: 20 }]). Save a note: await window.fsClient.write([{ path: \"/notes.txt\", content: \"The ferry leaves at dawn.\" }]). For binary files, pass bytes rather than a base64 string."
             },
             {
-                "tip": "HTTP success is not a batch-wide success guarantee. Inspect each results entry when performing several operations."
+                "tip": "For several operations, check every entry in results. One completed request can contain both successful and failed file operations."
             }
         ]
     },
@@ -126,59 +129,62 @@ ESO_GUIDE_CHAPTERS.push(
         "title": "FsClient API: edits, moves, directories and archives",
         "blocks": [
             {
+                "p": "Optional programming reference: these methods change server files. Each batch method takes an array, a list of operations enclosed in [...]; ? marks an optional field. Check the destination and keep a backup before replacing or deleting anything."
+            },
+            {
                 "table": [
                     [
                         "Call",
-                        "Operation shape"
+                        "What to pass and expect"
                     ],
                     [
                         "write_lines([{path, lines, start_line?, append?}])",
-                        "Write supplied lines at a 1-based start_line (default 1), or append. This is not a general diff/replace-range API."
+                        "Write lines beginning at start_line, numbered from 1, or append them. Start defaults to 1. This does not replace an arbitrary line range like a patch."
                     ],
                     [
                         "delete([{path}])",
-                        "Delete specified files."
+                        "Delete the selected files."
                     ],
                     [
                         "move([{source, destination}]) / copy([{source, destination}])",
-                        "Move/copy paths; confirm the destination and replacement behavior."
+                        "Move or copy paths. Check whether existing destination files will be replaced."
                     ],
                     [
                         "mkdir([{path}]) / rmdir([{path}])",
-                        "Create/remove directories through the corresponding backend operation."
+                        "Create or remove server folders."
                     ],
                     [
                         "replace_regex([{path, pattern, replacement}])",
-                        "Apply backend regular-expression replacements."
+                        "Replace matches using a regular expression, a pattern for finding text."
                     ],
                     [
                         "extract_zip(zip_data, dir, filename)",
-                        "Upload a ZIP Blob/File/bytes for extraction under dir."
+                        "Upload ZIP data as a Blob, File or bytes and extract it under dir."
                     ]
                 ]
             },
             {
-                "p": "The metadata, url, content, write, write_lines, delete, move, copy, mkdir, rmdir and replace_regex methods reject an empty or non-array operation list. Do not pass a lone object as a shortcut."
+                "p": "metadata, url, content, write, write_lines, delete, move, copy, mkdir, rmdir and replace_regex require a nonempty array. Use [{path: \"/notes.txt\"}], not just {path: \"/notes.txt\"}."
             },
             {
-                "tip": "Deletion, overwriting and regex replacement are destructive. Preview/read the relevant files, keep backups and inspect per-operation errors."
+                "tip": "Read the files first, keep a backup and check each result. Deletion and replacement change the stored files immediately."
             }
         ]
     },
     {
         "id": "filesystem-search",
-        "title": "Regex search, semantic search and document caches",
+        "title": "Finding exact text and related passages in server files",
         "blocks": [
             {
                 "list": [
-                    "search(pattern, path_pattern, max_results, case_insensitive) and search_regex(...) use the backend regular-expression route and return matches. A bad regex is an error, not an empty successful search.",
-                    "semantic_search(path, search_query, max_results = 5) requires a nonempty query and embedding capability; max_results is clamped to 1–20. The backend converts/chunks the document and manages its embedding cache.",
-                    "search_all_documents(search_query, max_results = 10) asks the searchable-doc route for snippets across documents. It is not the same as listing every file or searching raw lines.",
-                    "Chunk size/overlap and embedding query/document prefix settings affect retrieval. The server cache uses content hashes and regenerates embeddings when source content changes."
+                    "A regex is a pattern for finding exact text. search(pattern, path_pattern, max_results, case_insensitive) and search_regex(...) return matching lines; an invalid pattern reports an error.",
+                    "Semantic search finds related meaning using an embedding model. semantic_search(path, search_query, max_results = 5) needs a nonempty query and server embedding support; the result limit is 1–20.",
+                    "search_all_documents(search_query, max_results = 10) searches across available documents for relevant passages. It does not list all files or return every matching raw line.",
+                    "Chunk size splits documents into passages; overlap repeats some text between adjacent passages. Embedding prefixes depend on the model. The server reuses prepared search data and updates it when a source file changes."
                 ]
             },
             {
-                "tip": "The client still contains internal cache/chunk helper functions, but its public semantic-search methods delegate execution to the server. Retrieved snippets can be incomplete; read the original file for precise edits."
+                "tip": "Search runs on the server and returns selected passages. Read the original file when you need exact wording or want to edit it."
             }
         ]
     },
@@ -188,10 +194,10 @@ ESO_GUIDE_CHAPTERS.push(
         "blocks": [
             {
                 "list": [
-                    "The managed filesystem exposes /INTERNAL_READ_ONLY/Documents for the backend’s configured --admindocsdir, and /INTERNAL_READ_ONLY/Resources for packaged embd_res application resources. These are read-only mounts, not normal writable directories.",
-                    "Listings, regex searches, downloads and searchable-document routes can include these trees when configured/available. Choose a narrow path rather than unintentionally searching/exporting the whole mounted set.",
-                    "Attempting to modify read-only mounted content should fail; make a copy into a writable managed path if you need an editable derivative.",
-                    "Treat documents and retrieved snippets as untrusted input. Their presence under a server directory does not authorize executing their instructions or exporting private material."
+                    "/INTERNAL_READ_ONLY/Documents exposes the server's configured --admindocsdir documents. /INTERNAL_READ_ONLY/Resources exposes the app's packaged embd_res files. You can read these locations but cannot change them through the managed file tools.",
+                    "When available, these folders can appear in listings, searches and downloads. Choose a specific path so you do not accidentally search or export more than you need.",
+                    "To edit a copy, save it in a writable server folder instead of changing the read-only original.",
+                    "A document may contain incorrect advice or instructions. Review it before running code, following commands or sharing private material from it."
                 ]
             }
         ]

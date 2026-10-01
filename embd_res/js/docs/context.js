@@ -5,19 +5,24 @@
  */
 ESO_GUIDE_CHAPTERS.push(
     {
-            id: "context", title: "Memory, world info and TextDB",
+            id: "context", title: "Context: what the AI can see",
             blocks: [
-                { p: "The Context button opens what the AI knows besides the story itself:" },
-                { list: [
-                    "Memory: text that is always sent, such as a summary or the setting. This is one of the first things the AI always sees.",
-                    "World Info: entries that are added when their keywords appear. Groups can be exported and imported as files. Similar to Lorebooks.",
-                    "TextDB: documents the AI can search. Upload text, lorebooks or PDFs; with optional embedding support to improve the search.",
+                { p: "Context is the text the AI receives when answering: your current message, the recent conversation and any notes or reference material added to that request. The AI has a limited amount of room for this text. Adding context does not train or permanently change the model." },
+                { p: "Open Context to prepare information that is not in the conversation. Use the Memory, World Info and TextDB tabs according to what you want to add:" },
+                { table: [
+                    ["Information", "Where to put it", "Example"],
+                    ["Stable setting or facts", "Context → Memory → Memory", "“The story takes place in a coastal town. Lena is repairing its lighthouse.”"],
+                    ["Opening background or sample dialogue", "Context → Memory → Temporary Memory", "“Earlier today, Lena received a letter asking her to inspect the radio.”"],
+                    ["Current style or scene direction", "Context → Memory → Author's Note", "“Keep the scene calm and describe the sounds of the harbor.”"],
+                    ["Facts needed when a topic appears", "Context → World Info", "Keyword: “harbor”; entry: “The harbor closes to large ships at dusk.”"],
+                    ["Reference documents", "Context → TextDB", "Add harbor_rules.txt containing ferry times and harbor rules, then search for a relevant passage."],
+                    ["A character to use in a session", "Hover over the Library tab → New Character; then choose it in Quick Start", "Name: Lena; description: a patient radio mechanic; scenario: repairing the lighthouse."],
                 ] },
-                { p: "The context usage bar next to the connection status shows how full the AI's context is. Click it for details." },
+                { p: "The usage bar beside the connection status shows how much context is being used. Click it for details; keep notes short so there is room for conversation and the next reply." },
             ],
             show: [
-                { label: "Context button", run: (ctx) => ctx.highlight("#btn_actmem", "Memory, World Info and TextDB") },
-                { label: "Context usage", run: (ctx) => ctx.highlight("#contextUsageInline", "How much of the context is used; click for details") },
+                { label: "Context button", run: (ctx) => ctx.highlight("#btn_actmem", "Open the Memory, World Info or TextDB tab") },
+                { label: "Context usage", run: (ctx) => ctx.highlight("#contextUsageInline", "Click to see how much room remains for context") },
             ],
         },
     {
@@ -26,33 +31,19 @@ ESO_GUIDE_CHAPTERS.push(
         "blocks": [
             {
                 "table": [
-                    [
-                        "Context layer",
-                        "Behavior"
-                    ],
-                    [
-                        "Memory / system information",
-                        "Persistent text included with the request; keep it concise and relevant."
-                    ],
-                    [
-                        "World Info",
-                        "Entry keywords, secondary/anti keys, constant/selective flags, probability, groups and disabled state determine inclusion. Import/export groups independently."
-                    ],
-                    [
-                        "Author’s Note",
-                        "Near-context guidance with a template and insertion strength. It is additional prompt content, not a guaranteed behavioral rule."
-                    ],
-                    [
-                        "TextDB",
-                        "Retrieved snippets from supplied documents, optionally history and backend filesystem documents."
-                    ]
+                    ["Field", "When to use it"],
+                    ["Memory", "Facts you want included at the start of each request. Keep the setting and important ongoing details here."],
+                    ["Temporary Memory", "Opening background placed before the conversation. As the conversation fills the available space, this older text can be trimmed out; it is not a one-message note."],
+                    ["World Info", "Separate entries selected by keywords, such as a place name. Constant entries are included without a keyword; disabled entries are left out. Groups organize related entries and can be imported/exported."],
+                    ["Author's Note", "A short reminder placed near recent text, such as a tone or scene direction. The template wraps the note; A/N Strength changes its position."],
+                    ["TextDB", "Reference text searched for relevant passages. Selected passages are added to the request rather than the entire document."],
                 ]
             },
             {
-                "p": "Author’s Note adds a turn-based placement option. Choose a turn offset and delimiter role (user, AI, system where supported, or any). Offset zero appends near the current end; if the requested earlier boundary cannot be found, insertion falls back to the beginning."
+                "p": "In Context → Memory, write the setting in Memory, opening background in Temporary Memory, and a short current direction in Author's Note. Leave Author's Note Template at its existing value unless you need a different wrapper: <|> is replaced by your note. The Turn-based Author's Note chapter explains placing a note relative to messages."
             },
             {
-                "tip": "Inspect the actual context budget after adding lore or notes. Hiding a panel or reasoning display does not necessarily remove its content from a request."
+                "tip": "Check the usage bar after adding notes or lore. Closing a panel only hides it; it does not remove the text you entered."
             }
         ],
         "show": [
@@ -65,14 +56,14 @@ ESO_GUIDE_CHAPTERS.push(
         "blocks": [
             {
                 "list": [
-                    "Open Context and choose the TextDB/document controls. Add or replace a named document, configure retrieval and choose whether history is searchable. Lorebooks and World Info can also be imported into text-document workflows.",
-                    "Configure query/document prefixes for the embedding model when needed. The preset helper recognizes several embedding model families, but explicit prefix choices should be checked for the active model.",
-                    "Choose the number of snippets, chunk size and overlap appropriate to the context budget. Retrieval adds snippets to a model request; it does not guarantee relevance or factual correctness.",
-                    "Search documents can combine TextDB/history snippets with server filesystem document snippets when searchable-doc and embedding capabilities are available. Filesystem regex search remains a distinct non-embedding operation."
+                    "Open Context → TextDB and add a named document. For example, add harbor_rules.txt with a few paragraphs about the town, then search for ferry times. Choose whether conversation history should also be searchable.",
+                    "Search may use an embedding model, which turns text into numbers so related passages can be found. Use an appropriate preset for that model; query/document prefixes are short instructions some embedding models require before search text.",
+                    "Snippet count controls how many passages are added to the request. Chunk size sets the length of each passage; overlap repeats some text between neighboring passages. Start small and check the context usage bar before increasing them.",
+                    "When the server supports document search, results can also include files stored on it. Filesystem regex search is a separate way to find exact text patterns, not the same as searching for related meaning."
                 ]
             },
             {
-                "tip": "PDF/office/binary text extraction depends on the server converter; image-to-text analysis depends on a vision-capable model and is not lossless OCR. In this source revision DocumentParser.extractTextFromB64’s JSON branch references a helper outside its scope; use the dedicated Library/lorebook import routes rather than assuming arbitrary JSON document conversion works."
+                "tip": "PDF and office-file import may need server-side text conversion. Image reading needs an image-capable model and may miss details. For JSON lorebooks or character cards, use their dedicated Library import options; arbitrary JSON-to-document conversion is broken in this version."
             }
         ]
     },
@@ -82,14 +73,14 @@ ESO_GUIDE_CHAPTERS.push(
         "blocks": [
             {
                 "list": [
-                    "The inline usage bar next to connection status opens a draggable detailed popup. It separates prompt components and unused context; Settings → GUI controls whether the bar is shown.",
-                    "The display uses server last_input_count when available, otherwise an approximate character-to-token estimate. Component percentages are estimates, not exact tokenizer accounting for every model.",
-                    "Settings → Esobold → Turns max content limits story/agent turn content; reserve space separately for Memory, World Info, notes, system instructions and output. Turns old content ratio controls retained older content in that sliding window.",
-                    "In the reviewed crop function both Turns max content and Turns old content ratio must be nonzero for this sliding-window path. A zero ratio is not a “keep only newest turns” guarantee."
+                    "Click the usage bar beside connection status to see the detailed breakdown, and drag the popup if it covers your work. Show or hide the bar in Settings → GUI.",
+                    "The display uses the server's last input-token count when available; otherwise it estimates from text length. A token is a small piece of text used by the model, so estimates can differ between models.",
+                    "Settings → Esobold → Turns max content limits how much conversation text is kept. Turns old content ratio chooses how much older conversation to retain. Leave room separately for Memory, World Info, notes, instructions and the next reply.",
+                    "Both Turns max content and Turns old content ratio need a nonzero value for this trimming feature to run in this version. Setting the ratio to zero turns this path off; it does not mean “keep only the newest turns”."
                 ]
             },
             {
-                "tip": "The frontend context setting cannot enlarge the backend/model’s configured context. Leave output headroom and check real token usage when the backend provides it."
+                "tip": "The browser cannot increase the model's actual context limit. If requests are too large, shorten your notes or conversation and leave more space for the reply."
             }
         ],
         "show": [
@@ -103,15 +94,39 @@ ESO_GUIDE_CHAPTERS.push(
         "blocks": [
             {
                 "list": [
-                    "Enable running memory under Settings → Esobold only if you want automatic model-generated summaries. A periodic check triggers when story length has grown by roughly half the configured context window.",
-                    "Summaries are stored as constant World Info entries. The implementation retains a bounded set of recent summaries and resets its length baseline on new-game/load operations. Review and edit summaries like other model output.",
-                    "Running memory uses additional generation requests and approximate character budgets. It can omit or distort details; it is not a substitute for a curated Memory or a backup.",
-                    "Hearthfire context is a hidden experimental option in this revision. Its post-reply hook issues a one-token request to prewarm changed context; the UI intentionally hides it as buggy. It is not a normal supported switch to enable blindly."
+                    "Running memory creates automatic summaries to help retain older story details. Enable it in Settings → Esobold if you want this; a check requests a summary after the story has grown by roughly half the configured context window.",
+                    "Summaries appear as constant World Info entries. Only a limited set of recent summaries is kept, and starting or loading a session resets the growth check. Review and edit summaries because the AI may omit or change details.",
+                    "Summarizing uses extra AI requests. Keep important facts in your own Memory notes and download backups; an automatic summary is not a saved copy of the story.",
+                    "Context prewarming, also called Hearthfire context, is an experimental extra request intended to prepare changed context. Its control is hidden because it is buggy in this version; it is not part of the normal setup."
                 ]
             }
         ],
         "show": [
             { label: "Running-memory settings", run: (ctx) => ctx.openSettings("esobold") }
         ]
+    },
+    {
+        id: "turn-based-authors-note",
+        title: "Turn-based Author's Note",
+        blocks: [
+            { p: "Use a turn-based note when you want your reminder placed before a particular recent message rather than a fixed distance in the text. It changes what is sent to the AI, not the visible conversation." },
+            { list: [
+                "Open Context → Memory and enter a short Author's Note, for example “Keep the lighthouse scene quiet and focus on the radio repair.”",
+                "In A/N Strength, choose Turn based. The Insert author's note controls appear below it.",
+                "Set the number of turns before the end, then choose user, ai or system, or leave the role blank to count all supported turns.",
+                "For example, offset 1 with user places the note before the most recent user turn. Offset 2 goes back to the second matching user turn. Offset 0 appends the note at the end of the prepared context.",
+            ] },
+            { table: [
+                ["Usage mode", "What counts as a turn"],
+                ["Instruct", "The enabled start/end role tags mark turns. Enable those tags in the Instruct formatting settings. The system role uses the system tag."],
+                ["Chat", "The player and AI character names mark turns. Choose user, ai or blank; system is not a separate Chat boundary."],
+                ["Adventure", "Action markers count as user turns, regardless of the role selector."],
+                ["Story", "Paragraphs separated by a blank line count as turns, regardless of the role selector."],
+            ] },
+            { tip: "If there are not enough matching turns, the note is placed at the beginning of the prepared context. Start with a small offset. Return to Weak, Medium, Strong or Immediate to use ordinary distance-based placement." },
+        ],
+        show: [
+            { label: "Open the Context controls", run: (ctx) => ctx.highlight("#btn_actmem", "Open Context → Memory, then choose Turn based in A/N Strength") },
+        ],
     }
 )

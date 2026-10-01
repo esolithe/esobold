@@ -7,9 +7,9 @@ ESO_GUIDE_CHAPTERS.push(
     {
             id: "world-tree", title: "The world tree",
             blocks: [
-                { p: "Every reply is recorded in the world tree. When you retry or edit, the story branches; the tree keeps all branches." },
-                { p: "Open the tree with the tree icon in the top bar and click a point to load the story from there." },
-                { tip: "Settings → Esobold → World tree settings: prune branches, choose how many levels of branches are shown, or show the whole tree (occasionally may have issues on very large saves)." },
+                { p: "The world tree lets you revisit alternative versions of a story. Replies and retries form branches, so you can return to an earlier choice and continue in another direction." },
+                { p: "Click the tree icon in the top bar. Choose a point in the tree, review the confirmation, and load the story from there." },
+                { tip: "Use Settings → Esobold → World tree settings to simplify the display or limit its depth. Showing the whole tree can be slow for a large save." },
             ],
             show: [
                 { label: "Tree icon", run: (ctx) => ctx.highlight("#openTreeDiagram", "Opens the world tree") },
@@ -21,14 +21,14 @@ ESO_GUIDE_CHAPTERS.push(
         "blocks": [
             {
                 "list": [
-                    "Open the world tree from the story controls. Each saved alternative is represented by a node/branch; the current story follows one path through that tree.",
-                    "Click a branch/node summary, review the load confirmation, then switch. Switching changes the active story and its history; save first if you want an independent snapshot.",
-                    "Undo and Redo navigate the current story history. Retry generates an alternative continuation, and subsequent submissions update the branch representation.",
-                    "The viewer supports pan/zoom and a paginated neighborhood around the active node. Close the viewer before returning to normal input."
+                    "Open the tree icon in the top bar. A node is a point in the story, and a branch is an alternative continuation. The current session follows one path.",
+                    "Click the point you want to revisit and confirm the load. This changes the active story and conversation history; download a save first if you want to keep a separate copy.",
+                    "Undo and Redo move through the current history. Retry asks the AI for another continuation, which can become a different branch when you continue.",
+                    "Pan or zoom to explore the nearby branches. Close the tree when you want to return to typing."
                 ]
             },
             {
-                "tip": "The graph is a visualization of session data, not a backup. A downloaded save is still needed if the browser storage or current session is lost."
+                "tip": "The tree is part of the session, not a separate backup. Hover over the Library tab and choose Download to keep a copy outside the browser."
             }
         ]
     },
@@ -44,20 +44,20 @@ ESO_GUIDE_CHAPTERS.push(
                     ],
                     [
                         "Merge single branches",
-                        "Prunes single-child chains in the displayed tree. It simplifies the view rather than intentionally deleting alternative story data."
+                        "Combines chains of points that have only one continuation to simplify the display; it does not delete alternative stories."
                     ],
                     [
                         "World tree depth",
-                        "Limits the neighborhood/separation shown by the paginated view."
+                        "Limits how far the view extends around the current point."
                     ],
                     [
                         "Show all nodes",
-                        "Requests the full graph; large sessions can take substantially more rendering work."
+                        "Shows the full tree. A large story may take longer to draw."
                     ]
                 ]
             },
             {
-                "p": "TreeHandler builds branches from shared story prefixes and reconstructs the active history from a selected tree key. TreeViewer uses Mermaid for layout and panzoom for navigation. If a large graph is slow, prefer the bounded/paginated view before trying the full tree."
+                "p": "Branches share the story up to the point where they diverge. Selecting a point restores the history leading to it. If the full tree is slow, use the smaller nearby view and increase its depth only when needed."
             }
         ],
         "show": [

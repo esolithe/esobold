@@ -5,11 +5,11 @@
  */
 ESO_GUIDE_CHAPTERS.push(
     {
-            id: "welcome", title: "Welcome to Eso Lite",
+            id: "welcome", title: "Welcome to Esobold",
             blocks: [
-                { p: "Eso Lite is Esobold's version of KoboldAI Lite: a browser app for writing stories, chatting and working with an AI. It adds a Library, Quick Start, a world tree of your story's branches, agent mode and more." },
-                { p: "The chapters are short. Read them in order the first time; the \"Show me\" buttons point at the part of the screen being explained." },
-                { tip: "You can come back at any time with Guide in the top bar. Mods can add their own tabs to this window." },
+                { p: "Esobold is an app for writing stories, chatting with characters and working with an AI. Its browser interface, Eso Lite, has a Library for saved sessions and characters, Quick Start to prepare a session, and a world tree to explore alternative story branches." },
+                { p: "Start with Connect an AI, then Modes and your first message. A “Show me” button points to the control described in that chapter; close the highlight or press Escape to return to the guide." },
+                { tip: "Open Guide in the top bar whenever you need help. Read the chapters for the features you use; the later tool and programming references are optional." },
             ],
             show: [
                 { label: "Where is the Guide?", run: (ctx) => ctx.highlight("#topbtn_guide", "Opens this guide") },
@@ -18,13 +18,13 @@ ESO_GUIDE_CHAPTERS.push(
     {
             id: "connect", title: "Connect an AI",
             blocks: [
-                { p: "Eso Lite does not run a model itself; it talks to one. Use AI in the top bar to choose where the AI runs:" },
+                { p: "The AI runs on your computer, a server or an online service; this browser page sends your messages to it. Open AI in the top bar and choose a connection:" },
                 { list: [
-                    "KoboldCpp or Esobold running on your computer or server (usually connected automatically when Eso Lite is opened from it).",
-                    "AI Horde: free models run by volunteers; no setup, but slower and with a queue.",
-                    "Online providers with an API key, such as OpenAI-compatible services or Claude.",
+                    "Esobold or KoboldCpp on your computer or server. Opening its website usually connects you to that server automatically. A no-model server lets you browse the interface but cannot generate replies.",
+                    "AI Horde: volunteer computers run the models. Requests may wait in a queue.",
+                    "An online provider: enter the service's API address and key. An API key is the password-like value the provider gives you to use its service.",
                 ] },
-                { p: "The connection status is shown on the right of the top bar." },
+                { p: "Check the connection status on the right of the top bar before sending a message." },
             ],
             show: [
                 { label: "AI", run: (ctx) => ctx.highlight(ctx.navLink("AI"), "Choose where the AI runs") },
@@ -34,15 +34,15 @@ ESO_GUIDE_CHAPTERS.push(
     {
             id: "first-message", title: "Modes and your first message",
             blocks: [
-                { p: "Settings → General → Usage mode decides how the AI answers:" },
+                { p: "Open Settings → General → Usage mode and choose how you want to interact:" },
                 { table: [
-                    ["Mode", "Use it for"],
-                    ["Instruct", "Giving the AI tasks or questions, like an assistant. Generally, this mode can also be used for chatting with a character - especially if models focus on instruction following (which is many modern models)."],
-                    ["Chat", "Talking with a character."],
-                    ["Adventure", "Text adventures: you describe actions, the AI tells what happens."],
-                    ["Story", "Writing a story together; the AI acts as your cowriter, continuing your text in a freeform way."],
+                    ["Mode", "Try it for"],
+                    ["Instruct", "Ask a question or give a task, such as “Suggest three names for a seaside town.” Many instruction-following models can also chat with a character in this mode."],
+                    ["Chat", "Talk with a character using the player and character names you set."],
+                    ["Adventure", "Describe an action, such as “I open the lighthouse door”; the AI describes what happens next."],
+                    ["Story", "Write an opening, such as “The last ferry arrived at dusk.” The AI continues the story."],
                 ] },
-                { p: "Type into the box at the bottom and press Submit. Undo removes the last step, Redo brings it back and Retry asks for a new answer. Tick Allow Editing to change the story text directly." },
+                { p: "Type in the bottom input box and press Submit. Undo moves back, Redo restores the next step, and Retry asks for another answer. Tick Allow Editing to edit existing story text." },
             ],
             show: [
                 { label: "Input box", run: (ctx) => ctx.highlight("#input_text", "Type here, then press Submit") },
@@ -56,9 +56,9 @@ ESO_GUIDE_CHAPTERS.push(
         "blocks": [
             {
                 "list": [
-                    "Open AI in the top bar, select an endpoint type, enter its base URL and any required key, then connect. A local Esobold page can use its own backend; remote providers and AI Horde are separate choices.",
-                    "Check the connection status before submitting. A reachable server is not proof that image, audio, embeddings, filesystem or administration is enabled.",
-                    "For an online provider, choose a model supported by that provider and a matching API format. Instruct formatting and chat-completions tool support are separate concerns."
+                    "Open AI in the top bar. Choose the service type, enter its address and any required key, then connect. Use your Esobold server, AI Horde or an online provider according to where you want the AI to run.",
+                    "Check the connection status. Features such as images, audio and document search need their own server support; being connected does not enable them all.",
+                    "For an online provider, choose a model it offers and the API format it supports. Follow the provider's instructions if you are unsure which format to select."
                 ]
             },
             {
@@ -69,20 +69,20 @@ ESO_GUIDE_CHAPTERS.push(
                     ],
                     [
                         "Local Esobold/KoboldCpp",
-                        "Backend capabilities and version determine which controls appear. Model execution happens on the backend, not in this browser."
+                        "Replies are generated by the model loaded on that server. Its version and enabled features determine which controls you can use."
                     ],
                     [
                         "AI Horde",
-                        "Volunteer workers, model availability, queues and account/API-key settings affect requests. Local access does not make every remote endpoint available."
+                        "Available volunteer computers and models determine the queue and response time. Set your Horde API key if you have one."
                     ],
                     [
                         "Online APIs",
-                        "The selected provider receives the context and request. Its key, model names, rate limits and supported parameters apply."
+                        "Your chosen provider receives the text you send. Its model names, request limits and supported options apply."
                     ]
                 ]
             },
             {
-                "tip": "The local-endpoint visibility override exposes choices; it does not enable missing server features or bypass server authentication."
+                "tip": "Showing additional connection choices does not turn on features at the server or remove its password requirements."
             }
         ],
         "show": [
@@ -96,17 +96,17 @@ ESO_GUIDE_CHAPTERS.push(
         "blocks": [
             {
                 "list": [
-                    "Choose Usage Mode under Settings → General. Set chat names/opponents or instruct role formatting for that mode.",
-                    "Prepare Memory, World Info and any character information before a long session. These are context inputs, not a separately trained model.",
-                    "Type a message and Submit. Wait for completion or use the stop/abort control to cancel the active request. Retry generates an alternative; Undo and Redo move through the current history.",
-                    "Use Allow Editing for direct story changes. Save or export before large edits, branch switches, imports or backend reloads."
+                    "Choose Settings → General → Usage mode and set the names or Instruct formatting needed by that mode.",
+                    "Give the AI useful background before a long session. Context means the text sent with your next message: recent conversation plus your notes and selected reference material. For example, put “We are exploring a coastal town” in Context → Memory; add a character through Library → New Character and select it in Quick Start. The context chapters explain each field with examples.",
+                    "Type a message and press Submit. Wait for the reply, or use Stop/Abort to cancel the current request. Retry asks for an alternative; Undo and Redo move through the current conversation.",
+                    "Use Allow Editing to change story text. Hover over the Library tab and choose Download before large edits, importing another session or switching branches."
                 ]
             },
             {
-                "p": "Classic, Messenger and Aesthetic are presentation choices. They do not change which backend model is loaded. Esobold also supports the newer Raw/Markdown/Render editor and the world tree."
+                "p": "Classic, Messenger and Aesthetic change the appearance of the conversation, not the AI model. Raw/Markdown/Render offers different ways to edit or view text; the world tree shows story alternatives."
             },
             {
-                "tip": "Browser state belongs to an origin and storage namespace. Moving between URLs, ports, browsers or local/non-local namespaces can make existing saves appear absent. Keep downloadable backups rather than relying on browser storage alone."
+                "tip": "Browser saves stay with the browser and website address where you made them. A different address, port or browser may show a different Library. Download important saves so you can import them elsewhere."
             }
         ],
         "show": [
@@ -116,18 +116,18 @@ ESO_GUIDE_CHAPTERS.push(
     },
     {
         "id": "data-and-trust",
-        "title": "Data, credentials and trusted code",
+        "title": "Your data and add-ons",
         "blocks": [
             {
                 "list": [
-                    "Prompts, Memory, World Info, selected documents and attachments can be sent to the configured model service. Choose material you have permission to process.",
-                    "Server saves, OpenLumara, MCP and model-provider credentials are separate services. A GitHub login is not required to read this guide or write local documentation.",
-                    "Treat browser storage, imported code, third-party mods, runnable code blocks and external tool servers as trusted-code boundaries. They may see page data or act through configured services.",
-                    "Before enabling automated tools, inspect the Allowed checkboxes and the destination of writes, uploads, messages and commands. Stop does not roll back completed side effects."
+                    "The model service receives the messages, notes, selected documents and attachments included in a request. Only send material you are comfortable sharing with that service and have permission to use.",
+                    "Keys and passwords connect you to particular services, such as your model provider, OpenLumara or a server Library. Keep them private; entering one does not sign you into the other services.",
+                    "Mods, imported scripts, runnable code blocks and connected tool servers can read page data or perform actions. Use code and add-ons from sources you trust, and review their access before enabling them.",
+                    "Before allowing automated tools, check the Allowed boxes and where files, uploads, messages or commands will go. Stopping the AI does not undo an action already completed."
                 ]
             },
             {
-                "tip": "A confirmation dialog is a chance to review an action, not a security sandbox. Do not put credentials or private content into public shared saves, screenshots or debug logs."
+                "tip": "Read confirmation dialogs before accepting. Keep passwords and private information out of shared saves, screenshots and debug logs."
             }
         ]
     }

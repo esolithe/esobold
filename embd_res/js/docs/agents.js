@@ -7,12 +7,12 @@ ESO_GUIDE_CHAPTERS.push(
     {
             id: "agent", title: "Agent mode (experimental)",
             blocks: [
-                { p: "In agent mode the AI can take several steps and use tools before it answers: search the web, roll dice, evaluate formulas, generate or analyse images, speak through TTS, search the TextDB or ask you for input." },
+                { p: "Agent mode lets the AI take several steps and use tools before replying. For example, it can search reference text, roll dice, calculate a formula, generate an image or ask you a question before continuing." },
                 { list: [
-                    "Turn it on under Settings → Agent.",
-                    "It needs an instruct model with separate start and end tags for all roles (for example ChatML).",
-                    "Tools such as web search, image generation or TTS must be set up and enabled first.",
-                    "This mode works well with Esobold (or KoboldCPP)'s Autoswap, allowing the AI to switch model types and tools seamlessly during its multi-step reasoning.",
+                    "Enable it in Settings → Agent.",
+                    "Use a model that can follow tool instructions. In Instruct mode, choose a suitable preset with separate start/end tags for user, AI and system messages, such as ChatML. These tags let the model tell the message types apart.",
+                    "Set up and allow the tools you need in Settings → Tools. Search, images and speech also require the corresponding services or models.",
+                    "Esobold/KoboldCpp Autoswap can switch between configured model types during the task, such as text and image models.",
                 ] },
             ],
             show: [
@@ -21,22 +21,22 @@ ESO_GUIDE_CHAPTERS.push(
         },
     {
         "id": "agent-setup",
-        "title": "Agent setup and endpoint requirements",
+        "title": "Agent setup: model and service requirements",
         "blocks": [
             {
                 "list": [
-                    "Enable agent behavior in Settings → Agent, or use its chat control. Use a model that can follow the selected tool protocol; correct role start/end tags are required for the grammar/instruct path.",
-                    "The standard path generates grammar-constrained command choices. Use OAI tools selects the OpenAI-compatible chat-completions tool-calling path; the endpoint/model must actually support it.",
-                    "Settings → Tools → Esobold agent tools groups commands by purpose. Check Allowed only for actions you intend to grant; group checkboxes change their member tools together.",
-                    "Skip initial planning chooses commands directly each cycle; explicit macro plans still run. Streaming displays partial progress, not a completed result."
+                    "Enable agent mode in Settings → Agent or its chat control. Select a suitable model and formatting preset so it can distinguish user instructions, AI replies and tool actions.",
+                    "The standard route restricts replies to supported command choices. Use OAI tools instead selects OpenAI-compatible tool calling; use it only with a model and service that support that format.",
+                    "Open Settings → Tools → Esobold agent tools. Tick Allowed only for actions you want the agent to use; a group checkbox changes all tools in that group.",
+                    "Skip initial planning lets the AI choose an action directly each cycle. Saved macro plans can still run. Streaming shows progress while the reply is being prepared."
                 ]
             },
             {
-                "tip": "Model-generated actions are not trusted authorization. Restrict tools, paths, services and user confirmations independently of the model’s wording."
+                "tip": "The AI may choose an unsuitable action. Allow only the tools it needs, limit file access and read confirmation dialogs before approving changes."
             }
         ],
         "show": [
-            { label: "Agent behavior and protocol", run: (ctx) => ctx.openSettings("esoboldAgent") },
+            { label: "Open agent setup", run: (ctx) => ctx.openSettings("esoboldAgent") },
             { label: "Allowed agent tools", run: (ctx) => ctx.openSettings("tools") }
         ]
     },
@@ -52,35 +52,35 @@ ESO_GUIDE_CHAPTERS.push(
                     ],
                     [
                         "Maximum agent actions per plan",
-                        "Bounds how many future actions can be planned."
+                        "Limits the number of actions the agent can plan ahead."
                     ],
                     [
                         "Maximum repeated actions",
-                        "Limits repeats of the same action type before input is needed."
+                        "Limits how often the same action type can repeat before the agent needs input."
                     ],
                     [
                         "Maximum actions in history",
-                        "Caps previous actions included in agent context; keep it larger than the plan length if continuity matters."
+                        "Limits previous actions sent with the next request. Use more than the plan length if you want the agent to retain earlier steps."
                     ],
                     [
                         "Replan on error",
-                        "Restarts planning after invalid/missing command input instead of treating a failed step as completed."
+                        "Plans again after a command's input is missing or invalid."
                     ],
                     [
                         "Stop on request for input",
-                        "Controls the user-input pause route while executing a plan."
+                        "Chooses whether the plan pauses when the agent asks you a question."
                     ],
                     [
                         "Stop thinking / abort",
-                        "Marks the run to end and cancels pending generation/input where possible; it does not undo completed writes/messages."
+                        "Ends the run and cancels pending requests where possible. Completed writes or messages remain."
                     ]
                 ]
             },
             {
-                "p": "A cycle builds context, chooses a plan or direct tool/text response, executes available actions, records their results and finalizes a user-visible response. OAI streaming accumulates interleaved text/reasoning and multiple partial tool-call argument chunks before executing complete calls."
+                "p": "A cycle sends the conversation and instructions to the AI, chooses a plan or direct response, runs allowed actions, then adds their results before replying. Streaming may deliver text and pieces of tool input separately; the agent waits for a complete tool call before running it."
             },
             {
-                "tip": "Automatic continuation and error replanning can cause additional requests beyond one plan. Disable them when a bounded run is important."
+                "tip": "Continuing automatically or planning again after errors can use more AI requests. Disable those options if you want the agent to stop after a limited run."
             }
         ]
     },
@@ -90,31 +90,31 @@ ESO_GUIDE_CHAPTERS.push(
         "blocks": [
             {
                 "list": [
-                    "userInput shows a prompt and optional suggested answers. Clicking a suggestion fills the input; Confirm and Continue supplies it, while Stop loop ends the pending request.",
-                    "When supported, add local files or select existing backend filesystem files/directories. The dialog deduplicates selections and uploads local bytes at confirmation; failures keep the dialog actionable.",
-                    "The separate filesystem-picker overlay supports selecting entries or opening the embedded development view. It checks parent-message origin before accepting results.",
-                    "A file path in a request does not automatically attach every file’s contents. fs_content has a per-file character limit with truncation metadata; request narrower line ranges for the omitted portion."
+                    "When the agent asks for input, read the question and optional suggested replies. A suggestion fills the text box; Confirm and Continue sends your answer, while Stop loop ends the request.",
+                    "You can add local files or select existing server files and folders where supported. Duplicate selections are removed. Local files upload when you confirm; a failed upload leaves the dialog open for correction.",
+                    "The file picker lets you select existing entries. Its separate embedded-development action opens a preview instead of attaching file contents.",
+                    "A path alone is not a file's text. fs_content reads a limited amount per file and reports if text was cut short; ask for a smaller line range to read the rest."
                 ]
             },
             {
-                "tip": "Do not assume an interrupted multi-file upload was rolled back. Check the reported uploaded paths before retrying."
+                "tip": "After an interrupted multi-file upload, check which paths were uploaded before retrying the remaining files."
             }
         ]
     },
     {
         "id": "agent-continuation",
-        "title": "Continuation, visibility and source limitations",
+        "title": "Continuing an agent task and showing progress",
         "blocks": [
             {
                 "list": [
-                    "Choose Automatic, Prompt or Disabled for behavior after a plan may still be incomplete. Disabled skips the task-completion check; Prompt asks the user before continuing.",
-                    "In this reviewed revision the Automatic branch supplies a string where the later continuation code expects .input, so it does not reliably launch the intended next cycle. Use the explicit Prompt/manual route instead of depending on that option.",
-                    "Hide agent thinking and Skip previous COT change visibility/context-history handling. They do not revoke tools, cancel side effects or guarantee removal of all reasoning from a remote service’s request.",
-                    "Streaming requires the selected backend/protocol’s streaming support. Agent stream visualizer and OpenLumara stream handling display deltas; debug logs can contain request/response data."
+                    "Automatic, Prompt and Disabled choose what happens if a plan may still be unfinished. Prompt asks you before continuing; Disabled skips the completion check.",
+                    "Automatic continuation does not reliably start the next step in this version. Choose Prompt or continue manually instead.",
+                    "Hide agent thinking hides the AI's displayed reasoning. Skip previous COT leaves earlier reasoning text out of the history used by that feature. Neither option stops tools or makes all request data private.",
+                    "Streaming needs support from the chosen service and tool format. Progress is displayed as it arrives; debug logs may contain the request and reply."
                 ]
             },
             {
-                "tip": "This guide describes the pinned source, including limits; it does not claim that every experimental toggle is a working automation guarantee."
+                "tip": "Use the explicit Prompt/manual route for continuation, and check each tool result before allowing another step."
             }
         ]
     }

@@ -1,6 +1,6 @@
 # Esobold native guide
 
-Open **Guide** in the Lite top bar. These ordered classic scripts provide 74
+Open **Guide** in the Lite top bar. These ordered classic scripts provide 75
 chapters in the existing Esobold tab; mods retain their separate guide tabs.
 There is no second help renderer or Markdown-to-HTML pipeline.
 
@@ -8,23 +8,23 @@ There is no second help renderer or Markdown-to-HTML pipeline.
 
 | File | Coverage |
 | --- | --- |
-| `gettingStarted.js` | Connections, modes, writing-session workflow, data and trusted-code boundaries |
-| `library.js` | Library/Quick Start, character cards, ZIP import/export, local/server saves and legacy encryption |
-| `context.js` | Memory, World Info, Author's Note, TextDB/document retrieval, usage estimates and running memory |
+| `gettingStarted.js` | Connections, modes, writing-session workflow, data and add-on precautions |
+| `library.js` | Library/Quick Start, character cards, ZIP import/export, local/server saves and basic save encryption |
+| `context.js` | Memory, World Info, ordinary/turn-based Author's Note, TextDB retrieval, usage estimates and running memory |
 | `storyTree.js` | Branches, Undo/Retry, tree display controls and bounded/full views |
 | `generation.js` | Formatting, sampler families, constrained output, stopping and request failures |
 | `media.js` | Images, transcription, speech, music, backgrounds and floating content viewers |
 | `editors.js` | Raw/Markdown/Render, popup/fullscreen editors, tree-sitter symbols/errors/warnings |
 | `filesystem.js` | Actual `/fs/` page, list/tile/picker modes, storage modes, operation-array API, search and read-only mounts |
-| `agents.js` | Grammar/OAI protocols, plans, limits, input/files, streaming, continuation and stopping |
-| `agentTools.js` | Permission policy and all 80 built-in commands with nested argument schemas and effects |
+| `agents.js` | Model/service setup, plans, limits, input/files, streaming, continuation and stopping |
+| `agentTools.js` | Allowed tool groups and all 80 built-in commands with argument schemas and effects |
 | `macros.js` | Saved-plan validation, invocation, directory expansion, per-file execution and whitelist behavior |
 | `openLumara.js` | Identity, remote chats/messages/storage, streaming and websocket listener |
-| `webContainer.js` | Browser runtime, contained processes/files, backend transfers and dev previews |
+| `webContainer.js` | Browser coding workspace, commands/files, server transfers and development previews |
 | `mcp.js` | Dynamic external-tool discovery, schemas, permissions and legacy browser-adapter limitations |
 | `administration.js` | Admin configuration, model/config reloads and HF download selection |
 | `settings.js` | Fork/agent settings, GUI, themes, fonts and display hooks |
-| `mods.js` | Trusted community code and QuickStart/Settings/Guide extension contracts |
+| `mods.js` | Community add-ons and QuickStart/Settings/Guide extension contracts |
 | `developerApi.js` | Native guide schema, browser helper APIs, runnable blocks, popups and source coverage |
 
 ## Content and integration contract
@@ -42,6 +42,14 @@ There is no second help renderer or Markdown-to-HTML pipeline.
   an explicit deep link. Registered `GuideExtension` tabs follow Esobold.
 - Keep controls, prerequisites, side effects and failure paths source-backed.
   Conditional capabilities are not promises that a backend/model is configured.
+- Lead with the purpose, explain unfamiliar terms, give visible control paths and
+  use short SFW examples. Match the actual labels, such as **Media** and
+  **Hover over the Library tab**.
+- Keep programming and tool-input details in optional references. Preserve exact
+  identifiers and schemas while rewriting their explanations.
+- Describe the normal Library save/backup workflow, not the older server-save
+  popup. Explain skipped local compression as a way to make saving faster, and
+  save encryption as basic protection rather than a place to store secrets.
 - Add a new functional-area script to the existing loader order. Reuse the native
   renderer rather than introducing a competing registry or markup framework.
 
@@ -68,35 +76,34 @@ repository-root file with that name.
 
 Tool effects distinguish the actual stores and operations: `add_to_history`
 appends to TextDB, `overwrite_current_state_response` sets `StateFormat` rather
-than editing a reply, and `wordcount` toggles action-summary bookkeeping. A
+than editing a reply, and `wordcount` toggles action-summary tracking. A
 macro's output-suppression flag is not a per-stage private-draft guarantee. The
 legacy browser MCP adapter's hard-coded CPU-info execution is documented, not
 presented as a working generic tool bridge.
 
 ## Exercised verification
 
-The actual modified Lite page was served through an isolated localhost static
-preview and exercised in disposable Chromium; no existing browser state or
-model-serving process was changed.
+The actual Esobold/KoboldCpp instance was exercised through its built-in
+Cloudflare remote tunnel, using `koboldcpp.py --nomodel --remotetunnel` and a
+disposable Chromium profile. There was no separate gateway or preview renderer.
 
-- All 74 chapters rendered at 1280×900 and 390×844, with no article horizontal
-  overflow, outer-body overflow or hidden current-chapter selection.
+- All 75 chapters were opened through the native sidebar at 1440×1000 and
+  390×844. Chapter titles matched their selections, with no article horizontal
+  overflow, outer-body overflow or offscreen current-chapter selection.
 - Native Back/Next, first-page Back disabling, Close and final-page Done worked.
-- The selected chapter survived closing/reopening and a full page reload.
-- Show-me highlighting hid the guide and Escape restored it.
+- The selected turn-based Author's Note chapter survived closing the guide and
+  a full page reload.
+- Hovering over the actual Library tab exposed Q.Save, Download, Load,
+  New Character and Share.
+- The Media show-me shortcut previously pointed to a hidden panel. It now rings
+  the visible Media button at both widths; Escape restores the guide.
 - Shortcuts opened the six referenced General, GUI, Samplers, Tools, Agent and
-  Esobold settings tabs.
-- A temporary real `GuideExtension` rendered after Esobold and was unregistered.
-- The actual browser-local tool executors were exercised with SFW synthetic
-  metadata: stable-ID lore retrieval, separate `State`/`StateFormat` updates,
-  TextDB history appends without World Info changes, and word-count bookkeeping
-  toggles. The corrected tool/macro/MCP chapters rendered at desktop/mobile
-  widths without article overflow; no model request or external MCP call ran.
-- Desktop/mobile guide screenshots were visually inspected. Long sidebar,
-  table/article scrolling and narrow-screen navigation labels were checked.
+  Esobold settings tabs. Settings were cancelled without saving changes.
+- Desktop context/tool-reference and narrow-screen Author's Note/highlight
+  screenshots were visually inspected. No browser page errors were reported.
 
-The preview deliberately had no backend; its startup backend-connection error
-was dismissed. This verifies documentation/UI integration, **not** model
-responses, filesystem mutations, remote authentication, WebContainer boot, MCP
-execution, model download or administration reloads. Existing experimental/source
+This verifies the hosted documentation and native UI integration, not AI
+responses, filesystem mutations, remote authentication, WebContainer startup,
+MCP execution, model downloads or administration reloads. No model was loaded
+and external-service connection offers were declined. Existing experimental
 limitations are documented rather than silently fixed or presented as working.
