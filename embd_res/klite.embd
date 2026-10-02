@@ -35586,6 +35586,7 @@ Current version indicated by LITEVER below.
 <!-- EsoLite modifications -->
 <script src="static/js/modHooks.js"></script>
 <script src="static/js/esoGuide.js"></script>
+<script src="static/js/esoGuideLoader.js" type="module"></script>
 <script src="static/js/fs.js"></script>
 <script src="static/js/openlumara_client.js"></script>
 <script src="static/js/encryptUtils.js"></script>
