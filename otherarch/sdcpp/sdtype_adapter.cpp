@@ -470,7 +470,7 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
         if (!lora_dynamic && inputs.lora_len > 0) {
             printf("Note: static LoRAs can reduce mmap memory savings!\n");
         }
-    } else if (inputs.params_backend == "CPU") {
+    } else if (params_backend == "CPU") {
         printf("Offloading weights to system RAM\n");
     } else if (inputs.use_mmap) {
         printf("Using mmap for I/O\n");
@@ -488,6 +488,9 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
     if(inputs.max_vram && *inputs.max_vram) {
         max_vram = inputs.max_vram;
         printf("Using max VRAM = %s GB\n", max_vram.c_str());
+        if (params_backend == "") {
+            printf("Note: a VRAM limit may not be effective without offloading!\n");
+        }
     }
     if(inputs.quant > 0)
     {
@@ -1129,6 +1132,10 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
     {
         ref_audio_data.push_back(std::string(inputs.ref_audios[i]));
     }
+    std::vector<float> custom_sigmas;
+    if (inputs.custom_sigmas && inputs.custom_sigmas_count > 0) {
+        custom_sigmas.assign(inputs.custom_sigmas, inputs.custom_sigmas + inputs.custom_sigmas_count);
+    }
     sd_params->prompt = inputs.prompt;
     sd_params->negative_prompt = inputs.negative_prompt;
     sd_params->cfg_scale = inputs.cfg_scale;
@@ -1199,6 +1206,15 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
             }
             sd_params->cfg_scale = 1.0f;
             sd_params->sample_steps = 1;
+        }
+        // A custom sigma list determines the real sampler iteration count and
+        // would otherwise bypass the SDXS one-step restriction above. A
+        // two-value list already represents one step and remains valid.
+        if (custom_sigmas.size() > 2) {
+            if (!sd_is_quiet && sddebugmode) {
+                printf("SDXS: ignoring custom sigma schedule with more than 1 step\n");
+            }
+            custom_sigmas.clear();
         }
     }
 
@@ -1470,6 +1486,10 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
     params.sample_params.sample_method = sd_params->sample_method;
     params.sample_params.scheduler = sd_params->scheduler;
     params.sample_params.sample_steps = sd_params->sample_steps;
+    if (!custom_sigmas.empty()) {
+        params.sample_params.custom_sigmas = custom_sigmas.data();
+        params.sample_params.custom_sigmas_count = (int)custom_sigmas.size();
+    }
     params.sample_params.shifted_timestep = sd_params->shifted_timestep;
     if (sd_params->eta >= 0.f && sd_params->eta <= 1.f) {
         params.sample_params.eta = sd_params->eta;
@@ -1721,6 +1741,9 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
         if (input_audio.data) {
             free(input_audio.data);
             input_audio.data = nullptr;
+        }
+        if (info.is_qwenimg && params.ref_images_count > 0) {
+            printf("\nKCPP SD: If using Qwen Image 2.1, editing requires Qwen3-VL vision mmproj!\n");
         }
         return sd_generation.error("KCPP SD generate failed!");
     }
