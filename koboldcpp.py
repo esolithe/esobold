@@ -78,10 +78,19 @@ default_autoswap_threshold = 256
 overridekv_max = 16
 default_autofit_padding = 1024
 lora_filenames_max = 10
-multiuser_concurrent_limit = 10
+queue_concurrent_limit = 10
 swa_padding_default = 0
 default_reqtimeout = 600 # 10 min default
 default_maxctx = 16384
+
+def parse_reqtimeout(value):
+    try:
+        timeout = int(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError("must be a valid integer")
+    if timeout < 0:
+        raise argparse.ArgumentTypeError("must be zero or greater")
+    return timeout or default_reqtimeout
 
 # abuse prevention
 stop_token_max = 256
@@ -155,7 +164,7 @@ exitcounter = -1
 punishcounter = 0 #causes a timeout if too many errors
 rewardcounter = 0 #reduces error counts for successful jobs
 totalgens = 0
-currentusergenkey = "" #store a special key so polled streaming works even in multiuser
+currentusergenkey = "" #store a special key so polled streaming works even in with multiple users
 pendingabortkey = "" #if an abort is received for the non-active request, remember it (at least 1) to cancel later
 args = None #global args
 runmode_untouched = True
@@ -279,6 +288,8 @@ deprecated_keys = {
     "sdgendefaults",
     "flashattention",
     "useswa",
+    "jinja_tools",
+    "multiuser",
 }
 
 saved_stdout = None
@@ -463,7 +474,7 @@ class sd_load_model_inputs(ctypes.Structure):
                 ("vae_conv_direct", ctypes.c_bool),
                 ("taesd", ctypes.c_bool),
                 ("tiled_vae_threshold", ctypes.c_int),
-                ("t5xxl_filename", ctypes.c_char_p),
+                ("llm_filename", ctypes.c_char_p),
                 ("clip1_filename", ctypes.c_char_p),
                 ("clip2_filename", ctypes.c_char_p),
                 ("vae_filename", ctypes.c_char_p),
@@ -478,7 +489,6 @@ class sd_load_model_inputs(ctypes.Structure):
                 ("img_soft_limit", ctypes.c_int),
                 ("max_vram", ctypes.c_char_p),
                 ("split_mode", ctypes.c_char_p),
-                ("stream_layers", ctypes.c_bool),
                 ("auto_fit", ctypes.c_bool),
                 ("devices_override", ctypes.c_char_p),
                 ("quiet", ctypes.c_bool),
@@ -1601,7 +1611,7 @@ def get_capabilities():
     can_search_documents = has_embeddings and bool(_admindocsdir) and os.path.isdir(_admindocsdir)
     hasOpenLumaraEnabled = global_memory["OpenLumara"]
     hasOpenLumaraAuthenticated = bool(getattr(args, "OpenLumara_requirelogin", True))
-    return {"result":"KoboldCpp", "version":KcppVersion, "protected":has_password, "llm":has_llm, "txt2img":has_txt2img,"vision":visionSupport,"audio":audioSupport,"transcribe":has_whisper,"multiplayer":has_multiplayer,"websearch":has_search,"tts":has_tts, "embeddings":has_embeddings, "music":has_music, "fs":has_fs, "fsMode":fs_mode, "musicllm":bool(musicllmmodelpath), "savedata":(savedata_obj is not None), "admin": admin_type, "router":has_router, "guidance": has_guidance, "jinja": has_jinja, "mcp":has_mcp, "defaults_modified":bool(args.gendefaults), "hasServerSaving": has_server_saving, "hasAdminWithHF": had_admin_with_hf, "embeddingModel": embeddingModel, "canSearchDocuments": can_search_documents, "hasOpenLumaraEnabled": hasOpenLumaraEnabled, "hasOpenLumaraAuthenticated": hasOpenLumaraAuthenticated}
+    return {"result":"KoboldCpp", "version":KcppVersion, "protected":has_password, "llm":has_llm, "txt2img":has_txt2img,"vision":visionSupport,"audio":audioSupport,"transcribe":has_whisper,"multiplayer":has_multiplayer,"websearch":has_search,"tts":has_tts, "embeddings":has_embeddings, "music":has_music, "fs":has_fs, "fsMode":fs_mode, "musicllm":bool(musicllmmodelpath), "savedata":(savedata_obj is not None), "admin": admin_type, "router":has_router, "guidance": has_guidance, "jinja": has_jinja, "mcp":has_mcp, "parallelrequests":args.parallelrequests, "defaults_modified":bool(args.gendefaults), "hasServerSaving": has_server_saving, "hasAdminWithHF": had_admin_with_hf, "embeddingModel": embeddingModel, "canSearchDocuments": can_search_documents, "hasOpenLumaraEnabled": hasOpenLumaraEnabled, "hasOpenLumaraAuthenticated": hasOpenLumaraAuthenticated}
 
 
 def scan_directory(dirpath, valid_exts, depth):
@@ -2279,6 +2289,15 @@ def coerce_ban_list(value):
             pass
     return [value]
 
+def normalize_sampler_order(value):
+    if value is None or value == []:
+        return []
+    if not isinstance(value, (list, tuple)) or not 0 < len(value) <= sampler_order_max:
+        return None
+    if any(isinstance(sampler, bool) or not isinstance(sampler, int) or sampler < 0 or sampler >= sampler_order_max for sampler in value):
+        return None
+    return list(value)
+
 def generate(genparams, stream_flag=False):
     global maxctx, args, currentusergenkey, totalgens, pendingabortkey
 
@@ -2312,7 +2331,7 @@ def generate(genparams, stream_flag=False):
     dry_sequence_breakers = genparams.get('dry_sequence_breakers', [])
     xtc_threshold = tryparsefloat(genparams.get('xtc_threshold', 0.2),0.2)
     xtc_probability = tryparsefloat(genparams.get('xtc_probability', 0),0)
-    sampler_order = genparams.get('sampler_order', [6, 0, 1, 3, 4, 2, 5])
+    sampler_order = normalize_sampler_order(genparams.get('sampler_order', [6, 0, 1, 3, 4, 2, 5]))
     seed = tryparseint(genparams.get('sampler_seed', -1),-1)
     stop_sequence = genparams.get('stop_sequence', [])
     ban_eos_token = genparams.get('ban_eos_token', False)
@@ -2344,7 +2363,7 @@ def generate(genparams, stream_flag=False):
     banned_strings = coerce_ban_list(genparams.get('banned_strings', [])) # SillyTavern uses that name
     banned_tokens = coerce_ban_list(genparams.get('banned_tokens', banned_strings))
     bypass_eos_token = genparams.get('bypass_eos', False)
-    tool_call_fix = genparams.get('using_openai_tools', False)
+    tool_call_fix = genparams.get('_generic_tool_json_array_fix', False)
     custom_token_bans = genparams.get('custom_token_bans', '')
 
     for tok in custom_token_bans.split(','):
@@ -2472,17 +2491,16 @@ def generate(genparams, stream_flag=False):
     for n, breaker in enumerate(dry_sequence_breakers):
         inputs.dry_sequence_breakers[n] = breaker.encode("UTF-8")
 
-    if sampler_order and 0 < len(sampler_order) <= sampler_order_max:
-        try:
-            for i, sampler in enumerate(sampler_order):
-                inputs.sampler_order[i] = sampler
-            inputs.sampler_len = len(sampler_order)
-            global showsamplerwarning
-            if showsamplerwarning and inputs.mirostat==0 and inputs.sampler_len>0 and (inputs.sampler_order[0]!=6 or inputs.sampler_order[inputs.sampler_len-1]!=5):
-                print("\n(Note: Non-default sampler_order detected. Recommended sampler values are [6,0,1,3,4,2,5]. This message will only show once per session.)")
-                showsamplerwarning = False
-        except TypeError as e:
-            print("ERROR: sampler_order must be a list of integers: " + str(e))
+    if sampler_order:
+        for i, sampler in enumerate(sampler_order):
+            inputs.sampler_order[i] = sampler
+        inputs.sampler_len = len(sampler_order)
+        global showsamplerwarning
+        if showsamplerwarning and inputs.mirostat==0 and inputs.sampler_len>0 and (inputs.sampler_order[0]!=6 or inputs.sampler_order[inputs.sampler_len-1]!=5):
+            print("\n(Note: Non-default sampler_order detected. Recommended sampler values are [6,0,1,3,4,2,5]. This message will only show once per session.)")
+            showsamplerwarning = False
+    elif sampler_order is None:
+        print("ERROR: sampler_order must contain between 1 and 7 integer sampler IDs from 0 to 6. Using the default order.")
     inputs.seed = seed
 
     inputs.stop_sequence_len = len(stop_sequence)
@@ -2571,26 +2589,11 @@ def continuous_batching_python_eligible(genparams, api_format):
     if not getattr(args, "noshift", False) or getattr(args, "smartcontext", False) or getattr(args, "draftmodel", "") or getattr(args, "usemtp", False) or getattr(args, "enableguidance", False):
         utfprint("Batching disabled due to loaded settings",2)
         return False
-    if genparams.get("negative_prompt") or genparams.get("images") or genparams.get("audio"):
-        utfprint("Batching disabled due to media",2)
+    if genparams.get("negative_prompt"):
+        utfprint("Batching disabled due to negative prompt",2)
         return False
-    if genparams.get("grammar") or genparams.get("grammar_retain_state") or genparams.get("banned_tokens") or genparams.get("banned_strings"):
-        utfprint("Batching disabled due to grammar or bans",2)
-        return False
-    if tryparsefloat(genparams.get("dry_multiplier", 0), 0) or tryparseint(genparams.get("mirostat", 0), 0) or tryparsefloat(genparams.get("xtc_probability", 0), 0) or tryparsefloat(genparams.get("nsigma", 0), 0):
-        utfprint("Batching disabled due to samplers set 1",2)
-        return False
-    if tryparsefloat(genparams.get("smoothing_factor", 0), 0) or tryparsefloat(genparams.get("adaptive_target", -1), -1) > 0 or genparams.get("using_openai_tools", False):
-        utfprint("Batching disabled due to samplers set 2",2)
-        return False
-    if tryparsefloat(genparams.get("top_a", 0), 0) or tryparsefloat(genparams.get("tfs", 1), 1) != 1 or tryparsefloat(genparams.get("dynatemp_range", 0), 0):
-        utfprint("Batching disabled due to samplers set 3",2)
-        return False
-    if genparams.get("sampler_order") and genparams.get("sampler_order") != [6, 0, 1, 3, 4, 2, 5]:
-        utfprint("Batching disabled due to sampler order",2)
-        return False
-    if genparams.get("reasoning_effort"):
-        utfprint("Batching disabled due to reasoning",2)
+    if genparams.get("grammar_retain_state") or genparams.get("banned_tokens") or genparams.get("banned_strings"):
+        utfprint("Batching disabled due to retained grammar or bans",2)
         return False
     return True
 
@@ -2787,13 +2790,13 @@ def sd_load_model(model_filename,vae_filename,llm_filename,clip1_filename,clip2_
     inputs.tiled_vae_threshold = args.sdtiledvae
     inputs.vae_filename = vae_filename.encode("UTF-8")
     inputs.audio_vae_filename = audio_vae_filename.encode("UTF-8")
-    inputs.t5xxl_filename = llm_filename.encode("UTF-8")
+    inputs.llm_filename = llm_filename.encode("UTF-8")
     inputs.clip1_filename = clip1_filename.encode("UTF-8")
     inputs.clip2_filename = clip2_filename.encode("UTF-8")
     inputs.photomaker_filename = photomaker_filename.encode("UTF-8")
     inputs.upscaler_filename = upscaler_filename.encode("UTF-8")
     inputs.max_vram = str((args.sdvramlimit/1024.0) if args.sdvramlimit > 0 else '').encode('UTF-8')
-    inputs.stream_layers = False
+    inputs.auto_fit = False
 
     lora_filenames, lora_multipliers = prepare_initial_lora_multipliers()
     inputs.lora_len = len(lora_filenames)
@@ -5545,7 +5548,9 @@ ws ::= | " " | "\n" [ \t]{0,20}
             attachedimgid = 0
             attachedaudid = 0
             jinja_output = None
-            jinjatools = genparams.get('tools', [])
+            request_tools = genparams.get('tools', [])
+            genparams['_jinja_tool_formatting_used'] = False
+            genparams['_generic_tool_json_array_fix'] = False
             if use_jinja and cached_chat_template:
                 copied_jinja_kwargs = dict(cached_jinja_kwargs or {})
                 # Merge user-provided chat_template_kwargs into our defaults
@@ -5559,7 +5564,7 @@ ws ::= | " " | "\n" [ \t]{0,20}
                     copied_jinja_kwargs["reasoning_strength"] = "none"
                 elif "reasoning_effort" in copied_jinja_kwargs and copied_jinja_kwargs["reasoning_effort"]:
                     copied_jinja_kwargs["reasoning_strength"] = copied_jinja_kwargs["reasoning_effort"]
-                jinja_output = format_jinja(messages_array,jinjatools,copied_jinja_kwargs)
+                jinja_output = format_jinja(messages_array,request_tools,copied_jinja_kwargs)
             if jinja_output:
                 messages_string = jinja_output
                 for pair in thinkformats:
@@ -5567,18 +5572,19 @@ ws ::= | " " | "\n" [ \t]{0,20}
                     if jinja_output.rstrip().endswith(starter): #the prompt template already forced a start think.
                         genparams["already_started_thinking"] = True
                         break
-                if jinjatools and len(jinjatools)>0:
+                if request_tools and len(request_tools)>0:
                     genparams["using_openai_tools"] = True
-                    if api_format == 4 and args.jinja_tools:
+                    genparams['_jinja_tool_formatting_used'] = True
+                    if api_format == 4:
                         # Default Jinja tool requests to 0.5 and cap their temperature at 1.0.
                         genparams["temperature"] = min(tryparsefloat(genparams.get("temperature", 0.5), 0.5), 1.0)
                 # handle media
                 images_added, audio_added = sweep_media_from_messages(messages_array)
             else:
-                if jinjatools:
+                if request_tools:
                     # inject the tools list at the top of the context window, even if context has shifted
                     # uses koboldcpp's special memory parameter
-                    tools_string = f"{system_message_start}### Available Tools:\n{json.dumps(compress_tools_array(jinjatools), indent=0)}{system_message_end}\n"
+                    tools_string = f"{system_message_start}### Available Tools:\n{json.dumps(compress_tools_array(request_tools), indent=0)}{system_message_end}\n"
                     exist_mem = genparams.get('memory', "")
                     genparams["memory"] = tools_string + exist_mem
 
@@ -5667,6 +5673,7 @@ ws ::= | " " | "\n" [ \t]{0,20}
                             # Set temperature lower automatically if function calling, cannot exceed 0.5
                             genparams["temperature"] = (1.0 if genparams.get("temperature", 0.5) > 1.0 else genparams.get("temperature", 0.5))
                             genparams["using_openai_tools"] = True
+                            genparams['_generic_tool_json_array_fix'] = True
                             # Set grammar to llamacpp example grammar to force json response (see https://github.com/ggerganov/llama.cpp/blob/master/grammars/json_arr.gbnf)
                             genparams["grammar"] = jsongrammar
                             try:
@@ -5707,7 +5714,7 @@ ws ::= | " " | "\n" [ \t]{0,20}
                 genparams["stop_sequence"] = [user_message_start.strip()]
             else:
                 genparams["stop_sequence"].append(user_message_start.strip())
-            if not used_tool_json and jinjatools and latest_turn_was_tool:
+            if not used_tool_json and request_tools and latest_turn_was_tool:
                 genparams["stop_sequence"].append("(Made a function call") # qol prevent fake toolcalls
             genparams["trim_stop"] = True
 
@@ -7933,7 +7940,7 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                             time.sleep(3)
                             global_memory["last_active_timestamp"] = datetime.now()
                             global_memory["triggered_sleeping"] = False
-                            if not self.wait_for_upstream_ready(upstream_port,120,0.5):
+                            if not self.wait_for_upstream_ready(upstream_port,args.reqtimeout,0.5):
                                 self.send_error(504, "KoboldCpp model swap reload timed out")
                                 return
                             time.sleep(0.1)
@@ -7992,7 +7999,7 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                         resp = conn.getresponse()
                         time.sleep(3)
                         global_memory["last_active_timestamp"] = datetime.now()
-                        if not self.wait_for_upstream_ready(upstream_port,120,0.5):
+                        if not self.wait_for_upstream_ready(upstream_port,args.reqtimeout,0.5):
                             self.send_error(504, "KoboldCpp model swap reload timed out")
                             return
                         time.sleep(0.1)
@@ -9111,9 +9118,8 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                 tool_segment_tag = m_seg.group(1)
                 if args.developerMode and args.debugmode >= 1:
                     print(f"[TC] Dynamically extracted tool_segment_tag from rendered output: {tool_segment_tag!r}")
-        jinjatools = (args.jinja and args.jinja_tools)
         if (api_format == 4 or api_format == 7 or api_format == 9) and using_openai_tools:
-            if not jinjatools or not tool_segment_tag:
+            if not genparams.get('_jinja_tool_formatting_used', False) or not tool_segment_tag:
                 genparams['sync_toolcall_stream_ineligible'] = True
                 return
 
@@ -11344,7 +11350,7 @@ Change Mode<br>
                 multiuserkey = ""
 
             if totalgens>0:
-                if (multiuserkey=="" and multiuserkey==currentusergenkey and requestsinqueue==0) or (multiuserkey!="" and multiuserkey==currentusergenkey): #avoid leaking prompts in multiuser
+                if (multiuserkey=="" and multiuserkey==currentusergenkey and requestsinqueue==0) or (multiuserkey!="" and multiuserkey==currentusergenkey): #avoid leaking prompts when multiple users
                     pendtxt = handle.get_pending_output()
                     pendtxtStr = ctypes.string_at(pendtxt).decode("UTF-8","ignore")
             response_body = (json.dumps({"results": [{"text": pendtxtStr}]}).encode())
@@ -11362,7 +11368,7 @@ Change Mode<br>
                 multiuserkey = ""
 
             if totalgens>0:
-                if (multiuserkey=="" and multiuserkey==currentusergenkey and requestsinqueue==0) or (multiuserkey!="" and multiuserkey==currentusergenkey): #avoid leaking prompts in multiuser
+                if (multiuserkey=="" and multiuserkey==currentusergenkey and requestsinqueue==0) or (multiuserkey!="" and multiuserkey==currentusergenkey): #avoid leaking prompts with multiple users
                     lastlogprobs = handle.last_logprobs()
                     logprobsdict = parse_last_logprobs(lastlogprobs)
             response_body = (json.dumps({"logprobs":logprobsdict}).encode())
@@ -11831,13 +11837,12 @@ Change Mode<br>
                     }}).encode())
                 return
             ratelimitlookup[client_ip] = datetime.now()
-        muint = int(args.multiuser)
-        if muint<=0 and ((args.whispermodel and args.whispermodel!="") or (args.sdmodel and args.sdmodel!="") or (args.ttsmodel and args.ttsmodel!="") or (args.embeddingsmodel and args.embeddingsmodel!="")):
+        muint = int(args.queuelimit)
+        if muint < 2 and ((args.whispermodel and args.whispermodel!="") or (args.sdmodel and args.sdmodel!="") or (args.ttsmodel and args.ttsmodel!="") or (args.embeddingsmodel and args.embeddingsmodel!="")):
             muint = 2 # this prevents errors when using voice/img together with text
         if args.parallelrequests > 1 and muint <=0:
-            muint = multiuser_concurrent_limit # multiuser required for batching
-        multiuserlimit = ((muint-1) if muint > 1 else multiuser_concurrent_limit)
-        #backwards compatibility for up to X concurrent requests, use default limit of X if multiuser set to 1
+            muint = queue_concurrent_limit # required for batching
+        multiuserlimit = (muint if muint > 0 else queue_concurrent_limit)
         if muint > 0 and requestsinqueue < multiuserlimit:
             reqblocking = True
             requestsinqueue += 1
@@ -12050,11 +12055,6 @@ Change Mode<br>
                 trunc_len = 10000
                 if args.debugmode >= 1:
                     trunc_len = 40000
-
-                if use_jinja and not args.jinja_tools:
-                    tmptools = genparams.get('tools', [])
-                    if tmptools and len(tmptools) > 0:
-                        use_jinja = False # not allowed to use tools with jinja
 
                 # payload modifications for lcpp endpoint. we detect this by the timings_per_token field existing
                 if "timings_per_token" in genparams:
@@ -12873,7 +12873,7 @@ def save_config_dict(filename, savdict, template):
         filenamestr += ".kcpps"
     if not filenamestr.endswith(".kcppt") and template:
         filenamestr += ".kcppt"
-    do_not_save = {'agent_api_key', 'agent_base_url', 'allow_config_onready', 'analyze', 'config', 'exportconfig', 'exporttemplate', 'run_bundled_agent', 'testmemory', 'unpack', 'version'}
+    do_not_save = {'agent_api_key', 'agent_base_url', 'allow_config_onready', 'analyze', 'config', 'exportconfig', 'exporttemplate', 'run_bundled_agent', 'testmemory', 'unpack', 'version'} | deprecated_keys
     filtered = {k: v for k, v in savdict.items() if k not in do_not_save}
     if 'gendefaults' in filtered:
         gendefaults = parse_json_object(filtered['gendefaults'], 'gendefaults')
@@ -13110,7 +13110,7 @@ def show_gui():
 
     tabs = ctk.CTkFrame(root, corner_radius = 0, width=windowwidth, height=windowheight-50)
     tabs.grid(row=0, stick="nsew")
-    tabnames= ["Quick Launch", "Hardware", "Context", "Loaded Files", "Network", "Horde Worker","Image Gen","Audio","Admin","Autoswap","Filesystem","Extra","OpenLumara"]
+    tabnames= ["Quick Launch", "Hardware", "Context", "Loaded Files", "Network", "Horde Worker","Image Gen","Audio","Agent","Admin","Autoswap","Filesystem","OpenLumara","Extra"]
     navbuttons = {}
     navbuttonframe = ctk.CTkFrame(tabs, width=int(104), height=int(tabs.cget("height")))
     navbuttonframe.grid(row=0, column=0, padx=2,pady=2)
@@ -13181,7 +13181,6 @@ def show_gui():
     chatcompletionsadapter_var = ctk.StringVar(value="AutoGuess")
     jinjatemplate_var = ctk.StringVar()
     jinja_var = ctk.IntVar(value=0)
-    jinja_tools_var = ctk.IntVar(value=0)
     jinja_stream_toolcall_var = ctk.IntVar(value=0)
     jinja_kwargs_var = ctk.StringVar()
     jinja_think_var = ctk.StringVar(value="default")
@@ -13217,7 +13216,7 @@ def show_gui():
 
     port_var = ctk.StringVar(value=defaultport)
     host_var = ctk.StringVar(value="")
-    multiuser_var = ctk.StringVar(value=str(multiuser_concurrent_limit))
+    queuelimit_var = ctk.StringVar(value=str(queue_concurrent_limit))
     multiplayer_var = ctk.IntVar(value=has_multiplayer)
     websearch_var = ctk.IntVar(value=0)
     horde_name_var = ctk.StringVar(value="koboldcpp")
@@ -13287,6 +13286,7 @@ def show_gui():
 
     admin_var = ctk.IntVar(value=0)
     agent_var = ctk.IntVar(value=1 if args.agent else 0)
+    agent_load_var = ctk.StringVar(value=args.agentload)
     admin_dir_var = ctk.StringVar()
     baseconfig_var = ctk.StringVar()
     admin_text_model_dir_var = ctk.StringVar()
@@ -14044,16 +14044,12 @@ def show_gui():
     makecheckbox(context_tab, "Enable Guidance", enableguidance_var, 43,padx=(140), tooltiptxt="Enables the use of Classifier-Free-Guidance, which allows the use of negative prompts. Has performance and memory impact.")
     def togglejinja(a,b,c):
         if jinja_var.get()==1:
-            jinja_tools_var.set(1)
-            jinjatoolsbox.grid()
             jinjakwargsbox.grid()
             jinjakwargsboxlbl.grid()
             jinjathinkbox.grid()
             jinjathinklbl.grid()
         else:
-            jinja_tools_var.set(0)
             jinja_stream_toolcall_var.set(0)
-            jinjatoolsbox.grid_remove()
             jinja_stream_toolcall_box.grid_remove()
             jinjakwargsbox.grid_remove()
             jinjakwargsboxlbl.grid_remove()
@@ -14106,10 +14102,9 @@ def show_gui():
         curr = (curr if curr else {})
         if "reasoning_effort" in curr and curr["reasoning_effort"]:
             think_effort_var.set(curr["reasoning_effort"])
-    makecheckbox(context_tab, "Use Jinja", jinja_var, row=45, command=togglejinja, tooltiptxt="Enables using jinja chat template formatting for chat completions endpoint. Other endpoints are unaffected.")
-    jinjatoolsbox = makecheckbox(context_tab, "Jinja for Tools", jinja_tools_var, row=45 ,padx=(140), command=togglejinjatools, tooltiptxt="Allows jinja even with tool calls. If unchecked, jinja will be disabled when tools are used.")
+    makecheckbox(context_tab, "Use Jinja", jinja_var, row=45, command=togglejinja, tooltiptxt="Enables Jinja chat template formatting, including tool calls. Falls back to universal formatting if Jinja fails.")
     jinja_think_choices = ['default', 'true', 'false']
-    jinjathinkbox, jinjathinklbl = makelabelcombobox(context_tab, "Jinja Thinking:", jinja_think_var, 45, command=togglejinjathink,labelpadx=(280), padx=370, width=100, tooltiptxt="Tries to enable or disable thinking in Jinja mode. This is a shortcut to setting Jinja Kwargs directly.", values=jinja_think_choices)
+    jinjathinkbox, jinjathinklbl = makelabelcombobox(context_tab, "Jinja Thinking:", jinja_think_var, 45, command=togglejinjathink,labelpadx=(210), padx=300, width=100, tooltiptxt="Tries to enable or disable thinking in Jinja mode. This is a shortcut to setting Jinja Kwargs directly.", values=jinja_think_choices)
     jinjakwargsbox,jinjakwargsboxlbl = makelabelentry(context_tab, "Jinja Kwargs:", jinja_kwargs_var, row=47, width=160, labelpadx=(210), padx=(300), singleline=True, tooltip='Set additiona fields for Jinja JSON template parser, must be a valid json object.\nSpecified as JSON fields: {"KEY1":"VALUE1", "KEY2":"VALUE2"...}')
     think_effort_choices = ['default', 'xhigh', 'high', 'medium', 'low', 'minimal', 'none']
     makelabelcombobox(context_tab, "Think Effort:", think_effort_var, 47, command=togglethinkeffort, padx=84, width=100, tooltiptxt="Set the default thinking effort, can be overridden by the API.", values=think_effort_choices)
@@ -14207,11 +14202,11 @@ def show_gui():
     makefileentry(network_tab, "SSL Key:", "Select Unencrypted SSL key.pem file", ssl_key_var, 22, width=200, filetypes=[("*.pem *.crt *.key", "*.pem *.key")], singlerow=True, tooltiptxt="Select your unencrypted .pem SSL key file for https.\nCan be generated with OpenSSL.")
     makelabelentry(network_tab, "Password: ", password_var, 24, 200, padx=(100), singleline=True, tooltip="Enter a password required to use this instance.\nThis key will be required for all text endpoints.\nImage endpoints are not secured.")
 
-    makelabelentry(network_tab, "Multiuser Queue:", multiuser_var, row=30, width=50, padx=(120), singleline=True, tooltip="Maximum queued incoming requests.")
+    makelabelentry(network_tab, "Queue Limit:", queuelimit_var, row=30, width=50, padx=(120), singleline=True, tooltip="Maximum queued incoming requests.")
     makelabelentry(network_tab, "Max Req. Size (MB):", maxrequestsize_var, row=30, width=50, padx=(340), singleline=True, tooltip="Specify a max request payload size. Any requests to the server larger than this size will be dropped. Do not change if unsure.",labelpadx=210)
-    makelabelentry(network_tab, "IP Rate Limiter (s):", ratelimit_var, row=34, width=50, padx=(120), singleline=True, tooltip="Rate limits each IP to allow a new request once per X seconds. Do not change if unsure.")
+    makelabelentry(network_tab, "Parallel Requests:", parallel_requests_var, row=34, width=50, padx=(120), singleline=True, tooltip="Allows multiple requests to be batched and executed in parallel. Only works for basic text generation requests. Experimental!")
     makelabelentry(network_tab, "Request Timeout (s):", reqtimeout_var, row=34, width=50, padx=(340), singleline=True, tooltip="Timeout in seconds for HTTP requests",labelpadx=210)
-    makelabelentry(network_tab, "Parallel Requests:", parallel_requests_var, row=38, width=50, padx=(120), singleline=True, tooltip="Allows multiple requests to be batched and executed in parallel. Only works for basic text generation requests. Experimental!")
+    makelabelentry(network_tab, "IP Rate Limiter (s):", ratelimit_var, row=38, width=50, padx=(120), singleline=True, tooltip="Rate limits each IP to allow a new request once per X seconds. Do not change if unsure.")
 
 
     def togglerpcmode(a,b,c):
@@ -14321,8 +14316,8 @@ def show_gui():
     imglora6,imglora7,imglora8 = makefileentry(images_tab, "LoRA Dir:", "Select directory for runtime lora triggers",sd_lora_var, 20, width=280, singlerow=True, dialog_type=2,tooltiptxt="Select directory containing LoRAs that can be used at runtime.\nSyntax is <lora:name:weight>")
 
     makefileentry(images_tab, "Image LLM:", "Select image text encoder or LLM model file",sd_llm_var, 24, width=280, singlerow=True, filetypes=[("*.safetensors *.gguf","*.safetensors *.gguf")],tooltiptxt="Select a .safetensors or .gguf text encoder or LLM file for image generation.")
-    makefileentry(images_tab, "Clip-1 File:", "Select First Clip model file (Clip-L for SD3 or Flux, or other vision encoder)",sd_clip1_var, 26, width=280, singlerow=True, filetypes=[("*.safetensors *.gguf","*.safetensors *.gguf")],tooltiptxt="Select a .safetensors Clip-1 file to be loaded.\nThis is Clip-L for SD3 and Flux, Clip Vision for WAN, and Qwen2.5VL for QwenImage")
-    makefileentry(images_tab, "Clip-2 File:", "Select Second Clip model file (Clip-G for SD3)",sd_clip2_var, 28, width=280, singlerow=True, filetypes=[("*.safetensors *.gguf","*.safetensors *.gguf")],tooltiptxt="Select a .safetensors Clip-2 file to be loaded.\nThis is Clip-G for SD3")
+    makefileentry(images_tab, "Clip-1 File:", "Select First Clip model file",sd_clip1_var, 26, width=280, singlerow=True, filetypes=[("*.safetensors *.gguf","*.safetensors *.gguf")],tooltiptxt="Select a .safetensors Clip-1 file to be loaded.")
+    makefileentry(images_tab, "Clip-2 File:", "Select Second Clip model file, or tokenizer",sd_clip2_var, 28, width=280, singlerow=True, filetypes=[("*.safetensors *.gguf *.json","*.safetensors *.gguf *.json")],tooltiptxt="Select a .safetensors Clip-2 file to be loaded, or tokenizer json.")
     makefileentry(images_tab, "PhotoMaker:", "Select Optional PhotoMaker model file (SDXL)",sd_photomaker_var, 30, width=280, singlerow=True, filetypes=[("*.safetensors *.gguf","*.safetensors *.gguf")],tooltiptxt="PhotoMaker is a model that allows face cloning.\nSelect a .safetensors PhotoMaker file to be loaded (SDXL only).")
     makefileentry(images_tab, "Upscaler:", "Select Optional Upscaling model file (ESRGAN)",sd_upscaler_var, 32, width=280, singlerow=True, filetypes=[("*.safetensors *.gguf *.pth","*.safetensors *.gguf *.pth")],tooltiptxt="Select an upscaler model file.\nCurrently only ESRGAN is supported.")
 
@@ -14369,6 +14364,10 @@ def show_gui():
     makefileentry(audio_tab, "MusicDiffuser:", "Select music diffusion (DiT) model (e.g acestep-v15-turbo)", musicdiffusion_var, 34, width=280, singlerow=True, dialog_type=0, tooltiptxt="Select music diffusion (DiT) model (e.g acestep-v15-turbo)")
     makefileentry(audio_tab, "MusicVAE:", "Select music VAE model", musicvae_var, 36, width=280, singlerow=True, dialog_type=0, tooltiptxt="Select music VAE model")
     makecheckbox(audio_tab, "Music Low VRAM", musiclowvram_var, 38, 0,tooltiptxt="Unload music models when not in use.")
+
+    agent_tab = tabcontent["Agent"]
+    makecheckbox(agent_tab, "Launch KoboldCpp Agent", agent_var, 1, 0, tooltiptxt="Open the local tool-using agent in a new terminal after the KoboldCpp API is ready.")
+    makefileentry(agent_tab, "Load Agent Session:", "Select a KoboldCpp Agent JSON save file", agent_load_var, 3, width=280, filetypes=[("JSON save file", "*.json")], tooltiptxt="Load the agent's conversation, working directory, and runtime settings from a JSON save file.")
 
     admin_tab = tabcontent["Admin"]
     def toggleadmin(a,b,c):
@@ -14657,7 +14656,6 @@ def show_gui():
         args.genlimit = int(genlimit_var.get()) if genlimit_var.get()!="" else 0
         args.nobostoken = (nobostoken_var.get()==1)
         args.jinja = (jinja_var.get()==1)
-        args.jinja_tools = (jinja_tools_var.get()==1)
         args.jinja_stream_toolcall = (jinja_stream_toolcall_var.get()==1)
         args.jinja_kwargs = jinja_kwargs_var.get()  if jinja_kwargs_var.get() != "" else ""
         args.jinjatemplate = jinjatemplate_var.get() if jinjatemplate_var.get() != "" else ""
@@ -14710,7 +14708,7 @@ def show_gui():
         args.port_param = defaultport if port_var.get()=="" else int(port_var.get())
         args.port = args.port_param
         args.host = host_var.get()
-        args.multiuser = int(multiuser_var.get()) if multiuser_var.get()!="" else multiuser_concurrent_limit
+        args.queuelimit = int(queuelimit_var.get()) if queuelimit_var.get()!="" else queue_concurrent_limit
         args.multiplayer = (multiplayer_var.get()==1)
         args.websearch = (websearch_var.get()==1)
         args.maxrequestsize = int(maxrequestsize_var.get()) if maxrequestsize_var.get()!="" else 32
@@ -14792,6 +14790,7 @@ def show_gui():
 
         args.admin = (admin_var.get()==1 and not args.cli)
         args.agent = agent_var.get()==1
+        args.agentload = agent_load_var.get()
         args.admindir = admin_dir_var.get()
         args.admintextmodelsdir = admin_text_model_dir_var.get()
         args.admindatadir = admin_data_dir_var.get()
@@ -14974,7 +14973,6 @@ def show_gui():
             genlimit_var.set(str(0))
         nobostoken_var.set(mydict["nobostoken"] if ("nobostoken" in mydict) else 0)
         jinja_var.set(mydict["jinja"] if ("jinja" in mydict) else 0)
-        jinja_tools_var.set(mydict["jinja_tools"] if ("jinja_tools" in mydict) else 0)
         jinja_think_var.set("default")
         think_effort_var.set("default")
         jinja_stream_toolcall_var.set(mydict["jinja_stream_toolcall"] if ("jinja_stream_toolcall" in mydict) else 0)
@@ -15055,7 +15053,7 @@ def show_gui():
         chatcompletionsadapter_var.set(mydict["chatcompletionsadapter"] if ("chatcompletionsadapter" in mydict and mydict["chatcompletionsadapter"]) else "")
         port_var.set(mydict["port_param"] if ("port_param" in mydict and mydict["port_param"]) else defaultport)
         host_var.set(mydict["host"] if ("host" in mydict and mydict["host"]) else "")
-        multiuser_var.set(mydict["multiuser"] if ("multiuser" in mydict and mydict["multiuser"]>1) else multiuser_concurrent_limit)
+        queuelimit_var.set(mydict["queuelimit"] if "queuelimit" in mydict else queue_concurrent_limit)
         multiplayer_var.set(mydict["multiplayer"] if ("multiplayer" in mydict) else 0)
         websearch_var.set(mydict["websearch"] if ("websearch" in mydict) else 0)
         download_dir_var.set(mydict["downloaddir"] if ("downloaddir" in mydict and mydict["downloaddir"]) else "")
@@ -15132,6 +15130,7 @@ def show_gui():
 
         admin_var.set(mydict["admin"] if ("admin" in mydict) else 0)
         agent_var.set(mydict["agent"] if ("agent" in mydict) else 0)
+        agent_load_var.set(mydict["agentload"] if ("agentload" in mydict and mydict["agentload"]) else "")
         router_mode_var.set(mydict["routermode"] if ("routermode" in mydict) else 0)
         autoswap_mode_var.set(mydict["autoswapmode"] if ("autoswapmode" in mydict) else 0)
         autoswap_threshold_var.set(mydict["autoswapthreshold"] if ("autoswapthreshold" in mydict) else default_autoswap_threshold)
@@ -15324,6 +15323,9 @@ def show_gui():
         # processing vars
         kcpp_exporting_template = False
         export_vars()
+        # Cancel pending callbacks before destroy deletes their Tcl commands.
+        for after_id in root.tk.splitlist(root.tk.call("after", "info")):
+            root.tk.call("after", "cancel", after_id)
         root.destroy()
 
         if not has_valid_model():
@@ -15625,8 +15627,10 @@ def convert_invalid_args(args):
         dict["sdclip1"] = dict["sdclipl"]
     if "sdclipg" in dict and "sdclip2" not in dict:
         dict["sdclip2"] = dict["sdclipg"]
-    if "jinja_tools" in dict and dict["jinja_tools"]:
-        dict["jinja"] = True
+    if "jinja_tools" in dict:
+        if dict["jinja_tools"]:
+            dict["jinja"] = True
+        del dict["jinja_tools"]
     if "jinjathink" in dict and dict["jinjathink"] and dict["jinjathink"]!="default":
         dict["jinja"] = True
         jinja_kwargs = None
@@ -15870,19 +15874,15 @@ def apply_agent_launch_safeguards(launch_args):
         launch_args.host = "127.0.0.1"  # The same-terminal agent uses a local API.
 
     adjustments = []
-    if launch_args.defaultgenamt < 8192:
-        adjustments.append(f"default generation amount increased from {launch_args.defaultgenamt} to 8192")
-        launch_args.defaultgenamt = 8192
+    if launch_args.defaultgenamt < 10240:
+        adjustments.append(f"default generation amount increased from {launch_args.defaultgenamt} to 10240")
+        launch_args.defaultgenamt = 10240
     if launch_args.contextsize < 32768:
         adjustments.append(f"context size increased from {launch_args.contextsize} to 32768")
         launch_args.contextsize = 32768
     if not launch_args.jinja:
         adjustments.append("Jinja chat templates enabled")
         launch_args.jinja = True
-    if not launch_args.jinja_tools:
-        adjustments.append("Jinja tool formatting enabled")
-        launch_args.jinja_tools = True
-
     if adjustments:
         print("\nWARNING: KoboldCpp Agent adjusted launch settings for reliable tool use:")
         for adjustment in adjustments:
@@ -16140,7 +16140,7 @@ def get_kobold_agent_path():
     return os.path.join(base_path, "kcpp_agent.py")
 
 
-def run_bundled_kobold_agent(base_url=None, api_key=None):
+def run_bundled_kobold_agent(base_url=None, api_key=None, load_session=None):
     """Run the bundled agent script inside a frozen KoboldCpp process."""
     agent_path = get_kobold_agent_path()
     if not os.path.isfile(agent_path):
@@ -16155,12 +16155,14 @@ def run_bundled_kobold_agent(base_url=None, api_key=None):
             sys.argv.extend(["--base-url", base_url])
         if api_key:
             sys.argv.extend(["--api-key", api_key])
+        if load_session:
+            sys.argv.extend(["--load-session", load_session])
         kcpp_agent.main()
     finally:
         sys.argv = old_argv
 
 
-def launch_kobold_agent_terminal(base_url=None, api_key=None, same_terminal=False):
+def launch_kobold_agent_terminal(base_url=None, api_key=None, same_terminal=False, load_session=None):
     """Run the agent in a new or existing terminal, using the bundled runner when frozen."""
     agent_path = get_kobold_agent_path()
     if not os.path.isfile(agent_path):
@@ -16174,6 +16176,8 @@ def launch_kobold_agent_terminal(base_url=None, api_key=None, same_terminal=Fals
         command.extend(["--agent-base-url" if is_frozen else "--base-url", base_url])
     if api_key:
         command.extend(["--agent-api-key" if is_frozen else "--api-key", api_key])
+    if load_session:
+        command.extend(["--agentload" if is_frozen else "--load-session", load_session])
 
     try:
         if same_terminal:
@@ -16617,11 +16621,12 @@ def main(launch_args, default_args):
     args = launch_args #note: these are NOT shared with the child processes!
 
     if args.run_bundled_agent:
-        run_bundled_kobold_agent(args.agent_base_url, args.agent_api_key)
+        run_bundled_kobold_agent(args.agent_base_url, args.agent_api_key, args.agentload)
         return
 
-    if args.agent and len(sys.argv) == 2:
-        launch_kobold_agent_terminal()
+    standalone_agent_args = cli_arg_overrides and cli_arg_overrides <= {"agent", "agentload"}
+    if args.agent and (len(sys.argv) == 2 or standalone_agent_args):
+        launch_kobold_agent_terminal(load_session=args.agentload)
         return
 
     if (args.version) and len(sys.argv) <= 2:
@@ -17698,8 +17703,7 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
             if chatcompl_adapter is None:
                 if cached_chat_template:
                     args.jinja = True
-                    args.jinja_tools = True
-                    print("Chat template heuristics failed to identify chat completions format. Jinja and Jinja tools will be used.")
+                    print("Chat template heuristics failed to identify chat completions format. Jinja will be used.")
                 else:
                     print("Chat template heuristics failed to identify chat completions format. Alpaca will be used.")
 
@@ -18214,15 +18218,15 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
                 if args.cli:
                     if args.mcpfile:
                         time.sleep(2)
-                    success = launch_kobold_agent_terminal(agent_base_url, args.password, same_terminal=True)
+                    success = launch_kobold_agent_terminal(agent_base_url, args.password, same_terminal=True, load_session=args.agentload)
                     raise SystemExit(0 if success else 1)
                 if args.mcpfile:
                     agent_timer = threading.Timer(
-                        2, launch_kobold_agent_terminal, args=(agent_base_url, args.password)
+                        2, launch_kobold_agent_terminal, args=(agent_base_url, args.password), kwargs={"load_session": args.agentload}
                     )
                     agent_timer.start()
                     return True
-                return launch_kobold_agent_terminal(agent_base_url, args.password)
+                return launch_kobold_agent_terminal(agent_base_url, args.password, load_session=args.agentload)
         asyncio.run(RunServerMultiThreaded(args.host, args.port, KcppServerRequestHandler, on_server_ready))
     else:
         # Flush stdout for previous win32 issue so the client can see output.
@@ -18267,6 +18271,7 @@ if __name__ == '__main__':
     #more advanced params
     advparser = parser.add_argument_group('Advanced Commands')
     advparser.add_argument("--agent", help="Launches the simple KoboldCpp Agent in a new terminal window, or the current terminal with --cli.", action='store_true')
+    advparser.add_argument("--agentload", metavar=('[filename]'), help="Load a KoboldCpp Agent JSON save file when launching the agent.", default="")
     advparser.add_argument("--analyze", metavar=('[filename]'), help="Reads the metadata, weight types and tensor names in any GGUF or safetensors file.", default="")
     advparser.add_argument("--autofit","--fit","-fit", help="Forces autofit, which attempts to fit the model in the best possible way. Overrides everything else.", action='store_true')
     advparser.add_argument("--autofitpadding", metavar=('[padding in MB]'), help="How much spare allowance in MB should autofit reserve? If it's too little, the load might fail.", type=int, default=default_autofit_padding)
@@ -18294,10 +18299,9 @@ if __name__ == '__main__':
     advparser.add_argument("--genlimit","--promptlimit", help="Sets the maximum number of generated tokens, it will restrict all generations to this or lower. Also usable with --prompt or --benchmark.",metavar=('[token limit]'), type=int, default=0)
     advparser.add_argument("--highpriority", help="Experimental flag. If set, increases the process CPU priority, potentially speeding up generation. Use caution.", action='store_true')
     advparser.add_argument("--ignoremissing", help="Ignores all missing non-essential files, just skipping them instead.", action='store_true')
-    advparser.add_argument("--jinja", help="Enables using jinja chat template formatting for chat completions endpoint. Other endpoints are unaffected. Tool calls are done without jinja.", action='store_true')
+    advparser.add_argument("--jinja", "--jinja_tools", "--jinja-tools", "--jinjatools", dest="jinja", help="Enables Jinja chat template formatting, including tool calls. Falls back to universal formatting if Jinja fails.", action='store_true')
     advparser.add_argument("--jinja_stream_toolcall","--jinja-stream-toolcall","--jinjastreamtoolcall", help="When jinja tool calls are active, stream the tool call content as tokens are generated rather than buffering silently until generation is complete. Implies --jinja and --jinja_tools.", action='store_true')
     advparser.add_argument("--jinja_kwargs","--jinja-kwargs","--jinjakwargs","--chat-template-kwargs", metavar=('{"parameter":"value",...}'), help="Set additional fields for Jinja JSON template parser, must be a valid JSON object.", default="")
-    advparser.add_argument("--jinja_tools","--jinja-tools","--jinjatools", help="Enables using jinja chat template formatting for chat completions endpoint. Other endpoints are unaffected. Tool calls are done with jinja.", action='store_true')
     advparser.add_argument("--jinjatemplate","--chat-template-file", metavar=('[filename]'), help="Select a custom Jinja chat template, will overwrite model jinja chat template", default="")
     advparser.add_argument("--jinjathink", help="A quick way to enable or disable thinking in the jinja template.", type=str, choices=['default','true','false'], default="default")
     advparser.add_argument("--lora", help="GGUF models only, applies a lora file on top of model.", metavar=('[lora_filename]'), nargs='+')
@@ -18311,7 +18315,6 @@ if __name__ == '__main__':
     advparser.add_argument("--moecpu","--n-cpu-moe", "-ncmoe", metavar=('[layers affected]'), help="Keep the Mixture of Experts (MoE) weights of the first N layers in the CPU. If no value is provided, applies to all layers.", nargs='?', const=999, type=int, default=0)
     advparser.add_argument("--ffncpu","--n-cpu-ffn", "-ncffn", metavar=('[layers affected]'), help="Keep the dense FFN weights of the first N layers in the CPU. If no value is provided, applies to all layers.", nargs='?', const=999, type=int, default=0)
     advparser.add_argument("--moeexperts", metavar=('[num of experts]'), help="How many experts to use for MoE models (default=follow gguf)", type=int, default=-1)
-    advparser.add_argument("--multiuser", help="Set maximum number of queued incoming requests allowed.", metavar=('limit'), type=int, nargs='?', const=multiuser_concurrent_limit, default=multiuser_concurrent_limit)
     advparser.add_argument("--multiplayer", help="Hosts a shared multiplayer session that others can join.", action='store_true')
     advparser.add_argument("--nocertify", help="Allows insecure SSL connections. Use this if you have cert errors and need to bypass certificate restrictions.", action='store_true')
     advparser.add_argument("--nofastforward", help="If set, do not attempt to fast forward GGUF context (always reprocess). Will also enable noshift", action='store_true')
@@ -18331,11 +18334,12 @@ if __name__ == '__main__':
     advparser.add_argument("--overridenativecontext", help="Overrides the native trained context of the loaded model with a custom value to be used for Rope scaling.",metavar=('[trained context]'), type=int, default=0)
     advparser.add_argument("--overridetensors","--override-tensor","-ot", metavar=('[tensor name pattern=buffer type]'), help="Override selected backend for specific tensors matching tensor_name_regex_pattern=buffer_type, same as in llama.cpp.", default="")
     advparser.add_argument("--developerMode", help="Enables developer utilities, such as hot reloading of Kobold Lite.", default=False, type=bool)
-    advparser.add_argument("--parallelrequests","--continuous-batching","--contbatch", help="Allows multiple requests to be batched and executed in parallel. Only works for basic text generation requests (Experimental, No media)", metavar=('[slots]'), type=check_range(int,0,32), default=1)
+    advparser.add_argument("--parallelrequests","--continuous-batching","--contbatch", help="Allows multiple text and multimodal generation requests to be processed in parallel (Experimental).", metavar=('[slots]'), type=check_range(int,0,32), default=1)
     advparser.add_argument("--password", metavar=('[API key]'), help="Enter a password required to use this instance. This key will be required for all text endpoints. Image endpoints are not secured. Can also be set with env var KCPP_PASSWORD", default=os.getenv('KCPP_PASSWORD',None))
     advparser.add_argument("--preloadstory", metavar=('[savefile]'), help="Configures a prepared story json save file to be hosted on the server, which frontends (such as KoboldAI Lite) can access over the API.", default="")
     advparser.add_argument("--prompt","-p", metavar=('[prompt]'), help="Passing a prompt string triggers a direct inference, loading the model, outputs the response to stdout and exits. Can be used alone or with benchmark.", type=str, default="")
     advparser.add_argument("--quantkv", help="Sets the KV cache data type quantization, options are f16/bf16/q8_0/q5_1/q4_0. Requires Flash Attention for full effect, otherwise only K cache is quantized.",metavar=('[quantization level f16/bf16/q8_0/q5_1/q4_0]'), type=str, choices=["f16","bf16","q8_0","q5_1","q4_0","0","1","2","3"], default="f16")
+    advparser.add_argument("--queuelimit", help="Set maximum number of queued incoming requests allowed.", metavar=('limit'), type=int, default=queue_concurrent_limit)
     advparser.add_argument("--quiet", help="Enable quiet mode, which hides generation inputs and outputs in the terminal. Quiet mode is automatically enabled when running a horde worker.", action='store_true')
     advparser.add_argument("--ratelimit", metavar=('[seconds]'), help="If enabled, rate limit generative request by IP address. Each IP can only send a new request once per X seconds.", type=int, default=0)
     advparser.add_argument("--reasoningeffort", help="A quick way to set the default reasoning effort. API values override this.", type=str, choices=['default','none','low','medium','high','xhigh'], default="default")
@@ -18373,8 +18377,8 @@ if __name__ == '__main__':
     sdparsergroup.add_argument("--sdaudiovae", metavar=('[filename]'), help="Specify an image generation audio VAE for LTX2.3 video generation.", default="")
     sdparsergroup.add_argument("--sdclamped", metavar=('[maxres]'), help="If specified, limit generation steps and image size for shared use. Accepts an extra optional parameter that indicates maximum resolution (eg. 768 clamps to 768x768, min 512px, disabled if 0).", nargs='?', const=512, type=int, default=0)
     sdparsergroup.add_argument("--sdclampedsoft", metavar=('[maxres]'), help="If specified, limit max image size to curb memory usage. Similar to --sdclamped, but less strict, allows trade-offs between width and height (e.g. 640 would allow 640x640, 512x768 and 768x512 images).", type=int, default=0)
-    sdparsergroup.add_argument("--sdclip1", "--sdclipl", metavar=('[filename]'), help="Specify first safetensors Clip model (SD3 or Flux Clip-L, WAN or QwenImg vision). Leave blank if prebaked or unused.", default="")
-    sdparsergroup.add_argument("--sdclip2", "--sdclipg", metavar=('[filename]'), help="Specify second safetensors Clip model (SD3 Clip-G). Leave blank if prebaked or unused.", default="")
+    sdparsergroup.add_argument("--sdclip1", "--sdclipl", metavar=('[filename]'), help="Specify first safetensors Clip model. Leave blank if prebaked or unused.", default="")
+    sdparsergroup.add_argument("--sdclip2", "--sdclipg", metavar=('[filename]'), help="Specify second safetensors Clip model. Leave blank if prebaked or unused. Put tokenizer here if required.", default="")
     sdparsergroup.add_argument("--sdclipdevice", metavar=('[Device ID]'), help=f"CLIP / T5 / LLM device for image generation. GPU index, -1 or 'main' for the main GPU, or 'CPU' (default: {default_sdclipdevice}).", type=sd_get_device_number, default=None)
     sdparsergroup.add_argument("--sdconvdirect", help="Enables Conv2D Direct. May improve performance or reduce memory usage. Might crash if not supported by the backend. Can be 'off' (default) to disable, 'full' to turn it on for all operations, or 'vaeonly' to enable only for the VAE.", type=sd_convdirect_option, choices=sd_convdirect_choices, default=sd_convdirect_choices[0])
     sdparsergroup.add_argument("--sdflashattention", help="Enables Flash Attention for image generation.", action='store_true')
@@ -18437,7 +18441,7 @@ if __name__ == '__main__':
     admingroup.add_argument("--admindocsdir", metavar=('[directory]'), help="Specify a directory containing text or PDF documents. When set, the directory is accessible read-only at /INTERNAL_READ_ONLY/Documents via filesystem API endpoints.", default="")
     admingroup.add_argument("--adminallowhf", help="Enables downloading of HuggingFace models through the Lite UI.", action='store_true')
     admingroup.add_argument("--routermode", help="Router mode uses a reverse proxy router, allowing you to easily hotswap models and configs within a single request. Requires admin mode.", action='store_true')
-    admingroup.add_argument("--reqtimeout", metavar=('[seconds]'), help="Timeout in seconds for HTTP requests.", type=int, default=default_reqtimeout)
+    admingroup.add_argument("--reqtimeout", metavar=('[seconds]'), help="Timeout in seconds for HTTP requests. Use 0 for the default timeout.", type=parse_reqtimeout, default=default_reqtimeout)
     admingroup.add_argument("--autoswapmode", help="Autoswap mode builds on router mode to allow switching of model types within the same config automatically. Requires admin mode and router mode. All models desired must be defined within the same config.", action='store_true')
     admingroup.add_argument("--autoswapthreshold", help=f"Keep model families at or below this combined file size resident in autoswap mode, in MB (default {default_autoswap_threshold}). Only one model family above the threshold is loaded at a time.", type=check_range(int,0,1048576), default=default_autoswap_threshold)
     admingroup.add_argument("--baseconfig", help="Specify a base .kcpps config to apply, if no custom base config is selected during a model swap", default="")
@@ -18475,6 +18479,7 @@ if __name__ == '__main__':
     deprecatedgroup.add_argument("--sdgendefaults", help=argparse.SUPPRESS, action='store_true') # legacy option, see gendefaults
     deprecatedgroup.add_argument("--flashattention","--flash-attn","-fa", help=argparse.SUPPRESS, action='store_true') #flash attention now default on
     deprecatedgroup.add_argument("--useswa", help=argparse.SUPPRESS, action='store_true')
+    deprecatedgroup.add_argument("--multiuser", help=argparse.SUPPRESS, metavar=('limit'), type=int, nargs='?', const=queue_concurrent_limit, default=None)
 
     internalgroup = parser.add_argument_group('Internal Commands')
     internalgroup.add_argument("--testmemory", help=argparse.SUPPRESS, action='store_true')
