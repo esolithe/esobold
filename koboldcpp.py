@@ -15643,7 +15643,6 @@ def convert_invalid_args(args):
             dict["jinja_kwargs"] = json.dumps(jinja_kwargs)
     if "jinja_stream_toolcall" in dict and dict["jinja_stream_toolcall"]:
         dict["jinja"] = True
-        dict["jinja_tools"] = True
     if "jinja_kwargs" in dict and dict["jinja_kwargs"]:
         dict["jinja"] = True
     if "sdgendefaults" in dict and "gendefaults" not in dict:
@@ -17428,8 +17427,6 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
 
     # jinja_stream_toolcall implies jinja_tools which implies jinja
     if getattr(args, 'jinja_stream_toolcall', False):
-        args.jinja = True
-    if args.jinja_tools:
         args.jinja = True
 
     # sanitize and replace the default vanity name. remember me....
