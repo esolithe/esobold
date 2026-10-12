@@ -14056,12 +14056,6 @@ def show_gui():
             jinjathinkbox.grid_remove()
             jinjathinklbl.grid_remove()
         changed_gpulayers_estimate()
-    def togglejinjatools(a,b,c):
-        if jinja_tools_var.get()==1:
-            jinja_stream_toolcall_box.grid()
-        else:
-            jinja_stream_toolcall_var.set(0)
-            jinja_stream_toolcall_box.grid_remove()
     def togglejinjathink(a,b,c):
         curr = parse_json_object(jinja_kwargs_var.get(),"tempjinja")
         curr = (curr if curr else {})
@@ -17434,7 +17428,6 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
 
     # jinja_stream_toolcall implies jinja_tools which implies jinja
     if getattr(args, 'jinja_stream_toolcall', False):
-        args.jinja_tools = True
         args.jinja = True
     if args.jinja_tools:
         args.jinja = True
