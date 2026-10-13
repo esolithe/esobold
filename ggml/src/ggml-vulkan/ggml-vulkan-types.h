@@ -44,6 +44,8 @@ typedef struct VkPhysicalDeviceCooperativeMatrixDecodeVectorFeaturesNV {
 
 #include <cmath>
 
+#include <functional>
+
 #include <iomanip>
 
 #include <iostream>
@@ -203,6 +205,8 @@ static bool is_pow2(uint32_t x) { return x > 1 && (x & (x-1)) == 0; }
 #define VK_VENDOR_ID_NVIDIA 0x10de
 
 #define VK_VENDOR_ID_QUALCOMM 0x5143
+
+#define VK_VENDOR_ID_SAMSUNG 0x144d
 
 #define VK_DEVICE_DESCRIPTOR_POOL_SIZE 256
 
@@ -1020,6 +1024,8 @@ struct vk_device_struct {
     ggml_backend_buffer_type buffer_type;
 
     bool disable_fusion;
+    bool disable_descriptor_reuse;
+    std::atomic<uint64_t> buffer_destroy_count {};
     bool disable_host_visible_vidmem;
     bool allow_sysmem_fallback;
     bool disable_graph_optimize;
@@ -1062,6 +1068,8 @@ struct vk_buffer_struct {
         }
         VK_LOG_DEBUG("~vk_buffer_struct(" << buffer << ", " << size << ")");
 
+        // bump before destroying, so a thread that sees the buffer gone also sees the new count
+        device->buffer_destroy_count.fetch_add(1, std::memory_order_release);
         device->device.freeMemory(device_memory);
         device->device.destroyBuffer(buffer);
     }
@@ -1273,6 +1281,9 @@ struct ggml_backend_vk_context {
 
     std::vector<vk::DescriptorPool> descriptor_pools;
     std::vector<vk::DescriptorSet> descriptor_sets;
+    // last bindings written to each set; descriptor_sets is append-only so an index always names the same set
+    std::vector<std::vector<vk::DescriptorBufferInfo>> descriptor_set_bindings;
+    uint64_t descriptor_set_bindings_destroy_count {};
     uint32_t descriptor_set_idx {};
     uint32_t pipeline_descriptor_set_requirements {};
 
@@ -1439,4 +1450,3 @@ struct ggml_backend_vk_device_context {
     std::string pci_bus_id;
     int op_offload_min_batch_size;
 };
-

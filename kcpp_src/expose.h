@@ -201,7 +201,7 @@ struct sd_load_model_inputs
     const bool vae_conv_direct = false;
     const bool taesd = false;
     const int tiled_vae_threshold = 0;
-    const char * t5xxl_filename = nullptr;
+    const char * llm_filename = nullptr;
     const char * clip1_filename = nullptr;
     const char * clip2_filename = nullptr;
     const char * vae_filename = nullptr;
@@ -216,7 +216,6 @@ struct sd_load_model_inputs
     const int img_soft_limit = 0;
     const char * max_vram = nullptr;
     const char * split_mode = nullptr;
-    const bool stream_layers = false;
     const bool auto_fit = false;
     const char * devices_override = nullptr;
     const bool quiet = false;
@@ -262,6 +261,8 @@ struct sd_generation_inputs
     const int lora_len = 0;
     const char ** lora_filenames = nullptr;
     const float * lora_multipliers = nullptr;
+    const float * custom_sigmas = nullptr;
+    const int custom_sigmas_count = 0;
 };
 struct sd_generation_outputs
 {

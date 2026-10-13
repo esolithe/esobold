@@ -1796,6 +1796,15 @@ static struct ggml_tensor * ggml_new_tensor_impl(
         view_src   = view_src->view_src;
     }
 
+    // validate number of elements to fit in int64_t
+    int64_t current_nelements = ne[0];
+    for (int i = 1; i < n_dims; i++) {
+        if (ne[i] > 1) {
+            GGML_ASSERT(INT64_MAX / ne[i] > current_nelements);
+            current_nelements *= ne[i];
+        }
+    }
+
     size_t data_size = ggml_row_size(type, ne[0]);
     for (int i = 1; i < n_dims; i++) {
         data_size *= ne[i];
@@ -2206,6 +2215,7 @@ static struct ggml_tensor * ggml_acc_impl(
 
     struct ggml_tensor * result = inplace ? ggml_view_tensor(ctx, a) : ggml_dup_tensor(ctx, a);
 
+    GGML_ASSERT(offset < (size_t)(1 << 30));
     int32_t params[] = { nb1, nb2, nb3, offset, inplace ? 1 : 0 };
     ggml_set_op_params(result, params, sizeof(params));
 
@@ -8008,6 +8018,7 @@ void ggml_graph_dump_dot(const struct ggml_cgraph * gb, const struct ggml_cgraph
 ////////////////////////////////////////////////////////////////////////////////
 
 void ggml_set_input(struct ggml_tensor * tensor) {
+    GGML_ASSERT(tensor->op == GGML_OP_NONE);
     tensor->flags |= GGML_TENSOR_FLAG_INPUT;
 }
 

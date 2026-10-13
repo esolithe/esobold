@@ -26,6 +26,7 @@ class RNG;
 struct Denoiser;
 struct LoraModel;
 struct ConditionerParams;
+class ConditioningCache;
 struct SDCondition;
 struct RefImageParams;
 namespace Wav2Vec2 {
@@ -91,8 +92,6 @@ public:
     // kcpp
     std::map<std::string, std::shared_ptr<LoraModel>> kcpp_lora_cache;
     bool kcpp_lora_cache_populate = false;
-    std::string kcpp_taesd_path;
-    std::string kcpp_tokenizer_path;
     // kcpp
 
     std::string taesd_path;
@@ -184,6 +183,8 @@ public:
     std::recursive_mutex execution_mutex;
     std::unique_ptr<ModelConfig> config_;
     RunnerState runner_state_;
+    std::unique_ptr<ConditioningCache> conditioning_cache_;
+    std::vector<ModelManager::LoraSpec> conditioning_loras_;
     bool executing_ = false;
 
     std::shared_ptr<Denoiser> denoiser;
@@ -318,6 +319,7 @@ public:
     bool init_model_loader(ModelLoader& model_loader, ModelConfig& configuration);
 
     bool init(const sd_ctx_params_t* sd_ctx_params);
+    bool set_sage_attention_enabled(bool enabled);
 
     bool uses_tae() const;
 
@@ -365,6 +367,8 @@ public:
     void lora_stat();
 
     bool apply_loras(const sd_lora_t* loras, uint32_t lora_count);
+
+    SDCondition get_learned_condition(const ConditionerParams& params);
 
     void reset_generation_extensions();
 

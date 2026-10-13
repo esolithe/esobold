@@ -12,7 +12,7 @@ Current version indicated by LITEVER below.
 -->
 <head>
 	<script id="init-config">
-	const LITEVER = 347;
+	const LITEVER = 348;
 	const urlParams = new URLSearchParams(window.location.search);
 	var localflag = urlParams.get('local'); //this will be replaced automatically in embedded kcpp
 	const STORAGE_PREFIX = (localflag?"e_":"")+"kaihordewebui_";
@@ -4060,6 +4060,7 @@ Current version indicated by LITEVER below.
 		my_api_key: "0000000000", //put here so it can be saved and loaded in persistent mode
 		saved_oai_key: "", //do not ever share this in save files!
 		saved_oai_addr: default_oai_base, //do not ever share this in save files!
+		saved_oai_favorites: [], //saved custom OpenAI-compatible endpoint/key pairs; do not share in save files!
 		saved_dalle_key: "",
 		saved_dalle_url: (default_oai_base + default_oai_image_endpoint),
 		saved_dalle_model: default_dalle_model_name,
@@ -4281,6 +4282,7 @@ Current version indicated by LITEVER below.
 		my_api_key: true,
 		saved_oai_key: true,
 		saved_oai_addr: true,
+		saved_oai_favorites: true,
 		saved_dalle_key: true,
 		saved_dalle_url: true,
 		saved_oai_tts_key: true,
@@ -7341,6 +7343,61 @@ Current version indicated by LITEVER below.
 			render_gametext();
 		});
 	}
+	function normalize_oai_response_content(content)
+	{
+		if(content==null)
+		{
+			return "";
+		}
+		if(typeof content==="string")
+		{
+			return content;
+		}
+		if(Array.isArray(content))
+		{
+			let result = "";
+			for(let part of content)
+			{
+				if(part && part.type==="thinking")
+				{
+					let thinking = normalize_oai_response_content(part.thinking!=null?part.thinking:part.text);
+					if(thinking!="")
+					{
+						result += `${localsettings.start_thinking_tag}${thinking}${localsettings.stop_thinking_tag}`;
+					}
+				}
+				else
+				{
+					result += normalize_oai_response_content(part);
+				}
+			}
+			return result;
+		}
+		if(typeof content==="object")
+		{
+			if(typeof content.text==="string")
+			{
+				return content.text;
+			}
+			if(content.text && typeof content.text.value==="string")
+			{
+				return content.text.value;
+			}
+			if(typeof content.value==="string")
+			{
+				return content.value;
+			}
+			if(typeof content.refusal==="string")
+			{
+				return content.refusal;
+			}
+			if(content.content!=null)
+			{
+				return normalize_oai_response_content(content.content);
+			}
+		}
+		return "";
+	}
 	function oai_api_sync_req(targetep,oai_payload,oaiheaders)
 	{
 		fetch(targetep, {
@@ -7359,7 +7416,7 @@ Current version indicated by LITEVER below.
 					synchro_polled_response = dch.text;
 				}
 				else if (dch.message) {
-					synchro_polled_response = dch.message.content;
+					synchro_polled_response = normalize_oai_response_content(dch.message.content);
 					let reasoningtxt = "";
 					let has_called_tools = (dch.message.tool_calls && dch.message.tool_calls.length>0);
 					if(dch.message.reasoning_content!=null && dch.message.reasoning_content!="") //vllm compat
@@ -7372,13 +7429,13 @@ Current version indicated by LITEVER below.
 					}
 					if(reasoningtxt!="")
 					{
-						if(dch.message.content==null && !has_called_tools)
+						if(synchro_polled_response=="" && !has_called_tools)
 						{
 							synchro_polled_response = reasoningtxt;
 						}
 						else
 						{
-							synchro_polled_response = `${localsettings.start_thinking_tag}${reasoningtxt}${localsettings.stop_thinking_tag}${dch.message.content?dch.message.content:''}`;
+							synchro_polled_response = `${localsettings.start_thinking_tag}${reasoningtxt}${localsettings.stop_thinking_tag}${synchro_polled_response}`;
 						}
 					}
 
@@ -7582,32 +7639,52 @@ Current version indicated by LITEVER below.
 								{
 									let cnt = event.data.choices[0].delta.content;
 
-									if(cnt && cnt.length>0 && cnt[0].type=="thinking") //mistral
+									if(Array.isArray(cnt)) //mistral can include thinking and text blocks in the same delta
 									{
-										if(cnt[0].thinking && cnt[0].thinking.length>0 && cnt[0].thinking[0].text)
+										for(let content_part of cnt)
 										{
-											streaming_was_thinking = true;
-											cnt = cnt[0].thinking[0].text;
-										}
-										else
-										{
-											cnt = "";
+											if(content_part.type=="thinking")
+											{
+												if(Array.isArray(content_part.thinking))
+												{
+													for(let thinking_part of content_part.thinking)
+													{
+														if(thinking_part.text)
+														{
+															streaming_was_thinking = true;
+															synchro_pending_stream += thinking_part.text;
+														}
+													}
+												}
+											}
+											else if(content_part.type=="text" && content_part.text)
+											{
+												if(streaming_was_thinking)
+												{
+													streaming_was_thinking = false;
+													synchro_pending_stream = `${localsettings.start_thinking_tag}${synchro_pending_stream}${localsettings.stop_thinking_tag}`;
+												}
+												synchro_pending_stream += content_part.text;
+											}
 										}
 									}
-									else if(streaming_was_thinking)
+									else
 									{
-										streaming_was_thinking = false;
-										//if there is some final reasoning, add it
-										if(event.data.choices[0].delta.reasoning_content!=null&& event.data.choices[0].delta.reasoning_content!="")
+										if(streaming_was_thinking)
 										{
-											synchro_pending_stream += event.data.choices[0].delta.reasoning_content;
-										}else if(event.data.choices[0].delta.reasoning!=null&& event.data.choices[0].delta.reasoning!="")
-										{
-											synchro_pending_stream += event.data.choices[0].delta.reasoning;
+											streaming_was_thinking = false;
+											//if there is some final reasoning, add it
+											if(event.data.choices[0].delta.reasoning_content!=null&& event.data.choices[0].delta.reasoning_content!="")
+											{
+												synchro_pending_stream += event.data.choices[0].delta.reasoning_content;
+											}else if(event.data.choices[0].delta.reasoning!=null&& event.data.choices[0].delta.reasoning!="")
+											{
+												synchro_pending_stream += event.data.choices[0].delta.reasoning;
+											}
+											synchro_pending_stream = `${localsettings.start_thinking_tag}${synchro_pending_stream}${localsettings.stop_thinking_tag}`;
 										}
-										synchro_pending_stream = `${localsettings.start_thinking_tag}${synchro_pending_stream}${localsettings.stop_thinking_tag}`;
+										synchro_pending_stream += cnt;
 									}
-									synchro_pending_stream += cnt;
 								}
 								else if(event.data.choices[0].delta && !event.data.choices[0].delta.content && event.data.choices[0].delta.reasoning_content!=null&& event.data.choices[0].delta.reasoning_content!="")
 								{
@@ -11138,6 +11215,7 @@ Current version indicated by LITEVER below.
 			new_save_storyobj.savedsettings.my_api_key = "0000000000";
 			new_save_storyobj.savedsettings.saved_oai_key = "";
 			new_save_storyobj.savedsettings.saved_oai_addr = "";
+			new_save_storyobj.savedsettings.saved_oai_favorites = [];
 			new_save_storyobj.savedsettings.saved_dalle_key = "";
 			new_save_storyobj.savedsettings.saved_dalle_url = "";
 			new_save_storyobj.savedsettings.saved_oai_tts_key = "";
@@ -15002,9 +15080,218 @@ Current version indicated by LITEVER below.
 		});
 	}
 
+	function get_oai_favorites()
+	{
+		if(!Array.isArray(localsettings.saved_oai_favorites))
+		{
+			localsettings.saved_oai_favorites = [];
+		}
+		else
+		{
+			localsettings.saved_oai_favorites = localsettings.saved_oai_favorites.filter(favorite =>
+				favorite && typeof favorite.name === "string" && typeof favorite.endpoint === "string" && typeof favorite.key === "string");
+		}
+
+		let favorites = localsettings.saved_oai_favorites;
+		let default_index = favorites.findIndex(favorite => favorite.is_default === true);
+		if(default_index < 0)
+		{
+			// Migrate the old single endpoint/key setting when it belongs to official OpenAI.
+			let default_key = (oai_favorite_endpoints_match(localsettings.saved_oai_addr, default_oai_base) && localsettings.saved_oai_key !== dummy_api_key)
+				? localsettings.saved_oai_key
+				: "";
+			favorites.unshift({name:"[Default]", endpoint:default_oai_base, key:default_key, is_default:true});
+		}
+		else
+		{
+			let default_favorite = favorites[default_index];
+			default_favorite.name = "[Default]";
+			default_favorite.endpoint = default_oai_base;
+			// Keep one canonical built-in entry and place it first.
+			favorites = favorites.filter((favorite, index) => favorite.is_default !== true || index === default_index);
+			default_index = favorites.indexOf(default_favorite);
+			if(default_index > 0)
+			{
+				favorites.splice(default_index, 1);
+				favorites.unshift(default_favorite);
+			}
+			localsettings.saved_oai_favorites = favorites;
+		}
+		return localsettings.saved_oai_favorites;
+	}
+
+	function oai_favorite_endpoints_match(first, second)
+	{
+		return transform_oai_ep(first) === transform_oai_ep(second);
+	}
+
+	function refresh_oai_favorites(selected_index = -1)
+	{
+		let dropdown = document.getElementById("custom_oai_favorites");
+		if(!dropdown)
+		{
+			return;
+		}
+
+		let favorites = get_oai_favorites();
+		dropdown.replaceChildren();
+		let placeholder = document.createElement("option");
+		placeholder.value = "";
+		placeholder.textContent = "[Custom]";
+
+		for(let i = 0; i < favorites.length; ++i)
+		{
+			let favorite = favorites[i];
+			let option = document.createElement("option");
+			option.value = i.toString();
+			option.textContent = favorite.name;
+			dropdown.appendChild(option);
+		}
+		dropdown.appendChild(placeholder);
+
+		let endpoint = document.getElementById("custom_oai_endpoint").value.trim();
+		let key = document.getElementById("custom_oai_key").value.trim();
+		if(selected_index >= 0)
+		{
+			dropdown.value = selected_index.toString();
+		}
+		else
+		{
+			// A named favorite is more specific than the built-in default if both pairs match.
+			selected_index = favorites.findIndex(favorite => !favorite.is_default && oai_favorite_endpoints_match(favorite.endpoint, endpoint) && favorite.key === key);
+			if(selected_index < 0)
+			{
+				selected_index = favorites.findIndex(favorite => oai_favorite_endpoints_match(favorite.endpoint, endpoint) && favorite.key === key);
+			}
+			if(selected_index >= 0)
+			{
+				dropdown.value = selected_index.toString();
+			}
+			else
+			{
+				dropdown.value = "";
+			}
+		}
+		dropdown.dataset.currentValue = dropdown.value;
+		update_oai_favorite_btns();
+	}
+
+	function update_oai_favorite_btns()
+	{
+		let selected_value = document.getElementById("custom_oai_favorites").value;
+		let favorite = selected_value === "" ? null : get_oai_favorites()[Number.parseInt(selected_value, 10)];
+		document.getElementById("btn_save_oai_favorite").classList.toggle("hidden", selected_value !== "");
+		document.getElementById("btn_delete_oai_favorite").classList.toggle("hidden", !favorite || favorite.is_default === true);
+	}
+
+	function oai_favorite_fields_changed()
+	{
+		// The same inputs are reused by the dedicated providers; their keys must not affect these favorites.
+		if(document.getElementById("customapidropdown").value != 2)
+		{
+			return;
+		}
+		let endpoint = document.getElementById("custom_oai_endpoint").value.trim();
+		let key = document.getElementById("custom_oai_key").value.trim();
+		let dropdown = document.getElementById("custom_oai_favorites");
+		let selected_value = dropdown.value;
+		if(selected_value !== "")
+		{
+			let favorite = get_oai_favorites()[Number.parseInt(selected_value, 10)];
+			if(favorite && favorite.is_default === true)
+			{
+				favorite.key = key;
+			}
+			if(!favorite || !oai_favorite_endpoints_match(favorite.endpoint, endpoint) || favorite.key !== key)
+			{
+				dropdown.value = "";
+			}
+		}
+		dropdown.dataset.currentValue = dropdown.value;
+		update_oai_favorite_btns();
+	}
+
+	function load_oai_favorite()
+	{
+		let dropdown = document.getElementById("custom_oai_favorites");
+		let favorites = get_oai_favorites();
+		let previous_favorite = favorites[Number.parseInt(dropdown.dataset.currentValue, 10)];
+		if(previous_favorite && previous_favorite.is_default === true)
+		{
+			// Capture autofill and other changes that may not have fired the input handler.
+			previous_favorite.key = document.getElementById("custom_oai_key").value.trim();
+		}
+		let index = Number.parseInt(dropdown.value, 10);
+		let favorite = favorites[index];
+		if(!favorite)
+		{
+			dropdown.dataset.currentValue = dropdown.value;
+			update_oai_favorite_btns();
+			return;
+		}
+		document.getElementById("custom_oai_endpoint").value = favorite.endpoint;
+		document.getElementById("custom_oai_key").value = favorite.key;
+		dropdown.dataset.currentValue = dropdown.value;
+		update_oai_favorite_btns();
+	}
+
+	function save_oai_favorite()
+	{
+		let endpoint = document.getElementById("custom_oai_endpoint").value.trim();
+		let key = document.getElementById("custom_oai_key").value.trim();
+		if(endpoint === "")
+		{
+			msgbox("Enter an OpenAI API URL before adding a favorite.", "Missing API URL");
+			return;
+		}
+		endpoint = transform_oai_ep(endpoint);
+		document.getElementById("custom_oai_endpoint").value = endpoint;
+
+		let default_name = "Endpoint " + (get_oai_favorites().filter(favorite => !favorite.is_default).length + 1);
+		try
+		{
+			default_name = new URL(endpoint).host || default_name;
+		}
+		catch(error) {}
+		inputBoxOkCancel("Enter a name for this API URL and key pair.", "Add API Favorite", default_name, "Favorite name", () => {
+			let name = getInputBoxValue().trim();
+			if(name === "")
+			{
+				msgbox("Favorite name cannot be empty.", "Invalid Favorite Name");
+				return;
+			}
+			let favorites = get_oai_favorites();
+			if(favorites.some(favorite => favorite && favorite.name.toLowerCase() === name.toLowerCase()))
+			{
+				msgbox("A favorite with that name already exists.", "Duplicate Favorite Name");
+				return;
+			}
+			favorites.push({name:name, endpoint:endpoint, key:key});
+			refresh_oai_favorites(favorites.length - 1);
+			autosave();
+		}, () => {});
+	}
+
+	function delete_oai_favorite()
+	{
+		let dropdown = document.getElementById("custom_oai_favorites");
+		let index = Number.parseInt(dropdown.value, 10);
+		let favorite = get_oai_favorites()[index];
+		if(!favorite || favorite.is_default === true)
+		{
+			return;
+		}
+		msgboxYesNo("Remove the favorite \"" + favorite.name + "\"?", "Remove API Favorite", () => {
+			get_oai_favorites().splice(index, 1);
+			refresh_oai_favorites();
+			autosave();
+		}, null);
+	}
+
 	function customapi_dropdown(force_autotoggle_chatcompl = false)
 	{
 		let epchoice = document.getElementById("customapidropdown").value;
+		document.getElementById("custom_oai_favorites_container").classList.add("hidden");
 		document.getElementById("oaicustom").classList.add("hidden");
 		document.getElementById("koboldcustom").classList.add("hidden");
 		document.getElementById("claudecustom").classList.add("hidden");
@@ -15050,6 +15337,7 @@ Current version indicated by LITEVER below.
 			document.getElementById("oaireasoningeffort").value = localsettings.reasoning_effort;
 			if(epchoice==2)
 			{
+				document.getElementById("custom_oai_favorites_container").classList.remove("hidden");
 				document.getElementById("oaidesc").classList.remove("hidden");
 				document.getElementById("custom_oai_model").classList.remove("hidden");
 				document.getElementById("custom_oai_endpoint").classList.remove("hidden");
@@ -15059,6 +15347,7 @@ Current version indicated by LITEVER below.
 				} else {
 					document.getElementById("custom_oai_endpoint").value = (localsettings.saved_oai_addr ? localsettings.saved_oai_addr : default_oai_base);
 				}
+				refresh_oai_favorites();
 			}
 			else if(epchoice==3) //openrouter supports autofetch
 			{
@@ -15631,6 +15920,12 @@ Current version indicated by LITEVER below.
 				custom_oai_key = desired_oai_key;
 				if(epchoice==2)
 				{
+					let oai_favorite_index = Number.parseInt(document.getElementById("custom_oai_favorites").value, 10);
+					let selected_oai_favorite = get_oai_favorites()[oai_favorite_index];
+					if(selected_oai_favorite && selected_oai_favorite.is_default === true && custom_oai_endpoint === default_oai_base)
+					{
+						selected_oai_favorite.key = custom_oai_key;
+					}
 					if(localsettings.saved_oai_addr!=custom_oai_endpoint || localsettings.saved_oai_key!=custom_oai_key)
 					{
 						//if not reconnecting exact same key and API, overwrite custom eps
@@ -26101,7 +26396,7 @@ Current version indicated by LITEVER below.
 						console.log("sync request: handle recv reply");
 						pending_response_id = "";
 						poll_in_progress = false;
-						let resp = synchro_polled_response;
+						let resp = normalize_oai_response_content(synchro_polled_response);
 						if(waiting_for_summarycall==0)
 						{
 							last_reply_was_empty = (resp=="" || resp.trim()=="");
@@ -26153,7 +26448,7 @@ Current version indicated by LITEVER below.
 						}
 
 						synchro_polled_resptoolcalls = null;
-						render_gametext(false,false);
+						render_gametext(true,false);
 					}
 					if(synchro_polled_respimg)
 					{
@@ -34619,8 +34914,18 @@ Current version indicated by LITEVER below.
 				<span class="color_green" style="font-weight: bold;">Please input Nvidia NIM Key.</span><br><br>
 				</div>
 
-				<input class="form-control" name="username" autocomplete="username" type="text" id="custom_oai_endpoint" placeholder="OpenAI API URL" value="" onblur="">
-				<input class="form-control" name="password" autocomplete="current-password" type="password" id="custom_oai_key" placeholder="API Key (Required)" value="" onfocus="focus_api_keys()" onblur="blur_api_keys()"><br>
+				<div id="custom_oai_favorites_container" class="hidden">
+				<div style="display:flex; gap:4px; margin-bottom:4px; align-items:center; justify-content:flex-end;">
+					Favorites: <select title="Saved OpenAI API URL and key pairs" class="form-control" id="custom_oai_favorites" style="min-width:0;flex:1;height: 25px;font-size: 12px;padding: 3px;display: inline;max-width: 140px;" onchange="load_oai_favorite()">
+						<option value="0">[Default]</option>
+						<option value="">[Custom]</option>
+					</select>
+					<button title="Save the current API URL and key as a favorite" type="button" class="btn btn-primary" id="btn_save_oai_favorite" style="padding:3px; font-size:12px;" onclick="save_oai_favorite()">Save</button>
+					<button title="Delete the selected favorite" type="button" class="btn btn-primary bg_red hidden" id="btn_delete_oai_favorite" style="padding:3px; font-size:12px;" onclick="delete_oai_favorite()">Delete</button>
+				</div>
+				</div>
+				<input class="form-control" name="username" autocomplete="username" type="text" id="custom_oai_endpoint" placeholder="OpenAI API URL" value="" oninput="oai_favorite_fields_changed()">
+				<input class="form-control" name="password" autocomplete="current-password" type="password" id="custom_oai_key" placeholder="API Key (Required)" value="" oninput="oai_favorite_fields_changed()" onfocus="focus_api_keys()" onblur="blur_api_keys()"><br>
 				<div style="display:flex; align-items:center;">
 					<div style="padding:2px">Model Choice:</div>
 					<div style="padding:2px;margin-left:auto;" id="model_cost"></div>
@@ -34759,10 +35064,10 @@ Current version indicated by LITEVER below.
 					<div style="display: inline-block;">
 					Main Message Role:
 					<select title="Main Message Role" class="form-control" style="height: 25px; font-size: var(--theme_font_size_medium); margin-bottom: 2px; margin-right:4px; padding:4px;display:inline;width:100px" id="oairoledropdown">
+						<option value="3" selected>AutoRole</option>
 						<option value="0">User</option>
 						<option value="1">Assistant</option>
 						<option value="2">System</option>
-						<option value="3" selected>AutoRole</option>
 					</select>
 					</div>
 					<div style="display: inline-block;">
@@ -35586,6 +35891,7 @@ Current version indicated by LITEVER below.
 <!-- EsoLite modifications -->
 <script src="static/js/modHooks.js"></script>
 <script src="static/js/esoGuide.js"></script>
+<script src="static/js/esoGuideLoader.js" type="module"></script>
 <script src="static/js/fs.js"></script>
 <script src="static/js/openlumara_client.js"></script>
 <script src="static/js/encryptUtils.js"></script>
