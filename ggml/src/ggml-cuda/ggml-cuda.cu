@@ -2727,10 +2727,6 @@ static bool ggml_cuda_graph_check_compability(ggml_cgraph * cgraph) {
             }
         }
 
-        if (node->op == GGML_OP_ADD && node->src[1] && node->src[1]->ne[1] > 1) {
-            use_cuda_graph = false;
-        }
-
         if (!use_cuda_graph) {
             break;
         }
