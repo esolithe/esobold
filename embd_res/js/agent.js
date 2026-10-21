@@ -731,6 +731,17 @@ let buildOAIBaseMessages = (agentRunState, contextState, persistedMessages = [],
         }
     }
 
+    let excludeFromHistory = Array.isArray(agentRunState.excludeSpecificMessagePrefixes) ? [...agentRunState.excludeSpecificMessagePrefixes] : []
+    if (!!localsettings?.agentSkipPreviousCOTWhenProcessing) {
+        excludeFromHistory = excludeFromHistory.concat(listOfExclusions)
+    }
+    let history = getLastActions(undefined, excludeFromHistory)
+    history.forEach(turn => {
+        let role = turn.myturn ? "user" : "assistant"
+        if (turn.source === "system") role = "tool" // role = "system"
+        messages.push({ role, content: turn.msg })
+    })
+    
     let state = getDocumentFromTextDB('State')
     if (state) systemParts.push(`Current state: ${state}`)
 
@@ -749,20 +760,10 @@ let buildOAIBaseMessages = (agentRunState, contextState, persistedMessages = [],
         systemParts.push(contextState.finalAgentPrompt)
     }
 
+    let finalAdditions = []
     if (systemParts.length > 0) {
-        messages.push({ role: "system", content: systemParts.join("\n\n") })
+        finalAdditions.push({ role: "system", content: systemParts.join("\n\n") })
     }
-
-    let excludeFromHistory = Array.isArray(agentRunState.excludeSpecificMessagePrefixes) ? [...agentRunState.excludeSpecificMessagePrefixes] : []
-    if (!!localsettings?.agentSkipPreviousCOTWhenProcessing) {
-        excludeFromHistory = excludeFromHistory.concat(listOfExclusions)
-    }
-    let history = getLastActions(localsettings.agentMaxActionsInHistory, excludeFromHistory)
-    history.forEach(turn => {
-        let role = turn.myturn ? "user" : "assistant"
-        if (turn.source === "system") role = "tool" // role = "system"
-        messages.push({ role, content: turn.msg })
-    })
 
     if (agentRunState.initialPrompt) {
         let lastMsg = messages[messages.length - 1]
@@ -770,24 +771,30 @@ let buildOAIBaseMessages = (agentRunState, contextState, persistedMessages = [],
             ? `${agentRunState.initialUser}: ${agentRunState.initialPrompt}`
             : agentRunState.initialPrompt
         if (!lastMsg || lastMsg.role !== "user" || !lastMsg.content.includes(agentRunState.initialPrompt)) {
-            messages.push({ role: "user", content: promptContent })
+            finalAdditions.push({ role: "user", content: promptContent })
         }
     }
 
     if (Array.isArray(persistedMessages) && persistedMessages.length > 0) {
-        messages = messages.concat(persistedMessages)
+        finalAdditions = finalAdditions.concat(persistedMessages)
     }
 
     if (Array.isArray(appendedMessages) && appendedMessages.length > 0) {
-        messages = messages.concat(appendedMessages)
+        finalAdditions = finalAdditions.concat(appendedMessages)
     }
 
     let getMessageLength = (message) => `${message?.content || ""}`.length
+    
+    let totalFinalAdditionsLength = finalAdditions.reduce((sum, message) => sum + getMessageLength(message), 0);
+    let totalFreeSpace = contextState.max_allowed_characters - totalFinalAdditionsLength
+
     let totalMessageLength = messages.reduce((sum, message) => sum + getMessageLength(message), 0)
-    while (messages.length > 1 && totalMessageLength > contextState.max_allowed_characters) {
+    while (messages.length > 1 && totalMessageLength > totalFreeSpace) {
         totalMessageLength -= getMessageLength(messages[1])
         messages.splice(1, 1)
     }
+
+    messages = messages.concat(finalAdditions)
 
     return {
         messages,
@@ -1078,7 +1085,19 @@ let handleReasoningStripping = (text) => {
     return truncated_context;
 }
 
-let getLastActions = (amountOfActions = 10, excludeSpecificMessagePrefixes = []) => {
+let isTurnBoundaryEnabled = () => {
+    let turnsMaxContent = Number(localsettings.turnsMaxContent)
+    let turnsOldContentRatio = Number(localsettings.turnsOldContentRatio)
+    return turnsMaxContent > 0 && turnsOldContentRatio > 0
+}
+
+/**
+ * Returns the last actions from the game text, considering the specified amount and exclusions. If amount is not provided, and turn boundary limits are not present, it defaults to using the agent's maximum actions in history.
+ * @param {number|undefined} amountOfActions 
+ * @param {Array<string>} excludeSpecificMessagePrefixes 
+ * @returns {Array<Object>}
+ */
+let getLastActions = (amountOfActions = undefined, excludeSpecificMessagePrefixes = []) => {
     let exclusions = ["Chain of thought repetition detected - ending", "Chain of thought complete", "plan_actions"]
     // , "Action: {", "Action (words =", "Action taken: ", "Action taken (words ="
     // "Action: {", "Action (words =", "Action taken: ", "Action taken (words ="
@@ -1086,10 +1105,17 @@ let getLastActions = (amountOfActions = 10, excludeSpecificMessagePrefixes = [])
     let gametext = concat_gametext(true)
     gametext = handleReasoningStripping(gametext || "");
     gametext = cropToTurnBoundaryMax(gametext);
-    return repack_instruct_turns(gametext, `{{[INPUT]}}`, `{{[OUTPUT]}}`, `{{[SYSTEM]}}`, true, false, excludeSpecificMessagePrefixes).map(msg => {
+    let repackedTurns = repack_instruct_turns(gametext, `{{[INPUT]}}`, `{{[OUTPUT]}}`, `{{[SYSTEM]}}`, true, false, excludeSpecificMessagePrefixes).map(msg => {
         msg.msg = msg.msg.replaceAll("{{[SYSTEM_END]}}", "").replaceAll("{{[INPUT_END]}}", "").replaceAll("{{[OUTPUT_END]}}", "").trim();
         return msg
-    }).filter(msg => !/^\n*$/.test(msg.msg) && !!msg.msg && !exclusions.find(exclusion => msg.msg.indexOf(exclusion) !== -1)).splice(-amountOfActions)
+    }).filter(msg => !/^\n*$/.test(msg.msg) && !!msg.msg && !exclusions.find(exclusion => msg.msg.indexOf(exclusion) !== -1))
+    
+    // If turn boundary limits are not present, use the amount of actions to manage the number of turns returned - otherwise use the fixes boundary for improved performance
+    if (!isTurnBoundaryEnabled() || amountOfActions !== undefined) {
+        let amountToSplice = amountOfActions || window.localsettings?.agentMaxActionsInHistory || 10
+        repackedTurns = repackedTurns.splice(-amountToSplice)
+    }
+    return repackedTurns;
 }
 
 let getDocumentFromTextDB = (documentName) => {
@@ -1757,7 +1783,7 @@ let runAgentCycle = async (agentRunState = {}) => {
             excludeFromHistory = excludeFromHistory.concat(listOfExclusions)
         }
 
-        let lastActions = getLastActions(localsettings.agentMaxActionsInHistory, excludeFromHistory)
+        let lastActions = getLastActions(undefined, excludeFromHistory)
         lastActions.forEach(action => {
             switch (action.source) {
                 case "system":
@@ -2026,9 +2052,11 @@ let runAgentCycle = async (agentRunState = {}) => {
             if (!agentRunState?.planToUse && !shouldSkipPlanningStep) {
                 // Planning step: use plan_actions as the only tool
                 let planningTools = commandsToOAITools(getReasoningCommand(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist))
-                currentChainOfThought = currentChainOfThought.splice(-localsettings.agentMaxActionsInHistory)
-                recentActions = recentActions.splice(-localsettings.agentMaxActionsInHistory)
-                objRefOverride(agentRunState, { currentChainOfThought, recentActions })
+                if (!isTurnBoundaryEnabled()) {
+                    currentChainOfThought = currentChainOfThought.splice(-localsettings.agentMaxActionsInHistory)
+                    recentActions = recentActions.splice(-localsettings.agentMaxActionsInHistory)
+                    objRefOverride(agentRunState, { currentChainOfThought, recentActions })
+                }
 
                 let planningContext = buildAgentContextState(
                     agentRunState,
@@ -2137,9 +2165,11 @@ let runAgentCycle = async (agentRunState = {}) => {
                 if (!promptOverview && i === 0 && currentOrderOfActionsOverall.length === 0 && !shouldSkipPlanningStep) {
                     promptOverview = planningPrompt
                 }
-                currentChainOfThought = currentChainOfThought.splice(-localsettings.agentMaxActionsInHistory)
-                recentActions = recentActions.splice(-localsettings.agentMaxActionsInHistory)
-                objRefOverride(agentRunState, { currentChainOfThought, recentActions })
+                if (!isTurnBoundaryEnabled()) {
+                    currentChainOfThought = currentChainOfThought.splice(-localsettings.agentMaxActionsInHistory)
+                    recentActions = recentActions.splice(-localsettings.agentMaxActionsInHistory)
+                    objRefOverride(agentRunState, { currentChainOfThought, recentActions })
+                }
 
                 let contextCommands = plannedCommand ? [plannedCommand] : getEnabledCommands(agentRunState, manualOverridesForEnabledCommands, isUsingWhitelist)
                 let executionContext = buildAgentContextState(
@@ -2335,9 +2365,11 @@ let runAgentCycle = async (agentRunState = {}) => {
             }
             let jsonGrammar = await getCommandsGNBF(nextAction)
 
-            currentChainOfThought = currentChainOfThought.splice(-localsettings.agentMaxActionsInHistory)
-            recentActions = recentActions.splice(-localsettings.agentMaxActionsInHistory)
-            objRefOverride(agentRunState, { currentChainOfThought, recentActions })
+            if (!isTurnBoundaryEnabled()) {
+                currentChainOfThought = currentChainOfThought.splice(-localsettings.agentMaxActionsInHistory)
+                recentActions = recentActions.splice(-localsettings.agentMaxActionsInHistory)
+                objRefOverride(agentRunState, { currentChainOfThought, recentActions })
+            }
 
             let promptOverview = currentOrderOfActionDescriptionsOverall.length > 0 ? currentOrderOfActionDescriptionsOverall[i - 1] : null
             if (i === 0 && !shouldSkipPlanningStep) {
@@ -3719,7 +3751,7 @@ let checkIfTaskComplete = async (agentRunState) => {
     }
     try {
         let excludeFromHistory = !!localsettings?.agentSkipPreviousCOTWhenProcessing ? listOfExclusions : []
-        let latestActions = getLastActions(localsettings.agentMaxActionsInHistory, excludeFromHistory)
+        let latestActions = getLastActions(undefined, excludeFromHistory)
         let latestActionsText = latestActions.map(action => `${action.source}: ${action.msg}`).join("\n")
         let objective = agentRunState?.agentInputPrompt || agentRunState?.initialPrompt || ""
 
@@ -3744,7 +3776,7 @@ let checkIfTaskComplete = async (agentRunState) => {
 let checkIfTaskCompleteOAI = async (agentRunState) => {
     try {
         let excludeFromHistory = !!localsettings?.agentSkipPreviousCOTWhenProcessing ? listOfExclusions : []
-        let latestActions = getLastActions(localsettings.agentMaxActionsInHistory, excludeFromHistory)
+        let latestActions = getLastActions(undefined, excludeFromHistory)
         let latestActionsText = latestActions.map(action => `${action.source}: ${action.msg}`).join("\n")
         let objective = agentRunState?.agentInputPrompt || agentRunState?.initialPrompt || ""
 

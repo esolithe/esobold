@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A tiny, cross-platform OpenAI Chat Completions-compatible local agent, for use in KoboldCpp.
 
-Nine built-in tools, plus tools exposed by KoboldCpp's MCP proxy:
+Nine built-in tools, plus tools exposed by an MCP server:
   - read
   - write
   - edit
@@ -50,17 +50,18 @@ if os.name != "nt":
         pass  # Optional in some Python builds; plain input() still works.
 
 
-DEFAULT_MAX_TOOL_RESULT_CHARS = 20000
+DEFAULT_MAX_TOOL_RESULT_CHARS = 24000
 MAX_TOOL_RESULT_CHARS = DEFAULT_MAX_TOOL_RESULT_CHARS
 NORMAL_TOOL_RESULT_DISPLAY_CHARS = 8000
 COMPACT_TOOL_RESULT_DISPLAY_CHARS = 600
 MAX_AGENT_STEPS = 48
 MAX_FETCH_BYTES = 4000000
 MAX_VIEW_IMAGE_BYTES = 32 * 1024 * 1024
-MAX_PROJECT_INSTRUCTION_CHARS = 10000
+MAX_MCP_RESPONSE_BYTES = 4 * 1024 * 1024
+MAX_PROJECT_INSTRUCTION_CHARS = 12000
 DEFAULT_BASE_URL = os.getenv("OPENAI_BASE_URL", "http://127.0.0.1:5001/v1")
 DEFAULT_API_KEY = os.getenv("OPENAI_API_KEY", "local")
-DEFAULT_MODEL = os.getenv("OPENAI_MODEL", "local-model")
+DEFAULT_MODEL = os.getenv("OPENAI_MODEL", "")
 # Accept self-signed endpoint certificates for now; web_fetch keeps verification.
 API_SSL_CONTEXT = ssl._create_unverified_context()
 COLOR_STDOUT = False
@@ -70,9 +71,16 @@ ESCAPE_DISAMBIGUATION_SECONDS = 0.05
 ESCAPE_SEQUENCE_QUIET_SECONDS = 0.01
 ESCAPE_SEQUENCE_DRAIN_SECONDS = 0.10
 INTERRUPTED_TASK_NOTICE = "[Task was interrupted before the agent finished. Follow the new instruction below.]"
+AUTOCOMPACT_RESUME_NOTICE = (
+    "[The session was automatically compacted while this task was in progress. "
+    "Continue the task from the summary above, starting with the next unfinished "
+    "step. Do not wait for the user to repeat the request.]"
+)
 # Older agents must reject sessions whose confirmation overrides they cannot enforce.
 SESSION_FORMAT_VERSION = 2
 CONFIRMATION_MODES = ("on", "off", "auto")
+REASONING_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+MCP_PROTOCOL_VERSION = "2025-06-18"
 
 ANSI_RESET = "\033[0m"
 ANSI_BOLD_CYAN = "\033[1;36m"
@@ -90,6 +98,14 @@ class EndpointUnavailableError(RuntimeError):
 
 class APIResponseError(RuntimeError):
     """The server responded, but the API request or response was invalid."""
+
+
+class MCPHTTPError(RuntimeError):
+    """An MCP endpoint returned an unsuccessful HTTP response."""
+
+    def __init__(self, status: int, message: str):
+        super().__init__(message)
+        self.status = status
 
 
 class AgentInterrupted(Exception):
@@ -217,6 +233,61 @@ def input_prompt(text: str) -> str:
     return label + " "
 
 
+def drain_terminal_input() -> None:
+    """Best-effort discard of queued terminal input before a new prompt.
+
+    This leaves redirected input alone. It cannot discard input already buffered
+    by a Python reader or input that arrives after the flush.
+    """
+    try:
+        if not sys.stdin.isatty():
+            return
+        fd = sys.stdin.fileno()
+        if os.name == "nt":
+            import ctypes
+            from ctypes import wintypes
+            import msvcrt
+
+            flush_input = ctypes.windll.kernel32.FlushConsoleInputBuffer
+            flush_input.argtypes = [wintypes.HANDLE]
+            flush_input.restype = wintypes.BOOL
+            flush_input(msvcrt.get_osfhandle(fd))
+        else:
+            import termios
+
+            try:
+                termios.tcflush(fd, termios.TCIFLUSH)
+            except termios.error:
+                pass
+    except (AttributeError, ImportError, OSError, ValueError):
+        pass  # Unsupported terminal controls must not prevent prompting.
+
+
+def read_paste_input() -> str | None:
+    """Collect literal input until /end, or return None when cancelled."""
+    drain_terminal_input()
+    print(
+        "Paste mode: enter or paste text, then type "
+        + color("/end", ANSI_YELLOW)
+        + " on its own line to submit."
+    )
+
+    lines: list[str] = []
+    while True:
+        try:
+            chunk = input(input_prompt("Paste>") if not lines else "")
+        except (EOFError, KeyboardInterrupt):
+            print("\nPaste cancelled.\n")
+            return None
+
+        # Readline may return a bracketed multiline paste in one chunk, while
+        # basic consoles return one line per input() call.
+        for line in chunk.split("\n"):
+            if line == "/end":
+                return "\n".join(lines)
+            lines.append(line)
+
+
 def toggle_status(enabled: bool) -> str:
     return color("ON" if enabled else "OFF", ANSI_GREEN if enabled else ANSI_YELLOW)
 
@@ -239,10 +310,13 @@ class Throbber:
         self.enabled = stream_is_interactive(self.stream)
         self.stop_event = threading.Event()
         self.thread: threading.Thread | None = None
+        self.started_at = 0.0
+        self.rendered_width = 0
 
     def __enter__(self) -> Throbber:
         if not self.enabled:
             return self
+        self.started_at = time.monotonic()
         self._write_frame(0)
         self.thread = threading.Thread(target=self._animate, daemon=True)
         self.thread.start()
@@ -250,7 +324,10 @@ class Throbber:
 
     def _write_frame(self, index: int) -> None:
         label = color(self.label, ANSI_CYAN)
-        self.stream.write(f"\r{label} {self.FRAMES[index % len(self.FRAMES)]}")
+        elapsed = int(time.monotonic() - self.started_at)
+        suffix = f" {self.FRAMES[index % len(self.FRAMES)]} {elapsed}s"
+        self.rendered_width = max(self.rendered_width, len(self.label) + len(suffix))
+        self.stream.write(f"\r{label}{suffix}")
         self.stream.flush()
 
     def _animate(self) -> None:
@@ -265,7 +342,7 @@ class Throbber:
         self.stop_event.set()
         if self.thread is not None:
             self.thread.join(timeout=0.3)
-        self.stream.write("\r" + " " * (len(self.label) + 2) + "\r")
+        self.stream.write("\r" + " " * self.rendered_width + "\r")
         self.stream.flush()
 
 
@@ -454,7 +531,7 @@ def system_prompt(disabled_tools: set[str] | None = None) -> str:
     rules.append("After finishing tool use, briefly tell the user what was done.")
     return (
         f"You are a small, careful local computer assistant running on {platform.system()}.\n"
-        f"{introduction} The server may also supply MCP tools.\n\nRules:\n"
+        f"{introduction} An MCP server may also supply additional tools.\n\nRules:\n"
         + "\n".join(f"- {rule}" for rule in rules)
         + "\n"
         + load_workdir_instructions()
@@ -809,6 +886,7 @@ def tool_shell(args: dict[str, Any]) -> str:
 
     completed = subprocess.run(
         argv,
+        stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -837,6 +915,7 @@ def tool_ask_user(args: dict[str, Any]) -> str:
         raise ValueError("question must be a non-empty string")
     print("\n" + color("Agent asks:", ANSI_CYAN) + f" {question.strip()}")
     try:
+        drain_terminal_input()
         answer = input(input_prompt("Your answer>"))
     except (EOFError, KeyboardInterrupt):
         print()
@@ -1149,6 +1228,7 @@ def tool_arguments_preview(
 
 def read_tool_approval(prompt: str) -> str:
     """Read a yes/no line, but let Escape interrupt without waiting for Enter."""
+    drain_terminal_input()
     if not (stream_is_interactive(sys.stdin) and stream_is_interactive(sys.stdout)):
         return input(prompt)
 
@@ -1212,7 +1292,17 @@ def confirm_tool_call(
     verbose: bool = False,
     approval_label: str = "Approved automatically.",
 ) -> bool:
-    preview_limit = NORMAL_TOOL_RESULT_DISPLAY_CHARS if verbose else min(COMPACT_TOOL_RESULT_DISPLAY_CHARS, NORMAL_TOOL_RESULT_DISPLAY_CHARS)
+    verbose_preview = tool_arguments_preview(args, NORMAL_TOOL_RESULT_DISPLAY_CHARS)
+    if verbose:
+        preview_limit = NORMAL_TOOL_RESULT_DISPLAY_CHARS
+        preview = verbose_preview
+    else:
+        preview_limit = min(
+            COMPACT_TOOL_RESULT_DISPLAY_CHARS,
+            NORMAL_TOOL_RESULT_DISPLAY_CHARS,
+        )
+        preview = tool_arguments_preview(args, preview_limit)
+    more_available = not verbose and preview != verbose_preview
     delimiter = "--- Tool call --------------------------------------------------"
     print("\n" + color(delimiter, ANSI_YELLOW))
     print(color("Tool:", ANSI_YELLOW) + f" {name}")
@@ -1220,7 +1310,7 @@ def confirm_tool_call(
         color("Arguments preview:", ANSI_CYAN)
         + f" maximum {preview_limit} characters"
     )
-    print(tool_arguments_preview(args, preview_limit))
+    print(preview)
     print(color("-" * len(delimiter), ANSI_YELLOW))
 
     if auto_approve:
@@ -1229,8 +1319,9 @@ def confirm_tool_call(
 
     while True:
         try:
+            choices = "y/N/more" if more_available else "y/N"
             answer = read_tool_approval(
-                "Run this tool? [y/N, Esc to halt]: "
+                f"Run this tool? [{choices}, Esc to halt]: "
             ).strip().lower()
         except (EOFError, KeyboardInterrupt):
             raise AgentInterrupted from None
@@ -1240,7 +1331,22 @@ def confirm_tool_call(
             return True
         if answer in ("", "n", "no"):
             return False
-        print("Enter y to approve, n to deny and continue, or press Esc to halt.")
+        if more_available and answer in ("m", "more"):
+            print(
+                color("Arguments preview (more):", ANSI_CYAN)
+                + f" maximum {NORMAL_TOOL_RESULT_DISPLAY_CHARS} characters"
+            )
+            print(verbose_preview)
+            print(color("-" * len(delimiter), ANSI_YELLOW))
+            more_available = False
+            continue
+        if more_available:
+            print(
+                "Enter y to approve, n to deny and continue, m for more, "
+                "or press Esc to halt."
+            )
+        else:
+            print("Enter y to approve, n to deny and continue, or press Esc to halt.")
 
 
 def print_tool_result(name: str, result: str, verbose: bool) -> None:
@@ -1350,6 +1456,7 @@ def review_tool_call(
     model: str,
     max_tokens: int | None,
     request_timeout: int,
+    reasoning_effort: str | None = None,
 ) -> bool:
     """Append a temporary review turn without changing the conversation prefix."""
     review_messages = [
@@ -1374,7 +1481,7 @@ def review_tool_call(
         max_tokens=min(max_tokens, 100) if max_tokens is not None else 100,
         request_timeout=request_timeout,
         tool_choice="none",
-        reasoning_effort="none",
+        reasoning_effort=reasoning_effort,
     )
     try:
         choice = response["choices"][0]
@@ -1382,11 +1489,101 @@ def review_tool_call(
     except (KeyError, IndexError, TypeError):
         return False
     return (
-        choice.get("finish_reason") != "length"
-        and not choice["message"].get("tool_calls")
-        and isinstance(content, str)
+        isinstance(content, str)
         and re.match(r"\s*APPROVED[^\w\s]*(?:\s|$)", content, re.IGNORECASE) is not None
     )
+
+
+def path_is_within_workdir(
+    path_value: Any,
+    workdir: Path | None = None,
+) -> bool:
+    """Return whether a path resolves inside the current working directory."""
+    try:
+        root = (workdir or Path.cwd()).resolve()
+        path = Path(path_value).expanduser()
+        if not path.is_absolute():
+            path = root / path
+        path.resolve(strict=False).relative_to(root)
+    except (TypeError, ValueError, OSError, RuntimeError):
+        return False
+    return True
+
+
+def write_path_requires_confirmation(
+    name: str,
+    args: dict[str, Any],
+    workdir: Path | None = None,
+) -> bool:
+    """Return whether an auto-mode write/edit needs explicit confirmation."""
+    if name not in {"write", "edit"}:
+        return False
+    return not path_is_within_workdir(args.get("path"), workdir)
+
+
+def auto_mode_manual_confirmation_reason(
+    name: str,
+    args: dict[str, Any],
+    workdir: Path | None = None,
+) -> str | None:
+    """Explain why an auto-mode call must bypass automatic review."""
+    if name == "shell":
+        return "Shell commands require explicit confirmation in auto mode."
+    if write_path_requires_confirmation(name, args, workdir):
+        return "Write/edit outside the working directory requires explicit confirmation."
+    return None
+
+
+def glob_pattern_stays_within_root(pattern_value: Any) -> bool:
+    """Return whether every supported glob expansion avoids parent traversal."""
+    try:
+        patterns = [str(pattern_value)]
+        while any(re.search(r"\{[^{}]+\}", item) for item in patterns):
+            expanded = []
+            for item in patterns:
+                group = re.search(r"\{([^{}]+)\}", item)
+                if group:
+                    expanded.extend(
+                        item[:group.start()] + alternative + item[group.end():]
+                        for alternative in group.group(1).split(",")
+                    )
+                else:
+                    expanded.append(item)
+            if len(expanded) > 256:
+                return False
+            patterns = expanded
+        return all(
+            not Path(pattern).is_absolute() and ".." not in Path(pattern).parts
+            for pattern in patterns
+        )
+    except (TypeError, ValueError, OSError):
+        return False
+
+
+def deterministic_auto_approval(
+    name: str,
+    args: dict[str, Any],
+    workdir: Path | None = None,
+) -> str | None:
+    """Return an approval label for clearly safe auto-mode built-in calls."""
+    path_value: Any
+    if name in {"read", "write", "edit", "view_image"}:
+        path_value = args.get("path")
+    elif name in {"glob", "grep"}:
+        path_value = args.get("path", ".")
+    else:
+        return None
+
+    if not path_is_within_workdir(path_value, workdir):
+        return None
+
+    if name == "glob":
+        # A search rooted inside the workdir must not use its pattern to walk
+        # back out, including through the brace expansion supported by glob.
+        if not glob_pattern_stays_within_root(args.get("pattern")):
+            return None
+
+    return "Approved automatically (action inside workdir)."
 
 
 def tool_view_image(
@@ -1396,6 +1593,7 @@ def tool_view_image(
     model: str,
     max_tokens: int | None,
     request_timeout: int,
+    reasoning_effort: str | None = None,
 ) -> str:
     path = Path(args["path"]).expanduser()
     if not path.is_file():
@@ -1437,6 +1635,7 @@ def tool_view_image(
         temperature=DEFAULT_TEMPERATURE,
         max_tokens=max_tokens,
         request_timeout=request_timeout,
+        reasoning_effort=reasoning_effort,
     )
     try:
         choice = response["choices"][0]
@@ -1473,56 +1672,239 @@ def api_url(base_url: str, resource: str) -> str:
     return urllib.parse.urlunsplit(parsed._replace(path=path))
 
 
+def is_local_endpoint(base_url: str) -> bool:
+    """Return whether an endpoint explicitly targets this device's loopback interface."""
+    return url_targets_loopback(normalize_base_url(base_url))
+
+
+def url_targets_loopback(value: str) -> bool:
+    """Return whether an HTTP URL explicitly names a loopback host."""
+    hostname = urllib.parse.urlsplit(value).hostname
+    if hostname is None:
+        return False
+    hostname = hostname.rstrip(".")
+    if hostname.casefold() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
 def mcp_url(base_url: str) -> str:
     """Return the KoboldCpp MCP proxy URL for an OpenAI-compatible base URL."""
     parsed = urllib.parse.urlsplit(normalize_base_url(base_url))
     return urllib.parse.urlunsplit(parsed._replace(path="/mcp", query="", fragment=""))
 
 
-def mcp_request(
-    base_url: str,
-    api_key: str,
-    method: str,
-    params: dict[str, Any],
-    timeout: int,
-) -> dict[str, Any]:
-    payload = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": method,
-        "params": params,
-    }
-    request = urllib.request.Request(
-        mcp_url(base_url),
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        },
-        method="POST",
-    )
+def normalize_mcp_url(value: str) -> str:
+    """Validate an exact Streamable HTTP MCP endpoint URL."""
+    value = value.strip()
+    parsed = urllib.parse.urlsplit(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("MCP endpoint must be an http:// or https:// URL with a host")
     try:
-        with urllib.request.urlopen(request, timeout=timeout, context=API_SSL_CONTEXT) as response:
-            value = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"MCP HTTP {exc.code}: {limit_text(body, 'error response')}") from exc
-    except (urllib.error.URLError, ConnectionError, TimeoutError) as exc:
-        raise RuntimeError(f"Could not reach KoboldCpp MCP proxy: {exc}") from exc
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"KoboldCpp MCP proxy returned invalid JSON: {exc}") from exc
-    if not isinstance(value, dict):
-        raise RuntimeError("KoboldCpp MCP proxy returned a non-object response")
-    if value.get("error") is not None:
-        raise RuntimeError(f"MCP error: {json.dumps(value['error'], ensure_ascii=False)}")
+        hostname = parsed.hostname
+        parsed.port
+    except ValueError as exc:
+        raise ValueError(f"invalid MCP endpoint host or port: {exc}") from exc
+    if hostname is None:
+        raise ValueError("MCP endpoint must include a host")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("MCP endpoint must not contain embedded credentials")
+    if parsed.fragment:
+        raise ValueError("MCP endpoint must not contain a fragment")
     return value
 
 
+def read_limited_response(response: Any, limit: int, label: str) -> bytes:
+    body = response.read(limit + 1)
+    if len(body) > limit:
+        raise RuntimeError(f"{label} exceeds {limit:,} bytes")
+    return body
+
+
+def parse_mcp_sse(body: bytes, request_id: int) -> dict[str, Any]:
+    """Return the JSON-RPC response matching request_id from an SSE body."""
+    data_lines: list[str] = []
+    messages: list[dict[str, Any]] = []
+
+    def finish_event() -> None:
+        if not data_lines:
+            return
+        payload = "\n".join(data_lines)
+        data_lines.clear()
+        try:
+            value = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"MCP server returned invalid JSON in an SSE event: {exc}") from exc
+        if isinstance(value, dict):
+            messages.append(value)
+
+    for raw_line in body.decode("utf-8", errors="replace").splitlines():
+        if not raw_line:
+            finish_event()
+        elif raw_line.startswith("data:"):
+            data_lines.append(raw_line[5:].lstrip())
+    finish_event()
+
+    for message in messages:
+        if message.get("id") == request_id:
+            return message
+    raise RuntimeError("MCP SSE response did not contain the matching JSON-RPC response")
+
+
+class MCPStreamableHTTPClient:
+    """Small synchronous, tool-only Streamable HTTP MCP client."""
+
+    def __init__(self, url: str, api_key: str, timeout: int):
+        self.url = normalize_mcp_url(url)
+        self.api_key = api_key
+        self.timeout = timeout
+        self.session_id: str | None = None
+        self.protocol_version: str | None = None
+        self.initialized = False
+        self.next_request_id = 1
+
+    def _headers(self) -> dict[str, str]:
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        }
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        if self.session_id:
+            headers["Mcp-Session-Id"] = self.session_id
+        if self.protocol_version:
+            headers["MCP-Protocol-Version"] = self.protocol_version
+        return headers
+
+    def _post(
+        self,
+        payload: dict[str, Any],
+        request_id: int | None,
+    ) -> dict[str, Any] | None:
+        request = urllib.request.Request(
+            self.url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers=self._headers(),
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(
+                request, timeout=self.timeout, context=API_SSL_CONTEXT
+            ) as response:
+                received_session_id = response.headers.get("Mcp-Session-Id")
+                if received_session_id:
+                    self.session_id = received_session_id
+                body = read_limited_response(
+                    response, MAX_MCP_RESPONSE_BYTES, "MCP response"
+                )
+                content_type = response.headers.get("Content-Type", "").lower()
+        except urllib.error.HTTPError as exc:
+            body = exc.read(MAX_MCP_RESPONSE_BYTES + 1).decode(
+                "utf-8", errors="replace"
+            )
+            raise MCPHTTPError(
+                exc.code,
+                f"MCP HTTP {exc.code}: {limit_text(body, 'error response')}",
+            ) from exc
+        except (urllib.error.URLError, ConnectionError, TimeoutError) as exc:
+            raise RuntimeError(f"Could not reach MCP endpoint: {exc}") from exc
+
+        if request_id is None:
+            return None
+        if not body:
+            raise RuntimeError("MCP server returned an empty response")
+        if "text/event-stream" in content_type:
+            value = parse_mcp_sse(body, request_id)
+        else:
+            try:
+                value = json.loads(body.decode("utf-8"))
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(f"MCP server returned invalid JSON: {exc}") from exc
+            if not isinstance(value, dict):
+                raise RuntimeError("MCP server returned a non-object JSON response")
+        if value.get("id") != request_id:
+            raise RuntimeError("MCP server returned a mismatched JSON-RPC response id")
+        if value.get("error") is not None:
+            raise RuntimeError(
+                f"MCP error: {json.dumps(value['error'], ensure_ascii=False)}"
+            )
+        return value
+
+    def _request_without_connect(
+        self, method: str, params: dict[str, Any]
+    ) -> dict[str, Any]:
+        request_id = self.next_request_id
+        self.next_request_id += 1
+        response = self._post(
+            {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": method,
+                "params": params,
+            },
+            request_id,
+        )
+        if response is None:
+            raise RuntimeError("MCP server returned no JSON-RPC response")
+        return response
+
+    def connect(self) -> None:
+        if self.initialized:
+            return
+        response = self._request_without_connect(
+            "initialize",
+            {
+                "protocolVersion": MCP_PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {"name": "koboldcpp-agent", "version": "1.0.0"},
+            },
+        )
+        result = response.get("result")
+        if not isinstance(result, dict):
+            raise RuntimeError("MCP initialize response did not contain a result object")
+        negotiated_version = result.get("protocolVersion")
+        if not isinstance(negotiated_version, str) or not negotiated_version:
+            raise RuntimeError("MCP initialize response did not contain a protocol version")
+        self.protocol_version = negotiated_version
+        self._post(
+            {
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized",
+                "params": {},
+            },
+            None,
+        )
+        self.initialized = True
+
+    def request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        self.connect()
+        return self._request_without_connect(method, params)
+
+    def close(self) -> None:
+        if not self.session_id:
+            return
+        request = urllib.request.Request(
+            self.url, headers=self._headers(), method="DELETE"
+        )
+        try:
+            with urllib.request.urlopen(
+                request, timeout=min(self.timeout, 5), context=API_SSL_CONTEXT
+            ):
+                pass
+        except Exception:
+            pass
+        finally:
+            self.session_id = None
+            self.initialized = False
+
+
 def discover_mcp_tools(
-    base_url: str, api_key: str, timeout: int
+    client: MCPStreamableHTTPClient,
 ) -> tuple[list[dict[str, Any]], set[str], list[str]]:
-    response = mcp_request(base_url, api_key, "tools/list", {}, timeout)
+    response = client.request("tools/list", {})
     result = response.get("result", {})
     raw_tools = result.get("tools", []) if isinstance(result, dict) else []
     if not isinstance(raw_tools, list):
@@ -1565,18 +1947,12 @@ def discover_mcp_tools(
 
 
 def call_mcp_tool(
-    base_url: str,
-    api_key: str,
+    client: MCPStreamableHTTPClient,
     name: str,
     arguments: dict[str, Any],
-    timeout: int,
 ) -> str:
-    response = mcp_request(
-        base_url,
-        api_key,
-        "tools/call",
-        {"name": name, "arguments": arguments},
-        timeout,
+    response = client.request(
+        "tools/call", {"name": name, "arguments": arguments}
     )
     result = response.get("result")
     if isinstance(result, str):
@@ -1584,8 +1960,8 @@ def call_mcp_tool(
     return json.dumps(result, ensure_ascii=False)
 
 
-def probe_endpoint(base_url: str, api_key: str, timeout: int) -> tuple[bool, str]:
-    """Check reachability without spending tokens on a completion."""
+def probe_endpoint(base_url: str, api_key: str, timeout: int) -> tuple[bool, str, list[str]]:
+    """Check reachability and discover model IDs without requesting a completion."""
     request = urllib.request.Request(
         api_url(base_url, "models"),
         headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"},
@@ -1593,15 +1969,27 @@ def probe_endpoint(base_url: str, api_key: str, timeout: int) -> tuple[bool, str
     )
     try:
         with urllib.request.urlopen(request, timeout=min(timeout, 5), context=API_SSL_CONTEXT) as response:
-            response.read(1)
-            return True, f"HTTP {response.status}"
+            detail = f"HTTP {response.status}"
+            try:
+                payload = json.load(response)
+            except (ValueError, UnicodeError):
+                return True, detail, []
+            models: list[str] = []
+            entries = payload.get("data", []) if isinstance(payload, dict) else []
+            if isinstance(entries, list):
+                for entry in entries:
+                    model_id = entry.get("id") if isinstance(entry, dict) else None
+                    if isinstance(model_id, str) and model_id.strip() and model_id not in models:
+                        models.append(model_id)
+            models.sort(key=str.casefold)
+            return True, detail, models
     except urllib.error.HTTPError as exc:
         # Authentication failures and servers without /models are still reachable.
         if exc.code < 500:
-            return True, f"HTTP {exc.code}"
-        return False, f"HTTP {exc.code}"
+            return True, f"HTTP {exc.code}", []
+        return False, f"HTTP {exc.code}", []
     except (urllib.error.URLError, ConnectionError, TimeoutError) as exc:
-        return False, str(exc)
+        return False, str(exc), []
 
 
 def recover_connection(
@@ -1619,6 +2007,7 @@ def recover_connection(
         print("  [W] Open connection wizard")
         print("  [C] Cancel")
         try:
+            drain_terminal_input()
             answer = input("Choose [r/w/c]: ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             print()
@@ -1631,10 +2020,10 @@ def recover_connection(
                 return connection
             continue
         if answer in {"", "r", "retry", "reconnect"}:
-            reachable, detail = probe_endpoint(current_url, api_key, timeout)
+            reachable, detail, models = probe_endpoint(current_url, api_key, timeout)
             if reachable:
                 print(f"Endpoint responded: {current_url} ({detail}).\n")
-                return current_url, api_key, model
+                return current_url, api_key, model or (models[0] if models else "local-model")
             reason = detail
             continue
         print("Choose r, w, or c.")
@@ -1644,9 +2033,10 @@ def prompt_for_connection(
     current_url: str, current_key: str, current_model: str, timeout: int
 ) -> tuple[str, str, str] | None:
     """Collect and check connection settings before applying any of them."""
-    print("\nConnect to a model endpoint. Press Enter to keep a value, or type /cancel.")
+    print("\nConnect to a model endpoint. Press Enter to accept a default, or type /cancel.")
     try:
         while True:
+            drain_terminal_input()
             requested_url = input(f"Endpoint URL [{current_url}]: ").strip()
             if requested_url.lower() == "/cancel":
                 print("Connection unchanged.\n")
@@ -1658,27 +2048,135 @@ def prompt_for_connection(
                 print(f"Invalid endpoint: {exc}")
 
         key_status = "set" if current_key else "not set"
+        drain_terminal_input()
         requested_key = getpass.getpass(f"API key [{key_status}; Enter to keep]: ")
         if requested_key.strip().lower() == "/cancel":
             print("Connection unchanged.\n")
             return None
         candidate_key = requested_key if requested_key else current_key
 
-        requested_model = input(f"Model [{current_model}]: ").strip()
+        reachable, detail, models = probe_endpoint(candidate_url, candidate_key, timeout)
+        if not reachable:
+            print(f"Connection failed: {detail}. Settings unchanged.\n")
+            return None
+        print(f"Endpoint responded: {candidate_url} ({detail}).")
+        if models:
+            print("Available models:")
+            for model_id in models:
+                print(f"  {model_id}")
+            default_model = current_model if current_model in models else models[0]
+        else:
+            print("No model names available. Enter a model name manually if needed.")
+            default_model = current_model or "local-model"
+        drain_terminal_input()
+        requested_model = input(f"Model [{default_model}]: ").strip()
         if requested_model.lower() == "/cancel":
             print("Connection unchanged.\n")
             return None
-        candidate_model = requested_model or current_model
+        candidate_model = requested_model or default_model
     except (EOFError, KeyboardInterrupt):
         print("\nConnection unchanged.\n")
         return None
 
-    reachable, detail = probe_endpoint(candidate_url, candidate_key, timeout)
-    if not reachable:
-        print(f"Connection failed: {detail}. Settings unchanged.\n")
-        return None
-    print(f"Endpoint responded: {candidate_url} ({detail}).\n")
     return candidate_url, candidate_key, candidate_model
+
+
+def mcp_status_text(
+    base_url: str,
+    follows_model: bool,
+    endpoint: str | None,
+    api_key: str,
+) -> str:
+    if follows_model:
+        derived_url = mcp_url(base_url)
+        if is_local_endpoint(base_url):
+            return f"automatic ({derived_url})"
+        return "off (automatic; model endpoint is not loopback)"
+    if endpoint is None:
+        return "off"
+    key_status = "API key set" if api_key else "no API key"
+    return f"custom ({endpoint}; {key_status})"
+
+
+def prompt_for_mcp(
+    base_url: str,
+    follows_model: bool,
+    endpoint: str | None,
+    api_key: str,
+) -> tuple[bool, str | None, str] | None:
+    """Run the interactive MCP endpoint wizard without changing live settings."""
+    derived_url = mcp_url(base_url)
+    current_choice = "1" if follows_model else "3" if endpoint is None else "2"
+    automatic_note = (
+        "enabled when available"
+        if is_local_endpoint(base_url)
+        else "currently off because the model endpoint is not loopback"
+    )
+    print("\nConfigure MCP:")
+    print(f"  1. Automatic - {derived_url} ({automatic_note})")
+    print("  2. Custom Streamable HTTP URL")
+    print("  3. Off")
+    print("  4. Cancel")
+    try:
+        drain_terminal_input()
+        choice = input(f"Choice [{current_choice}]: ").strip().lower() or current_choice
+        if choice in {"4", "c", "cancel", "/cancel"}:
+            print("MCP settings unchanged.\n")
+            return None
+        if choice in {"1", "a", "auto", "automatic"}:
+            return True, None, ""
+        if choice in {"3", "off"}:
+            return False, None, ""
+        if choice not in {"2", "custom"}:
+            print("MCP settings unchanged: choose 1, 2, 3, or 4.\n")
+            return None
+
+        default_url = endpoint if not follows_model and endpoint else derived_url
+        while True:
+            drain_terminal_input()
+            requested_url = input(f"MCP URL [{default_url}]: ").strip()
+            if requested_url.lower() == "/cancel":
+                print("MCP settings unchanged.\n")
+                return None
+            try:
+                candidate_url = normalize_mcp_url(requested_url or default_url)
+                break
+            except ValueError as exc:
+                print(f"Invalid MCP endpoint: {exc}")
+
+        if not url_targets_loopback(candidate_url):
+            print(
+                "This remote server will receive MCP tool arguments and return "
+                "content to the model."
+            )
+            drain_terminal_input()
+            answer = input("Enable this remote MCP server? [y/N]: ").strip().lower()
+            if answer not in {"y", "yes"}:
+                print("MCP settings unchanged.\n")
+                return None
+
+        same_custom_endpoint = not follows_model and endpoint == candidate_url
+        if same_custom_endpoint and api_key:
+            key_prompt = "MCP bearer API key [set; Enter to keep, '-' to clear]: "
+        else:
+            key_prompt = "MCP bearer API key [optional; Enter for none]: "
+        print("Custom MCP API keys are kept only for this run and are not saved.")
+        drain_terminal_input()
+        requested_key = getpass.getpass(key_prompt)
+        if requested_key.strip().lower() == "/cancel":
+            print("MCP settings unchanged.\n")
+            return None
+        if same_custom_endpoint and api_key and not requested_key:
+            candidate_key = api_key
+        elif requested_key == "-":
+            candidate_key = ""
+        else:
+            candidate_key = requested_key
+    except (EOFError, KeyboardInterrupt):
+        print("\nMCP settings unchanged.\n")
+        return None
+
+    return False, candidate_url, candidate_key
 
 
 def confirmation_status(mode: str) -> str:
@@ -1715,6 +2213,18 @@ def session_path(command_arg: str) -> Path:
     return path
 
 
+def load_session_path(value: str) -> Path:
+    """Resolve an existing session path for command-line loading."""
+    path = session_path(value)
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError as exc:
+        raise argparse.ArgumentTypeError(f"cannot access session file: {value}") from exc
+    if not resolved.is_file():
+        raise argparse.ArgumentTypeError(f"not a file: {value}")
+    return resolved
+
+
 def save_session_file(
     path: Path,
     *,
@@ -1732,6 +2242,10 @@ def save_session_file(
     workdir: Path,
     tool_confirmation: dict[str, str] | None = None,
     max_agent_steps: int = MAX_AGENT_STEPS,
+    reasoning_effort: str | None = None,
+    autocompact_tokens: int | None = None,
+    mcp_follows_model: bool = True,
+    mcp_endpoint: str | None = None,
 ) -> None:
     """Save all session state except model endpoint credentials."""
     session = {
@@ -1741,8 +2255,12 @@ def save_session_file(
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
+        "reasoning_effort": reasoning_effort,
         # Agent-only state follows. Never add base_url, api_key, or model here.
         "max_agent_steps": max_agent_steps,
+        "autocompact_tokens": autocompact_tokens,
+        "mcp_follows_model": mcp_follows_model,
+        "mcp_endpoint": mcp_endpoint,
         "disabled_tools": sorted(disabled_tools),
         "workdir": str(workdir),
         "confirmation_mode": confirmation_mode,
@@ -1791,6 +2309,26 @@ def load_session_file(path: Path) -> dict[str, Any]:
         not isinstance(max_tokens, int) or isinstance(max_tokens, bool) or max_tokens < 1
     ):
         raise ValueError("max_tokens must be null or a positive integer")
+    session.setdefault("reasoning_effort", None)
+    if (
+        session["reasoning_effort"] is not None
+        and session["reasoning_effort"] not in REASONING_EFFORTS
+    ):
+        raise ValueError(
+            "reasoning_effort must be null, none, minimal, low, medium, high, xhigh, or max"
+        )
+    if "mcp_follows_model" not in session:
+        session["mcp_follows_model"] = session.get("mcp_mode") != "off"
+    if not isinstance(session["mcp_follows_model"], bool):
+        raise ValueError("mcp_follows_model must be a boolean")
+    session.setdefault("mcp_endpoint", None)
+    if session["mcp_endpoint"] is not None:
+        if not isinstance(session["mcp_endpoint"], str):
+            raise ValueError("mcp_endpoint must be null or an HTTP URL")
+        try:
+            session["mcp_endpoint"] = normalize_mcp_url(session["mcp_endpoint"])
+        except ValueError as exc:
+            raise ValueError(f"invalid mcp_endpoint: {exc}") from exc
     disabled_tools = session.get("disabled_tools")
     if not isinstance(disabled_tools, list) or not all(
         isinstance(name, str) and name for name in disabled_tools
@@ -1813,16 +2351,55 @@ def load_session_file(path: Path) -> dict[str, Any]:
         if not isinstance(session.get(field), bool):
             raise ValueError(f"{field} must be a boolean")
     session.setdefault("max_agent_steps", MAX_AGENT_STEPS)
+    session.setdefault("autocompact_tokens", None)
     for field in ("request_timeout", "max_tool_result_chars", "max_agent_steps"):
         value = session.get(field)
         if not isinstance(value, int) or isinstance(value, bool) or value < 1:
             raise ValueError(f"{field} must be a positive integer")
+    autocompact_tokens = session["autocompact_tokens"]
+    if autocompact_tokens is not None and (
+        not isinstance(autocompact_tokens, int)
+        or isinstance(autocompact_tokens, bool)
+        or autocompact_tokens < 1
+    ):
+        raise ValueError("autocompact_tokens must be null or a positive integer")
     workdir = session.get("workdir")
     if not isinstance(workdir, str) or not workdir:
         raise ValueError("workdir must be a non-empty string")
     if not Path(workdir).is_dir():
         raise ValueError(f"saved working directory is unavailable: {workdir}")
     return session
+
+
+def session_history_stats(messages: list[dict[str, Any]]) -> tuple[int, int, int]:
+    """Return message count, user-turn count, and textual payload characters."""
+    def count_characters(value: Any) -> int:
+        if isinstance(value, str):
+            return len(value)
+        if isinstance(value, list):
+            return sum(count_characters(item) for item in value)
+        if isinstance(value, dict):
+            return sum(count_characters(item) for item in value.values())
+        return 0
+
+    user_turns = sum(message.get("role") == "user" for message in messages)
+    character_count = sum(
+        count_characters(message.get(field))
+        for message in messages
+        for field in ("content", "reasoning", "reasoning_content", "tool_calls")
+    )
+    return len(messages), user_turns, character_count
+
+
+def print_session_loaded(path: Path, messages: list[dict[str, Any]]) -> None:
+    message_count, user_turns, character_count = session_history_stats(messages)
+    turn_label = "turn" if user_turns == 1 else "turns"
+    message_label = "message" if message_count == 1 else "messages"
+    print(f"Session loaded: {path}")
+    print(
+        f"History: {user_turns:,} user {turn_label}, {message_count:,} {message_label}, "
+        f"{character_count:,} characters"
+    )
 
 
 def print_runtime_status(
@@ -1834,6 +2411,9 @@ def print_runtime_status(
     max_tokens: int | None,
     tool_confirmation: dict[str, str] | None = None,
     max_agent_steps: int = MAX_AGENT_STEPS,
+    reasoning_effort: str | None = None,
+    autocompact_tokens: int | None = None,
+    mcp_status: str = "off",
 ) -> None:
     max_tokens_status = str(max_tokens) if max_tokens is not None else "server default"
     print(color("Current status:", ANSI_BOLD_CYAN))
@@ -1841,7 +2421,14 @@ def print_runtime_status(
     print(color("Endpoint:", ANSI_CYAN) + f" {base_url}")
     print(color("Working directory:", ANSI_CYAN) + f" {Path.cwd()}")
     print(color("Max output tokens:", ANSI_CYAN) + f" {max_tokens_status}")
+    print(color("Reasoning effort:", ANSI_CYAN) + f" {reasoning_effort or 'default'}")
     print(color("Max agent steps:", ANSI_CYAN) + f" {max_agent_steps}")
+    autocompact_status = (
+        f"{autocompact_tokens:,} context tokens"
+        if autocompact_tokens is not None else "off"
+    )
+    print(color("Automatic compaction:", ANSI_CYAN) + f" {autocompact_status}")
+    print(color("MCP:", ANSI_CYAN) + f" {mcp_status}")
     print(color("Default confirmation:", ANSI_CYAN) + f" {confirmation_status(confirmation_mode)}")
     if tool_confirmation:
         settings = ", ".join(f"{name}={mode}" for name, mode in sorted(tool_confirmation.items()))
@@ -1859,26 +2446,35 @@ def print_runtime_help(
     max_tokens: int | None,
     tool_confirmation: dict[str, str] | None = None,
     max_agent_steps: int = MAX_AGENT_STEPS,
+    reasoning_effort: str | None = None,
+    autocompact_tokens: int | None = None,
+    mcp_status: str = "off",
 ) -> None:
     rows = (
         ("/help", "Show this help"),
+        ("/paste", "Enter multiline input; finish with /end."),
         ("/save FILE", "Save conversation and settings as JSON"),
         ("/load FILE", "Load conversation and settings from JSON"),
         ("/clear", "Clear history and refresh MCP tools"),
         ("/tools", "List tools and confirmation settings (/tool is an alias)"),
         ("/tools NAME on|off", "Enable or disable a tool, then clear the session"),
         ("/compact", "Summarize history to save context space"),
+        ("/usage", "Show token usage for the latest model request"),
+        ("/autocompact [N|off]", "Show, set, or disable automatic compaction by context tokens"),
         ("/maxsteps [N]", "Show or set the maximum model turns per user message (N >= 1)"),
         ("/workdir", "Show the current working directory"),
         ("/workdir PATH", "Change directory and clear the session"),
+        ("/mcp", "Configure the MCP endpoint or turn MCP off"),
         ("/confirm", "Show global default confirmation and tool overrides"),
-        ("/confirm on|off|auto", "Set global default: ask, approve, or automatic review"),
+        ("/confirm on|off|auto", "Set global default: always ask, always approve, or auto (approve only within workdir)"),
         ("/confirm NAME", "Show a tool's confirmation setting"),
         ("/confirm NAME on|off|auto", "Override confirmation for a tool. Overrides win over the default"),
         ("/confirm NAME default", "Remove the tool's override"),
         ("/reasoning", "Show reasoning display status"),
         ("/reasoning on", "Display model reasoning"),
         ("/reasoning off", "Hide model reasoning"),
+        ("/reasoningeffort", "Show the reasoning effort override"),
+        ("/reasoningeffort EFFORT", "Set default|none|minimal|low|medium|high|xhigh|max"),
         ("/verbose", "Show verbose display status"),
         ("/verbose on", "Expand arguments and show result contents"),
         ("/verbose off", "Use compact tool displays"),
@@ -1892,7 +2488,8 @@ def print_runtime_help(
     print()
     print_runtime_status(
         base_url, model, confirmation_mode, show_reasoning, verbose, max_tokens,
-        tool_confirmation, max_agent_steps,
+        tool_confirmation, max_agent_steps, reasoning_effort, autocompact_tokens,
+        mcp_status,
     )
     print()
 
@@ -1908,6 +2505,47 @@ def reasoning_text(message: dict[str, Any]) -> str:
     return ""
 
 
+def completion_usage(response: dict[str, Any]) -> dict[str, int] | None:
+    """Return standard Chat Completions token counts when supplied by the server."""
+    usage = response.get("usage")
+    if not isinstance(usage, dict):
+        return None
+
+    counts: dict[str, int] = {}
+    for field in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        value = usage.get(field)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            counts[field] = value
+    return counts if "prompt_tokens" in counts else None
+
+
+def autocompaction_due(
+    usage: dict[str, int] | None,
+    autocompact_tokens: int | None,
+) -> bool:
+    """Return whether the latest request crossed the configured context limit."""
+    return (
+        autocompact_tokens is not None
+        and usage is not None
+        and usage["prompt_tokens"] > autocompact_tokens
+    )
+
+
+def print_quota(usage: dict[str, int] | None) -> None:
+    """Display the latest request usage without implying an account quota."""
+    if usage is None:
+        print("Token usage is unavailable. You may need to send a message first.\n")
+        return
+
+    print(color("Latest model request:", ANSI_BOLD_CYAN))
+    print(color("Context input:", ANSI_CYAN) + f" {usage['prompt_tokens']:,} tokens")
+    if "completion_tokens" in usage:
+        print(color("Generated output:", ANSI_CYAN) + f" {usage['completion_tokens']:,} tokens")
+    if "total_tokens" in usage:
+        print(color("Total request usage:", ANSI_CYAN) + f" {usage['total_tokens']:,} tokens")
+    print("Type " + color("/compact", ANSI_YELLOW) + " to summarize and compress current context.\n")
+
+
 def compact_session(
     messages: list[dict[str, Any]],
     base_url: str,
@@ -1916,7 +2554,8 @@ def compact_session(
     temperature: float,
     max_tokens: int | None,
     request_timeout: int,
-) -> str:
+    reasoning_effort: str | None = None,
+) -> tuple[str, dict[str, int] | None]:
     """Summarize the complete conversation without changing it on failure."""
     summary_request = [
         *messages,
@@ -1927,7 +2566,9 @@ def compact_session(
                 "with the earlier messages removed. Be concise and accurate. Include the "
                 "overall and current goals, decisions, completed work, important findings "
                 "and file paths, and remaining steps or blockers. Preserve details needed "
-                "to act; do not invent progress. Return only the summary."
+                "to act; do not invent progress. If a task is still in progress, state the "
+                "next unfinished step explicitly so work can resume without more input from "
+                "the user. Return only the summary."
             ),
         },
     ]
@@ -1940,6 +2581,7 @@ def compact_session(
         temperature=temperature,
         max_tokens=max_tokens,
         request_timeout=request_timeout,
+        reasoning_effort=reasoning_effort,
     )
     try:
         choice = response["choices"][0]
@@ -1950,7 +2592,7 @@ def compact_session(
         raise APIResponseError("summary was cut off by the output token limit")
     if not isinstance(summary, str) or not summary.strip():
         raise APIResponseError("model returned an empty summary")
-    return summary.strip()
+    return summary.strip(), completion_usage(response)
 
 
 def run_agent(
@@ -1964,16 +2606,43 @@ def run_agent(
     no_color: bool = False,
     tool_confirmation: dict[str, str] | None = None,
     max_agent_steps: int = MAX_AGENT_STEPS,
+    load_session: Path | None = None,
+    reasoning_effort: str | None = None,
 ) -> None:
     global MAX_TOOL_RESULT_CHARS
 
+    session = None
+    loaded_session_path = None
+    if load_session is not None:
+        loaded_session_path = load_session.resolve()
+        session = load_session_file(load_session)
+        os.chdir(session["workdir"])
+        temperature = float(session["temperature"])
+        max_tokens = session["max_tokens"]
+        reasoning_effort = session["reasoning_effort"]
+        max_agent_steps = session["max_agent_steps"]
+        autocompact_tokens = session["autocompact_tokens"]
+        confirmation_mode = session["confirmation_mode"]
+        tool_confirmation = session["tool_confirmation"]
+        no_color = session["no_color"]
+        request_timeout = session["request_timeout"]
+        MAX_TOOL_RESULT_CHARS = session["max_tool_result_chars"]
+        configure_colors(disabled=no_color)
+    else:
+        autocompact_tokens = None
+
     base_url = normalize_base_url(base_url)
-    show_reasoning = False
-    verbose = False
+    mcp_follows_model = (
+        session["mcp_follows_model"] if session is not None else True
+    )
+    mcp_endpoint = session["mcp_endpoint"] if session is not None else None
+    mcp_api_key = ""  # Custom MCP credentials are intentionally never saved.
+    show_reasoning = session["show_reasoning"] if session is not None else False
+    verbose = session["verbose"] if session is not None else False
     print(color("***\nWelcome to KoboldCpp Agent", ANSI_BOLD_CYAN))
     print(f"Connecting to {base_url}, please wait...")
     print(color("***", ANSI_BOLD_CYAN) + "\n")
-    reachable, detail = probe_endpoint(base_url, api_key, request_timeout)
+    reachable, detail, models = probe_endpoint(base_url, api_key, request_timeout)
     if not reachable:
         connection = recover_connection(
             base_url, api_key, model, request_timeout, detail
@@ -1982,28 +2651,60 @@ def run_agent(
             print("No reachable endpoint selected. Exiting.")
             return
         base_url, api_key, model = connection
+    else:
+        model = model or (models[0] if models else "local-model")
 
-    disabled_tools: set[str] = set()
+    disabled_tools = set(session["disabled_tools"]) if session is not None else set()
     tool_confirmation = dict(tool_confirmation or {})
     all_tools = list(TOOLS)
     available_tools = list(TOOLS)
     mcp_tool_names: set[str] = set()
+    mcp_client: MCPStreamableHTTPClient | None = None
+
+    def active_mcp_config() -> tuple[str, str] | None:
+        if mcp_follows_model:
+            if not is_local_endpoint(base_url):
+                return None
+            return mcp_url(base_url), api_key
+        if mcp_endpoint is None:
+            return None
+        return mcp_endpoint, mcp_api_key
+
+    def get_mcp_client() -> MCPStreamableHTTPClient | None:
+        nonlocal mcp_client
+        config = active_mcp_config()
+        if config is None:
+            if mcp_client is not None:
+                mcp_client.close()
+                mcp_client = None
+            return None
+        endpoint, key = config
+        if (
+            mcp_client is None
+            or mcp_client.url != endpoint
+            or mcp_client.api_key != key
+            or mcp_client.timeout != request_timeout
+        ):
+            if mcp_client is not None:
+                mcp_client.close()
+            mcp_client = MCPStreamableHTTPClient(endpoint, key, request_timeout)
+        return mcp_client
 
     def refresh_mcp_tools() -> None:
         nonlocal all_tools, available_tools, mcp_tool_names
         all_tools = list(TOOLS)
         mcp_tool_names = set()
-        try:
-            mcp_tools, mcp_tool_names, warnings = discover_mcp_tools(
-                base_url, api_key, request_timeout
-            )
-            all_tools.extend(mcp_tools)
-            for warning in warnings:
-                print(color("MCP warning:", ANSI_YELLOW) + f" {warning}")
-            if mcp_tools:
-                print(color("MCP tools:", ANSI_CYAN) + f" {len(mcp_tools)} loaded")
-        except Exception as exc:
-            print(color("MCP unavailable:", ANSI_YELLOW) + f" {exc}")
+        client = get_mcp_client()
+        if client is not None:
+            try:
+                mcp_tools, mcp_tool_names, warnings = discover_mcp_tools(client)
+                all_tools.extend(mcp_tools)
+                for warning in warnings:
+                    print(color("MCP warning:", ANSI_YELLOW) + f" {warning}")
+                if mcp_tools:
+                    print(color("MCP tools:", ANSI_CYAN) + f" {len(mcp_tools)} loaded")
+            except Exception as exc:
+                print(color("MCP unavailable:", ANSI_YELLOW) + f" {exc}")
         available_tools = [
             tool for tool in all_tools
             if tool["function"]["name"] not in disabled_tools
@@ -2015,20 +2716,62 @@ def run_agent(
 
     refresh_mcp_tools()
 
-    messages: list[dict[str, Any]] = [
-        {"role": "system", "content": system_prompt(disabled_tools)}
-    ]
-    pending_interruption = False
+    messages: list[dict[str, Any]] = (
+        session["messages"] if session is not None else
+        [{"role": "system", "content": system_prompt(disabled_tools)}]
+    )
+    last_usage: dict[str, int] | None = None
+    pending_interruption = session["pending_interruption"] if session is not None else False
 
+    def compact_current_session(
+        *,
+        automatic: bool,
+        resume: bool = False,
+        trigger_tokens: int | None = None,
+    ) -> bool:
+        """Compact current history, optionally making an in-progress turn continue."""
+        nonlocal last_usage
+        try:
+            with Throbber("Automatically summarizing session" if automatic else "Summarizing session"):
+                summary, _ = compact_session(
+                    messages, base_url, api_key, model, temperature,
+                    max_tokens, request_timeout, reasoning_effort,
+                )
+        except (EndpointUnavailableError, APIResponseError) as exc:
+            label = "Automatic compaction" if automatic else "Compaction"
+            print(f"{label} failed: {exc}. Conversation unchanged.\n")
+            return False
+        messages[:] = [
+            {"role": "system", "content": system_prompt(disabled_tools)},
+            {"role": "assistant", "content": f"Summary of the earlier session:\n{summary}"},
+        ]
+        if resume:
+            messages.append({"role": "user", "content": AUTOCOMPACT_RESUME_NOTICE})
+        last_usage = None
+        if automatic:
+            trigger = (
+                f" after context input reached {trigger_tokens:,} tokens"
+                if trigger_tokens is not None else ""
+            )
+            suffix = " Resuming the in-progress task.\n" if resume else "\n"
+            print(f"Session automatically compacted{trigger}.{suffix}")
+        else:
+            print(f"Session compacted:\n{summary}\n")
+        return True
+
+    if loaded_session_path is not None:
+        print_session_loaded(loaded_session_path, messages)
     print_runtime_status(
         base_url, model, confirmation_mode, show_reasoning, verbose, max_tokens,
-        tool_confirmation, max_agent_steps,
+        tool_confirmation, max_agent_steps, reasoning_effort, autocompact_tokens,
+        mcp_status_text(base_url, mcp_follows_model, mcp_endpoint, mcp_api_key),
     )
     print("\nKoboldCpp Agent has full shell access, exercise caution when approving commands.")
     print("Type " + color("/help", ANSI_YELLOW) + " for runtime commands.\n")
 
     while True:
         try:
+            drain_terminal_input()
             user_text = input(input_prompt("User>")).strip()
         except (EOFError, KeyboardInterrupt):
             print("\nExiting.")
@@ -2042,10 +2785,29 @@ def run_agent(
         command_parts = user_text.split(maxsplit=1)
         command = command_parts[0].lower()
         command_arg = command_parts[1].strip() if len(command_parts) == 2 else ""
+        literal_input = False
+        if command == "/paste":
+            if command_arg:
+                print("Usage: /paste\n")
+                continue
+            pasted_text = read_paste_input()
+            if pasted_text is None:
+                continue
+            if not pasted_text.strip():
+                print("Paste was empty.\n")
+                continue
+            user_text = pasted_text
+            command = ""
+            command_arg = ""
+            literal_input = True
         if command == "/help":
             print_runtime_help(
                 base_url, model, confirmation_mode, show_reasoning, verbose,
-                max_tokens, tool_confirmation, max_agent_steps,
+                max_tokens, tool_confirmation, max_agent_steps, reasoning_effort,
+                autocompact_tokens,
+                mcp_status_text(
+                    base_url, mcp_follows_model, mcp_endpoint, mcp_api_key
+                ),
             )
             continue
         if command == "/maxsteps":
@@ -2057,6 +2819,30 @@ def run_agent(
                     continue
             print(f"Max agent steps: {max_agent_steps}\n")
             continue
+        if command == "/usage":
+            if command_arg:
+                print("Usage: /usage\n")
+                continue
+            print_quota(last_usage)
+            continue
+        if command == "/autocompact":
+            if command_arg:
+                if command_arg.lower() == "off":
+                    autocompact_tokens = None
+                else:
+                    try:
+                        autocompact_tokens = positive_int(command_arg)
+                    except (ValueError, argparse.ArgumentTypeError):
+                        print("Usage: /autocompact [N|off] (N must be a positive integer)\n")
+                        continue
+            if autocompact_tokens is None:
+                print("Automatic compaction is off.\n")
+            else:
+                print(
+                    "Automatic compaction threshold: "
+                    f"{autocompact_tokens:,} context tokens.\n"
+                )
+            continue
         if command == "/save":
             try:
                 path = session_path(command_arg)
@@ -2065,7 +2851,11 @@ def run_agent(
                     messages=messages,
                     temperature=temperature,
                     max_tokens=max_tokens,
+                    reasoning_effort=reasoning_effort,
                     max_agent_steps=max_agent_steps,
+                    autocompact_tokens=autocompact_tokens,
+                    mcp_follows_model=mcp_follows_model,
+                    mcp_endpoint=mcp_endpoint,
                     disabled_tools=disabled_tools,
                     confirmation_mode=confirmation_mode,
                     tool_confirmation=tool_confirmation,
@@ -2080,7 +2870,7 @@ def run_agent(
             except (OSError, TypeError, ValueError) as exc:
                 print(f"Cannot save session: {exc}\n")
                 continue
-            print(f"Session saved: {path.resolve()}\n")
+            print(f"\nSession saved: {path.resolve()}\n")
             continue
         if command == "/load":
             try:
@@ -2092,9 +2882,15 @@ def run_agent(
                 print(f"Cannot load session: {exc}\n")
                 continue
             messages[:] = session["messages"]
+            last_usage = None
             temperature = float(session["temperature"])
             max_tokens = session["max_tokens"]
+            reasoning_effort = session["reasoning_effort"]
             max_agent_steps = session["max_agent_steps"]
+            autocompact_tokens = session["autocompact_tokens"]
+            mcp_follows_model = session["mcp_follows_model"]
+            mcp_endpoint = session["mcp_endpoint"]
+            mcp_api_key = ""
             disabled_tools.clear()
             disabled_tools.update(session["disabled_tools"])
             confirmation_mode = session["confirmation_mode"]
@@ -2107,10 +2903,15 @@ def run_agent(
             MAX_TOOL_RESULT_CHARS = session["max_tool_result_chars"]
             pending_interruption = session["pending_interruption"]
             refresh_mcp_tools()
-            print(f"Session loaded: {loaded_path}")
+            print()
+            print_session_loaded(loaded_path, messages)
             print_runtime_status(
                 base_url, model, confirmation_mode, show_reasoning, verbose,
-                max_tokens, tool_confirmation, max_agent_steps,
+                max_tokens, tool_confirmation, max_agent_steps, reasoning_effort,
+                autocompact_tokens,
+                mcp_status_text(
+                    base_url, mcp_follows_model, mcp_endpoint, mcp_api_key
+                ),
             )
             print()
             continue
@@ -2145,11 +2946,13 @@ def run_agent(
                 disabled_tools.remove(name)
             refresh_mcp_tools()
             messages[:] = [{"role": "system", "content": system_prompt(disabled_tools)}]
+            last_usage = None
             pending_interruption = False
             print(f"{name} is now {setting}. Conversation cleared.\n")
             continue
         if command == "/clear" and not command_arg:
             messages[:] = [{"role": "system", "content": system_prompt(disabled_tools)}]
+            last_usage = None
             pending_interruption = False
             refresh_mcp_tools()
             print("Conversation cleared.\n")
@@ -2161,20 +2964,7 @@ def run_agent(
             if len(messages) == 1:
                 print("Nothing to compact.\n")
                 continue
-            try:
-                with Throbber("Summarizing session"):
-                    summary = compact_session(
-                        messages, base_url, api_key, model, temperature,
-                        max_tokens, request_timeout,
-                    )
-            except (EndpointUnavailableError, APIResponseError) as exc:
-                print(f"Compaction failed: {exc}. Conversation unchanged.\n")
-                continue
-            messages[:] = [
-                {"role": "system", "content": system_prompt(disabled_tools)},
-                {"role": "assistant", "content": f"Summary of the earlier session:\n{summary}"},
-            ]
-            print(f"Session compacted:\n{summary}\n")
+            compact_current_session(automatic=False)
             continue
         if command == "/workdir":
             if not command_arg:
@@ -2192,10 +2982,29 @@ def run_agent(
                 print(f"Cannot change working directory: {exc}\n")
                 continue
             messages[:] = [{"role": "system", "content": system_prompt(disabled_tools)}]
+            last_usage = None
             pending_interruption = False
             refresh_mcp_tools()
             print(f"Working directory: {Path.cwd()}")
             print("Conversation cleared (/clear fresh session).\n")
+            continue
+        if command == "/mcp":
+            if command_arg:
+                print("Usage: /mcp\n")
+                continue
+            mcp_settings = prompt_for_mcp(
+                base_url, mcp_follows_model, mcp_endpoint, mcp_api_key
+            )
+            if mcp_settings is not None:
+                mcp_follows_model, mcp_endpoint, mcp_api_key = mcp_settings
+                refresh_mcp_tools()
+                print(
+                    "MCP: "
+                    + mcp_status_text(
+                        base_url, mcp_follows_model, mcp_endpoint, mcp_api_key
+                    )
+                    + ".\n"
+                )
             continue
         if command == "/confirm":
             parts = command_arg.split()
@@ -2239,6 +3048,22 @@ def run_agent(
             else:
                 print("Usage: /reasoning [on|off]\n")
             continue
+        if command == "/reasoningeffort":
+            setting = command_arg.lower()
+            if not setting:
+                print(f"Reasoning effort: {reasoning_effort or 'default'}.\n")
+            elif setting == "default":
+                reasoning_effort = None
+                print("Reasoning effort reset to default (parameter omitted).\n")
+            elif setting in REASONING_EFFORTS:
+                reasoning_effort = setting
+                print(f"Reasoning effort set to {reasoning_effort}.\n")
+            else:
+                print(
+                    "Usage: /reasoningeffort "
+                    "[default|none|minimal|low|medium|high|xhigh|max]\n"
+                )
+            continue
         if command == "/verbose":
             setting = command_arg.lower()
             if not setting:
@@ -2270,7 +3095,11 @@ def run_agent(
         if command in {"/model", "/apikey", "/endpoint"}:
             print("Use /connect to set the endpoint, API key, and model.\n")
             continue
-        if user_text.startswith("/") and not user_text.startswith("//"):
+        if (
+            not literal_input
+            and user_text.startswith("/")
+            and not user_text.startswith("//")
+        ):
             print(f"Unknown command: {command}. Type /help for available commands.\n")
             continue
 
@@ -2297,11 +3126,16 @@ def run_agent(
                     temperature=temperature,
                     max_tokens=max_tokens,
                     request_timeout=request_timeout,
+                    reasoning_effort=reasoning_effort,
                     cancellation=cancellation,
                 )
                 response = run_interruptible_request(
                     lambda: chat_completion(**request_args),
                     on_interrupt=cancellation.cancel,
+                )
+                last_usage = completion_usage(response)
+                should_autocompact = autocompaction_due(
+                    last_usage, autocompact_tokens
                 )
             except AgentInterrupted:
                 pending_interruption = True
@@ -2377,6 +3211,11 @@ def run_agent(
             if content:
                 print("\n" + color("Agent>", ANSI_GREEN) + f" {content}\n")
             if not tool_calls:
+                if should_autocompact:
+                    compact_current_session(
+                        automatic=True,
+                        trigger_tokens=last_usage["prompt_tokens"],
+                    )
                 break
 
             awaiting_answer = any(
@@ -2412,31 +3251,53 @@ def run_agent(
                                 result = f"ERROR: {type(exc).__name__}: {exc}"
                         else:
                             effective_mode = tool_confirmation.get(name, confirmation_mode)
+                            automatic_approval = None
                             reviewed_safe = False
                             if effective_mode == "auto":
-                                try:
-                                    with Throbber("Reviewing tool call"):
-                                        reviewed_safe = review_tool_call(
-                                            messages, available_tools, call_id, name,
-                                            base_url, api_key, model, max_tokens,
-                                            request_timeout,
-                                        )
-                                except Exception as exc:
-                                    print(f"Automatic review unavailable: {exc}")
-                                if not reviewed_safe:
+                                manual_reason = auto_mode_manual_confirmation_reason(
+                                    name, args
+                                )
+                                if manual_reason is not None:
+                                    print(manual_reason)
+                                else:
+                                    automatic_approval = deterministic_auto_approval(name, args)
+                                    if automatic_approval is None:
+                                        try:
+                                            with Throbber("Reviewing tool call"):
+                                                reviewed_safe = review_tool_call(
+                                                    messages, available_tools, call_id, name,
+                                                    base_url, api_key, model, max_tokens,
+                                                    request_timeout, reasoning_effort,
+                                                )
+                                        except Exception as exc:
+                                            print(f"Automatic review unavailable: {exc}")
+                                if (
+                                    automatic_approval is None
+                                    and not reviewed_safe
+                                    and manual_reason is None
+                                ):
                                     print("Automatic review requests confirmation.")
+                            auto_approve = (
+                                effective_mode == "off"
+                                or automatic_approval is not None
+                                or reviewed_safe
+                            )
+                            if automatic_approval is not None:
+                                approval_label = automatic_approval
+                            elif reviewed_safe:
+                                approval_label = "Approved by automatic review."
+                            elif name in tool_confirmation:
+                                approval_label = (
+                                    f"Approved automatically (/confirm {name} off)."
+                                )
+                            else:
+                                approval_label = "Approved automatically (confirm off)."
                             try:
                                 approved = confirm_tool_call(
                                     display_name, args,
-                                    effective_mode == "off" or reviewed_safe,
+                                    auto_approve,
                                     verbose,
-                                    approval_label=(
-                                        "Approved by automatic review."
-                                        if reviewed_safe else (
-                                            f"Approved automatically (/confirm {name} off)."
-                                            if name in tool_confirmation else "Approved automatically (confirm off)."
-                                        )
-                                    ),
+                                    approval_label=approval_label,
                                 )
                             except AgentInterrupted:
                                 pending_interruption = True
@@ -2448,17 +3309,14 @@ def run_agent(
                             else:
                                 try:
                                     if name in mcp_tool_names:
-                                        result = call_mcp_tool(
-                                            base_url,
-                                            api_key,
-                                            name,
-                                            args,
-                                            request_timeout,
-                                        )
+                                        client = get_mcp_client()
+                                        if client is None:
+                                            raise RuntimeError("MCP is off")
+                                        result = call_mcp_tool(client, name, args)
                                     elif name == "view_image":
                                         result = tool_view_image(
                                             args, base_url, api_key, model,
-                                            max_tokens, request_timeout,
+                                            max_tokens, request_timeout, reasoning_effort,
                                         )
                                     else:
                                         result = TOOL_IMPL[name](args)
@@ -2479,8 +3337,19 @@ def run_agent(
                     }
                 )
             if pending_interruption:
+                if should_autocompact:
+                    compact_current_session(
+                        automatic=True,
+                        trigger_tokens=last_usage["prompt_tokens"],
+                    )
                 print("\nInterrupted. Enter new instruction.\n")
                 break
+            if should_autocompact:
+                compact_current_session(
+                    automatic=True,
+                    resume=True,
+                    trigger_tokens=last_usage["prompt_tokens"],
+                )
         else:
             print(f"Agent stopped: reached the limit of {max_agent_steps} consecutive tool/model turns.\n")
 
@@ -2495,12 +3364,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--api-key",
         default=DEFAULT_API_KEY,
-        help="API key for model requests and the KoboldCpp MCP proxy (default: OPENAI_API_KEY or 'local')",
+        help=(
+            "API key for model requests and the automatic same-origin MCP endpoint "
+            "(default: OPENAI_API_KEY or 'local')"
+        ),
     )
     parser.add_argument(
         "--model",
         default=DEFAULT_MODEL,
-        help="Model name (default: OPENAI_MODEL or 'local-model')",
+        help="Model name (default: OPENAI_MODEL or the first model from /models; falls back to 'local-model')",
+    )
+    parser.add_argument(
+        "--workdir",
+        type=directory_path,
+        default=None,
+        metavar="PATH",
+        help="Set the initial working directory",
+    )
+    parser.add_argument(
+        "--load-session",
+        type=load_session_path,
+        default=None,
+        metavar="FILE",
+        help="Load conversation and runtime settings from a KoboldCpp Agent JSON save file",
     )
     parser.add_argument(
         "--temperature",
@@ -2541,8 +3427,11 @@ def parse_args() -> argparse.Namespace:
         choices=CONFIRMATION_MODES,
         default="on",
         help=(
-            "Default tool confirmation: 'on' asks, 'off' approves, and 'auto' asks "
-            "when automatic review does not approve (default: %(default)s). "
+            "Default tool confirmation: 'on' asks, 'off' approves, and 'auto' "
+            "approves non-destructive built-in actions inside the working directory "
+            "and asks when automatic review does not approve. Shell commands and "
+            "write/edit paths outside the working directory always ask in auto mode "
+            "(default: %(default)s). "
             "Per-tool overrides take precedence; ask_user prompts directly unless overridden."
         ),
     )
@@ -2577,6 +3466,17 @@ def positive_int(value: str) -> int:
     return parsed
 
 
+def directory_path(value: str) -> Path:
+    path = Path(value).expanduser()
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError as exc:
+        raise argparse.ArgumentTypeError(f"cannot access directory: {value}") from exc
+    if not resolved.is_dir():
+        raise argparse.ArgumentTypeError(f"not a directory: {value}")
+    return resolved
+
+
 def temperature_value(value: str) -> float:
     parsed = float(value)
     if not 0.0 <= parsed <= 2.0:
@@ -2596,6 +3496,8 @@ def main() -> None:
     MAX_TOOL_RESULT_CHARS = args.max_tool_result_chars
     configure_colors(disabled=args.no_color)
     try:
+        if args.workdir is not None:
+            os.chdir(args.workdir)
         run_agent(
             base_url=args.base_url,
             api_key=args.api_key,
@@ -2607,6 +3509,7 @@ def main() -> None:
             max_agent_steps=args.max_agent_steps,
             request_timeout=args.request_timeout,
             no_color=args.no_color,
+            load_session=args.load_session,
         )
     except KeyboardInterrupt:
         print("\nExiting.")

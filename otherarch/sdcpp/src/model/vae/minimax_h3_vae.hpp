@@ -228,11 +228,12 @@ namespace MiniMaxH3VAE {
         return ggml_reshape_3d(ctx, x, x->ne[0], x->ne[1], x->ne[2] * x->ne[3]);
     }
 
-    static ggml_tensor* apply_partial_rope(ggml_context* ctx,
+    static ggml_tensor* apply_partial_rope(GGMLRunnerContext* runner_ctx,
                                            ggml_tensor* x,
                                            ggml_tensor* pe) {
+        auto ctx        = runner_ctx->ggml_ctx;
         int64_t rot_dim = pe->ne[2] * 2;
-        auto rotated    = Rope::apply_rope(ctx,
+        auto rotated    = Rope::apply_rope(runner_ctx,
                                            ggml_ext_slice(ctx, x, 0, 0, rot_dim),
                                            pe,
                                            false);
@@ -289,8 +290,8 @@ namespace MiniMaxH3VAE {
                                                   batch_size);
             q                   = ggml_rms_norm(ctx->ggml_ctx, q, 1e-5f);
             k                   = ggml_rms_norm(ctx->ggml_ctx, k, 1e-5f);
-            q                   = apply_partial_rope(ctx->ggml_ctx, q, pe);
-            k                   = apply_partial_rope(ctx->ggml_ctx, k, pe);
+            q                   = apply_partial_rope(ctx, q, pe);
+            k                   = apply_partial_rope(ctx, k, pe);
             auto out            = ggml_ext_attention_ext(ctx,
                                                          q,
                                                          k,
@@ -556,12 +557,18 @@ namespace MiniMaxH3VAE {
                                    tensor.shape()[3]});
         }
 
-        static sd_tiling_params_t h3_tiling(sd_tiling_params_t params) {
+        sd_tiling_params_t resolve_tiling_params(sd_tiling_params_t params) const override {
+            if (!params.enabled) {
+                params.target_overlap = 0.25f;
+            }
+            if (params.tile_size_w == 0 && params.rel_size_w == 0.f) {
+                params.tile_size_w = 256;
+            }
+            if (params.tile_size_h == 0 && params.rel_size_h == 0.f) {
+                params.tile_size_h = 256;
+            }
             params.enabled         = true;
             params.temporal_tiling = false;
-            params.tile_size_x     = 16;
-            params.tile_size_y     = 16;
-            params.target_overlap  = 0.25f;
             return params;
         }
 
@@ -605,7 +612,7 @@ namespace MiniMaxH3VAE {
                                  bool circular_x = false,
                                  bool circular_y = false) override {
             auto input  = ensure_video_shape(x);
-            auto tiling = h3_tiling(tiling_params);
+            auto tiling = resolve_tiling_params(tiling_params);
             if (input.shape()[2] == 1) {
                 auto encoded = VAE::encode(n_threads, input, tiling, circular_x, circular_y);
                 if (!encoded.empty() && encoded.shape()[2] > 1) {
@@ -627,8 +634,11 @@ namespace MiniMaxH3VAE {
             auto plan   = make_vae_temporal_tile_plan(input.shape()[2], {17, 0});
             auto result = process_vae_temporal_tiles(input, plan, [&](const sd::Tensor<float>& chunk, const VAETemporalTile& tile) {
                 SD_UNUSED(tile);
-                return VAE::encode(n_threads, chunk, tiling, circular_x, circular_y);
+                // keep the runner alive across chunks; ending it here would
+                // evict and reload the encoder weights every chunk
+                return VAE::encode(n_threads, chunk, tiling, circular_x, circular_y, false);
             });
+            runner_end();
             if (result.empty()) {
                 return {};
             }
@@ -646,7 +656,7 @@ namespace MiniMaxH3VAE {
                                  bool circular_y   = false,
                                  bool silent       = false) override {
             auto input  = ensure_video_shape(x);
-            auto tiling = h3_tiling(tiling_params);
+            auto tiling = resolve_tiling_params(tiling_params);
             if (input.shape()[2] == 1) {
                 auto decoded = VAE::decode(n_threads,
                                            input,
@@ -689,13 +699,16 @@ namespace MiniMaxH3VAE {
                 {static_cast<int>(tokens_per_chunk + token_overlap), static_cast<int>(token_overlap)});
             GGML_ASSERT(plan.tiles.size() == static_cast<size_t>(num_chunks));
             auto result = process_vae_temporal_tiles(input, plan, [&](const sd::Tensor<float>& chunk, const VAETemporalTile& tile) {
+                // keep the runner alive across chunks; ending it here would
+                // evict and reload the decoder weights every chunk
                 auto decoded = VAE::decode(n_threads,
                                            chunk,
                                            tiling,
                                            true,
                                            circular_x,
                                            circular_y,
-                                           silent);
+                                           silent,
+                                           false);
                 if (decoded.empty()) {
                     return sd::Tensor<float>();
                 }
@@ -722,6 +735,7 @@ namespace MiniMaxH3VAE {
                 }
                 return first;
             });
+            runner_end();
             if (result.empty()) {
                 return {};
             }

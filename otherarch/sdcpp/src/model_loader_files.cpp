@@ -147,7 +147,7 @@ bool ModelLoader::add_file_impl(const std::string& path, const std::string& pref
         }
         if (tensor.index_in_zip < 0) {
             const auto& stamp = physical_files[tensor.file_index];
-            if (tensor.offset > stamp.size || static_cast<uint64_t>(tensor.nbytes_to_read()) > stamp.size - tensor.offset) { //kcpp int8 fp8
+            if (tensor.offset > stamp.size || static_cast<uint64_t>(tensor.nbytes_to_read()) > stamp.size - tensor.offset) {  // kcpp int8 fp8
                 LOG_ERROR("tensor '%s' extends beyond its model file", tensor.name.c_str());
                 return false;
             }
@@ -322,6 +322,24 @@ ModelLoader ModelLoader::file_reader(FileId id, SDVersion version) const {
     }
     reader.rebuild_catalog();
     return reader;
+}
+
+std::map<std::string, std::string> ModelLoader::file_metadata(FileId id) const {
+    for (const auto& file : files_) {
+        if (file.id == id) {
+            return file.metadata;
+        }
+    }
+    return {};
+}
+
+String2TensorStorage ModelLoader::file_tensors(FileId id) const {
+    for (const auto& file : files_) {
+        if (file.id == id) {
+            return file.tensors;
+        }
+    }
+    return {};
 }
 
 String2TensorStorage ModelLoader::file_tensors(FileId id, SDVersion version) const {

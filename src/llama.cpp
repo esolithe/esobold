@@ -22,6 +22,7 @@
 #include "llama-memory-recurrent.cpp"
 #include "llama-model-loader.cpp"
 #include "llama-model-saver.cpp"
+#include "llama-moe-cache.cpp"
 #include "llama-quant.cpp"
 #include "llama-hparams.cpp"
 #include "llama-graph.cpp"
@@ -95,7 +96,7 @@ enum llama_load_mode llama_load_mode_from_str(const char * str) {
     if (std::strcmp(str, "mlock")      == 0) { return LLAMA_LOAD_MODE_MLOCK;      }
     if (std::strcmp(str, "mmap+mlock") == 0) { return LLAMA_LOAD_MODE_MMAP_MLOCK; }
     if (std::strcmp(str, "dio")        == 0) { return LLAMA_LOAD_MODE_DIRECT_IO;  }
-    throw std::invalid_argument(std::string("unknown load mode: ") + str);
+    GGML_ABORT("unknown load mode: %s", str);
 }
 
 struct llama_sampler_chain_params llama_sampler_chain_default_params() {
