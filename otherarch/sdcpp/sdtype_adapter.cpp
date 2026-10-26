@@ -22,6 +22,7 @@
 
 #include "stable-diffusion.h"
 #include "src/kcpp_sd_extensions.h"
+#include "sdcpp_gguf_tokenizer.h"
 #include "src/core/util.h"
 #include "src/model.h"
 #include "src/model_loader.h"
@@ -241,6 +242,22 @@ static std::string read_str_from_disk(std::string filepath)
     return output;
 }
 
+struct KcppTokenizerResources {
+    std::string explicit_umt5_json;
+    std::string extracted_umt5_json;
+    std::string extracted_gemma_merges;
+    std::string extracted_gemma_vocab;
+
+    void reset() {
+        explicit_umt5_json.clear();
+        extracted_umt5_json.clear();
+        extracted_gemma_merges.clear();
+        extracted_gemma_vocab.clear();
+    }
+};
+
+static KcppTokenizerResources kcpp_tokenizer_resources;
+
 static std::string load_embd_file(std::string& cache, const char* filename)
 {
     if (cache.empty()) {
@@ -263,11 +280,17 @@ std::string load_qwen2_merges()
 std::string load_gemma_merges()
 {
     static std::string cache;
+    if (!kcpp_tokenizer_resources.extracted_gemma_merges.empty()) {
+        return kcpp_tokenizer_resources.extracted_gemma_merges;
+    }
     return load_embd_file(cache, "embd_res/gemma_merges_utf8_c_str.embd");
 }
 std::string load_gemma_vocab_json()
 {
     static std::string cache;
+    if (!kcpp_tokenizer_resources.extracted_gemma_vocab.empty()) {
+        return kcpp_tokenizer_resources.extracted_gemma_vocab;
+    }
     return load_embd_file(cache, "embd_res/gemma_vocab_json.embd");
 }
 std::string load_mistral_merges()
@@ -288,6 +311,12 @@ std::string load_t5_tokenizer_json()
 std::string load_umt5_tokenizer_json()
 {
     static std::string cache;
+    if (!kcpp_tokenizer_resources.explicit_umt5_json.empty()) {
+        return kcpp_tokenizer_resources.explicit_umt5_json;
+    }
+    if (!kcpp_tokenizer_resources.extracted_umt5_json.empty()) {
+        return kcpp_tokenizer_resources.extracted_umt5_json;
+    }
     return load_embd_file(cache, "embd_res/umt5_tokenizer_json.embd");
 }
 static void step_callback(int step, int frame_count, sd_image_t* image, bool is_noisy, void* data);
@@ -377,6 +406,8 @@ public:
 // resolve model / diffusion_model and text encoder / llm / proj / vision paths
 static void kcpp_set_model_paths(sd_ctx_params_t& params, SDParams& sd_params, const sd_load_model_inputs& inputs)
 {
+    kcpp_tokenizer_resources.reset();
+
     bool model_is_gguf = false;
     if(sd_params.t5xxl_path!="" || sd_params.clip_l_path!="" || sd_params.clip_g_path!="")
     {
@@ -480,6 +511,25 @@ static void kcpp_set_model_paths(sd_ctx_params_t& params, SDParams& sd_params, c
         return result;
     };
 
+    auto is_json_path = [&](const char* path) -> bool {
+        if (path_empty(path)) {
+            return false;
+        }
+        return toLowerCase(std::filesystem::u8path(path).extension().string()) == ".json";
+    };
+
+    auto sibling_tokenizer_json = [&](const char* model_path) -> std::string {
+        if (path_empty(model_path)) {
+            return {};
+        }
+        std::error_code error;
+        const auto candidate = std::filesystem::u8path(model_path).parent_path() / "tokenizer.json";
+        if (std::filesystem::is_regular_file(candidate, error)) {
+            return candidate.string();
+        }
+        return {};
+    };
+
     bool iswan = sd_version_is_wan(tempver);
     bool is_wan21 = sd_version_is_wan(tempver) && tempver != VERSION_WAN2_2_TI2V;
     bool is_qwenimg = sd_version_is_qwen_image(tempver);
@@ -496,6 +546,7 @@ static void kcpp_set_model_paths(sd_ctx_params_t& params, SDParams& sd_params, c
     bool is_lens = sd_version_is_lens(tempver);
     bool is_ming = (tempver == VERSION_MING_IMAGE);
     bool is_pid = sd_version_is_pid(tempver);
+    bool is_llada = sd_version_is_llada_image(tempver);
     bool is_ltx = sd_version_is_ltxav(tempver);
     bool is_ideogram = sd_version_is_ideogram4(tempver);
     bool is_boogu = sd_version_is_boogu_image(tempver);
@@ -503,9 +554,9 @@ static void kcpp_set_model_paths(sd_ctx_params_t& params, SDParams& sd_params, c
     bool is_sefi = sd_version_is_sefi_image(tempver);
     bool is_mageflow = sd_version_is_mage_flow(tempver);
     bool is_minimaxh3 = sd_version_is_minimax_h3(tempver);
-    bool conditioner_is_llm = (is_qwenimg || is_zimg || is_flux2 || is_flux3 || is_mosi || is_ovis || is_anima || is_ernie || is_longcat || is_lens || is_ltx || is_ideogram || is_boogu || is_krea2 || is_sefi || is_mageflow || is_minimaxh3 || is_pid || is_ming || is_zimg_l2p || is_iris);
+    bool conditioner_is_llm = (is_qwenimg || is_zimg || is_flux2 || is_flux3 || is_mosi || is_ovis || is_anima || is_ernie || is_longcat || is_lens || is_llada || is_ltx || is_ideogram || is_boogu || is_krea2 || is_sefi || is_mageflow || is_minimaxh3 || is_pid || is_ming || is_zimg_l2p || is_iris);
     bool has_llm_vision = (is_qwenimg || is_longcat || is_boogu);
-    bool has_tokenizer = (is_lens || is_pid || is_ming || is_mosi);
+    bool has_tokenizer = (is_lens || is_pid || is_ming || is_mosi || is_llada);
 
     //kcpp qol fallback: if a llm was loaded as t5 by mistake
     if(conditioner_is_llm && !path_empty(params.t5xxl_path))
@@ -547,7 +598,24 @@ static void kcpp_set_model_paths(sd_ctx_params_t& params, SDParams& sd_params, c
     //settle clip-g replacements
     if (!path_empty(params.clip_g_path))
     {
-        if(iswan && path_empty(params.clip_vision_path))
+        if (is_json_path(params.clip_g_path) && iswan)
+        {
+            try {
+                kcpp_tokenizer_resources.explicit_umt5_json = read_str_from_disk(params.clip_g_path);
+                printf("\nKCPP: using UMT5 tokenizer JSON from %s\n", params.clip_g_path);
+                params.clip_g_path = "";
+            } catch (const std::exception& exception) {
+                printf("\nKCPP: could not read UMT5 tokenizer JSON from %s: %s\n",
+                       params.clip_g_path,
+                       exception.what());
+            }
+        }
+        else if (is_json_path(params.clip_g_path) && is_ltx)
+        {
+            kcpp_main_tokenizer = params.clip_g_path;
+            params.clip_g_path = "";
+        }
+        else if(iswan && path_empty(params.clip_vision_path))
         {
             std::swap(params.clip_vision_path, params.clip_g_path);
         }
@@ -581,6 +649,36 @@ static void kcpp_set_model_paths(sd_ctx_params_t& params, SDParams& sd_params, c
         }
     }
 
+    // Safetensors encoders have no embedded tokenizer metadata, so Wan/LTX may
+    // use a tokenizer.json placed directly beside the selected text encoder.
+    // Never probe beside GGUF files; their tokenizer comes from GGUF metadata.
+    if (iswan && kcpp_tokenizer_resources.explicit_umt5_json.empty()) {
+        const char* tokenizer_source = !path_empty(params.t5xxl_path) ? params.t5xxl_path : params.model_path;
+        const std::string tokenizer_path =
+            !path_empty(tokenizer_source) && is_safetensors_file(tokenizer_source)
+                ? sibling_tokenizer_json(tokenizer_source)
+                : std::string();
+        if (!tokenizer_path.empty()) {
+            try {
+                kcpp_tokenizer_resources.explicit_umt5_json = read_str_from_disk(tokenizer_path);
+                printf("\nKCPP: using adjacent UMT5 tokenizer JSON from %s\n", tokenizer_path.c_str());
+            } catch (const std::exception& exception) {
+                printf("\nKCPP: could not read adjacent UMT5 tokenizer JSON from %s: %s\n",
+                       tokenizer_path.c_str(),
+                       exception.what());
+            }
+        }
+    }
+    if (is_ltx && kcpp_main_tokenizer.empty()) {
+        const char* tokenizer_source = !path_empty(params.llm_path) ? params.llm_path : params.model_path;
+        if (!path_empty(tokenizer_source) && is_safetensors_file(tokenizer_source)) {
+            kcpp_main_tokenizer = sibling_tokenizer_json(tokenizer_source);
+        }
+        if (!kcpp_main_tokenizer.empty()) {
+            printf("\nKCPP: using adjacent Gemma tokenizer JSON from %s\n", kcpp_main_tokenizer.c_str());
+        }
+    }
+
     //settle tae: build the TAE path for the detected model version
     if(inputs.taesd)
     {
@@ -605,7 +703,11 @@ static void kcpp_set_model_paths(sd_ctx_params_t& params, SDParams& sd_params, c
         {
             tae_name = "taesd_f2.embd";
         }
-        else if(sd_version_uses_wan_vae(tempver) && tempver != VERSION_QWEN_IMAGE_2_1) // qwen 2.1 + tae crashing as of master-917
+        else if(tempver == VERSION_QWEN_IMAGE_2_1)
+        {
+            tae_name = "taesd_qi21.embd";
+        }
+        else if(sd_version_uses_wan_vae(tempver))
         {
             tae_name = "taesd_w21.embd";
         }
@@ -652,6 +754,47 @@ static void kcpp_set_model_paths(sd_ctx_params_t& params, SDParams& sd_params, c
     }
     params.taesd_path = kcpp_taesd_path.c_str();
 
+    const auto resource_missing = [&](const char* name) {
+        return !file_exists(executable_path + "embd_res/" + name);
+    };
+
+    // Reconstruct exactly what the existing tokenizer classes need from the
+    // selected text encoder's GGUF metadata, entirely in memory.
+    if (iswan && kcpp_tokenizer_resources.explicit_umt5_json.empty()) {
+        const char* tokenizer_gguf = !path_empty(params.t5xxl_path) ? params.t5xxl_path : params.model_path;
+        if (!path_empty(tokenizer_gguf) && is_gguf_file(tokenizer_gguf)) {
+            std::string tokenizer_error;
+            if (kcpp_sd::gguf_tokenizer_extractor::to_unigram_json(
+                    tokenizer_gguf,
+                    kcpp_tokenizer_resources.extracted_umt5_json,
+                    tokenizer_error)) {
+                printf("\nKCPP: using UMT5 tokenizer metadata from %s\n", tokenizer_gguf);
+            } else {
+                printf("\nKCPP: could not use UMT5 tokenizer metadata from %s: %s\n",
+                       tokenizer_gguf,
+                       tokenizer_error.c_str());
+            }
+        }
+    }
+
+    if (is_ltx && kcpp_main_tokenizer.empty()) {
+        const char* tokenizer_gguf = !path_empty(params.llm_path) ? params.llm_path : params.model_path;
+        if (!path_empty(tokenizer_gguf) && is_gguf_file(tokenizer_gguf)) {
+            std::string tokenizer_error;
+            if (kcpp_sd::gguf_tokenizer_extractor::to_vocab_and_merges(
+                    tokenizer_gguf,
+                    kcpp_tokenizer_resources.extracted_gemma_vocab,
+                    kcpp_tokenizer_resources.extracted_gemma_merges,
+                    tokenizer_error)) {
+                printf("\nKCPP: using Gemma tokenizer metadata from %s\n", tokenizer_gguf);
+            } else {
+                printf("\nKCPP: could not use Gemma tokenizer metadata from %s: %s\n",
+                       tokenizer_gguf,
+                       tokenizer_error.c_str());
+            }
+        }
+    }
+
     if (!kcpp_main_tokenizer.empty()) {
         // assemble the tokenizer config
         if (!file_exists(kcpp_main_tokenizer)) {
@@ -663,6 +806,35 @@ static void kcpp_set_model_paths(sd_ctx_params_t& params, SDParams& sd_params, c
         kcpp_tokenizer_path += "main=";
         kcpp_tokenizer_path += kcpp_main_tokenizer;
         params.tokenizer = kcpp_tokenizer_path.c_str();
+    } else if (kcpp_tokenizer_path.empty()) {
+        // Explicit tokenizer JSON wins. Models with built-in tokenizer assets
+        // keep using them; GGUF metadata is only the final in-memory fallback.
+        const bool uses_baked_qwen = conditioner_is_llm && !has_tokenizer && !is_flux2 && !is_ernie && !is_ltx;
+        const bool uses_baked_mistral = is_flux2 || is_ernie;
+        const bool baked_missing =
+            (uses_baked_qwen && resource_missing("qwen2_merges_utf8_c_str.embd")) ||
+            (uses_baked_mistral &&
+             (resource_missing("mistral2_merges_utf8_c_str.embd") || resource_missing("mistral2_vocab_json.embd")));
+
+        if (has_tokenizer || baked_missing) {
+            const char* tokenizer_gguf = !path_empty(params.llm_path) ? params.llm_path : params.model_path;
+            if (!path_empty(tokenizer_gguf) && is_gguf_file(tokenizer_gguf)) {
+                std::string tokenizer_error;
+                const auto profile = is_mosi ? kcpp_sd::tokenizer_profile::MOSS_IMAGE
+                                             : kcpp_sd::tokenizer_profile::DEFAULT;
+                if (kcpp_sd::gguf_tokenizer_extractor::to_hf_json(tokenizer_gguf,
+                                                                  kcpp_tokenizer_path,
+                                                                  tokenizer_error,
+                                                                  profile)) {
+                    params.tokenizer = kcpp_tokenizer_path.c_str();
+                    printf("\nKCPP: using tokenizer metadata from %s\n", tokenizer_gguf);
+                } else {
+                    printf("\nKCPP: could not use tokenizer metadata from %s: %s\n",
+                           tokenizer_gguf,
+                           tokenizer_error.c_str());
+                }
+            }
+        }
     }
 
     // patch hidream to fix broken images on vulkan
@@ -870,7 +1042,12 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
 
     if(inputs.debugmode==1)
     {
+        const char* tokenizer = params.tokenizer;
+        if (tokenizer != nullptr && *tokenizer == '{') {
+            params.tokenizer = "<in-memory tokenizer JSON>";
+        }
         char* buf = sd_ctx_params_to_str(&params);
+        params.tokenizer = tokenizer;
         if(buf)
         {
             printf("\n%s\n", buf);

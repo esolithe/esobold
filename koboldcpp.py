@@ -66,6 +66,7 @@ default_draft_amount = 4
 default_ttsmaxlen = 4096
 default_embeddingsmaxctx = 4096
 default_visionmaxres = 1024
+tools_max_temperature = 1.0 #chat requests with tools are clamped to this temperature; the horde worker declares it as a limit
 net_save_slots = 12
 savestate_limit_default = 5
 savestate_limit = 0 #savestate slots start at 0, only set when load model
@@ -189,6 +190,8 @@ multiplayer_dataformat = "" # used to tell what is the data payload in saved sto
 multiplayer_lastactive = {} # timestamp of last activity for each unique player
 websearch_lastquery = ""
 websearch_lastresponse = []
+websearch_cache_until = 0.0
+websearch_cache_lock = threading.Lock()
 preloaded_story = None
 chatcompl_adapter = None
 chatcompl_adapter_list = None #if using autoguess, will populate this will potential adapters
@@ -595,7 +598,9 @@ class tts_generation_inputs(ctypes.Structure):
                 ("reference_audio", ctypes.c_char_p),
                 ("speaker_instruction", ctypes.c_char_p),
                 ("language", ctypes.c_char_p),
-                ("use_mp3", ctypes.c_bool)]
+                ("use_mp3", ctypes.c_bool),
+                ("reference_text", ctypes.c_char_p),
+                ("audiocpp_extra_params_json", ctypes.c_char_p)]
 
 class tts_generation_outputs(ctypes.Structure):
     _fields_ = [("status", ctypes.c_int),
@@ -1120,6 +1125,8 @@ def init_library():
     handle.music_load_model.restype = ctypes.c_bool
     handle.music_generate.argtypes = [music_generation_inputs]
     handle.music_generate.restype = music_generation_outputs
+    handle.music_get_family.argtypes = []
+    handle.music_get_family.restype = ctypes.c_char_p
     handle.last_logprobs.restype = last_logprobs_outputs
     handle.detokenize.argtypes = [detokenize_inputs]
     handle.detokenize.restype = ctypes.c_char_p
@@ -1609,11 +1616,13 @@ def get_capabilities():
     had_admin_with_hf = args.adminallowhf
     admin_type = (2 if args.admin and args.admindir and args.adminpassword else (1 if args.admin and args.admindir else 0))
     has_router = True if args.routermode else False
+    musicfamily_raw = handle.music_get_family()
+    musicfamily = musicfamily_raw.decode("UTF-8", "ignore") if musicfamily_raw else "none"
     _admindocsdir = str(getattr(args, "admindocsdir", "") or "").strip()
     can_search_documents = has_embeddings and bool(_admindocsdir) and os.path.isdir(_admindocsdir)
     hasOpenLumaraEnabled = global_memory["OpenLumara"]
     hasOpenLumaraAuthenticated = bool(getattr(args, "OpenLumara_requirelogin", True))
-    return {"result":"KoboldCpp", "version":KcppVersion, "protected":has_password, "llm":has_llm, "txt2img":has_txt2img,"vision":visionSupport,"audio":audioSupport,"transcribe":has_whisper,"multiplayer":has_multiplayer,"websearch":has_search,"tts":has_tts, "embeddings":has_embeddings, "music":has_music, "fs":has_fs, "fsMode":fs_mode, "musicllm":bool(musicllmmodelpath), "savedata":(savedata_obj is not None), "admin": admin_type, "router":has_router, "guidance": has_guidance, "jinja": has_jinja, "mcp":has_mcp, "parallelrequests":args.parallelrequests, "defaults_modified":bool(args.gendefaults), "hasServerSaving": has_server_saving, "hasAdminWithHF": had_admin_with_hf, "embeddingModel": embeddingModel, "canSearchDocuments": can_search_documents, "hasOpenLumaraEnabled": hasOpenLumaraEnabled, "hasOpenLumaraAuthenticated": hasOpenLumaraAuthenticated}
+    return {"result":"KoboldCpp", "version":KcppVersion, "protected":has_password, "llm":has_llm, "txt2img":has_txt2img,"vision":visionSupport,"audio":audioSupport,"transcribe":has_whisper,"multiplayer":has_multiplayer,"websearch":has_search,"tts":has_tts, "embeddings":has_embeddings, "music":has_music, "fs":has_fs, "fsMode":fs_mode, "musicllm":bool(musicllmmodelpath), "musicfamily":musicfamily, "savedata":(savedata_obj is not None), "admin": admin_type, "router":has_router, "guidance": has_guidance, "jinja": has_jinja, "mcp":has_mcp, "parallelrequests":args.parallelrequests, "defaults_modified":bool(args.gendefaults), "hasServerSaving": has_server_saving, "hasAdminWithHF": had_admin_with_hf, "embeddingModel": embeddingModel, "canSearchDocuments": can_search_documents, "hasOpenLumaraEnabled": hasOpenLumaraEnabled, "hasOpenLumaraAuthenticated": hasOpenLumaraAuthenticated}
 
 
 def scan_directory(dirpath, valid_exts, depth):
@@ -4061,6 +4070,21 @@ def tts_generate(genparams):
     if reference_audio and reference_audio.startswith("data:audio"):
         reference_audio = reference_audio.split(",", 1)[1]
     inputs.reference_audio = reference_audio.encode("UTF-8")
+    inputs.reference_text = genparams.get("reference_text", "").encode("UTF-8")
+    audiocpp_option_names = (
+        "exaggeration", "guidance_scale", "temperature", "repetition_penalty",
+        "min_p", "top_p", "top_k", "flow_guidance_scale", "max_tokens",
+        "max_new_tokens", "do_sample", "stop_on_eos", "num_inference_steps",
+        "text_chunk_size", "text_chunk_mode", "preset", "voice_id", "eos_bias",
+        "min_tokens", "template_name", "instruct")
+    audiocpp_options = {
+        key: genparams[key] for key in audiocpp_option_names
+        if key in genparams and isinstance(genparams[key], (str, int, float, bool))
+    }
+    # Retain the original case for Audio.cpp families with named voices while
+    # leaving the longstanding normalized field unchanged for legacy models.
+    audiocpp_options["__kcpp_voice"] = voicestr.strip()
+    inputs.audiocpp_extra_params_json = json.dumps(audiocpp_options).encode("UTF-8")
     ret = handle.tts_generate(inputs)
     outstr = ""
     if ret.status==1:
@@ -4208,190 +4232,311 @@ def detokenize_ids(tokids,addspecial):
             detokstr = ctypes.string_at(detok).decode("UTF-8","ignore")
     return detokstr
 
-# Performs a web search using DuckDuckGo and extracts text content from the top results.
-def websearch(query):
-    global websearch_lastquery
-    global websearch_lastresponse
-    global nocertify
-    # DDG already normalizes whitespace, but we optimize a tiny bit by doing it ourselves.
-    query = re.sub(r'\s+', ' ', query).strip()
-    if not query:
-        return []
-    # Clamp query to supported 500 decoded UTF-8 bytes, not codepoints.
-    query = query.encode('utf-8', errors='ignore')[:500].decode('utf-8', errors='ignore')
-    if query==websearch_lastquery:
-        print("\nReturning cached websearch...")
-        return websearch_lastresponse
-    import difflib
-    from html.parser import HTMLParser
-    num_results = 3
-    searchresults = []
-    utfprint("\nPerforming new websearch...",1)
+def _websearch_url(url):
+    """Validate a public HTTP(S) target and preserve existing URL escapes."""
+    import ipaddress
+    parts = urllib.parse.urlsplit(url.strip())
+    if parts.scheme not in {"http", "https"} or not parts.hostname:
+        raise ValueError("expected an HTTP(S) URL")
+    if parts.username is not None or parts.password is not None:
+        raise ValueError("credentials in URLs are not allowed")
+    hostname = parts.hostname.rstrip('.').encode('idna').decode('ascii')
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+    addresses = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+    if not addresses or any(not ipaddress.ip_address(item[4][0]).is_global for item in addresses):
+        raise ValueError("local and private network URLs are not allowed")
+    netloc = f"[{hostname}]" if ':' in hostname else hostname
+    if parts.port is not None:
+        netloc += f":{parts.port}"
+    return urllib.parse.urlunsplit((parts.scheme, netloc,
+        urllib.parse.quote(parts.path, safe="/%:@!$&'()*+,;=-._~"),
+        urllib.parse.quote(parts.query, safe="%/:?@!$&'()*+,;=-._~"), ""))
 
-    def fetch_searched_webpage(url, random_agent=False):
-        from urllib.parse import quote, urlsplit, urlunsplit
-        uagent = 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)'
-        if random_agent:
-            agents = ["Mozilla/5.0 (Macintosh; Intel Mac OS X 13_2) Gecko/20100101 Firefox/114.0",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.1823.79 Safari/537.36 Edg/114.0.1823.79",
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.5938.132 Safari/537.36"]
-            uagent = random.choice(agents)
-        if args.debugmode:
-            utfprint(f"WebSearch URL: {url}")
-        # Encode non-ASCII parts of the URL
-        try:
-            split_url = urlsplit(url)
-            encoded_path = quote(split_url.path)
-            encoded_url = urlunsplit((split_url.scheme, split_url.netloc, encoded_path, split_url.query, split_url.fragment))
 
-            ssl_cert_dir = os.environ.get('SSL_CERT_DIR')
-            if not ssl_cert_dir and not nocertify and os.name != 'nt':
-                os.environ['SSL_CERT_DIR'] = '/etc/ssl/certs'
+def _websearch_fetch(url):
+    """Fetch bounded HTML/plain text, honoring the server's encoding."""
+    class PublicRedirectHandler(urllib.request.HTTPRedirectHandler):
+        max_redirections = 5
 
-            req = urllib.request.Request(encoded_url, headers={'User-Agent': uagent})
-            with urllib.request.urlopen(req, timeout=30) as response:
-                html_content = response.read().decode('utf-8', errors='ignore')
-                return html_content
-        except urllib.error.HTTPError: #we got blocked? try 1 more time with a different user agent
-            try:
-                req = urllib.request.Request(encoded_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36'})
-                with urllib.request.urlopen(req, timeout=30) as response:
-                    html_content = response.read().decode('utf-8', errors='ignore')
-                    return html_content
-            except Exception as e:
-                utfprint(f"Error fetching text from URL {url}: {e}",1)
-                return ""
-        except Exception as e:
-            utfprint(f"Error fetching text from URL {url}: {e}",1)
-            return ""
-    def fetch_webpages_parallel(urls):
-        with ThreadPoolExecutor() as executor:
-            # Submit tasks and gather results
-            results = list(executor.map(fetch_searched_webpage, urls))
-        return results
-
-    def normalize_page_text(text):
-        text = re.sub(r'\s+([.,!?])', r'\1', text)  # Remove spaces before punctuation
-        # text = re.sub(r'([.,!?])([^\s])', r'\1 \2', text) # Ensure a single space follows punctuation, if not at the end of a line
-        return text
-
-    class VisibleTextParser(HTMLParser):
-        def __init__(self):
-            super().__init__()
-            self.texts = []
-            self.is_script_or_style = False
-        def handle_starttag(self, tag, attrs):
-            if tag in {'script', 'style'}:
-                self.is_script_or_style = True
-        def handle_endtag(self, tag):
-            if tag in {'script', 'style'}:
-                self.is_script_or_style = False
-        def handle_data(self, data):
-            if not self.is_script_or_style and data.strip():
-                self.texts.append(data.strip())
-        def get_text(self):
-            return ' '.join(self.texts)
-
-    class ExtractResultsParser(HTMLParser):
-        def __init__(self):
-            super().__init__()
-            self.titles = []
-            self.urls = []
-            self.descs = []
-            self.recordingTitle = False
-            self.recordingUrl = False
-            self.recordingDesc = False
-            self.currsegmenttxt = ""
-
-        def handle_starttag(self, tag, attrs):
-            if tag == "a":
-                # Check if the "class" attribute matches the target class
-                for attr_name, attr_value in attrs:
-                    if not self.recordingTitle and attr_name == "class" and "result__a" in attr_value.split():
-                        self.recordingTitle = True
-                        self.currsegmenttxt = ""
-                    if not self.recordingUrl and attr_name == "class" and "result__url" in attr_value.split():
-                        self.recordingUrl = True
-                        self.currsegmenttxt = ""
-                    if not self.recordingDesc and attr_name == "class" and "result__snippet" in attr_value.split():
-                        self.recordingDesc = True
-                        self.currsegmenttxt = ""
-
-        def handle_endtag(self, tag):
-            if tag == "a" and self.recordingTitle:
-                self.recordingTitle = False
-                self.titles.append(self.currsegmenttxt.strip())
-                self.currsegmenttxt = ""
-            if tag == "a" and self.recordingUrl:
-                self.recordingUrl = False
-                self.urls.append(f"https://{self.currsegmenttxt.strip()}")
-                self.currsegmenttxt = ""
-            if tag == "a" and self.recordingDesc:
-                self.recordingDesc = False
-                self.descs.append(self.currsegmenttxt.strip())
-                self.currsegmenttxt = ""
-
-        def handle_data(self, data):
-            if self.recordingTitle or self.recordingDesc or self.recordingUrl:
-                self.currsegmenttxt += data
-
-    # DDG supports `+` as spaces, which is more readable and compact than `%20`.
-    # Literal pluses get themselves encoded as `%2B`.
-    # And `_plus` method variant correctly encodes `/` to `%2F` by default.
-    # The variant was practically made for what we do here.
-    encoded_query = urllib.parse.quote_plus(query)
-    search_url = f"https://html.duckduckgo.com/html/?q={encoded_query}"
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return super().redirect_request(req, fp, code, msg, headers, _websearch_url(newurl))
 
     try:
-        search_html = fetch_searched_webpage(search_url, random_agent=True)
-        parser = ExtractResultsParser()
-        parser.feed(search_html)
-        titles = parser.titles[:num_results]
-        searchurls = parser.urls[:num_results]
-        descs = parser.descs[:num_results]
+        url = _websearch_url(url)
+        if not os.environ.get('SSL_CERT_DIR') and not nocertify and os.name != 'nt':
+            os.environ['SSL_CERT_DIR'] = '/etc/ssl/certs'
+        request = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+            "Accept": "text/html, application/xhtml+xml, text/plain;q=0.9",
+            "Accept-Encoding": "identity",
+        })
+        opener = urllib.request.build_opener(PublicRedirectHandler())
+        with opener.open(request, timeout=20) as response:
+            content_type = response.headers.get_content_type().lower()
+            if content_type not in {"text/html", "application/xhtml+xml", "text/plain"}:
+                raise ValueError(f"unsupported content type: {content_type}")
+            limit = 4 * 1024 * 1024
+            body = response.read(limit + 1)
+            if len(body) > limit:
+                raise ValueError(f"page exceeds {limit} bytes")
+            charset = response.headers.get_content_charset()
+            if not charset and content_type != "text/plain":
+                # Older pages sometimes declare the encoding only in a meta tag.
+                match = re.search(br'<meta\b[^>]*\bcharset\s*=\s*[\x22\x27\s]*([\w-]+)', body[:4096], re.I)
+                charset = match.group(1).decode('ascii') if match else None
+            try:
+                text = body.decode(charset or 'utf-8-sig', errors='replace')
+            except LookupError:
+                text = body.decode('utf-8-sig', errors='replace')
+            return text, content_type
+    except Exception as e:
+        utfprint(f"WebSearch fetch failed for {url}: {e}", 1)
+        return "", ""
 
-        if len(descs)==0 or len(titles)==0 or len(descs)==0:
-            utfprint("No results found! Maybe something went wrong...",1)
+
+def _websearch_parse_results(source, search_url):
+    """Keep each title, actual link and optional snippet in the same record."""
+    from html.parser import HTMLParser
+
+    class ResultsParser(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.results = []
+            self.current = None
+            self.field = None
+            self.field_tag = None
+            self.field_depth = 0
+            self.is_ad = False
+
+        def handle_starttag(self, tag, attrs):
+            attrs = dict(attrs)
+            classes = (attrs.get('class') or '').split()
+            if 'result' in classes:
+                self.current = None
+                self.field = None
+                self.is_ad = 'result--ad' in classes
+            if self.is_ad:
+                return
+            if self.field and tag in {'br', 'div', 'p'}:
+                self.handle_data(' ')
+            if tag == 'a' and 'result__a' in classes:
+                self.current = {"title": "", "url": attrs.get('href') or '', "desc": "", "content": ""}
+                self.results.append(self.current)
+                self.field, self.field_tag, self.field_depth = 'title', tag, 1
+            elif 'result__snippet' in classes and self.current is not None:
+                self.field, self.field_tag, self.field_depth = 'desc', tag, 1
+            elif self.field and tag == self.field_tag:
+                self.field_depth += 1
+
+        def handle_endtag(self, tag):
+            if self.field and tag in {'div', 'p'}:
+                self.handle_data(' ')
+            if self.field and tag == self.field_tag:
+                self.field_depth -= 1
+                if self.field_depth == 0:
+                    self.field = None
+
+        def handle_data(self, data):
+            if self.field and self.current is not None:
+                self.current[self.field] += data
+
+    parser = ResultsParser()
+    parser.feed(source)
+    parser.close()
+    results, seen = [], set()
+    for result in parser.results:
+        try:
+            if not result['url']:
+                continue
+            url = urllib.parse.urljoin(search_url, result['url'])
+            parts = urllib.parse.urlsplit(url)
+            if parts.hostname in {'duckduckgo.com', 'www.duckduckgo.com', 'html.duckduckgo.com'}:
+                url = urllib.parse.parse_qs(parts.query).get('uddg', [url])[0]
+            parts = urllib.parse.urlsplit(url)
+            if parts.scheme not in {'http', 'https'} or not parts.hostname:
+                continue
+            url = urllib.parse.urlunsplit(parts._replace(fragment=''))
+            result['title'] = ' '.join(result['title'].split())
+            result['desc'] = ' '.join(result['desc'].split())
+            if not result['title'] or url in seen:
+                continue
+            result['url'] = url
+            results.append(result)
+            seen.add(url)
+        except ValueError:
+            continue
+    return results
+
+
+def _websearch_extract_text(source):
+    """Adapt the agent's HTML-to-text converter, preserving paragraph boundaries."""
+    from html.parser import HTMLParser
+
+    class TextExtractor(HTMLParser):
+        block_tags = {'address', 'article', 'aside', 'blockquote', 'br', 'div', 'dl', 'dt', 'dd', 'form',
+                      'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'header', 'hr', 'li', 'main',
+                      'ol', 'p', 'pre', 'section', 'table', 'tr', 'ul'}
+        ignored_tags = {'head', 'script', 'style', 'noscript', 'template', 'svg', 'nav', 'footer',
+                        'button', 'select', 'textarea'}
+        void_tags = {'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta',
+                     'param', 'source', 'track', 'wbr'}
+
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.parts = []
+            self.stack = []
+
+        def handle_starttag(self, tag, attrs):
+            attrs = dict(attrs)
+            # HTML permits omitting </head>; HTMLParser does not close it for us.
+            if tag == 'body':
+                self.stack.clear()
+            ignored = (bool(self.stack and self.stack[-1][1]) or tag in self.ignored_tags
+                       or 'hidden' in attrs or (attrs.get('aria-hidden') or '').lower() == 'true'
+                       or bool(re.search(r'(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*hidden)\b',
+                                         attrs.get('style') or '', re.I)))
+            if not ignored:
+                if tag in self.block_tags:
+                    self.parts.append('\n\n')
+                elif tag in {'td', 'th'}:
+                    self.parts.append(' ')
+            if tag not in self.void_tags:
+                self.stack.append((tag, ignored))
+
+        def handle_endtag(self, tag):
+            if tag in self.block_tags and not (self.stack and self.stack[-1][1]):
+                self.parts.append('\n\n')
+            for i in range(len(self.stack) - 1, -1, -1):
+                if self.stack[i][0] == tag:
+                    del self.stack[i:]
+                    break
+
+        def handle_data(self, data):
+            if not (self.stack and self.stack[-1][1]):
+                # Source-code newlines are spaces, not paragraph breaks.
+                self.parts.append(re.sub(r'\s+', ' ', data))
+
+    parser = TextExtractor()
+    parser.feed(source)
+    parser.close()
+    text = ''.join(parser.parts).replace('\u00ad', '').replace('\u200b', '')
+    return '\n\n'.join(' '.join(block.split()) for block in text.split('\n\n') if block.strip())
+
+
+def _websearch_excerpt(text, query, title, desc, max_chars=2800):
+    """Rank overlapping passages; snippets need not be contiguous or verbatim."""
+    import unicodedata
+    from bisect import bisect_left, bisect_right
+
+    # Character tokens also allow matching scripts that do not use spaces.
+    token_pattern = re.compile(r'[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]|'
+                               r'[^\W_\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]+', re.UNICODE)
+    stopwords = set('a an and are as at be been but by can for from had has have he her his how i '
+                    'in is it its of on or our she that the their them there these they this to '
+                    'was we were what when where which who will with you your'.split())
+
+    def tokens(value):
+        return [m.group() for m in token_pattern.finditer(unicodedata.normalize('NFKC', value).casefold())]
+
+    # Normalize each source token separately so offsets still address readable text.
+    matches = list(token_pattern.finditer(text))
+    if not matches:
+        return ''
+    words = [unicodedata.normalize('NFKC', m.group()).casefold() for m in matches]
+    offsets = [m.start() for m in matches]
+    desc_words = tokens(desc)
+    targets = [set(tokens(value)) - stopwords for value in (desc, query, title)]
+    if not any(targets):
+        return ''
+    all_targets = set.union(*targets)
+    desc_pairs = set(zip(desc_words, desc_words[1:]))
+    # Start at paragraphs as well as inside long paragraphs; overlap prevents
+    # a match near a window boundary from being lost.
+    starts = set(range(0, len(words), 80))
+    starts.update(bisect_left(offsets, pos) for pos in range(0, len(text), max(1, max_chars // 2)))
+    starts.update(bisect_right(offsets, m.end() - 1) for m in re.finditer(r'\n\s*\n', text))
+    best_score, best_span = 0, None
+    for start in sorted(starts):
+        if start >= len(words):
+            continue
+        end = min(start + 360, bisect_right(offsets, offsets[start] + max_chars - 1))
+        while end > start and matches[end - 1].end() - offsets[start] > max_chars:
+            end -= 1
+        if end <= start:
+            continue
+        window = words[start:end]
+        present = set(window) - stopwords
+        counts = [len(present & target) for target in targets]
+        coverage = [count / len(target) if target else 0 for count, target in zip(counts, targets)]
+        # Keep the DDG snippet when a fetched page has no credible supporting text.
+        snippet_match = counts[0] >= min(3, len(targets[0])) and coverage[0] >= 0.5
+        query_match = counts[1] >= min(2, len(targets[1])) and coverage[1] >= 0.6
+        if not (snippet_match or query_match):
+            continue
+        phrase_score = len(desc_pairs & set(zip(window, window[1:]))) / max(1, len(desc_pairs))
+        score = 3 * coverage[0] + 2 * coverage[1] + coverage[2] + phrase_score
+        # Prefer less surrounding noise when two passages have equal coverage.
+        score += 0.1 * len(present & all_targets) / max(1, len(present))
+        if score > best_score:
+            best_score, best_span = score, (offsets[start], matches[end - 1].end())
+    if best_span is None:
+        return ''
+    start, end = best_span
+    # Include punctuation, but stop before the next word or the size limit.
+    while end < len(text) and end - start < max_chars and not text[end].isalnum():
+        end += 1
+    return text[start:end].strip()
+
+
+# Performs a web search using DuckDuckGo and extracts relevant passages from the top results.
+def websearch(query):
+    global websearch_lastquery, websearch_lastresponse, websearch_cache_until
+    query = ' '.join(query.split())
+    query = query.encode('utf-8', errors='ignore')[:500].decode('utf-8', errors='ignore').strip()
+    if not query:
+        return []
+    with websearch_cache_lock:
+        if query == websearch_lastquery and time.monotonic() < websearch_cache_until:
+            print("\nReturning cached websearch...")
+            return websearch_lastresponse
+    utfprint("\nPerforming new websearch...", 1)
+    search_url = 'https://html.duckduckgo.com/html/?q=' + urllib.parse.quote_plus(query)
+    try:
+        search_html, _ = _websearch_fetch(search_url)
+        results = _websearch_parse_results(search_html, search_url)[:6]
+        if not results:
+            utfprint("WebSearch returned no results (the search engine may be unavailable or blocking requests).", 1)
             return []
 
-        fetchedcontent = fetch_webpages_parallel(searchurls)
-        for i in range(len(descs)):
-            # dive into the results to try and get even more details
-            title = titles[i]
-            url = searchurls[i]
-            desc = descs[i]
-            pagedesc = ""
+        def enrich(result):
             try:
-                desclen = len(desc)
-                html_content = fetchedcontent[i]
-                parser2 = VisibleTextParser()
-                parser2.feed(html_content)
-                scraped = parser2.get_text().strip()
-                scraped = normalize_page_text(scraped)
-                desc = normalize_page_text(desc)
-                s = difflib.SequenceMatcher(None, scraped.lower(), desc.lower(), autojunk=False)
-                matches = s.find_longest_match(0, len(scraped), 0, desclen)
-                if matches.size > 100 and desclen-matches.size < 100: #good enough match
-                    # expand description by some chars both sides
-                    expandamtbefore = 200
-                    expandamtafter = 800
-                    startpt = matches.a - expandamtbefore
-                    startpt = 0 if startpt < 0 else startpt
-                    endpt =  matches.a + expandamtafter + desclen
-                    pagedesc = scraped[startpt:endpt].strip()
-            except Exception:
-                pass
-            searchresults.append({"title":title,"url":url,"desc":desc,"content":pagedesc})
+                source, content_type = _websearch_fetch(result['url'])
+                text = source if content_type == 'text/plain' else _websearch_extract_text(source)
+                result['content'] = _websearch_excerpt(text, query, result['title'], result['desc'])
+                reason = ('page text' if result['content'] else 'fetch failed' if not source else
+                          'no visible text' if not text else 'no qualifying passage')
+                utfprint(f"WebSearch {result['url']}: {len(text)} extracted characters, "
+                         f"{len(result['content'])} excerpt characters ({reason})", 0)
+            except Exception as e:
+                utfprint(f"WebSearch extraction failed for {result['url']}: {e}", 1)
+            return result
 
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            enriched = list(executor.map(enrich, results[:3]))
+            if sum(bool(result['content']) for result in enriched) < 3:
+                enriched.extend(executor.map(enrich, results[3:]))
+        # Prefer usable pages, then retain search rank among the three selected results.
+        selected = sorted(range(len(enriched)), key=lambda i: (not bool(enriched[i]['content']), i))[:3]
+        results = [enriched[i] for i in sorted(selected)]
     except Exception as e:
-        utfprint(f"Error fetching URL {search_url}: {e}",1)
+        utfprint(f"WebSearch failed: {e}", 1)
         return []
-    if len(searchresults) > 0:
+    with websearch_cache_lock:
         websearch_lastquery = query
-        websearch_lastresponse = searchresults
-    return searchresults
+        websearch_lastresponse = results
+        # Retry partial results soon; even complete searches should not stay stale forever.
+        websearch_cache_until = time.monotonic() + (300 if all(r['content'] for r in results) else 30)
+    return results
 
 def is_port_in_use(portNum):
     try:
@@ -4965,6 +5110,39 @@ def normalize_openai_tools_input(tools):
             print(f"Dropped unsupported tool: {tool}")
     return normalized
 
+def filter_tools_for_tool_choice(tools, tool_choice):
+    """Return the tools exposed to the model after applying an explicit tool choice."""
+    choice_type = ""
+    requested_name = None
+    if isinstance(tool_choice, str):
+        choice_type = tool_choice.lower()
+    elif isinstance(tool_choice, dict):
+        choice_type = str(tool_choice.get("type", "")).lower()
+        function = tool_choice.get("function")
+        if choice_type == "function" and isinstance(function, dict):
+            requested_name = function.get("name")
+        elif choice_type in ("function", "tool"):
+            # OpenAI Responses uses {"type":"function","name":"..."}; Anthropic uses
+            # {"type":"tool","name":"..."}.
+            requested_name = tool_choice.get("name")
+
+    if choice_type == "none":
+        return [], None, True
+    if not isinstance(requested_name, str) or not requested_name:
+        return tools, None, False
+
+    requested_name_folded = requested_name.casefold()
+    matching_tools = []
+    canonical_name = requested_name
+    for tool in tools:
+        function = tool.get("function") if isinstance(tool, dict) else None
+        name = function.get("name") if isinstance(function, dict) else None
+        if isinstance(name, str) and name.casefold() == requested_name_folded:
+            matching_tools.append(tool)
+            if len(matching_tools) == 1:
+                canonical_name = name
+    return matching_tools, canonical_name, False
+
 def normalize_tool_call_resp(obj): # Normalize various tool call formats to OpenAI format
     if "type" in obj and "function" in obj: # Already in OpenAI format
         return obj
@@ -5519,6 +5697,16 @@ ws ::= | " " | "\n" [ \t]{0,20}
         if api_format==4 or api_format==7: #handle ollama chat here too
             if genparams.get("tools"):
                 genparams["tools"] = normalize_openai_tools_input(genparams["tools"])
+            effective_tools, named_tool_choice, tool_choice_none = filter_tools_for_tool_choice(
+                genparams.get("tools", []), genparams.get("tool_choice", "auto"))
+            genparams["tools"] = effective_tools
+            genparams.pop('_tool_choice_function_name', None)
+            if named_tool_choice:
+                genparams['_tool_choice_function_name'] = named_tool_choice
+            if tool_choice_none:
+                # Do not expose or parse tools, and do not let a client-provided internal flag
+                # turn tool handling back on. Historical tool messages still render normally.
+                genparams["using_openai_tools"] = False
             # translate openai chat completion messages format into one big string.
             messages_array = genparams.get('messages', [])
             messages_string = adapter_obj.get("chat_start", "")
@@ -5548,7 +5736,8 @@ ws ::= | " " | "\n" [ \t]{0,20}
                         if decoded:
                             genparams["grammar"] = decoded
                     elif rt.lower() == "json_object":
-                        genparams["grammar"] = jsongrammar
+                        # the shared grammar is rooted at an array for tool calls; a json_object reply is one object
+                        genparams["grammar"] = jsongrammar.replace("root   ::= arr", "root   ::= object", 1)
                 except Exception:
                     # In case of any issues, just do normal gen
                     print("Structured Output not valid - discarded")
@@ -5595,8 +5784,8 @@ ws ::= | " " | "\n" [ \t]{0,20}
                     genparams["using_openai_tools"] = True
                     genparams['_jinja_tool_formatting_used'] = True
                     if api_format == 4:
-                        # Default Jinja tool requests to 0.5 and cap their temperature at 1.0.
-                        genparams["temperature"] = min(tryparsefloat(genparams.get("temperature", 0.5), 0.5), 1.0)
+                        # Default Jinja tool requests to 0.5 and cap their temperature at tools_max_temperature.
+                        genparams["temperature"] = min(tryparsefloat(genparams.get("temperature", 0.5), 0.5), tools_max_temperature)
                 # handle media
                 images_added, audio_added = sweep_media_from_messages(messages_array)
             else:
@@ -5690,7 +5879,7 @@ ws ::= | " " | "\n" [ \t]{0,20}
                             toolparamjson = None
                             toolname = None
                             # Set temperature lower automatically if function calling, cannot exceed 0.5
-                            genparams["temperature"] = (1.0 if genparams.get("temperature", 0.5) > 1.0 else genparams.get("temperature", 0.5))
+                            genparams["temperature"] = (tools_max_temperature if genparams.get("temperature", 0.5) > tools_max_temperature else genparams.get("temperature", 0.5))
                             genparams["using_openai_tools"] = True
                             genparams['_generic_tool_json_array_fix'] = True
                             # Set grammar to llamacpp example grammar to force json response (see https://github.com/ggerganov/llama.cpp/blob/master/grammars/json_arr.gbnf)
@@ -5700,6 +5889,14 @@ ws ::= | " " | "\n" [ \t]{0,20}
                                 toolparamjson = used_tool_json.get('function').get('parameters')
                                 bettergrammarjson = {"type":"array","items":{"type":"object","properties":{"id":{"type":"string","enum":["call_001"]},"type":{"type":"string","enum":["function"]},"function":{"type":"object","properties":{"name":{"type":"string"},"arguments":{}},"required":["name","arguments"],"additionalProperties":False}},"required":["id","type","function"],"additionalProperties":False}}
                                 bettergrammarjson["items"]["properties"]["function"]["properties"]["arguments"] = toolparamjson
+                                # Once the generic path selects a tool, require a call to that tool and honor the
+                                # request's parallel call setting. A function without parameters takes an empty object.
+                                bettergrammarjson["items"]["properties"]["function"]["properties"]["name"]["enum"] = [toolname]
+                                bettergrammarjson["minItems"] = 1
+                                if genparams.get("parallel_tool_calls", True) is False:
+                                    bettergrammarjson["maxItems"] = 1
+                                if toolparamjson is None:
+                                    bettergrammarjson["items"]["properties"]["function"]["properties"]["arguments"] = {"type":"object","properties":{}}
                                 decoded = convert_json_to_gbnf(bettergrammarjson)
                                 if decoded:
                                     genparams["grammar"] = decoded
@@ -5738,15 +5935,26 @@ ws ::= | " " | "\n" [ \t]{0,20}
             genparams["trim_stop"] = True
 
 
-    elif api_format==5:
+    elif api_format==5: #interrogation
         firstimg = genparams.get('image', "")
-        genparams["images"] = [firstimg]
-        genparams["max_length"] = 150
-        adapter_obj = {} if chatcompl_adapter is None else chatcompl_adapter
-        user_message_start = adapter_obj.get("user_start", "### Instruction:")
-        assistant_message_start = adapter_obj.get("assistant_start", "### Response:")
-        assistant_message_gen = adapter_obj.get("assistant_gen", assistant_message_start)
-        genparams["prompt"] = f"{user_message_start} In one sentence, write a descriptive caption for this image.\n{assistant_message_gen}"
+        image_url = firstimg if firstimg.startswith("data:image") else f"data:image/png;base64,{firstimg}"
+        genparams["messages"] = [
+            {
+                "role": "system",
+                "content": "You are a computer vision inspection tool. Answer from the supplied image (if any) only.",
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "In one to three sentences, write a descriptive caption for this image. Do not hallucinate results if no image is visible. If the image is missing or cannot be viewed, respond with 'Error: Image Vision Failed'.",
+                    },
+                    {"type": "image_url", "image_url": {"url": image_url}},
+                ],
+            },
+        ]
+        transform_genparams(genparams, 4, use_jinja)
 
     elif api_format==6:
         detokstr = ""
@@ -8894,10 +9102,22 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                             flat.append(obj)
                     tool_calls = [normalize_tool_call_resp(obj) for obj in flat]
                     tool_calls = [tc for tc in tool_calls if isinstance(tc, dict) and isinstance(tc.get("function", None), dict) and tc["function"].get("name")]
+                named_tool_choice = genparams.get('_tool_choice_function_name')
+                if tool_calls and named_tool_choice:
+                    # The native parser knows the filtered tool list, but the permissive fallback can
+                    # still recognize a model-emitted name that was not offered. Never surface it.
+                    matching_tool_calls = []
+                    for tc in tool_calls:
+                        function = tc.get("function", {})
+                        name = function.get("name")
+                        if isinstance(name, str) and name.casefold() == named_tool_choice.casefold():
+                            function["name"] = named_tool_choice
+                            matching_tool_calls.append(tc)
+                    tool_calls = matching_tool_calls
                 if tool_calls and len(tool_calls)>0:
                     for tc in tool_calls:
                         tcarg = tc.get("function",{}).get("arguments",None)
-                        tc["id"] = f"call_{random.randint(10000, 99999)}"
+                        tc["id"] = f"call_{random.randint(1000000, 9999999)}"
                         if tcarg is not None and not isinstance(tcarg, str):
                             tc["function"]["arguments"] = json.dumps(tcarg)
                     recvtxt = extract_toolcall_prose_prefix_content(recvtxt)
@@ -8924,7 +9144,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             res = {"id": chatcmpl_id, "object": "chat.completion", "created": int(time.time()), "model": modelNameToReturn,
                    "usage": {"prompt_tokens": prompttokens, "completion_tokens": comptokens, "total_tokens": (prompttokens+comptokens)},
                    "choices": [{"index": 0, "message": ccmsg, "finish_reason": currfinishreason, "logprobs":logprobsdict}]}
-        elif api_format == 5:
+        elif api_format == 5: # interrogation
             res = {"caption": end_trim_to_sentence(recvtxt)}
         elif api_format == 6:
             oldprompt = genparams.get('ollamabodyprompt', "")
@@ -8974,7 +9194,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                             raw_args = {}
                     content_blocks.append({
                         "type": "tool_use",
-                        "id": tc.get("id", f"toolu_{random.randint(10000,99999)}"),
+                        "id": tc.get("id", f"toolu_{random.randint(1000000,9999999)}"),
                         "name": func.get("name", ""),
                         "input": raw_args,
                     })
@@ -9727,7 +9947,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
 
     async def handle_request(self, genparams, api_format, stream_flag):
         tasks = []
-        genparams["oai_uniqueid"] = random.randint(100000, 999999)
+        genparams["oai_uniqueid"] = random.randint(1000000, 9999999)
         for key in ('_sse_stream_started', '_sse_stream_finished', '_oai_generation_pending', '_oai_generation_error', '_anthropic_stream_state', '_client_disconnected', '_json_keepalive_started'):
             genparams.pop(key, None)
         monitor_task = None
@@ -12166,7 +12386,7 @@ Change Mode<br>
                                         for block in gendat.get("content", []):
                                             if block.get("type") == "tool_use":
                                                 toolsdata_res.append({
-                                                    "id": block.get("id", f"toolu_{random.randint(10000,99999)}"),
+                                                    "id": block.get("id", f"toolu_{random.randint(1000000,9999999)}"),
                                                     "type": "function",
                                                     "function": {
                                                         "name": block.get("name", ""),
@@ -12217,7 +12437,7 @@ Change Mode<br>
                                                 raw_args = json.loads(raw_args)
                                             except Exception:
                                                 raw_args = {}
-                                        tc_id = tool_call.get("id", f"toolu_{random.randint(10000,99999)}")
+                                        tc_id = tool_call.get("id", f"toolu_{random.randint(1000000,9999999)}")
                                         tc_name = func.get("name", "")
                                         # Start block with EMPTY input — the actual args come in the delta
                                         tc_block = {"type": "tool_use", "id": tc_id, "name": tc_name, "input": {}}
@@ -14387,16 +14607,16 @@ def show_gui():
     tts_model_var.trace_add("write", gui_changed_modelfile)
     makelabelentry(audio_tab, "TTS Threads:" , tts_threads_var, 5, 50,padx=100,singleline=True,tooltip="How many threads to use during TTS generation.\nIf left blank, uses same value as threads.")
     makelabelentry(audio_tab, "TTS Max Tokens:" , ttsmaxlen_var, 5, 50,padx=300,singleline=True,tooltip="Max allowed audiotokens to generate per TTS request.", labelpadx=190)
-    makecheckbox(audio_tab, "TTS Use GPU", ttsgpu_var, 9, 0,tooltiptxt="Uses the GPU for TTS. Currently only works on certain models (OuteTTS/Q3TTS).")
+    makecheckbox(audio_tab, "TTS Use GPU", ttsgpu_var, 9, 0,tooltiptxt="Uses the GPU for TTS on supported model architectures.")
     ttsgpu_var.trace_add("write", gui_changed_modelfile)
     makefileentry(audio_tab, "WavTokenizer Model (Required for some models):", "Select WavTokenizer GGUF Model File", wavtokenizer_var, 11, width=280, filetypes=[("*.gguf","*.gguf")], tooltiptxt="Select a WavTokenizer GGUF model file on disk to be loaded for Narration.")
     wavtokenizer_var.trace_add("write", gui_changed_modelfile)
     makefileentry(audio_tab, "TTS Voices Dir:", "Select directory containing voices for voice cloning", tts_dir_var, 20, width=280, singlerow=True, dialog_type=2, tooltiptxt="Select directory containing voices for voice cloning")
 
-    makefileentry(audio_tab, "MusicLLM:", "Select music LLM model (e.g acestep-5Hz-lm-0.6B)", musicllm_var, 30, width=280, singlerow=True, dialog_type=0, tooltiptxt="Select music LLM model (e.g acestep-5Hz-lm)")
+    makefileentry(audio_tab, "MusicLLM:", "Select music LLM model (ACE-Step LM or YuE2 main GGUF)", musicllm_var, 30, width=280, singlerow=True, dialog_type=0, tooltiptxt="Select an ACE-Step LM or YuE2 main GGUF model")
     makefileentry(audio_tab, "MusicEmbeds:", "Select music embedding model (e.g Qwen3-Embedding-0.6B)", musicembeddings_var, 32, width=280, singlerow=True, dialog_type=0, tooltiptxt="Select music embedding model (e.g Qwen3-Embedding-0.6B)")
     makefileentry(audio_tab, "MusicDiffuser:", "Select music diffusion (DiT) model (e.g acestep-v15-turbo)", musicdiffusion_var, 34, width=280, singlerow=True, dialog_type=0, tooltiptxt="Select music diffusion (DiT) model (e.g acestep-v15-turbo)")
-    makefileentry(audio_tab, "MusicVAE:", "Select music VAE model", musicvae_var, 36, width=280, singlerow=True, dialog_type=0, tooltiptxt="Select music VAE model")
+    makefileentry(audio_tab, "MusicVAE:", "Select music VAE model (including YuE2 VAE GGUF)", musicvae_var, 36, width=280, singlerow=True, dialog_type=0, tooltiptxt="Select the music VAE; YuE2 requires its VAE GGUF")
     makecheckbox(audio_tab, "Music Low VRAM", musiclowvram_var, 38, 0,tooltiptxt="Unload music models when not in use.")
 
     agent_tab = tabcontent["Agent"]
@@ -15409,7 +15629,8 @@ def show_gui_yesnobox(title,message,icon='error'):
 def print_with_time(txt):
     print(f"{datetime.now().strftime('[%H:%M:%S]')} " + txt, flush=True)
 
-def make_url_request(url, data, method='POST', headers={}, timeout=600):
+def make_url_request(url, data, method='POST', headers={}, timeout=600, error_info=None):
+    #error_info, when given, receives the http status and the json body's return code of a refused request
     global nocertify
     try:
         request = None
@@ -15432,11 +15653,19 @@ def make_url_request(url, data, method='POST', headers={}, timeout=600):
                 json_response = json.loads(response_data.decode('utf-8',"ignore"))
                 return json_response
     except urllib.error.HTTPError as e:
+        errmsg = ""
+        if error_info is not None:
+            error_info["status"] = e.code
         try:
             errmsg = e.read().decode('utf-8',"ignore")
             print_with_time(f"Error: {e} - {errmsg}")
         except Exception as e:
             print_with_time(f"Error: {e}")
+        if error_info is not None:
+            try:
+                error_info["rc"] = json.loads(errmsg).get("rc")
+            except Exception:
+                pass
         return None
     except Exception as e:
         print_with_time(f"Error: {e} - {response_data}")
@@ -15449,7 +15678,11 @@ def run_horde_worker(args, api_key, worker_name, worker_id, parallel_batching_th
 
     def submit_completed_generation(url, jobid, sessionstart, submit_dict):
         global exitcounter, punishcounter, session_kudos_earned, session_jobs, rewardcounter
-        reply = make_url_request_horde(url, submit_dict)
+        error_info = {}
+        reply = make_url_request_horde(url, submit_dict, error_info=error_info)
+        if not reply and "message" in submit_dict and error_info.get("rc") in ("ChatSubmitInvalid", "ChatSubmitNonconformant", "ChatModelMismatch"):
+            # A refused chat reply still needs to release its job.
+            reply = make_url_request_horde(url, {"id": jobid, "model_id": friendlymodelname, "state": "faulted", "fault_reason": "reply_refused"})
         if not reply:
             punishcounter += 1
             print_with_time(f"Worker {worker_id} - Error, Job submit failed.")
@@ -15474,15 +15707,160 @@ def run_horde_worker(args, api_key, worker_name, worker_id, parallel_batching_th
                 if exitcounter > 1:
                     exitcounter -= 1
 
-    def make_url_request_horde(url, data, method='POST',addmykey=False):
+    def horde_headers(addmykey=False):
         global password
-        headers = headers = {"apikey": api_key,'User-Agent':'KoboldCppEmbeddedWorkerV2','Client-Agent':'KoboldCppEmbedWorker:2'}
+        headers = {"apikey": api_key,'User-Agent':'KoboldCppEmbeddedWorkerV2','Client-Agent':'KoboldCppEmbedWorker:2'}
         if addmykey and password!="":
             headers["Authorization"] = f"Bearer {password}"
-        ret = make_url_request(url, data, method, headers)
+        return headers
+
+    def make_url_request_horde(url, data, method='POST',addmykey=False,error_info=None):
+        ret = make_url_request(url, data, method, horde_headers(addmykey), error_info=error_info)
         if not ret:
             print(f"Worker {worker_id} - Make sure your Horde API key and worker name is valid!")
         return ret
+
+    def horde_chat_job(genurl, payload, jobid):
+        # Return a submit body, or None when Horde has already settled a cancelled job.
+        submit = {"id": jobid, "model_id": friendlymodelname, "state": "faulted"}
+        try:
+            messages_url = payload.pop("messages_url", None)
+            if messages_url:
+                with urllib.request.urlopen(messages_url, timeout=10) as response:
+                    source = gzip.GzipFile(fileobj=response) if response.headers.get('Content-Encoding', '').lower() == 'gzip' else response
+                    body = source.read(32 * 1024 * 1024 + 1)
+                if len(body) > 32 * 1024 * 1024:
+                    raise ValueError("messages exceed the 32 MiB limit")
+                payload["messages"] = json.loads(body)
+                if not isinstance(payload["messages"], list):
+                    raise ValueError("messages_url did not contain a messages array")
+
+            # Rough estimate of tokens to handle prompt_overflow_refused
+            count_payload = {key: copy.deepcopy(payload[key]) for key in ("messages", "tools", "response_format") if key in payload}
+            image_tokens = 0
+            for message in count_payload.get("messages", []):
+                if isinstance(message.get("content"), list):
+                    for part in message["content"]:
+                        if part.get("type") == "image_url":
+                            part["image_url"] = {} # Base64 size is unrelated to the image's token cost.
+                            image_tokens += 512
+            count_text = json.dumps(count_payload, ensure_ascii=False)
+            prompt_tokens = token_count_text(count_text, True)
+            if prompt_tokens < 0:
+                prompt_tokens = (len(count_text) + 2) // 3
+            prompt_tokens += 32 + 16 * len(count_payload.get("messages", [])) + image_tokens
+            context_limit = min(horde_ctxlimit, int(payload.get("max_context_length", horde_ctxlimit)))
+            output_tokens = int(payload.get("max_length", args.defaultgenamt))
+            if prompt_tokens + output_tokens > context_limit:
+                print_with_time(f"Worker {worker_id} - Chat job {jobid} estimated at {prompt_tokens} prompt + {output_tokens} output tokens exceeds context {context_limit}.")
+                submit["fault_reason"] = "prompt_overflow"
+                return submit
+
+            # Tool parsing needs the complete reply. Ordinary non-streamed jobs also use JSON.
+            stream = payload.pop("stream_progress", False) is True and not payload.get("tools")
+            payload["stream"] = stream
+            if not stream:
+                generation = make_url_request_horde(genurl, payload, addmykey=True)
+            else:
+                payload["stream_options"] = {"include_usage": True}
+                message = {"role": "assistant", "content": "", "reasoning_content": ""}
+                generation = None
+                done = threading.Event()
+
+                def read_stream():
+                    nonlocal generation
+                    try:
+                        request = urllib.request.Request(genurl, data=json.dumps(payload).encode('utf-8'), headers=horde_headers(True))
+                        request.add_header('Content-Type', 'application/json')
+                        with urllib.request.urlopen(request, timeout=600) as response:
+                            if 'text/event-stream' not in response.headers.get('Content-Type', ''):
+                                generation = json.loads(response.read())
+                                return
+                            finish_reason, usage = None, {}
+                            for line in response:
+                                if not line.startswith(b'data:'):
+                                    continue # Local chat SSE emits one JSON data line per event, plus keepalives.
+                                data = line[5:].strip()
+                                if data == b'[DONE]':
+                                    if finish_reason is not None:
+                                        generation = {"choices": [{"message": message, "finish_reason": finish_reason}], "usage": usage}
+                                        return
+                                    break
+                                event = json.loads(data)
+                                if event.get("error"):
+                                    raise ValueError(event["error"])
+                                usage = event.get("usage") or usage
+                                for choice in event.get("choices", []):
+                                    delta = choice.get("delta") or {}
+                                    if delta.get("tool_calls"):
+                                        raise ValueError("unexpected tool call in a text stream")
+                                    for key in ("content", "reasoning_content"):
+                                        message[key] += delta.get(key) or ""
+                                    finish_reason = choice.get("finish_reason") or finish_reason
+                            raise ValueError("chat stream ended before a completed reply")
+                    except Exception as e:
+                        print_with_time(f"Worker {worker_id} - Chat stream failed: {e}")
+                    finally:
+                        done.set()
+
+                reader = threading.Thread(target=read_stream, daemon=True)
+                reader.start()
+                offsets = {"content": 0, "reasoning_content": 0}
+                seq, cancelled = 1, False
+                try:
+                    while True:
+                        finished = done.wait(1)
+                        if finished and not generation:
+                            break
+                        # Strings are replaced by the reader; each slice is a stable prefix.
+                        delta = {key: message[key][offset:offset + 65536] for key, offset in offsets.items()}
+                        if not any(delta.values()):
+                            if finished:
+                                break
+                            continue
+                        progress = {"id": jobid, "seq": seq, "delta": delta}
+                        for attempt in range(3):
+                            error_info = {}
+                            ack = make_url_request(f'{cluster}/api/v2/generate/text/progress', progress, headers=horde_headers(), timeout=10, error_info=error_info)
+                            if ack is not None or error_info.get("status") in (400, 401, 403, 404, 409, 413):
+                                break
+                            if attempt < 2:
+                                time.sleep(1) # Retry the identical seq and delta, including after a lost acknowledgement.
+                        if not isinstance(ack, dict) or ack.get("accepted_seq") != seq:
+                            print_with_time(f"Worker {worker_id} - Chat progress stopped; will submit the final reply.")
+                            break
+                        if ack.get("cancelled") is True:
+                            cancelled = True
+                            make_url_request(f'{epurl}/api/extra/abort', {"genkey": payload["genkey"]}, headers=horde_headers(True), timeout=10)
+                            break
+                        for key in offsets:
+                            offsets[key] += len(delta[key])
+                        seq += 1
+                finally:
+                    reader.join() # No progress posts may outlive this job's final submission.
+                if cancelled:
+                    print_with_time(f"Worker {worker_id} - Chat job {jobid} cancelled by Horde.")
+                    return None
+
+            if not generation or generation.get("error"):
+                raise ValueError("backend did not return a chat completion")
+            choice = generation["choices"][0]
+            message = choice["message"]
+            finish_reason = choice["finish_reason"]
+            if finish_reason not in ("stop", "length", "tool_calls", "content_filter"):
+                raise ValueError(f"invalid finish_reason: {finish_reason}")
+            reply = {"role": "assistant", "content": message.get("content") or ""}
+            for key in ("tool_calls", "reasoning_content"):
+                if message.get(key):
+                    reply[key] = message[key]
+            for key in ("prompt_tokens", "completion_tokens", "reasoning_tokens"):
+                value = (generation.get("usage") or {}).get(key)
+                if value is not None:
+                    submit[key] = value
+            submit.update(message=reply, finish_reason=finish_reason, state="ok")
+        except Exception as e:
+            print_with_time(f"Worker {worker_id} - Chat job {jobid} failed: {e}")
+        return submit
 
     current_id = None
     current_payload = None
@@ -15541,6 +15919,23 @@ def run_horde_worker(args, api_key, worker_name, worker_id, parallel_batching_th
         }
         if parallel_batching_threads>1:
             gen_dict["threads"] = parallel_batching_threads
+
+        horde_ctxlimit = min(maxctx, maxctx if maxhordectx == 0 else maxhordectx)
+        horde_chat_limits = {
+            "max_context_length": horde_ctxlimit,
+            "max_length": maxhordelen,
+            "tools_max_temperature": tools_max_temperature,
+        }
+        gen_dict["chat_jobs"] = True
+        gen_dict["chat_features"] = ["seed", "presence_penalty", "tools", "json_object", "json_schema"]
+        gen_dict["image_transports"] = ["messages_url"]
+        if has_vision_support:
+            gen_dict["chat_features"].append("vision")
+            gen_dict["image_transports"].append("base64")
+
+        gen_dict["chat_features"].append("prompt_overflow_refused")
+        gen_dict["chat_limits"] = dict(horde_chat_limits)
+        gen_dict["model_id"] = friendlymodelname
         pop = make_url_request_horde(f'{cluster}/api/v2/generate/text/pop',gen_dict)
         if not pop:
             punishcounter += 1
@@ -15558,15 +15953,21 @@ def run_horde_worker(args, api_key, worker_name, worker_id, parallel_batching_th
         sleepy_counter = 0
         current_id = pop['id']
         current_payload = pop['payload']
+        is_chat_job = bool(pop.get('chat', False))
         print("") #empty newline
         print_with_time(f"Job {current_id} received from {cluster} for {current_payload.get('max_length',0)} tokens and {current_payload.get('max_context_length',0)} max context. Starting generation...")
 
         #do gen
+        submit_dict = None
         while exitcounter < 10:
             if parallel_batching_threads>1 or not modelbusy.locked():
                 #horde gets a genkey to avoid KCPP overlap
-                current_payload['genkey'] = f"HORDEREQ_{random.randint(100, 999)}"
-                current_generation = make_url_request_horde(f'{epurl}/api/v1/generate', current_payload, method='POST',addmykey=True)
+                current_payload['genkey'] = f"HORDEREQ_{current_id}" if is_chat_job else f"HORDEREQ_{random.randint(100, 999)}"
+                genurl = f'{epurl}/v1/chat/completions' if is_chat_job else f'{epurl}/api/v1/generate'
+                if is_chat_job:
+                    submit_dict = horde_chat_job(genurl, current_payload, current_id)
+                    break # A failed chat job is faulted, never regenerated after publishing partial text.
+                current_generation = make_url_request_horde(genurl, current_payload, method='POST',addmykey=True)
                 if current_generation:
                     break
                 else:
@@ -15585,11 +15986,12 @@ def run_horde_worker(args, api_key, worker_name, worker_id, parallel_batching_th
                 "generation": current_generation["results"][0]["text"],
                 "state": "ok"
             }
+        elif not is_chat_job:
+            print_with_time(f"Worker {worker_id} - Error, Abandoned current job due to errors. Getting new job.")
+        if submit_dict is not None:
             submiturl = cluster + '/api/v2/generate/text/submit'
             submit_thread = threading.Thread(target=submit_completed_generation, args=(submiturl, current_id, session_starttime, submit_dict))
             submit_thread.start() #submit job in new thread so nothing is waiting
-        else:
-            print_with_time(f"Worker {worker_id} - Error, Abandoned current job due to errors. Getting new job.")
         current_id = None
         current_payload = None
         time.sleep(0.1)
@@ -16397,7 +16799,7 @@ def load_mcp_async(args):
                 try:
                     init_payload = {
                         "jsonrpc": "2.0",
-                        "id": random.randint(100000, 999999),
+                        "id": random.randint(1000000, 9999999),
                         "method": "initialize",
                         "params": {
                             "protocolVersion": "2024-11-05",
@@ -16411,7 +16813,7 @@ def load_mcp_async(args):
                     }
                     toolget_payload = {
                         "jsonrpc": "2.0",
-                        "id": random.randint(100000, 999999),
+                        "id": random.randint(1000000, 9999999),
                         "method": "tools/list",
                         "params": {}
                     }
@@ -17895,6 +18297,24 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
                 if not loadok:
                     exitcounter = 999
                     exit_with_error(3, "Could not load Music LLM model!")
+        elif mu_has_llm and mu_has_vae and not mu_has_embed and not mu_has_diff:
+            paths_to_check = [args.musicllm, args.musicvae]
+            if not all(os.path.exists(p) for p in paths_to_check):
+                if args.ignoremissing:
+                    print("Ignoring missing YuE2 LLM/VAE model files!")
+                    args.musicllm = None
+                    args.musicvae = None
+                else:
+                    exitcounter = 999
+                    exit_with_error(2, "Cannot find required YuE2 LLM/VAE model files!")
+            else:
+                musicllmpath = os.path.abspath(args.musicllm)
+                musicvaepath = os.path.abspath(args.musicvae)
+                loadok = music_load_model(musicllmpath, "", "", musicvaepath)
+                print("Load YuE2 Music Models OK: " + str(loadok))
+                if not loadok:
+                    exitcounter = 999
+                    exit_with_error(3, "Could not load YuE2 music models!")
         elif mu_has_diff:
             if not (mu_has_embed and mu_has_vae):
                 exitcounter = 999
@@ -18453,10 +18873,10 @@ if __name__ == '__main__':
     ttsparsergroup.add_argument("--ttsdir", metavar=('[directory]'), help="Select directory containing voices for voice cloning.", default="")
 
     musicparsergroup = parser.add_argument_group('Music Gen Commands')
-    musicparsergroup.add_argument("--musicllm", metavar=('[filename]'), help="Select music LLM model (e.g acestep-5Hz-lm-0.6B)", default="")
+    musicparsergroup.add_argument("--musicllm", metavar=('[filename]'), help="Select music LLM model (e.g. ACE-Step LM or yue2-3b-q8_0.gguf)", default="")
     musicparsergroup.add_argument("--musicembeddings", metavar=('[filename]'), help="Select music embedding model (e.g Qwen3-Embedding-0.6B)", default="")
     musicparsergroup.add_argument("--musicdiffusion", metavar=('[filename]'), help="Select music diffusion (DiT) model (e.g acestep-v15-turbo)", default="")
-    musicparsergroup.add_argument("--musicvae", metavar=('[filename]'), help="Select music VAE model", default="")
+    musicparsergroup.add_argument("--musicvae", metavar=('[filename]'), help="Select music VAE model (e.g. yue2-vae-f16.gguf)", default="")
     musicparsergroup.add_argument("--musiclowvram", help="Unload music models when not in use", action='store_true')
 
     embeddingsparsergroup = parser.add_argument_group('Embeddings Model Commands')
