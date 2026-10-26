@@ -38,8 +38,7 @@ private:
         std::string name;
         ggml_tensor* tensor      = nullptr;
         ModelComponent component = ModelComponent::Count;
-        TensorStorage source;
-        bool has_source                 = false;
+        std::vector<TensorStorage> sources;
         ModelLoader::FileId source_file = 0;
         SDVersion source_version        = VERSION_COUNT;
 
@@ -138,6 +137,8 @@ private:
     bool apply_loras_to_params(const std::vector<TensorState*>& states);
     bool mmap_params(const std::vector<TensorState*>& states,
                      std::vector<ParamsStorageBlock*>& created_storage_blocks);
+    static std::vector<TensorStorage> find_tensor_sources(const TensorState& state, const String2TensorStorage& sources);
+    bool load_tensor_parts(TensorState& state);
     bool can_mmap_storage(const TensorState& state) const;
     bool alloc_params_buffers(const std::vector<TensorState*>& states,
                               std::vector<ParamsStorageBlock*>& created_storage_blocks);
@@ -151,13 +152,15 @@ private:
         size_t required_budget_bytes  = 0;
         size_t available_device_bytes = SIZE_MAX;
         size_t available_budget_bytes = SIZE_MAX;
+        bool requires_reclamation     = false;
         bool fits() const {
             return required_device_bytes <= available_device_bytes &&
                    required_budget_bytes <= available_budget_bytes;
         }
     };
     CapacityCheck check_capacity(const DeviceMemoryRequest& request,
-                                 const std::vector<TensorState*>& states) const;
+                                 const std::vector<TensorState*>& states,
+                                 bool log_details = false) const;
 
     ggml_backend_buffer_type_t params_buffer_type_for(const TensorState& state) const;
     ggml_backend_buffer_type_t split_buffer_type_for(const TensorState& state) const;

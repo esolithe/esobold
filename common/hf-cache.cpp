@@ -2,6 +2,7 @@
 
 #include "build-info.h"
 #include "common.h"
+#include "file-lock.h"
 #include "log.h"
 #include "http.h"
 #include "json.h"
@@ -161,6 +162,14 @@ static bool is_valid_oid(const std::string & oid) {
     return is_hex_string(oid, 40) || is_hex_string(oid, 64);
 }
 
+std::string get_lock_path(const std::string & repo_id, const std::string & oid) {
+    if (!is_valid_repo_id(repo_id) || !is_valid_oid(oid)) {
+        return {};
+    }
+    fs::path lock_path = fs::path(get_cache_path()) / ".locks" / repo_to_folder_name(repo_id) / (oid + ".lock");
+    return lock_path.string();
+}
+
 static bool is_valid_subpath(const fs::path & path, const fs::path & subpath) {
     if (subpath.is_absolute()) {
         return false; // never do a / b with b absolute
@@ -170,29 +179,6 @@ static bool is_valid_subpath(const fs::path & path, const fs::path & subpath) {
     auto [b_end, _] = std::mismatch(b.begin(), b.end(), t.begin(), t.end());
 
     return b_end == b.end();
-}
-
-static void safe_write_file(const fs::path & path, const std::string & data) {
-    fs::path path_tmp = path;
-    path_tmp += ".tmp";
-
-    if (path.has_parent_path()) {
-        fs::create_directories(path.parent_path());
-    }
-
-    std::ofstream file(path_tmp);
-    file << data;
-    file.close();
-
-    std::error_code ec;
-
-    if (!file.fail()) {
-        fs::rename(path_tmp, path, ec);
-    }
-    if (file.fail() || ec) {
-        fs::remove(path_tmp, ec);
-        throw std::runtime_error("failed to write file: " + fs_path_to_utf8(path));
-    }
 }
 
 static common_json api_get(const std::string & url,
@@ -282,7 +268,7 @@ static std::string get_repo_commit(const std::string & repo_id,
             return {};
         }
 
-        safe_write_file(refs_path / name_path, commit);
+        fs_write_atomic(refs_path / name_path, commit);
         return commit;
 
     } catch (const common_json_error & e) {
@@ -460,7 +446,7 @@ hf_files get_cached_files(const std::string & repo_id) {
     return files;
 }
 
-std::string finalize_file(const hf_file & file) {
+std::string finalize_file(const hf_file & file, const std::function<bool()> & keep_waiting) {
     static std::atomic<bool> symlinks_disabled{false};
 
     std::error_code ec;
@@ -472,6 +458,24 @@ std::string finalize_file(const hf_file & file) {
     }
 
     if (!fs::exists(local_path, ec)) {
+        return file.final_path;
+    }
+
+    // the lock file is shared with huggingface_hub: another process may be
+    // finalizing the same blob
+    common_file_lock lock(get_lock_path(file.repo_id, file.oid));
+    if (!lock.acquire(keep_waiting)) {
+        // without the lock, another process could move the blob while we check it
+        throw std::runtime_error("failed to lock cache for finalization: " + file.final_path);
+    }
+
+    // acquire() only polls keep_waiting while waiting for a busy lock
+    if (keep_waiting && !keep_waiting()) {
+        throw std::runtime_error("download cancelled before finalization: " + file.final_path);
+    }
+
+    // re-check under the lock: the winner may have created the link already
+    if (fs::exists(final_path, ec)) {
         return file.final_path;
     }
 

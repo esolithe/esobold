@@ -29,6 +29,7 @@ bool contains(const std::string& str, const std::string& substr);
 std::string sd_format(const char* fmt, ...);
 
 void replace_all_chars(std::string& str, char target, char replacement);
+std::string escape_newlines(const std::string& text);
 
 int round_up_to(int value, int base);
 
@@ -39,8 +40,6 @@ std::u32string utf8_to_utf32(const std::string& utf8_str);
 std::string utf32_to_utf8(const std::u32string& utf32_str);
 std::u32string unicode_value_to_utf32(int unicode_value);
 // std::string sd_basename(const std::string& path);
-
-std::string sd_get_u8path(const std::string& file_path);
 
 sd_image_t tensor_to_sd_image(const sd::Tensor<float>& tensor, int frame_index = 0);
 
@@ -103,6 +102,7 @@ std::vector<std::pair<std::string, float>> split_quotation_attention(
 sd_progress_cb_t sd_get_progress_callback();
 void* sd_get_progress_callback_data();
 
+void sd_begin_preview_pass(int total_steps);
 sd_preview_cb_t sd_get_preview_callback();
 void* sd_get_preview_callback_data();
 preview_t sd_get_preview_mode();

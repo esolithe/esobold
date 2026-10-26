@@ -160,12 +160,13 @@ namespace MiniMaxH3 {
         return ggml_reshape_3d(ctx, x, x->ne[0], x->ne[1], x->ne[2] * x->ne[3]);
     }
 
-    static ggml_tensor* apply_partial_rope(ggml_context* ctx,
+    static ggml_tensor* apply_partial_rope(GGMLRunnerContext* runner_ctx,
                                            ggml_tensor* x,
                                            ggml_tensor* pe) {
+        auto ctx        = runner_ctx->ggml_ctx;
         int64_t rot_dim = pe->ne[2] * 2;
         GGML_ASSERT(rot_dim <= x->ne[0]);
-        auto rotated = Rope::apply_rope(ctx,
+        auto rotated = Rope::apply_rope(runner_ctx,
                                         ggml_ext_slice(ctx, x, 0, 0, rot_dim),
                                         pe,
                                         false);
@@ -209,8 +210,8 @@ namespace MiniMaxH3 {
             q                = q_norm->forward(ctx, q);
             k                = k_norm->forward(ctx, k);
             if (pe != nullptr) {
-                q = apply_partial_rope(ctx->ggml_ctx, q, pe);
-                k = apply_partial_rope(ctx->ggml_ctx, k, pe);
+                q = apply_partial_rope(ctx, q, pe);
+                k = apply_partial_rope(ctx, k, pe);
             } else {
                 q = attention_layout(ctx->ggml_ctx, q);
                 k = attention_layout(ctx->ggml_ctx, k);
@@ -264,6 +265,9 @@ namespace MiniMaxH3 {
             for (int64_t i = 0; i < num_layers; ++i) {
                 auto block = std::dynamic_pointer_cast<TokenRefinerBlock>(blocks["blocks." + std::to_string(i)]);
                 x          = block->forward(ctx, x);
+                sd::ggml_graph_cut::mark_graph_cut(x,
+                                                   "minimax_h3.token_refiner.blocks." + std::to_string(i),
+                                                   "hidden_states");
             }
             return std::dynamic_pointer_cast<RMSNorm>(blocks["final_norm"])->forward(ctx, x);
         }
@@ -527,7 +531,11 @@ namespace MiniMaxH3 {
             GGML_ASSERT(context->ne[0] == config.text_dim);
             auto condition_proj = std::dynamic_pointer_cast<Linear>(blocks["condition_proj"]);
             auto token_refiner  = std::dynamic_pointer_cast<TokenRefiner>(blocks["token_refiner"]);
-            return token_refiner->forward(ctx, condition_proj->forward(ctx, context));
+            auto projected      = condition_proj->forward(ctx, context);
+            sd::ggml_graph_cut::mark_graph_cut(projected,
+                                               "minimax_h3.condition_proj",
+                                               "hidden_states");
+            return token_refiner->forward(ctx, projected);
         }
 
         ggml_tensor* time_embedding(GGMLRunnerContext* ctx,

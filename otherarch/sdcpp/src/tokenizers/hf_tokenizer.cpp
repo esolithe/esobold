@@ -4,6 +4,7 @@
 #include <array>
 #include <climits>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <queue>
 #include <sstream>
@@ -493,12 +494,17 @@ struct HFTokenizer::Impl {
     }
 };
 
-HFTokenizer::HFTokenizer(const std::string& path)
+HFTokenizer::HFTokenizer(const std::string& source)
     : impl_(new Impl) {
-    std::ifstream stream(path, std::ios::binary);
-    tokenizer_require(stream.good(), "cannot open " + path);
     TokenizerJSON config;
-    stream >> config;
+    const auto first = source.find_first_not_of(" \t\r\n");
+    if (first != std::string::npos && source[first] == '{') {
+        config = TokenizerJSON::parse(source);
+    } else {
+        std::ifstream stream(std::filesystem::u8path(source), std::ios::binary);
+        tokenizer_require(stream.good(), "cannot open " + source);
+        stream >> config;
+    }
     tokenizer_require(config.value("version", std::string("1.0")) == "1.0", "unsupported version");
     tokenizer_require(config.value("padding", TokenizerJSON()).is_null(), "JSON padding is unsupported; padding is controlled by the text encoder");
     tokenizer_require(config.value("truncation", TokenizerJSON()).is_null(), "JSON truncation is unsupported; truncation is controlled by the text encoder");
@@ -735,7 +741,7 @@ bool HFTokenizer::encode(const std::string& text, std::vector<int>& tokens, on_n
         }
     }
     ss << "]";
-    LOG_VERBOSE("split prompt \"%s\" to %zu tokens %s", text.c_str(), result.size(), ss.str().c_str());
+    LOG_VERBOSE("split prompt \"%s\" to %zu tokens %s", escape_newlines(text).c_str(), result.size(), escape_newlines(ss.str()).c_str());
     tokens = std::move(result);
     return true;
 }

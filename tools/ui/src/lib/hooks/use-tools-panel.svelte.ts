@@ -28,7 +28,7 @@ export interface UseToolsPanelReturn {
  * Shared reactive state and helpers for the tools panel UI.
  *
  * Used by both the desktop dropdown (`ChatFormActionAddToolsSubmenu`)
- * and the mobile sheet (`ChatFormActionAddSheet`) to avoid
+ * and the mobile drawer (`ChatFormActionAddDrawer`) to avoid
  * duplicating group filtering, checked-state derivation, and favicon logic.
  *
  * All toggle state routes through `conversationsStore.preferences`: with an
@@ -49,12 +49,13 @@ export function useToolsPanel(): UseToolsPanelReturn {
 
 		// Tools endpoint unreachable (403) — server started without tools
 		if (toolsStore.isToolsEndpointUnreachable) {
-			return `The KoboldCpp MCP bridge may accessible on the same URL with /mcp at the end but must be added manually.`;
+			return `To enable Server Tools you need to run llama-server with ${CLI_FLAGS.TOOLS} all or ${CLI_FLAGS.TOOLS} <name> flag. To see MCP Tools you need to add / enable MCP Server(s).`;
 		}
 
 		// Other errors — return null so UI shows "Failed to load tools"
 		if (toolsStore.error) return null;
-		return `The KoboldCpp MCP bridge may accessible on the same URL with /mcp at the end but must be added manually`;
+
+		return `To enable Server Tools you need to run llama-server with ${CLI_FLAGS.TOOLS} all or ${CLI_FLAGS.TOOLS} <name> flag. To see MCP Tools you need to add / enable MCP Server(s).`;
 	});
 
 	function isGroupChecked(group: ToolGroup): boolean {

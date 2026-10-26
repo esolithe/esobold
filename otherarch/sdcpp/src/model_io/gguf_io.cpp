@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <ostream>
 #include <string>
@@ -19,7 +20,7 @@ static void set_error(std::string* error, const std::string& message) {
 }
 
 bool is_gguf_file(const std::string& file_path) {
-    std::ifstream file(file_path, std::ios::binary);
+    std::ifstream file(std::filesystem::u8path(file_path), std::ios::binary);
     if (!file.is_open()) {
         return false;
     }
@@ -47,10 +48,14 @@ bool read_gguf_file(const std::string& file_path,
     gguf_context* ctx_gguf_ = nullptr;
     ggml_context* ctx_meta_ = nullptr;
 
-    ctx_gguf_ = gguf_init_from_file(file_path.c_str(), {true, &ctx_meta_});
+    GGUFReader gguf_reader;
+    bool probe_ok = gguf_reader.load(file_path);
+
+    if (!probe_ok || !gguf_reader.has_tensors_beyond_ggml_limits()) {
+        ctx_gguf_ = gguf_init_from_file(file_path.c_str(), {true, &ctx_meta_});
+    }
     if (!ctx_gguf_) {
-        GGUFReader gguf_reader;
-        if (!gguf_reader.load(file_path)) {
+        if (!probe_ok && !gguf_reader.load(file_path)) {
             set_error(error, "failed to open '" + file_path + "' with GGUFReader");
             return false;
         }
@@ -174,7 +179,7 @@ bool GGUFStreamingWriter::write_metadata(const std::string& file_path,
     }
 
     LOG_INFO("trying to save tensors to %s", file_path.c_str());
-    FILE* file = fopen(file_path.c_str(), "wb+");
+    FILE* file = ggml_fopen(file_path.c_str(), "wb+");
     if (file == nullptr) {
         set_error(error, "failed to open output file '" + file_path + "'");
         close();

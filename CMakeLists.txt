@@ -147,6 +147,11 @@ if (LLAMA_CUBLAS)
 
         set(LLAMA_EXTRA_LIBS ${LLAMA_EXTRA_LIBS} CUDA::cuda_driver)
 
+    # CUDA graphs are independent of whether GPU architectures were supplied.
+    if(CUDAToolkit_VERSION VERSION_GREATER 12)
+        add_compile_definitions(GGML_CUDA_USE_GRAPHS)
+    endif()
+
     if (NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
         # 50 == lowest CUDA 12 standard
         # 60 == f16 CUDA intrinsics
@@ -156,11 +161,9 @@ if (LLAMA_CUBLAS)
         # 80 == Ampere, asynchronous data loading, faster tensor core instructions
         message("CUDA Toolkit Version: ${CUDAToolkit_VERSION}")
         if(CUDAToolkit_VERSION VERSION_GREATER_EQUAL 13)
-                add_compile_definitions(GGML_CUDA_USE_GRAPHS) #try enable cuda graphs on cu12 build
                 add_compile_definitions(KCPP_LIMIT_CUDA_MAX_ARCH=860)
                 set(CMAKE_CUDA_ARCHITECTURES "75-virtual;80-virtual;86-virtual") # lowest CUDA 13 standard
         elseif(CUDAToolkit_VERSION VERSION_GREATER 12)
-                add_compile_definitions(GGML_CUDA_USE_GRAPHS) #try enable cuda graphs on cu12 build
                 add_compile_definitions(KCPP_LIMIT_CUDA_MAX_ARCH=800)
                 set(CMAKE_CUDA_ARCHITECTURES "50-virtual;61-virtual;75-virtual;80-virtual") # lowest CUDA 12 standard + lowest for integer intrinsics
         else()
@@ -580,6 +583,7 @@ endif()
 set_source_files_properties(vendor/hash/sha256/sha256.c PROPERTIES COMPILE_OPTIONS ${KCPP_HASH_NO_WARN_FLAG})
 
 add_library(sdtype_adapter
+            kcpp_src/sdcpp_gguf_tokenizer.cpp
             otherarch/sdcpp/sdtype_adapter.cpp
             otherarch/sdcpp/src/conditioning/wan_audio.cpp
             otherarch/sdcpp/src/core/compute_workspace.cpp
@@ -588,6 +592,9 @@ add_library(sdtype_adapter
             otherarch/sdcpp/src/core/ggml_graph_cut.cpp
             otherarch/sdcpp/src/core/ggml_graph_cut.h
             otherarch/sdcpp/src/core/parallel.cpp
+            otherarch/sdcpp/src/core/probe/backend_probe.cpp
+            otherarch/sdcpp/src/core/probe/conv_direct.cpp
+            otherarch/sdcpp/src/core/probe/flash_attn.cpp
             otherarch/sdcpp/src/core/regex.cpp
             otherarch/sdcpp/src/core/ggml_tensor_utils.cpp
             otherarch/sdcpp/src/core/runner_cache.cpp
@@ -607,6 +614,7 @@ add_library(sdtype_adapter
             otherarch/sdcpp/src/runtime/sample-cache.cpp
             otherarch/sdcpp/src/runtime/tiling.cpp
             otherarch/sdcpp/src/runtime/audio_processing.cpp
+            otherarch/sdcpp/src/runtime/image_preprocess.cpp
             otherarch/sdcpp/src/core/util.cpp
             otherarch/sdcpp/src/name_conversion.cpp
             otherarch/sdcpp/src/upscaler.cpp
@@ -667,18 +675,20 @@ target_compile_features(whisper_adapter PUBLIC cxx_std_17) # don't bump
 target_link_libraries(whisper_adapter PRIVATE common2 ggml ${LLAMA_EXTRA_LIBS})
 set_target_properties(whisper_adapter PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
+add_subdirectory(otherarch/audiocpp)
+
 add_library(music_adapter
             otherarch/acestep/music_adapter.cpp)
 target_include_directories(music_adapter PUBLIC . ./kcpp_src ./ggml/include ./ggml/src ./ggml/src/ggml-cpu ./include ./otherarch ./otherarch/tools ./vendor/stb ./vendor/nlohmann ./vendor ./otherarch/acestep ./tools ./common)
 target_compile_features(music_adapter PUBLIC cxx_std_17) # don't bump
-target_link_libraries(music_adapter PRIVATE common2 ggml ${LLAMA_EXTRA_LIBS})
+target_link_libraries(music_adapter PRIVATE common2 ggml audiocpp ${LLAMA_EXTRA_LIBS})
 set_target_properties(music_adapter PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 add_library(tts_adapter
             otherarch/tts_adapter.cpp)
 target_include_directories(tts_adapter PUBLIC . ./kcpp_src ./ggml/include ./ggml/src ./ggml/src/ggml-cpu ./include ./otherarch ./otherarch/tools ./vendor/stb ./vendor/nlohmann ./vendor ./otherarch/ttscpp/include ./otherarch/ttscpp/src ./otherarch/qwen3tts ./tools ./common)
 target_compile_features(tts_adapter PUBLIC cxx_std_17) # don't bump
-target_link_libraries(tts_adapter PRIVATE common2 ggml ${LLAMA_EXTRA_LIBS})
+target_link_libraries(tts_adapter PRIVATE common2 ggml audiocpp ${LLAMA_EXTRA_LIBS})
 set_target_properties(tts_adapter PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 add_library(embeddings_adapter

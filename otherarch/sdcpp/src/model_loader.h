@@ -13,6 +13,14 @@
 
 TensorTypeRules parse_tensor_type_rules(const std::string& tensor_type_rules);
 
+void convert_tensor(void* src,
+                    ggml_type src_type,
+                    void* dst,
+                    ggml_type dst_type,
+                    int nrows,
+                    int n_per_row,
+                    std::vector<float> imatrix = {});
+
 class MmapWrapper;
 
 struct ModelFileData {
@@ -20,6 +28,8 @@ struct ModelFileData {
     std::vector<TensorStorage> tensors;
     std::shared_ptr<MmapWrapper> mmapped;
     std::shared_ptr<struct ggml_backend_buffer> mmbuffer;
+    // mmapped wrapped by devices that can use host memory in place (buffer_from_host_ptr)
+    std::map<ggml_backend_dev_t, std::shared_ptr<struct ggml_backend_buffer>> device_mmbuffers;
     bool is_zip;
 };
 
@@ -95,6 +105,8 @@ public:
     bool del_file(FileId id);
     uint64_t file_revision(FileId id) const;
     std::string file_path(FileId id) const;
+    std::map<std::string, std::string> file_metadata(FileId id) const;
+    String2TensorStorage file_tensors(FileId id) const;
     String2TensorStorage file_tensors(FileId id, SDVersion version) const;
     bool load_file_tensors(FileId id, SDVersion version, on_new_tensor_cb_t callback, const std::set<std::string>& names, bool use_mmap = false) const;
     bool refresh_files(bool include_isolated = true);
@@ -120,7 +132,9 @@ public:
     void process_model_files(bool enable_mmap = false, bool writable_mmap = true);
     std::vector<MmapTensorStore> mmap_tensors(std::map<std::string, ggml_tensor*>& tensors,
                                               std::set<std::string> ignore_tensors = {},
-                                              bool writable                        = true);
+                                              bool writable                        = true,
+                                              ggml_backend_dev_t device            = nullptr);
+    std::vector<ggml_backend_buffer_t> get_device_mmap_buffers() const;
     bool load_tensors(on_new_tensor_cb_t on_new_tensor_cb,
                       bool use_mmap                                    = false,
                       const std::set<std::string>* target_tensor_names = nullptr,
@@ -145,7 +159,6 @@ public:
     bool tensor_should_be_converted(const TensorStorage& tensor_storage, ggml_type type) const;
     int64_t get_params_mem_size(ggml_backend_t backend, ggml_type type = GGML_TYPE_COUNT) const;
     ~ModelLoader() = default;
-    bool has_diffusion_model_tensors();
 };
 
 #endif  // __MODEL_LOADER_H__

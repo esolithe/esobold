@@ -84,12 +84,17 @@ class TinyEncoder : public UnaryBlock {
     int channels    = 64;
     int z_channels  = 4;
     int num_blocks  = 3;
+    bool f16;
 
 public:
-    TinyEncoder(int z_channels = 4, bool use_midblock_gn = false)
-        : z_channels(z_channels) {
-        int index                       = 0;
+    TinyEncoder(int z_channels = 4, bool use_midblock_gn = false, bool f16 = false)
+        : z_channels(z_channels), f16(f16) {
+        in_channels                     = f16 ? 16 : 3;
+        int index                       = f16 ? 1 : 0;
         blocks[std::to_string(index++)] = std::shared_ptr<GGMLBlock>(new Conv2d(in_channels, channels, {3, 3}, {1, 1}, {1, 1}));
+        if (f16) {
+            index++;  // nn.ReLU()
+        }
         blocks[std::to_string(index++)] = std::shared_ptr<GGMLBlock>(new TAEBlock(channels, channels));
 
         blocks[std::to_string(index++)] = std::shared_ptr<GGMLBlock>(new Conv2d(channels, channels, {3, 3}, {2, 2}, {1, 1}, {1, 1}, false));
@@ -97,12 +102,14 @@ public:
             blocks[std::to_string(index++)] = std::shared_ptr<GGMLBlock>(new TAEBlock(channels, channels));
         }
 
-        blocks[std::to_string(index++)] = std::shared_ptr<GGMLBlock>(new Conv2d(channels, channels, {3, 3}, {2, 2}, {1, 1}, {1, 1}, false));
+        blocks[std::to_string(index++)] = std::shared_ptr<GGMLBlock>(new Conv2d(channels, f16 ? channels * 2 : channels, {3, 3}, {2, 2}, {1, 1}, {1, 1}, false));
+        channels *= f16 ? 2 : 1;
         for (int i = 0; i < num_blocks; i++) {
             blocks[std::to_string(index++)] = std::shared_ptr<GGMLBlock>(new TAEBlock(channels, channels));
         }
 
-        blocks[std::to_string(index++)] = std::shared_ptr<GGMLBlock>(new Conv2d(channels, channels, {3, 3}, {2, 2}, {1, 1}, {1, 1}, false));
+        blocks[std::to_string(index++)] = std::shared_ptr<GGMLBlock>(new Conv2d(channels, f16 ? channels * 2 : channels, {3, 3}, {2, 2}, {1, 1}, {1, 1}, false));
+        channels *= f16 ? 2 : 1;
         for (int i = 0; i < num_blocks; i++) {
             blocks[std::to_string(index++)] = std::shared_ptr<GGMLBlock>(new TAEBlock(channels, channels, use_midblock_gn));
         }
@@ -114,7 +121,11 @@ public:
         // x: [n, in_channels, h, w]
         // return: [n, z_channels, h/8, w/8]
 
-        for (int i = 0; i < num_blocks * 3 + 6; i++) {
+        for (int i = f16 ? 1 : 0; i < num_blocks * 3 + 6 + (f16 ? 2 : 0); i++) {
+            if (f16 && i == 2) {
+                x = ggml_relu_inplace(ctx->ggml_ctx, x);
+                continue;
+            }
             auto block = std::dynamic_pointer_cast<UnaryBlock>(blocks[std::to_string(i)]);
 
             x = block->forward(ctx, x);
@@ -131,9 +142,11 @@ class TinyDecoder : public UnaryBlock {
     int num_blocks   = 3;
 
 public:
-    TinyDecoder(int z_channels = 4, bool use_midblock_gn = false)
+    TinyDecoder(int z_channels = 4, bool use_midblock_gn = false, bool f16 = false)
         : z_channels(z_channels) {
-        int index = 0;
+        channels     = f16 ? 256 : 64;
+        out_channels = f16 ? 16 : 3;
+        int index    = 0;
 
         blocks[std::to_string(index++)] = std::shared_ptr<GGMLBlock>(new Conv2d(z_channels, channels, {3, 3}, {1, 1}, {1, 1}));
         index++;  // nn.ReLU()
@@ -142,13 +155,15 @@ public:
             blocks[std::to_string(index++)] = std::shared_ptr<GGMLBlock>(new TAEBlock(channels, channels, use_midblock_gn));
         }
         index++;  // nn.Upsample()
-        blocks[std::to_string(index++)] = std::shared_ptr<GGMLBlock>(new Conv2d(channels, channels, {3, 3}, {1, 1}, {1, 1}, {1, 1}, false));
+        blocks[std::to_string(index++)] = std::shared_ptr<GGMLBlock>(new Conv2d(channels, f16 ? channels / 2 : channels, {3, 3}, {1, 1}, {1, 1}, {1, 1}, false));
+        channels /= f16 ? 2 : 1;
 
         for (int i = 0; i < num_blocks; i++) {
             blocks[std::to_string(index++)] = std::shared_ptr<GGMLBlock>(new TAEBlock(channels, channels));
         }
         index++;  // nn.Upsample()
-        blocks[std::to_string(index++)] = std::shared_ptr<GGMLBlock>(new Conv2d(channels, channels, {3, 3}, {1, 1}, {1, 1}, {1, 1}, false));
+        blocks[std::to_string(index++)] = std::shared_ptr<GGMLBlock>(new Conv2d(channels, f16 ? channels / 2 : channels, {3, 3}, {1, 1}, {1, 1}, {1, 1}, false));
+        channels /= f16 ? 2 : 1;
 
         for (int i = 0; i < num_blocks; i++) {
             blocks[std::to_string(index++)] = std::shared_ptr<GGMLBlock>(new TAEBlock(channels, channels));
@@ -691,6 +706,7 @@ class TAESD : public GGMLBlock {
 protected:
     bool decode_only;
     bool taef2 = false;
+    bool f16   = false;
 
 public:
     int z_channels = 4;
@@ -701,17 +717,21 @@ public:
         bool use_midblock_gn = false;
         taef2                = sd_version_uses_flux2_vae(version);
 
-        if (sd_version_is_dit(version)) {
+        if (sd_version_is_dit(version) && !sd_version_is_pixart(version)) {
             z_channels = 16;
         }
         if (taef2) {
             z_channels      = 32;
             use_midblock_gn = true;
         }
-        blocks["decoder.layers"] = std::shared_ptr<GGMLBlock>(new TinyDecoder(z_channels, use_midblock_gn));
+        f16 = version == VERSION_QWEN_IMAGE_2_1;
+        if (f16) {
+            z_channels = 64;
+        }
+        blocks["decoder.layers"] = std::shared_ptr<GGMLBlock>(new TinyDecoder(z_channels, use_midblock_gn, f16));
 
         if (!decode_only) {
-            blocks["encoder.layers"] = std::shared_ptr<GGMLBlock>(new TinyEncoder(z_channels, use_midblock_gn));
+            blocks["encoder.layers"] = std::shared_ptr<GGMLBlock>(new TinyEncoder(z_channels, use_midblock_gn, f16));
         }
     }
 
@@ -720,10 +740,15 @@ public:
         if (taef2) {
             z = unpatchify(ctx->ggml_ctx, z, 2);
         }
-        return decoder->forward(ctx, z);
+        auto x = decoder->forward(ctx, z);
+        return f16 ? unpatchify(ctx->ggml_ctx, x, 2) : x;
     }
 
     ggml_tensor* encode(GGMLRunnerContext* ctx, ggml_tensor* x) {
+        if (f16) {
+            GGML_ASSERT(x->ne[0] % 2 == 0 && x->ne[1] % 2 == 0);
+            x = patchify(ctx->ggml_ctx, x, 2);
+        }
         auto encoder = std::dynamic_pointer_cast<TinyEncoder>(blocks["encoder.layers"]);
         auto z       = encoder->forward(ctx, x);
         if (taef2) {
@@ -733,8 +758,96 @@ public:
     }
 };
 
+//kcpp: addon code
+// TAEQI2.1-Tinier replaces only the wider, low-resolution TAE blocks with
+// cheaper ConvNeXt-style depthwise residual blocks.
+class KCPPTAESuperBlock : public UnaryBlock {
+public:
+    KCPPTAESuperBlock(int channels, int expansion = 2) {
+        blocks["conv.0"] = std::shared_ptr<GGMLBlock>(new Conv2d_grouped(channels,
+                                                                          channels,
+                                                                          channels,
+                                                                          {7, 7},
+                                                                          {1, 1},
+                                                                          {3, 3},
+                                                                          {1, 1},
+                                                                          false));
+        blocks["conv.1"] = std::shared_ptr<GGMLBlock>(new Conv2d(channels, channels * expansion, {1, 1}));
+        blocks["conv.3"] = std::shared_ptr<GGMLBlock>(new Conv2d(channels * expansion,
+                                                                  channels,
+                                                                  {1, 1},
+                                                                  {1, 1},
+                                                                  {0, 0},
+                                                                  {1, 1},
+                                                                  false));
+    }
+
+    ggml_tensor* forward(GGMLRunnerContext* ctx, ggml_tensor* x) override {
+        auto conv_0 = std::dynamic_pointer_cast<Conv2d_grouped>(blocks["conv.0"]);
+        auto conv_1 = std::dynamic_pointer_cast<Conv2d>(blocks["conv.1"]);
+        auto conv_3 = std::dynamic_pointer_cast<Conv2d>(blocks["conv.3"]);
+
+        auto h = conv_0->forward(ctx, x);
+        h      = conv_1->forward(ctx, h);
+        h      = ggml_relu_inplace(ctx->ggml_ctx, h);
+        h      = conv_3->forward(ctx, h);
+        return ggml_add(ctx->ggml_ctx, h, x);
+    }
+};
+
+class KCPPTinyF16TinierEncoder : public TinyEncoder {
+public:
+    KCPPTinyF16TinierEncoder(int z_channels)
+        : TinyEncoder(z_channels, false, true) {
+        for (int i = 9; i <= 11; i++) {
+            blocks[std::to_string(i)] = std::shared_ptr<GGMLBlock>(new KCPPTAESuperBlock(128));
+        }
+        for (int i = 13; i <= 15; i++) {
+            blocks[std::to_string(i)] = std::shared_ptr<GGMLBlock>(new KCPPTAESuperBlock(256));
+        }
+    }
+};
+
+class KCPPTinyF16TinierDecoder : public TinyDecoder {
+public:
+    KCPPTinyF16TinierDecoder(int z_channels)
+        : TinyDecoder(z_channels, false, true) {
+        for (int i = 2; i <= 4; i++) {
+            blocks[std::to_string(i)] = std::shared_ptr<GGMLBlock>(new KCPPTAESuperBlock(256));
+        }
+        for (int i = 7; i <= 9; i++) {
+            blocks[std::to_string(i)] = std::shared_ptr<GGMLBlock>(new KCPPTAESuperBlock(128));
+        }
+    }
+};
+
+static bool kcpp_is_f16_tinier_tae(const String2TensorStorage& tensor_storage_map) {
+    return tensor_storage_map.find("tae.decoder.layers.2.conv.1.weight") != tensor_storage_map.end() ||
+           tensor_storage_map.find("tae.encoder.layers.9.conv.1.weight") != tensor_storage_map.end();
+}
+
+class KCPPTAESDVariant : public TAESD {
+    bool qwen_image_2_1;
+
+public:
+    KCPPTAESDVariant(bool decode_only, SDVersion version)
+        : TAESD(decode_only, version),
+          qwen_image_2_1(version == VERSION_QWEN_IMAGE_2_1) {}
+
+    void init(ggml_context* ctx, const String2TensorStorage& tensor_storage_map, std::string prefix) {
+        if (qwen_image_2_1 && kcpp_is_f16_tinier_tae(tensor_storage_map)) {
+            blocks["decoder.layers"] = std::shared_ptr<GGMLBlock>(new KCPPTinyF16TinierDecoder(z_channels));
+            if (!decode_only) {
+                blocks["encoder.layers"] = std::shared_ptr<GGMLBlock>(new KCPPTinyF16TinierEncoder(z_channels));
+            }
+        }
+        TAESD::init(ctx, tensor_storage_map, std::move(prefix));
+    }
+};
+//kcpp: end addon code
+
 struct TinyImageAutoEncoder : public VAE {
-    TAESD taesd;
+    KCPPTAESDVariant taesd;
     bool decode_only = false;
 
     TinyImageAutoEncoder(ggml_backend_t backend,
