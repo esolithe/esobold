@@ -13,7 +13,7 @@ Current version indicated by LITEVER below.
 <head>
 	<script id="init-config">
 	/* split: src/config/init-config.js */
-	const LITEVER = 352;
+	const LITEVER = 353;
 	const urlParams = new URLSearchParams(window.location.search);
 	var localflag = urlParams.get('local'); //this will be replaced automatically in embedded kcpp
 	const STORAGE_PREFIX = (localflag?"e_":"")+"kaihordewebui_";
@@ -685,6 +685,13 @@ Current version indicated by LITEVER below.
 	}
 	.oai-control input[type="checkbox"] {
 		margin: 0;
+	}
+	.oai-control-group {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		flex-shrink: 0;
+		white-space: nowrap;
 	}
 	.context_tab_container
 	{
@@ -1451,6 +1458,36 @@ Current version indicated by LITEVER below.
 	}
 	.workerTable>tbody>tr>td{
 		padding: min(0.4vw, 5px);
+	}
+	#workercontainer .workerDetails {
+		display: none;
+	}
+	@media (max-width: 768px) {
+		#workercontainer .workerTableDiv {
+			overflow-x: auto;
+			-webkit-overflow-scrolling: touch;
+		}
+		#workercontainer .workerTable th,
+		#workercontainer .workerTable td {
+			overflow-wrap: anywhere;
+		}
+		#workercontainer .workerTable .workerJobs {
+			white-space: nowrap;
+		}
+	}
+	@media (max-width: 480px) {
+		#workercontainer .workerTable {
+			font-size: 12px;
+		}
+		#workercontainer .workerCapabilities,
+		#workercontainer .workerJobs,
+		#workercontainer .workerUptime,
+		#workercontainer .workerKudos {
+			display: none;
+		}
+		#workercontainer .workerDetails {
+			display: table-cell;
+		}
 	}
 
 	/* split: src/generation/logprobs.css */
@@ -3865,9 +3902,11 @@ Current version indicated by LITEVER below.
 	var oai_models_endpoint = "/models";
 	var oai_submit_endpoint = "/completions";
 	var oai_submit_endpoint_chat = "/chat/completions";
+	var oai_submit_endpoint_responses = "/responses";
 	const OAI_API_TYPE = Object.freeze({
 		TEXT_COMPLETIONS: "text-completions",
-		CHAT_COMPLETIONS: "chat-completions"
+		CHAT_COMPLETIONS: "chat-completions",
+		RESPONSES: "responses"
 	});
 
 	var default_oai_image_endpoint = "/images/generations";
@@ -4154,6 +4193,7 @@ Current version indicated by LITEVER below.
 		prev_custom_endpoint_model_dict: {}, //we may not be able to match, but set it if we do
 		prev_custom_endpoint_manual_model_dict: {}, //explicitly entered models may be valid even when omitted from a model list
 		prev_custom_endpoint_ischatcmpl: true,
+		prev_custom_endpoint_api_type: "", //empty falls back to the legacy chat-completions boolean
 		generate_images_mode: (localflag?0:1), //0=off, 1=horde, 2=a1111, 3=dalle, 4=comfy, 5=pollinations
 
 		autoscroll: true, //automatically scroll to bottom on render
@@ -5189,15 +5229,82 @@ Current version indicated by LITEVER below.
 			};
 		}
 
+		//polyfill for object.fromEntries
+		if (!Object.fromEntries)
+		{
+			Object.fromEntries = function(iterable) {
+				if (iterable == null) throw new TypeError("Object.fromEntries requires an iterable");
+				var result = {};
+				var addEntry = function(entry) {
+					if (entry == null || (typeof entry !== "object" && typeof entry !== "function")) {
+						throw new TypeError("Iterator value " + entry + " is not an entry object");
+					}
+					Object.defineProperty(result, entry[0], {
+						value: entry[1],
+						writable: true,
+						enumerable: true,
+						configurable: true
+					});
+				};
+
+				var iteratorMethod = typeof Symbol !== "undefined" && Symbol.iterator && iterable[Symbol.iterator];
+				if (typeof iteratorMethod === "function") {
+					var iterator = iteratorMethod.call(iterable);
+					var step;
+					while (!(step = iterator.next()).done) addEntry(step.value);
+				}
+				else {
+					for (var i = 0; i < iterable.length; ++i) addEntry(iterable[i]);
+				}
+				return result;
+			};
+		}
+
+		//polyfills for array.flat and array.flatMap
+		if (!Array.prototype.flat) {
+			Array.prototype.flat = function(depth) {
+				var flattened = [];
+				var maxDepth = depth === undefined ? 1 : Number(depth);
+				if (isNaN(maxDepth) || maxDepth < 0) maxDepth = 0;
+				else maxDepth = Math.floor(maxDepth);
+				var flatten = function(array, currentDepth) {
+					for (var i = 0; i < array.length; ++i) {
+						if (!(i in array)) continue;
+						var value = array[i];
+						if (Array.isArray(value) && currentDepth > 0) flatten(value, currentDepth - 1);
+						else flattened.push(value);
+					}
+				};
+				flatten(this, maxDepth);
+				return flattened;
+			};
+		}
+
+		if (!Array.prototype.flatMap) {
+			Array.prototype.flatMap = function(callback, thisArg) {
+				if (typeof callback !== "function") throw new TypeError("flatMap callback must be a function");
+				return Array.prototype.map.call(this, callback, thisArg).flat();
+			};
+		}
+
 		//inplace polyfill for replaceall
 		if (!String.prototype.replaceAll) {
 			String.prototype.replaceAll = function(str, newStr){
 				// If a regex pattern
 				if (Object.prototype.toString.call(str).toLowerCase() === '[object regexp]') {
-					return this.replace(str, newStr);
+					if (!str.global) throw new TypeError("replaceAll requires a global RegExp");
+					return String(this).replace(str, newStr);
 				}
-				// If a string
-				return this.replace(new RegExp(str, 'g'), newStr);
+				// Escape string patterns so they retain native replaceAll's literal matching behavior.
+				var escaped = String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+				return String(this).replace(new RegExp(escaped, 'g'), newStr);
+			};
+		}
+
+		//polyfill for trimstart
+		if (!String.prototype.trimStart) {
+			String.prototype.trimStart = function() {
+				return String(this).replace(/^[\s\uFEFF\xA0]+/, "");
 			};
 		}
 
@@ -5482,7 +5589,7 @@ Current version indicated by LITEVER below.
 				//offer to reconnect
 				let pending_eptype = localsettings.prev_custom_endpoint_type;
 				let pending_custmodel = (localsettings.prev_custom_endpoint_model_dict?(localsettings.prev_custom_endpoint_model_dict[pending_eptype] || ""):"");
-				let pending_ischatcmpl = localsettings.prev_custom_endpoint_ischatcmpl;
+				let pending_oai_api_type = get_saved_oai_api_type();
 				if((window.eso.allowHordeEvenWithLocalAccess() && pending_eptype>0) || (localflag && pending_eptype==2))
 				{
 					msgboxYesNo("Reconnect to previous custom endpoint?","Custom Endpoint Reconnect",()=>{
@@ -5495,7 +5602,7 @@ Current version indicated by LITEVER below.
 								const hasValue = Array.from(dropdown.options).some(option => option.value === pending_custmodel);
 								if (hasValue) {
 									dropdown.value = pending_custmodel;
-									set_oai_chat_completions(pending_ischatcmpl);
+									set_oai_api_type(pending_oai_api_type);
 								}
 							}
 						}
@@ -7510,6 +7617,38 @@ Current version indicated by LITEVER below.
 		}
 		return "";
 	}
+	function normalize_oai_responses_output(data)
+	{
+		let result = {text:"", tool_calls:[]};
+		let output = Array.isArray(data && data.output) ? data.output : [];
+		let reasoning = output.filter(item => item && item.type === "reasoning").map(item => JSON.parse(JSON.stringify(item)));
+		for(let item of output)
+		{
+			if(!item) continue;
+			if(item.type === "message")
+			{
+				result.text += normalize_oai_response_content(item.content);
+			}
+			else if(item.type === "function_call")
+			{
+				result.tool_calls.push({
+					id:item.call_id || item.id,
+					type:"function",
+					function:{name:item.name, arguments:item.arguments || ""},
+					_responses_item:JSON.parse(JSON.stringify(item))
+				});
+			}
+		}
+		if(result.text === "" && data && typeof data.output_text === "string")
+		{
+			result.text = data.output_text;
+		}
+		if(result.tool_calls.length>0 && reasoning.length>0)
+		{
+			result.tool_calls[0]._responses_reasoning = reasoning;
+		}
+		return result;
+	}
 	function oai_api_sync_req(targetep,oai_payload,oaiheaders)
 	{
 		fetch(targetep, {
@@ -7522,7 +7661,24 @@ Current version indicated by LITEVER below.
 		.then((data) => {
 			console.log("sync finished response: " + JSON.stringify(data));
 			last_response_obj = JSON.parse(JSON.stringify(data));
-			if ((custom_oai_key != "" || is_using_kcpp_with_jinja() || determine_if_mcp_active()) && data.choices != null && data.choices.length > 0) {
+			if(Array.isArray(data.output))
+			{
+				if(data.status === "failed")
+				{
+					throw new Error(format_json_error(data.error || data));
+				}
+				let result = normalize_oai_responses_output(data);
+				synchro_polled_response = result.text;
+				if(result.tool_calls.length>0)
+				{
+					synchro_polled_resptoolcalls = result.tool_calls;
+				}
+				if(localsettings.opmode==1 && gametext_arr.length>0 && synchro_polled_response!="")
+				{
+					synchro_polled_response = cleanup_story_completion(synchro_polled_response);
+				}
+			}
+			else if ((custom_oai_key != "" || is_using_kcpp_with_jinja() || determine_if_mcp_active()) && data.choices != null && data.choices.length > 0) {
 				let dch = data.choices[0];
 				if (dch.text) {
 					synchro_polled_response = dch.text;
@@ -7639,6 +7795,47 @@ Current version indicated by LITEVER below.
 		let logprobs_content_arr = [];
 		let pending_toolcall_objs = [];
 		let pending_toolcall_last_obj = null;
+		let responses_output_items = [];
+		let responses_stream_error = "";
+		let responses_stream_active = false;
+		let responses_stream_finished = false;
+		function stash_responses_output_item(item)
+		{
+			if(!item) return;
+			let item_key = item.id || item.call_id;
+			let old_index = responses_output_items.findIndex(old_item => (old_item.id || old_item.call_id) === item_key && old_item.type === item.type);
+			if(old_index>=0) responses_output_items[old_index] = item;
+			else responses_output_items.push(item);
+		}
+		function finish_responses_stream()
+		{
+			if(responses_stream_finished) return;
+			responses_stream_finished = true;
+			if(responses_stream_error)
+			{
+				console.error("Responses API error: " + responses_stream_error);
+				clear_poll_flags();
+				render_gametext();
+				msgbox("Error occurred during text generation: " + responses_stream_error);
+				on_error_feedback();
+				return;
+			}
+
+			let responses_result = normalize_oai_responses_output({output:responses_output_items});
+			if(synchro_pending_stream === "") synchro_pending_stream = responses_result.text;
+			if(responses_result.tool_calls.length>0)
+			{
+				synchro_polled_resptoolcalls = responses_result.tool_calls;
+				last_stop_reason = "tool_calls";
+			}
+			synchro_polled_response = synchro_pending_stream;
+			if(synchro_polled_response!="" && localsettings.opmode==1 && gametext_arr.length>0)
+			{
+				synchro_polled_response = cleanup_story_completion(synchro_polled_response);
+			}
+			synchro_pending_stream = "";
+			poll_pending_response();
+		}
 		let reqOpt =
 		{method: 'POST',
 		headers: submit_headers,
@@ -7677,12 +7874,17 @@ Current version indicated by LITEVER below.
 						last_response_streamlog += chunk;
 					}
 					let evs = [];
-					let m;
-					while ((m = /^data: ?(.*)(\r?\n){2}/m.exec(ctrl.buf)) !== null) {
-						try{evs.push({data: JSON.parse(m[1])});} catch (e) {
-							console.log("Cannot parse a chunk: " + chunk);
+					let event_end;
+					while ((event_end = /(\r?\n){2}/.exec(ctrl.buf)) !== null) {
+						let event_data = ctrl.buf.substring(0,event_end.index).split(/\r?\n/)
+							.filter(line => line.startsWith("data:"))
+							.map(line => line.substring(5).replace(/^ /,""))
+							.join("\n");
+						ctrl.buf = ctrl.buf.substring(event_end.index + event_end[0].length);
+						if(!event_data || event_data === "[DONE]") continue;
+						try{evs.push({data: JSON.parse(event_data)});} catch (e) {
+							console.log("Cannot parse a chunk: " + event_data);
 						}
-						ctrl.buf = ctrl.buf.substring(m.index + m[0].length);
 					}
 					if (evs.length) {
 						ctrl.enqueue(evs);
@@ -7696,6 +7898,52 @@ Current version indicated by LITEVER below.
 					if(pending_response_id && pending_response_id != "-1" && pending_response_id != "")
 					{
 						for (let event of chunk) {
+							// Responses API emits typed events instead of Chat Completions choices.
+							if(event.data && typeof event.data.type === "string" && (event.data.type === "error" || event.data.type.startsWith("response.")))
+							{
+								responses_stream_active = true;
+								if(responses_stream_finished) continue;
+								let response_event = event.data;
+								if(response_event.type === "error" || response_event.type === "response.failed")
+								{
+									responses_stream_error = format_json_error(response_event.error || response_event.response || response_event);
+									finish_responses_stream();
+								}
+								else if(response_event.type === "response.output_text.delta" || response_event.type === "response.refusal.delta")
+								{
+									synchro_pending_stream += response_event.delta || "";
+									if(Array.isArray(response_event.logprobs)) logprobs_content_arr = logprobs_content_arr.concat(response_event.logprobs);
+								}
+								else if(response_event.type === "response.output_item.done")
+								{
+									stash_responses_output_item(response_event.item);
+									if(response_event.item && response_event.item.type === "function_call") last_stop_reason = "tool_calls";
+								}
+								else if(response_event.type === "response.function_call_arguments.done")
+								{
+									stash_responses_output_item({
+										type:"function_call",
+										id:response_event.item_id,
+										call_id:response_event.call_id || response_event.item_id,
+										name:response_event.name,
+										arguments:response_event.arguments || ""
+									});
+									last_stop_reason = "tool_calls";
+								}
+								else if(response_event.type === "response.completed" || response_event.type === "response.incomplete")
+								{
+									last_response_obj = JSON.parse(JSON.stringify(response_event.response));
+									if(Array.isArray(response_event.response && response_event.response.output))
+									{
+										responses_output_items = response_event.response.output;
+									}
+									let response_result = normalize_oai_responses_output({output:responses_output_items});
+									if(synchro_pending_stream === "") synchro_pending_stream = response_result.text;
+									last_stop_reason = response_result.tool_calls.length>0 ? "tool_calls" : (response_event.type === "response.incomplete" ? "length" : "stop");
+									finish_responses_stream();
+								}
+								continue;
+							}
 							//for gemini
 							if (event.data && event.data.candidates && event.data.candidates.length>0) {
 								if(event.data.candidates[0].content && event.data.candidates[0].content.parts && event.data.candidates[0].content.parts.length>0)
@@ -7888,7 +8136,7 @@ Current version indicated by LITEVER below.
 								if(synchro_pending_stream.includes(cur) && synchro_pending_stream.trim().indexOf(cur) > 1) //don't trigger early stopping if the match is very early
 								{
 									cached_stop_seq = [];
-									let need_clean_output = (synchro_pending_stream!="" && localsettings.opmode==1 && gametext_arr.length>0 && is_using_oai_chat_completions());
+									let need_clean_output = (synchro_pending_stream!="" && localsettings.opmode==1 && gametext_arr.length>0 && is_using_oai_messages_api());
 									if(need_clean_output)
 									{
 										synchro_pending_stream = cleanup_story_completion(synchro_pending_stream);
@@ -7916,13 +8164,18 @@ Current version indicated by LITEVER below.
 					}
 				},
 				close() { //end of stream
+					if(responses_stream_active)
+					{
+						finish_responses_stream();
+						return;
+					}
 					if(streaming_was_thinking && synchro_pending_stream && (last_stop_reason=="stop" || last_stop_reason=="tool_calls")) //wrap up if we stopped properly
 					{
 						synchro_pending_stream = `${localsettings.start_thinking_tag}${synchro_pending_stream}${localsettings.stop_thinking_tag}`;
 					}
 					streaming_was_thinking = false;
 					synchro_polled_response = synchro_pending_stream;
-					let need_clean_output = (synchro_polled_response!="" && localsettings.opmode==1 && gametext_arr.length>0 && is_using_oai_chat_completions());
+					let need_clean_output = (synchro_polled_response!="" && localsettings.opmode==1 && gametext_arr.length>0 && is_using_oai_messages_api());
 					if(need_clean_output)
 					{
 						synchro_polled_response = cleanup_story_completion(synchro_polled_response);
@@ -10756,15 +11009,47 @@ Current version indicated by LITEVER below.
 	}
 	function is_oai_chat_completions_selected()
 	{
-		return document.getElementById("useoaichatcompl").value === OAI_API_TYPE.CHAT_COMPLETIONS;
+		return get_oai_api_type() === OAI_API_TYPE.CHAT_COMPLETIONS;
+	}
+	function is_oai_responses_selected()
+	{
+		return get_oai_api_type() === OAI_API_TYPE.RESPONSES;
+	}
+	function is_oai_messages_api_selected()
+	{
+		return is_oai_chat_completions_selected() || is_oai_responses_selected();
+	}
+	function get_oai_api_type()
+	{
+		let api_type = document.getElementById("useoaichatcompl").value;
+		return Object.values(OAI_API_TYPE).includes(api_type) ? api_type : OAI_API_TYPE.CHAT_COMPLETIONS;
+	}
+	function set_oai_api_type(api_type)
+	{
+		if(Object.values(OAI_API_TYPE).includes(api_type))
+		{
+			document.getElementById("useoaichatcompl").value = api_type;
+		}
+	}
+	function get_saved_oai_api_type()
+	{
+		if(Object.values(OAI_API_TYPE).includes(localsettings.prev_custom_endpoint_api_type))
+		{
+			return localsettings.prev_custom_endpoint_api_type;
+		}
+		return localsettings.prev_custom_endpoint_ischatcmpl ? OAI_API_TYPE.CHAT_COMPLETIONS : OAI_API_TYPE.TEXT_COMPLETIONS;
 	}
 	function set_oai_chat_completions(use_chat_completions)
 	{
-		document.getElementById("useoaichatcompl").value = use_chat_completions ? OAI_API_TYPE.CHAT_COMPLETIONS : OAI_API_TYPE.TEXT_COMPLETIONS;
+		set_oai_api_type(use_chat_completions ? OAI_API_TYPE.CHAT_COMPLETIONS : OAI_API_TYPE.TEXT_COMPLETIONS);
 	}
 	function is_using_oai_chat_completions()
 	{
 		return is_using_horde_chat_completions() || is_oai_chat_completions_selected();
+	}
+	function is_using_oai_messages_api()
+	{
+		return is_using_horde_chat_completions() || is_oai_messages_api_selected();
 	}
 	function is_using_kcpp_with_streaming()
 	{
@@ -10922,7 +11207,7 @@ Current version indicated by LITEVER below.
 
 	function determine_if_can_use_mcp()
 	{
-		return (custom_oai_key!="" && is_using_oai_chat_completions()) || is_using_kcpp_with_streaming();
+		return (custom_oai_key!="" && is_using_oai_messages_api()) || is_using_kcpp_with_streaming();
 	}
 
 	function determine_if_mcp_active()
@@ -10948,7 +11233,7 @@ Current version indicated by LITEVER below.
 			}
 			else
 			{
-				let isoai = (custom_oai_key!="" && is_using_oai_chat_completions());
+				let isoai = (custom_oai_key!="" && is_using_oai_messages_api());
 				return isoai;
 			}
 		}
@@ -14106,6 +14391,7 @@ Current version indicated by LITEVER below.
 					tokenspersec = 0;
 				}
 				worker_data_showonly[i].tokenspersec = parseFloat(tokenspersec);
+				worker_data_showonly[i].jobtypes = (elem.accepts_chat_jobs ? 2 : 0) + (elem.accepts_prompt_jobs ? 1 : 0);
 				if(elem.models.length>0)
 				{
 					worker_data_showonly[i].defaultmodel = elem.models[0];
@@ -14192,11 +14478,49 @@ Current version indicated by LITEVER below.
 		show_workers();
 	}
 
+	function show_worker_details(workerIndex) {
+		let elem = worker_data_showonly[workerIndex];
+		if (!elem) { return; }
+
+		let tokenspersec = elem.performance.replace(" tokens per second", "");
+		if (tokenspersec.toLowerCase()=="no requests fulfilled yet")
+		{
+			tokenspersec = 0;
+		}
+
+		let acceptedJobs = [];
+		if (elem.accepts_chat_jobs) { acceptedJobs.push("Chat"); }
+		if (elem.accepts_prompt_jobs) { acceptedJobs.push("Prompt"); }
+		if (acceptedJobs.length==0) { acceptedJobs.push("None"); }
+
+		let kudosRate = "";
+		if(first_seen_workers.hasOwnProperty(elem.id))
+		{
+			let firstseen = first_seen_workers[elem.id];
+			let kudosdiff = elem.kudos_rewards - firstseen.startkudos;
+			if(kudosdiff>0)
+			{
+				let hrspassed = ((performance.now() - firstseen.timestamp) / 1000)/3600.0;
+				kudosRate = ` (${(kudosdiff/hrspassed).toFixed(0)}/hr)`;
+			}
+		}
+
+		let details =
+			`<b>Capabilities:</b> ${escape_html(String(elem.max_length))} / ${escape_html(String(elem.max_context_length))} (${escape_html(String(tokenspersec))} T/s)<br><br>` +
+			`<b>Jobs:</b> ${escape_html(acceptedJobs.join(", "))}<br><br>` +
+			`<b>Uptime:</b> ${escape_html(String(format_uptime(elem.uptime)))} (${escape_html(String(elem.requests_fulfilled))} jobs)<br><br>` +
+			`<b>Kudos:</b> ${escape_html(elem.kudos_rewards.toFixed(0) + kudosRate)}`;
+
+		msgbox(details, `Worker Details - ${elem.name.substring(0, 40)}`, true, false, hide_msgbox);
+	}
+
 	function show_workers() {
 		document.getElementById("workercontainer").classList.remove("hidden");
 
 		let str = "";
 		let timenow = performance.now();
+		const chatJobIndicator = '<span role="img" aria-label="Accepts chat jobs" title="Accepts chat jobs">💬</span>';
+		const promptJobIndicator = '<span role="img" aria-label="Accepts prompt jobs" title="Accepts prompt jobs">📝</span>';
 		for (var i = 0; i < worker_data_showonly.length; ++i) {
 			let elem = worker_data_showonly[i];
 			let tokenspersec = elem.performance.replace(" tokens per second", "");
@@ -14216,17 +14540,21 @@ Current version indicated by LITEVER below.
 			}
 			if(elem.threads>1)
 			{
-				clickinfo += (clickinfo==""?"":"<br><br>") + "Threads: " + elem.threads;
+				clickinfo += `${clickinfo==""?"":"<br><br>"}Threads: ${elem.threads}`;
 			}
 			if(clickinfo!="")
 			{
-				workerNameHtml = "<a class=\"color_blueurl\" href=\"#\" onclick=\"msgbox(\'"+clickinfo+"\','Worker Info',false,false,hide_msgbox)\">"+workerNameHtml+"</a>";
+				workerNameHtml = `<a class="color_blueurl" href="#" onclick="msgbox('${clickinfo}','Worker Info',false,false,hide_msgbox)">${workerNameHtml}</a>`;
 			}
 			let allmdls = "";
 			for (let n = 0; n < elem.models.length; ++n) {
 				if (n > 0) { allmdls += "<br>"; }
 				allmdls += escape_html(elem.models[n].substring(0, 40));
 			}
+			let jobCapabilities = "";
+			if (elem.accepts_chat_jobs) { jobCapabilities = chatJobIndicator; }
+			if (elem.accepts_prompt_jobs) { jobCapabilities += `${jobCapabilities ? " " : ""}${promptJobIndicator}`; }
+			if (!jobCapabilities) { jobCapabilities = "&mdash;"; }
 			let kudos_per_hr = "";
 			if(first_seen_workers.hasOwnProperty(elem.id))
 			{
@@ -14235,13 +14563,13 @@ Current version indicated by LITEVER below.
 				if(kudosdiff>0)
 				{
 					var hrspassed = ((timenow - firstseen.timestamp) / 1000)/3600.0; //time passed in sec
-					kudos_per_hr = "(" + (kudosdiff/hrspassed).toFixed(0) + "/hr)";
+					kudos_per_hr = `(${(kudosdiff/hrspassed).toFixed(0)}/hr)`;
 				}
 			}
-			str += "<tr id='workertablerow_"+i+"'><td>" + workerNameHtml + "</td><td>" + allmdls + "</td><td>" + elem.max_length + " / " + elem.max_context_length + "<br>(" + tokenspersec + " T/s)</td><td "+brokenstyle+">" + format_uptime(elem.uptime) + "<br>(" + elem.requests_fulfilled + " jobs)</td><td "+style+">" + elem.kudos_rewards.toFixed(0) + "<br><span style='color:gray'>"+kudos_per_hr+"</span></td></tr>";
+			str += `<tr id="workertablerow_${i}"><td>${workerNameHtml}</td><td>${allmdls}</td><td class="workerCapabilities"><a class="color_blueurl" href="#" onclick="show_worker_details(${i}); return false;">${elem.max_length} / ${elem.max_context_length}<br>(${tokenspersec} T/s)</a></td><td class="workerJobs">${jobCapabilities}</td><td class="workerUptime" ${brokenstyle}>${format_uptime(elem.uptime)}<br>(${elem.requests_fulfilled} jobs)</td><td class="workerKudos" ${style}>${elem.kudos_rewards.toFixed(0)}<br><span style="color:gray">${kudos_per_hr}</span></td><td class="workerDetails"><a class="color_blueurl" href="#" onclick="show_worker_details(${i}); return false;">${elem.max_length} / ${elem.max_context_length}<br>(${tokenspersec} T/s)</a></td></tr>`;
 		}
 		document.getElementById("workertable").innerHTML = str;
-		document.getElementById("worktitlecount").innerText = "Worker List - Total " + worker_data_showonly.length;
+		document.getElementById("worktitlecount").innerText = `Worker List - Total ${worker_data_showonly.length}`;
 	}
 
 	function show_my_own_workers()
@@ -14824,6 +15152,26 @@ Current version indicated by LITEVER below.
 		document.getElementById("apikey").value = tmpkey;
 	}
 
+	function get_horde_chat_completion_model_names()
+	{
+		let chat_models = new Set();
+		if(cached_worker_list)
+		{
+			for(let i=0; i<cached_worker_list.length; ++i)
+			{
+				let worker = cached_worker_list[i];
+				if(worker.accepts_chat_jobs && Array.isArray(worker.models))
+				{
+					for(let j=0; j<worker.models.length; ++j)
+					{
+						chat_models.add(worker.models[j]);
+					}
+				}
+			}
+		}
+		return chat_models;
+	}
+
 	function toggle_horde_chat_completions()
 	{
 		let pickedmodel = document.getElementById("pickedmodel");
@@ -14841,11 +15189,14 @@ Current version indicated by LITEVER below.
 				document.getElementById("apikey").value = tmpkey;
 				return;
 			}
+			model_quick_search();
 			let selected_options = Array.from(pickedmodel.selectedOptions);
 			for(let i=1; i<selected_options.length; ++i)
 			{
 				selected_options[i].selected = false;
 			}
+		}else{
+			model_quick_search();
 		}
 		pickedmodel.multiple = !use_chat_completions;
 	}
@@ -14889,18 +15240,18 @@ Current version indicated by LITEVER below.
 	{
 		document.getElementById("oaiemulatecompletionsbox").classList.add("hidden");
 		document.getElementById("usegeminiwebbox").classList.add("hidden");
-		if(is_oai_chat_completions_selected())
+		if(is_oai_messages_api_selected())
 		{
 			document.getElementById("useoaichatcomplbox").classList.remove("hidden");
 			if(localsettings.saved_oai_role!=null)
 			{
 				document.getElementById("oairoledropdown").value = localsettings.saved_oai_role;
 			}
-			if(document.getElementById("customapidropdown").value==7 || (document.getElementById("customapidropdown").value==2 && document.getElementById("custom_oai_endpoint").value.includes(".moonshot."))) //mistral api supports prefill
+			if(is_oai_chat_completions_selected() && (document.getElementById("customapidropdown").value==7 || (document.getElementById("customapidropdown").value==2 && document.getElementById("custom_oai_endpoint").value.includes(".moonshot.")))) //mistral api supports prefill
 			{
 				document.getElementById("oaiemulatecompletionsbox").classList.remove("hidden");
 			}
-			if(document.getElementById("customapidropdown").value==5)
+			if(is_oai_chat_completions_selected() && document.getElementById("customapidropdown").value==5)
 			{
 				document.getElementById("usegeminiwebbox").classList.remove("hidden");
 			}
@@ -15008,7 +15359,7 @@ Current version indicated by LITEVER below.
 
 		if(epchoice=="2" || epchoice=="3" || epchoice=="5" || epchoice=="7" || epchoice=="8" || epchoice=="9" || epchoice=="10" || epchoice=="11")
 		{
-			set_oai_chat_completions(localsettings.prev_custom_endpoint_ischatcmpl);
+			set_oai_api_type(get_saved_oai_api_type());
 		}
 		return true;
 	}
@@ -15100,8 +15451,13 @@ Current version indicated by LITEVER below.
 		if(autotoggle_check)
 		{
 			document.getElementById("useoaichatcompl").disabled = false;
-			if(ep_should_always_use_chat_completions() || dropdown.selectedIndex==dropdown.options.length-1)
+			if(ep_should_always_use_chat_completions())
 			{
+				set_oai_chat_completions(true);
+				document.getElementById("useoaichatcompl").disabled = true;
+			} else if(is_oai_responses_selected()) {
+				// Responses is an explicit choice; model changes should not silently replace it.
+			} else if(dropdown.selectedIndex==dropdown.options.length-1) {
 				set_oai_chat_completions(true);
 				document.getElementById("useoaichatcompl").disabled = true;
 			} else if (document.getElementById("custom_oai_endpoint").value.toLowerCase().includes("featherless.ai")) {
@@ -15776,6 +16132,9 @@ Current version indicated by LITEVER below.
 		if(desired_oai_ep!="" && desired_oai_ep.toLowerCase().endsWith("/chat/completions")) {
 			desired_oai_ep = desired_oai_ep.slice(0,-17);
 		}
+		if(desired_oai_ep!="" && desired_oai_ep.toLowerCase().endsWith("/responses")) {
+			desired_oai_ep = desired_oai_ep.slice(0,-10);
+		}
 		if (document.getElementById("oaiaddversion").checked && !desired_oai_ep.toLowerCase().includes("text.pollinations.ai"))
 		{
 			if(desired_oai_ep!="" && desired_oai_ep.length > 4 && !desired_oai_ep.slice(-4).toLowerCase().includes("/v") && !desired_oai_ep.toLowerCase().includes("/v1/")) {
@@ -15978,6 +16337,7 @@ Current version indicated by LITEVER below.
 									koboldcpp_has_txt2img = (data.txt2img?true:false);
 									let no_txt_model = (mdlname=="inactive");
 									update_mini_action_toggles_visibility();
+									update_genimg_button_visiblility();
 									updateAgentButtonVisibility();
 									if (window?.eso?.afterKoboldCppVersionCheck) {
 										window.eso.afterKoboldCppVersionCheck(data);
@@ -17496,9 +17856,20 @@ Current version indicated by LITEVER below.
 		let pickedparent = document.getElementById("pickedmodel");
 		let pickedentries = pickedparent.children;
 		let searchstr = document.getElementById("modelquicksearch").value.trim().toLowerCase();
+		let use_chat_completions = document.getElementById("horde_use_chat_completions").checked;
+		let chat_models = (use_chat_completions ? get_horde_chat_completion_model_names() : null);
 		for(let i=0; i<pickedentries.length; i++){
 			let schild = pickedentries[i];
-			if(searchstr=="" || schild.text.trim().toLowerCase().includes(searchstr))
+			let model = models_data[parseInt(schild.value)];
+			let supports_chat_completions = (!use_chat_completions || (model && chat_models.has(model.name)));
+			schild.disabled = !supports_chat_completions;
+			if(!supports_chat_completions)
+			{
+				schild.selected = false;
+			}
+			let show_model = (supports_chat_completions && (searchstr=="" || schild.text.trim().toLowerCase().includes(searchstr)));
+			schild.hidden = !show_model;
+			if(show_model)
 			{
 				schild.style.display = "block";
 			}else{
@@ -17527,10 +17898,14 @@ Current version indicated by LITEVER below.
 
 		let manualworker = (!use_chat_completions && document.getElementById("manualworker").checked ? true : false);
 
-		if (selected_idx_arr.length == 0) { //select everything
+		if (selected_idx_arr.length == 0) { //select everything (or every chat-capable model)
 			manualworker = false;
+			let chat_models = (use_chat_completions ? get_horde_chat_completion_model_names() : null);
 			for (let i = 0; i < models_data.length; ++i) {
-				prep_sel_models.push(models_data[i]);
+				if(!use_chat_completions || chat_models.has(models_data[i].name))
+				{
+					prep_sel_models.push(models_data[i]);
+				}
 			}
 		}
 		else
@@ -19613,6 +19988,25 @@ Current version indicated by LITEVER below.
 
 	/* split: src/websearch/websearch.js */
 	var websearch_request_controller = null;
+	function create_websearch_request_controller()
+	{
+		let native_controller = null;
+		if(typeof AbortController !== "undefined")
+		{
+			try { native_controller = new AbortController(); }
+			catch(error) { console.log("AbortController Not Supported: " + error); }
+		}
+		return {
+			aborted: false,
+			signal: native_controller ? native_controller.signal : null,
+			abort: function()
+			{
+				this.aborted = true;
+				if(native_controller) native_controller.abort();
+			}
+		};
+	}
+
 	function cancel_websearch()
 	{
 		if(websearch_request_controller)
@@ -19633,8 +20027,10 @@ Current version indicated by LITEVER below.
 		{
 			thinking_tags.push([localsettings.start_thinking_tag, localsettings.stop_thinking_tag]);
 		}
-		for(let [start, end] of thinking_tags)
+		for(let i = 0; i < thinking_tags.length; ++i)
 		{
+			let start = thinking_tags[i][0];
+			let end = thinking_tags[i][1];
 			let pos;
 			while((pos = text.indexOf(start)) !== -1)
 			{
@@ -19657,81 +20053,105 @@ Current version indicated by LITEVER below.
 		return text.replace(/\s+/g, " ");
 	}
 
-	async function generate_websearch_prompt(recentCtx, search_query, onDoneFn, signal)
+	function generate_websearch_prompt(recentCtx, search_query, onDoneFn, request_controller)
 	{
 		let query = search_query.trim();
-		let result = query;
-		if(query && custom_kobold_endpoint)
+		let finish = function(result)
 		{
-			try
+			if(request_controller && request_controller.aborted) return;
+			if(onDoneFn) onDoneFn(result);
+			return result;
+		};
+		if(!query || !custom_kobold_endpoint) return Promise.resolve(finish(query));
+
+		let use_chat;
+		let endpoint;
+		let payload;
+		try
+		{
+			let template = localsettings.websearch_template || default_websearch_template;
+			// split/join performs a literal replacement even when the query contains "$&".
+			let instruction = template.split('{{QUERY}}').join(query);
+			// Reserve room for the instructions, model formatting, and the 256-token reply.
+			let max_chars = Math.max(0, Math.floor((localsettings.max_context_length - 256) * 3) - 512);
+			if(instruction.length + 80 > max_chars) throw new Error("Search request exceeds rewrite context budget");
+			let context = replace_search_placeholders(recentCtx);
+			let context_budget = Math.max(0, Math.min(6000, max_chars - instruction.length - 80));
+			context = context_budget ? substring_to_boundary(context, context_budget) : "";
+			let task = "Recent conversation (reference only):\n" + (context || "(none)") + "\n\n" + instruction;
+			use_chat = is_using_kcpp_with_jinja();
+			payload = {
+				max_context_length: localsettings.max_context_length,
+				max_length: 256,
+				temperature: 0.2,
+				top_p: 1,
+				top_k: 0,
+				rep_pen: 1,
+				use_default_badwordsids: false,
+				bypass_eos: false
+			};
+			lastcheckgenkey = "WEBSEARCH" + Date.now();
+			payload.genkey = lastcheckgenkey;
+			endpoint = kobold_custom_gen_endpoint;
+			if(use_chat)
 			{
-				let template = localsettings.websearch_template || default_websearch_template;
-				let instruction = template.replaceAll('{{QUERY}}', () => query);
-				// Reserve room for the instructions, model formatting, and the 256-token reply.
-				let max_chars = Math.max(0, Math.floor((localsettings.max_context_length - 256) * 3) - 512);
-				if(instruction.length + 80 > max_chars) throw new Error("Search request exceeds rewrite context budget");
-				let context = replace_search_placeholders(recentCtx);
-				let context_budget = Math.max(0, Math.min(6000, max_chars - instruction.length - 80));
-				context = context_budget ? substring_to_boundary(context, context_budget) : "";
-				let task = "Recent conversation (reference only):\n" + (context || "(none)") + "\n\n" + instruction;
-				let use_chat = is_using_kcpp_with_jinja();
-				let payload = {
-					max_context_length: localsettings.max_context_length,
-					max_length: 256,
-					temperature: 0.2,
-					top_p: 1,
-					top_k: 0,
-					rep_pen: 1,
-					use_default_badwordsids: false,
-					bypass_eos: false
-				};
-				lastcheckgenkey = "WEBSEARCH" + Date.now();
-				payload.genkey = lastcheckgenkey;
-				let endpoint = kobold_custom_gen_endpoint;
-				if(use_chat)
-				{
-					endpoint = "/v1" + oai_submit_endpoint_chat;
-					payload.messages = [{role: "user", content: task}];
-					payload.max_tokens = payload.max_length;
-					delete payload.max_length;
-					payload.stream = false;
-					payload.continue_assistant_turn = false;
-					payload.chat_template_kwargs = {enable_thinking: false};
-				}
-				else
-				{
-					let start = get_instruct_starttag(false) || "\n### Instruction:\n";
-					let end = get_instruct_endtag(false) || "\n### Response:\n";
-					if(!is_using_kcpp_with_autotags())
-					{
-						start = start.replaceAll("{{[INPUT]}}", "\n### Instruction:\n");
-						end = end.replaceAll("{{[OUTPUT]}}", "\n### Response:\n");
-					}
-					payload.prompt = start + task + (localsettings.separate_end_tags ? get_instruct_starttag_end(false) : "") + end;
-					payload.replace_instruct_placeholders = true;
-				}
-				let response = await fetch(apply_proxy_url(custom_kobold_endpoint + endpoint), {
-					method: 'POST', headers: get_kobold_header(), body: JSON.stringify(payload), signal
-				});
-				if(!response.ok) throw new Error("Search rewrite HTTP " + response.status);
-				let data = await response.json();
-				let choice = use_chat ? data.choices?.[0] : data.results?.[0];
-				// A token-limit response may contain only reasoning or a cut-off query.
-				if(choice && choice.finish_reason !== "length")
-				{
-					let text = use_chat ? choice.message?.content : choice.text;
-					result = clean_websearch_query(text) || query;
-				}
+				endpoint = "/v1" + oai_submit_endpoint_chat;
+				payload.messages = [{role: "user", content: task}];
+				payload.max_tokens = payload.max_length;
+				delete payload.max_length;
+				payload.stream = false;
+				payload.continue_assistant_turn = false;
+				payload.chat_template_kwargs = {enable_thinking: false};
 			}
-			catch(error)
+			else
 			{
-				if(signal?.aborted) return;
-				console.log("Search rewrite failed; using original query:", error);
+				let start = get_instruct_starttag(false) || "\n### Instruction:\n";
+				let end = get_instruct_endtag(false) || "\n### Response:\n";
+				if(!is_using_kcpp_with_autotags())
+				{
+					start = start.split("{{[INPUT]}}").join("\n### Instruction:\n");
+					end = end.split("{{[OUTPUT]}}").join("\n### Response:\n");
+				}
+				payload.prompt = start + task + (localsettings.separate_end_tags ? get_instruct_starttag_end(false) : "") + end;
+				payload.replace_instruct_placeholders = true;
 			}
 		}
-		if(signal?.aborted) return;
-		if(onDoneFn) onDoneFn(result);
-		return result;
+		catch(error)
+		{
+			console.log("Search rewrite failed; using original query:", error);
+			return Promise.resolve(finish(query));
+		}
+
+		let request_options = {
+			method: 'POST', headers: get_kobold_header(), body: JSON.stringify(payload)
+		};
+		if(request_controller && request_controller.signal) request_options.signal = request_controller.signal;
+		return fetch(apply_proxy_url(custom_kobold_endpoint + endpoint), request_options)
+		.then(function(response)
+		{
+			if(!response.ok) throw new Error("Search rewrite HTTP " + response.status);
+			return response.json();
+		})
+		.then(function(data)
+		{
+			if(request_controller && request_controller.aborted) return;
+			let choices = use_chat ? data.choices : data.results;
+			let choice = choices && choices.length > 0 ? choices[0] : null;
+			let result = query;
+			// A token-limit response may contain only reasoning or a cut-off query.
+			if(choice && choice.finish_reason !== "length")
+			{
+				let text = use_chat ? (choice.message ? choice.message.content : "") : choice.text;
+				result = clean_websearch_query(text) || query;
+			}
+			return finish(result);
+		})
+		.catch(function(error)
+		{
+			if(request_controller && request_controller.aborted) return;
+			console.log("Search rewrite failed; using original query:", error);
+			return finish(query);
+		});
 	}
 
 	/* split: src/memory/memory.js */
@@ -21870,7 +22290,7 @@ Current version indicated by LITEVER below.
 							playDecodedAllTalkData(decodedData);
 						})
 						.catch((error) => {
-							console.log("AllTalk v2 Speak Error:", data);
+							console.log("AllTalk v2 Speak Error:", error);
 							tts_is_playing = false;
 							tts_is_processing = false;
 							update_submit_button(false);
@@ -21908,7 +22328,7 @@ Current version indicated by LITEVER below.
 								return response.json().then(data => {
 									if (data && data.output_file_url && data.status === "generate-success")
 									{
-										const audioUrl = `${localsettings.saved_alltalk_url}${data.output_file_url}`;
+										const audioUrl = new URL(data.output_file_url, `${localsettings.saved_alltalk_url}/`).href;
 										fetch(audioUrl)
 										.then(response => response.arrayBuffer())
 										.then(data => {
@@ -21928,7 +22348,7 @@ Current version indicated by LITEVER below.
 											playDecodedAllTalkData(decodedData);
 										})
 										.catch((error) => {
-											console.log("AllTalk v2 Speak Error:", data);
+											console.log("AllTalk v2 Speak Error:", error);
 											tts_is_playing = false;
 											tts_is_processing = false;
 											update_submit_button(false);
@@ -23610,6 +24030,130 @@ Current version indicated by LITEVER below.
 		return oai_messages;
 	}
 
+	// Keep the established Chat Completions representation internally and adapt it only at the Responses boundary.
+	function oai_responses_content(content, role)
+	{
+		if(!Array.isArray(content))
+		{
+			return content == null ? "" : content;
+		}
+		return content.map(part => {
+			if(!part || typeof part !== "object") return part;
+			if(part.type === "text")
+			{
+				return {type:(role === "assistant" ? "output_text" : "input_text"), text:part.text};
+			}
+			if(part.type === "image_url")
+			{
+				let image = {type:"input_image", image_url:(part.image_url && part.image_url.url) ? part.image_url.url : part.image_url};
+				if(part.image_url && part.image_url.detail) image.detail = part.image_url.detail;
+				return image;
+			}
+			return part;
+		});
+	}
+
+	function oai_messages_to_responses_input(messages)
+	{
+		let input = [];
+		for(let message of messages)
+		{
+			if(!message || typeof message !== "object") continue;
+			if(message.role === "tool")
+			{
+				input.push({type:"function_call_output", call_id:message.tool_call_id, output:message.content});
+				continue;
+			}
+
+			if(message.tool_calls && message.tool_calls.length>0)
+			{
+				let reasoning_added = false;
+				if(message.content)
+				{
+					input.push({type:"message", role:"assistant", content:oai_responses_content(message.content, "assistant")});
+				}
+				for(let tool_call of message.tool_calls)
+				{
+					if(!reasoning_added && Array.isArray(tool_call._responses_reasoning))
+					{
+						input.push(...tool_call._responses_reasoning);
+						reasoning_added = true;
+					}
+					if(tool_call._responses_item)
+					{
+						input.push(tool_call._responses_item);
+					}
+					else
+					{
+						input.push({
+							type:"function_call",
+							call_id:tool_call.id,
+							name:tool_call.function.name,
+							arguments:tool_call.function.arguments
+						});
+					}
+				}
+				continue;
+			}
+
+			input.push({
+				type:"message",
+				role:message.role,
+				content:oai_responses_content(message.content, message.role)
+			});
+		}
+		return input;
+	}
+
+	function oai_tools_to_responses_tools(tools)
+	{
+		return tools.map(tool => ({
+			type:"function",
+			name:tool.function.name,
+			description:tool.function.description,
+			parameters:tool.function.parameters,
+			strict:(tool.function.strict === true)
+		}));
+	}
+
+	function oai_clean_chat_tool_calls(tool_calls)
+	{
+		return tool_calls.map(tool_call => ({
+			id:tool_call.id,
+			type:tool_call.type || "function",
+			function:tool_call.function
+		}));
+	}
+
+	function oai_prepare_responses_payload(payload)
+	{
+		payload.input = oai_messages_to_responses_input(payload.messages || []);
+		delete payload.messages;
+		if(payload.max_tokens != null)
+		{
+			payload.max_output_tokens = payload.max_tokens;
+			delete payload.max_tokens;
+		}
+		if(payload.reasoning_effort)
+		{
+			payload.reasoning = {effort:payload.reasoning_effort};
+			delete payload.reasoning_effort;
+		}
+		if(payload.tools)
+		{
+			payload.tools = oai_tools_to_responses_tools(payload.tools);
+		}
+		// These Chat/Completions fields have no Responses equivalent.
+		delete payload.stop;
+		delete payload.presence_penalty;
+		delete payload.logit_bias;
+		delete payload.logprobs;
+		delete payload.previous_response_id;
+		delete payload.conversation;
+		payload.store = false;
+		return payload;
+	}
+
 	/* split: src/generation/dispatch.js */
 	function dispatch_submit_generation(submit_payload, input_was_empty) //if input is not empty, always unban eos
 	{
@@ -23665,7 +24209,7 @@ Current version indicated by LITEVER below.
 						if(!mhistory[i].myturn && mhistory[i].tool_calls)
 						{
 							cturn.content = null;
-							cturn.tool_calls = mhistory[i].tool_calls;
+							cturn.tool_calls = oai_clean_chat_tool_calls(mhistory[i].tool_calls);
 						}
 						else if(!mhistory[i].myturn && mhistory[i].tool_results)
 						{
@@ -23741,7 +24285,7 @@ Current version indicated by LITEVER below.
 				Object.assign(oai_payload, localsettings.custom_sampler_fields);
 				if(localsettings.request_logprobs && !targetep.toLowerCase().includes("api.x.ai") && !targetep.toLowerCase().includes("api.mistral.ai"))
 				{
-					if(is_using_oai_chat_completions() || targetep.toLowerCase().includes("api.x.ai"))
+					if(is_using_oai_messages_api() || targetep.toLowerCase().includes("api.x.ai"))
 					{
 						oai_payload.logprobs = true;
 						oai_payload.top_logprobs = 5;
@@ -23749,7 +24293,7 @@ Current version indicated by LITEVER below.
 						oai_payload.logprobs = 5;
 					}
 				}
-				if(!targetep.toLowerCase().includes("pollinations.ai") && !targetep.toLowerCase().includes("api.x.ai") && !targetep.toLowerCase().includes("api.perplexity.ai"))
+				if(!targetep.toLowerCase().includes("pollinations.ai") && !targetep.toLowerCase().includes("api.x.ai") && !targetep.toLowerCase().includes("api.perplexity.ai") && !targetep.toLowerCase().includes("api.meta.ai"))
 				{
 					//grok has no support for stop
 					let stops = get_stop_sequences().slice(0, 4); //lets try adding stop sequences, limit to first 4
@@ -23789,7 +24333,7 @@ Current version indicated by LITEVER below.
 					}
 				}
 
-				if (is_using_oai_chat_completions())
+				if (is_using_oai_messages_api())
 				{
 					let cannotreason = (targetep.toLowerCase().includes("text.pollinations.ai"));
 					if(!cannotreason)
@@ -23823,7 +24367,7 @@ Current version indicated by LITEVER below.
 					}
 
 					oai_payload.messages = [];
-					targetep = apply_proxy_url(custom_oai_endpoint + oai_submit_endpoint_chat);
+					targetep = apply_proxy_url(custom_oai_endpoint + (is_oai_responses_selected() ? oai_submit_endpoint_responses : oai_submit_endpoint_chat));
 					if (document.getElementById("jailbreakprompt") && document.getElementById("jailbreakprompt").checked && document.getElementById("jailbreakprompttext").value!="") {
 						let addrole = document.getElementById("jailbreakprompttextrole").value;
 						addrole = ((addrole==2)?"system":(addrole==1?"assistant":"user"));
@@ -23884,7 +24428,7 @@ Current version indicated by LITEVER below.
 							if(!mhistory[i].myturn && mhistory[i].tool_calls)
 							{
 								cturn.content = null;
-								cturn.tool_calls = mhistory[i].tool_calls;
+								cturn.tool_calls = is_oai_responses_selected() ? mhistory[i].tool_calls : oai_clean_chat_tool_calls(mhistory[i].tool_calls);
 							}
 							else if(!mhistory[i].myturn && mhistory[i].tool_results)
 							{
@@ -23960,6 +24504,11 @@ Current version indicated by LITEVER below.
 				else
 				{
 					oai_payload.prompt = submit_payload.prompt;
+				}
+
+				if(is_oai_responses_selected())
+				{
+					oai_payload = oai_prepare_responses_payload(oai_payload);
 				}
 
 				last_request_str = JSON.stringify(oai_payload);
@@ -25023,7 +25572,7 @@ Current version indicated by LITEVER below.
 			}
 			else
 			{
-				let isoai = (custom_oai_key!="" && is_using_oai_chat_completions());
+				let isoai = (custom_oai_key!="" && is_using_oai_messages_api());
 				visionstatus = (isoai?`<span class="color_green">OpenAI API (Conditional)</span>`:`<span class="color_yellow">Unsupported</span>`);
 			}
 		}
@@ -25992,7 +26541,7 @@ Current version indicated by LITEVER below.
 							console.log("Replacing with Image: " + matchstr);
 							gametext_arr[i] = gametext_arr[i].replace(matchstr, newstr);
 							//default to llava if supported, and image is self uploaded
-							let isoaichat = (is_using_oai_chat_completions() && custom_oai_key!="");
+							let isoaichat = (is_using_oai_messages_api() && custom_oai_key!="");
 							// Exclude images if agent mode is enabled as the agent should pick - it can still be enabled manually, but shouldn't be the default
 							let isAgentModeEnabled = typeof isAgentModeEnabledAndSetCorrectly === "function" && isAgentModeEnabledAndSetCorrectly();
 							const imgitm = image_db[key];
@@ -28547,7 +29096,10 @@ Current version indicated by LITEVER below.
 	{
 		let media = text.match(/(?:\s*\[<\|([hp])\|.+?\|\1\|>\])+\s*$/);
 		if(!media) return text.length;
-		let attachments = Array.from(media[0].matchAll(/\s*\[<\|([hp])\|(.+?)\|\1\|>\]/g));
+		let attachments = [];
+		let attachment_regex = /\s*\[<\|([hp])\|(.+?)\|\1\|>\]/g;
+		let attachment_match;
+		while((attachment_match = attachment_regex.exec(media[0])) !== null) attachments.push(attachment_match);
 		let shiftStart = text.length;
 		for(let j=attachments.length-1;j>=0;--j)
 		{
@@ -29660,7 +30212,8 @@ Current version indicated by LITEVER below.
 			if(dropdown && dropdown.value)
 			{
 				localsettings.prev_custom_endpoint_model_dict[localsettings.prev_custom_endpoint_type] = dropdown.value;
-				localsettings.prev_custom_endpoint_ischatcmpl = is_oai_chat_completions_selected();
+				localsettings.prev_custom_endpoint_ischatcmpl = get_oai_api_type() !== OAI_API_TYPE.TEXT_COMPLETIONS;
+				localsettings.prev_custom_endpoint_api_type = get_oai_api_type();
 			}
 		}
 	}
@@ -32148,7 +32701,7 @@ Current version indicated by LITEVER below.
 	/* split: src/websearch/websearch.js */
 	// end of aesthetic ui
 
-	async function PerformWebsearch(webSearchQuery, onDone)
+	function PerformWebsearch(webSearchQuery, onDone)
 	{
 		cancel_websearch();
 		if (!localsettings.websearch_enabled || !is_using_kcpp_with_websearch())
@@ -32179,46 +32732,50 @@ Current version indicated by LITEVER below.
 			return;
 		}
 
-		let controller = new AbortController();
+		let controller = create_websearch_request_controller();
 		websearch_request_controller = controller;
 		pending_response_id = "-1";
 		websearch_in_progress = true;
 		render_gametext(false);
-		try
+		let rewrite_promise = Promise.resolve(webSearchQuery);
+		if(localsettings.websearch_multipass)
 		{
-			if(localsettings.websearch_multipass)
-			{
-				webSearchQuery = await generate_websearch_prompt(concat_gametext(true, ""), webSearchQuery, null, controller.signal);
-			}
-			if(controller.signal.aborted) return;
+			rewrite_promise = generate_websearch_prompt(concat_gametext(true, ""), webSearchQuery, null, controller);
+		}
+
+		let search_promise = rewrite_promise.then(function(rewritten_query)
+		{
+			if(controller.aborted) return;
+			webSearchQuery = rewritten_query || webSearchQuery;
 			if(webSearchQuery && webSearchQuery !== lastSearchQuery)
 			{
-				let response = await fetch(apply_proxy_url(custom_kobold_endpoint + koboldcpp_websearch_endpoint), {
+				let request_options = {
 					method: 'POST', headers: get_kobold_header(),
-					body: JSON.stringify({q: webSearchQuery}), signal: controller.signal
-				});
-				if(!response.ok) throw new Error("WebSearch HTTP " + response.status);
-				let values = await response.json();
-				if(controller.signal.aborted) return;
-				if(!Array.isArray(values)) throw new Error("Invalid WebSearch response");
-				if(lastSearchResults && lastSearchResults.length > 0)
+					body: JSON.stringify({q: webSearchQuery})
+				};
+				if(controller.signal) request_options.signal = controller.signal;
+				return fetch(apply_proxy_url(custom_kobold_endpoint + koboldcpp_websearch_endpoint), request_options)
+				.then(function(response)
 				{
-					recentSearchQueries.push(lastSearchResults[0]);
-					if(recentSearchQueries.length > 2) recentSearchQueries.shift();
-				}
-				lastSearchQuery = webSearchQuery;
-				lastSearchResults = values;
+					if(!response.ok) throw new Error("WebSearch HTTP " + response.status);
+					return response.json();
+				})
+				.then(function(values)
+				{
+					if(controller.aborted) return;
+					if(!Array.isArray(values)) throw new Error("Invalid WebSearch response");
+					if(lastSearchResults && lastSearchResults.length > 0)
+					{
+						recentSearchQueries.push(lastSearchResults[0]);
+						if(recentSearchQueries.length > 2) recentSearchQueries.shift();
+					}
+					lastSearchQuery = webSearchQuery;
+					lastSearchResults = values;
+				});
 			}
-		}
-		catch(error)
-		{
-			if(controller.signal.aborted) return;
-			console.log("WebSearch Error:", error);
-			lastSearchResults = [];
-			recentSearchQueries = [];
-			lastSearchQuery = "";
-		}
-		finally
+		});
+
+		let finish = function()
 		{
 			if(websearch_request_controller === controller)
 			{
@@ -32228,8 +32785,20 @@ Current version indicated by LITEVER below.
 				show_abort_button(false);
 				render_gametext(false);
 			}
-		}
-		if(!controller.signal.aborted) onDone();
+			if(!controller.aborted) onDone();
+		};
+
+		return search_promise.then(finish, function(error)
+		{
+			if(!controller.aborted)
+			{
+				console.log("WebSearch Error:", error);
+				lastSearchResults = [];
+				recentSearchQueries = [];
+				lastSearchQuery = "";
+			}
+			finish();
+		});
 	}
 
 	/* split: src/textdb/textdb.js */
@@ -35490,8 +36059,6 @@ Current version indicated by LITEVER below.
 					<div style="padding:2px;margin-left:auto;" id="model_cost"></div>
 				</div>
 				<select title="OpenAI Model Selection" style="padding:4px;display:inline;width:calc(100% - 200px)" class="form-control" id="custom_oai_model" onchange="oai_model_change(true)">
-					<option value="davinci-002">davinci-002</option>
-					<option value="gpt-3.5-turbo-instruct">gpt-3.5-turbo-instruct</option>
 					<option value="gpt-3.5-turbo">gpt-3.5-turbo</option>
 					<option value="gpt-3.5-turbo-16k">gpt-3.5-turbo-16k</option>
 					<option value="gpt-4">gpt-4</option>
@@ -35518,6 +36085,8 @@ Current version indicated by LITEVER below.
 					<option value="o3-mini">o3-mini</option>
 					<option value="o3">o3</option>
 					<option value="o4-mini">o4-mini</option>
+					<option value="davinci-002">davinci-002</option>
+					<option value="gpt-3.5-turbo-instruct">gpt-3.5-turbo-instruct</option>
 					<option style="display:none;" class="custom_model_option" value="custom">[Custom]</option>
 				</select>
 				<select title="OpenRouter AI Model Selection" style="padding:4px;display:inline;width:calc(100% - 200px)" class="form-control hidden" id="custom_openrouter_model" onchange="oai_model_change(true)">
@@ -35626,6 +36195,7 @@ Current version indicated by LITEVER below.
 					<label class="oai-control" for="useoaichatcompl">Mode<select class="form-control" style="height:22px; font-size:10px; padding:3px 5px; width:130px" id="useoaichatcompl" title="OpenAI API Type" onchange="toggleoaichatcompl()">
 						<option value="text-completions">Text-Completions</option>
 						<option value="chat-completions">Chat-Completions</option>
+						<option value="responses">Responses</option>
 					</select></label>
 					<label class="oai-control" for="useoainonstandard"><input type="checkbox" id="useoainonstandard" title="Send Non-Standard Fields">
 					<span>Non-Standard Fields <span class="helpicon">?<span class="helptext">Send all extra non-standard samplers (e.g Min-P, Top-K, Top-A, TFS). May be rejected by many endpoints.</span></span></span></label>
@@ -35640,8 +36210,10 @@ Current version indicated by LITEVER below.
 						<option value="2">System</option>
 					</select>
 					</label>
-					<label class="oai-control" title="Add Prefix. Forcefully inserts extra text at the start of the prompt to steer the AI."><input type="checkbox" title="Add Prefix Prompt" id="jailbreakprompt" onchange="togglejailbreak()">Add Prefix</label>
-					<label class="oai-control" title="Add Postfix. Forcefully inserts extra text to before the AI response to steer the AI."><input type="checkbox" title="Add Postfix Prompt" id="jailbreakprompt2" onchange="togglejailbreak2()">Add Postfix</label>
+					<div class="oai-control-group">
+						<label class="oai-control" title="Add Prefix. Forcefully inserts extra text at the start of the prompt to steer the AI."><input type="checkbox" title="Add Prefix Prompt" id="jailbreakprompt" onchange="togglejailbreak()">Add Prefix</label>
+						<label class="oai-control" title="Add Postfix. Forcefully inserts extra text to before the AI response to steer the AI."><input type="checkbox" title="Add Postfix Prompt" id="jailbreakprompt2" onchange="togglejailbreak2()">Add Postfix</label>
+					</div>
 					<select title="Reasoning Effort" class="form-control" style="height: 22px; font-size: var(--theme_font_size_medium); padding:2px;display:inline;width:120px" id="oaireasoningeffort">
 						<option value="" selected>Reasoning: Default</option>
 						<option value="none">Reasoning: None</option>
@@ -35906,7 +36478,7 @@ Current version indicated by LITEVER below.
 			<div class="workerTableDiv">
 			<table class="table workerTable" style="text-align: center;">
 			<thead class="sticky-top bg-white">
-			<tr><th><a class="color_blueurl" href="#" onclick="sort_display_workers('name')">Name</a></th><th><a class="color_blueurl" href="#" onclick="sort_display_workers('defaultmodel')">Model</a></th><th><a class="color_blueurl" href="#" onclick="sort_display_workers('tokenspersec')">Capabilities</a></th><th><a class="color_blueurl" href="#" onclick="sort_display_workers('uptime')">Uptime</a></th><th><a class="color_blueurl" href="#" onclick="sort_display_workers('kudos_rewards')">Kudos</a></th></tr>
+			<tr><th><a class="color_blueurl" href="#" onclick="sort_display_workers('name')">Name</a></th><th><a class="color_blueurl" href="#" onclick="sort_display_workers('defaultmodel')">Model</a></th><th class="workerCapabilities"><a class="color_blueurl" href="#" onclick="sort_display_workers('tokenspersec')">Capabilities</a></th><th class="workerJobs"><a class="color_blueurl" href="#" onclick="sort_display_workers('jobtypes')">Jobs</a></th><th class="workerUptime"><a class="color_blueurl" href="#" onclick="sort_display_workers('uptime')">Uptime</a></th><th class="workerKudos"><a class="color_blueurl" href="#" onclick="sort_display_workers('kudos_rewards')">Kudos</a></th><th class="workerDetails"><a class="color_blueurl" href="#" onclick="sort_display_workers('tokenspersec')">More Info</a></th></tr>
 			</thead>
 			<tbody id="workertable">
 			</tbody>

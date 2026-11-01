@@ -18,6 +18,7 @@
 #include <filesystem>
 
 #include "otherarch/utils.h"
+#include "otherarch/webp_image.h"
 #include "model_adapter.h"
 
 #include "stable-diffusion.h"
@@ -43,6 +44,160 @@ using namespace kcpp_sd;
 #include "stb_image_resize.h"
 
 #include "avi_writer.h"
+#include "webp/encode.h"
+#include "webp/mux.h"
+
+// Encodes an array of RGB, RGBA or grayscale frames into an animated WebP.
+// The returned buffer uses malloc so callers can continue to release it with
+// free(), matching the old GIF helper's ownership contract.
+static int create_animated_webp_buf_from_sd_images(sd_image_t* images,
+                                                    int num_images,
+                                                    int fps,
+                                                    uint8_t** out_data,
+                                                    size_t* out_len) {
+    if (out_data == nullptr || out_len == nullptr) {
+        return -1;
+    }
+    *out_data = nullptr;
+    *out_len  = 0;
+
+    if (images == nullptr || num_images <= 0 || fps <= 0 ||
+        images[0].data == nullptr || images[0].width == 0 || images[0].height == 0 ||
+        images[0].width > WEBP_MAX_DIMENSION || images[0].height > WEBP_MAX_DIMENSION) {
+        fprintf(stderr, "Invalid animated WebP input.\n");
+        return -1;
+    }
+
+    const int width  = static_cast<int>(images[0].width);
+    const int height = static_cast<int>(images[0].height);
+
+    WebPAnimEncoderOptions anim_options;
+    WebPConfig config;
+    if (!WebPAnimEncoderOptionsInit(&anim_options) ||
+        !WebPConfigPreset(&config, WEBP_PRESET_PICTURE, 80.0f)) {
+        fprintf(stderr, "Failed to initialize the animated WebP encoder.\n");
+        return -1;
+    }
+
+    // Avoid exhaustively encoding every compression/disposal candidate. Mixed
+    // mode still uses heuristics to choose lossless coding when appropriate.
+    anim_options.minimize_size = 0;
+    anim_options.allow_mixed   = 1;
+    config.method              = 3;
+    config.thread_level        = 1;
+    if (!WebPValidateConfig(&config)) {
+        fprintf(stderr, "Invalid animated WebP encoder configuration.\n");
+        return -1;
+    }
+
+    WebPAnimEncoder* encoder = WebPAnimEncoderNew(width, height, &anim_options);
+    if (encoder == nullptr) {
+        fprintf(stderr, "Failed to create the animated WebP encoder.\n");
+        return -1;
+    }
+
+    int last_timestamp_ms = -1;
+    for (int i = 0; i < num_images; ++i) {
+        const sd_image_t& image = images[i];
+        if (image.data == nullptr || static_cast<int>(image.width) != width ||
+            static_cast<int>(image.height) != height ||
+            (image.channel != 1 && image.channel != 3 && image.channel != 4)) {
+            fprintf(stderr, "Animated WebP frame %d has invalid dimensions or channels.\n", i);
+            WebPAnimEncoderDelete(encoder);
+            return -1;
+        }
+
+        WebPPicture picture;
+        if (!WebPPictureInit(&picture)) {
+            fprintf(stderr, "Failed to initialize animated WebP frame %d.\n", i);
+            WebPAnimEncoderDelete(encoder);
+            return -1;
+        }
+        picture.use_argb = 1;
+        picture.width    = width;
+        picture.height   = height;
+
+        int imported = 0;
+        std::vector<uint8_t> rgb_buffer;
+        if (image.channel == 1) {
+            const size_t pixel_count = static_cast<size_t>(width) * static_cast<size_t>(height);
+            rgb_buffer.resize(pixel_count * 3);
+            for (size_t p = 0; p < pixel_count; ++p) {
+                rgb_buffer[p * 3 + 0] = image.data[p];
+                rgb_buffer[p * 3 + 1] = image.data[p];
+                rgb_buffer[p * 3 + 2] = image.data[p];
+            }
+            imported = WebPPictureImportRGB(&picture, rgb_buffer.data(), width * 3);
+        } else if (image.channel == 4) {
+            imported = WebPPictureImportRGBA(&picture, image.data, width * 4);
+        } else {
+            imported = WebPPictureImportRGB(&picture, image.data, width * 3);
+        }
+
+        if (!imported) {
+            fprintf(stderr, "Failed to import animated WebP frame %d.\n", i);
+            WebPPictureFree(&picture);
+            WebPAnimEncoderDelete(encoder);
+            return -1;
+        }
+
+        int timestamp_ms = static_cast<int>(
+            (static_cast<int64_t>(i) * 1000 + fps / 2) / fps);
+        if (timestamp_ms <= last_timestamp_ms) {
+            timestamp_ms = last_timestamp_ms + 1;
+        }
+        if (!WebPAnimEncoderAdd(encoder, &picture, timestamp_ms, &config)) {
+            const char* error = WebPAnimEncoderGetError(encoder);
+            fprintf(stderr, "Failed to encode animated WebP frame %d: %s\n",
+                    i, error != nullptr ? error : "unknown error");
+            WebPPictureFree(&picture);
+            WebPAnimEncoderDelete(encoder);
+            return -1;
+        }
+        WebPPictureFree(&picture);
+        last_timestamp_ms = timestamp_ms;
+    }
+
+    int final_timestamp_ms = static_cast<int>(
+        (static_cast<int64_t>(num_images) * 1000 + fps / 2) / fps);
+    if (final_timestamp_ms <= last_timestamp_ms) {
+        final_timestamp_ms = last_timestamp_ms + 1;
+    }
+    if (!WebPAnimEncoderAdd(encoder, nullptr, final_timestamp_ms, nullptr)) {
+        const char* error = WebPAnimEncoderGetError(encoder);
+        fprintf(stderr, "Failed to finalize animated WebP frames: %s\n",
+                error != nullptr ? error : "unknown error");
+        WebPAnimEncoderDelete(encoder);
+        return -1;
+    }
+
+    WebPData webp_data;
+    WebPDataInit(&webp_data);
+    if (!WebPAnimEncoderAssemble(encoder, &webp_data) ||
+        webp_data.bytes == nullptr || webp_data.size == 0) {
+        const char* error = WebPAnimEncoderGetError(encoder);
+        fprintf(stderr, "Failed to assemble animated WebP: %s\n",
+                error != nullptr ? error : "unknown error");
+        WebPDataClear(&webp_data);
+        WebPAnimEncoderDelete(encoder);
+        return -1;
+    }
+
+    uint8_t* owned_data = static_cast<uint8_t*>(malloc(webp_data.size));
+    if (owned_data == nullptr) {
+        fprintf(stderr, "Failed to allocate animated WebP output buffer.\n");
+        WebPDataClear(&webp_data);
+        WebPAnimEncoderDelete(encoder);
+        return -1;
+    }
+    memcpy(owned_data, webp_data.bytes, webp_data.size);
+    *out_data = owned_data;
+    *out_len  = webp_data.size;
+
+    WebPDataClear(&webp_data);
+    WebPAnimEncoderDelete(encoder);
+    return 0;
+}
 
 // early callback log initialization
 namespace {
@@ -554,8 +709,9 @@ static void kcpp_set_model_paths(sd_ctx_params_t& params, SDParams& sd_params, c
     bool is_sefi = sd_version_is_sefi_image(tempver);
     bool is_mageflow = sd_version_is_mage_flow(tempver);
     bool is_minimaxh3 = sd_version_is_minimax_h3(tempver);
-    bool conditioner_is_llm = (is_qwenimg || is_zimg || is_flux2 || is_flux3 || is_mosi || is_ovis || is_anima || is_ernie || is_longcat || is_lens || is_llada || is_ltx || is_ideogram || is_boogu || is_krea2 || is_sefi || is_mageflow || is_minimaxh3 || is_pid || is_ming || is_zimg_l2p || is_iris);
-    bool has_llm_vision = (is_qwenimg || is_longcat || is_boogu);
+    bool is_fibo2 = (tempver == VERSION_FIBO2);
+    bool conditioner_is_llm = (is_qwenimg || is_zimg || is_flux2 || is_flux3 || is_mosi || is_ovis || is_anima || is_ernie || is_longcat || is_lens || is_llada || is_ltx || is_ideogram || is_boogu || is_krea2 || is_sefi || is_mageflow || is_minimaxh3 || is_pid || is_ming || is_zimg_l2p || is_iris || is_fibo2);
+    bool has_llm_vision = (is_qwenimg || is_longcat || is_boogu || is_fibo2);
     bool has_tokenizer = (is_lens || is_pid || is_ming || is_mosi || is_llada);
 
     //kcpp qol fallback: if a llm was loaded as t5 by mistake
@@ -1336,6 +1492,10 @@ uint8_t* load_image_from_b64(const std::string & b64str, int& width, int& height
     std::vector<uint8_t> decoded_buf = kcpp_base64_decode(b64str);
     int c = 0;
     uint8_t* image_buffer = (uint8_t*)stbi_load_from_memory(decoded_buf.data(), decoded_buf.size(), &width, &height, &c, expected_channel);
+    if (image_buffer == nullptr) {
+        image_buffer = kcpp_decode_webp_from_memory(
+            decoded_buf.data(), decoded_buf.size(), &width, &height, &c, expected_channel);
+    }
 
     if (image_buffer == NULL) {
         fprintf(stderr, "load_image_from_b64 failed\n");
@@ -2297,11 +2457,19 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
             int status = 0;
             int status2 = 0;
 
-            if(video_output_type==0 || video_output_type==2)
+            const bool output_gif  = video_output_type == 0 || video_output_type == 2;
+            const bool output_webp = video_output_type == 3 || video_output_type == 4;
+            const bool output_avi  = video_output_type == 1 || video_output_type == 2 || video_output_type == 4;
+
+            if(output_gif)
             {
                 status = create_gif_buf_from_sd_images_msf(results, generated_num_results, vid_fps, &out_data,&out_len);
             }
-            if(video_output_type==1 || video_output_type==2)
+            else if(output_webp)
+            {
+                status = create_animated_webp_buf_from_sd_images(results, generated_num_results, vid_fps, &out_data,&out_len);
+            }
+            if(output_avi)
             {
                 status2 = create_mjpg_avi_membuf_from_sd_images(results, generated_num_results, vid_fps, 40, &out_data2,&out_len2, generated_audio);
             }
@@ -2314,7 +2482,10 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
 
             if(!sd_is_quiet && sddebugmode==1)
             {
-                printf("Video Output Sizes: GIF=%zu AVI=%zu\n",out_len,out_len2);
+                printf("Video Output Sizes: GIF=%zu WEBP=%zu AVI=%zu\n",
+                       output_gif ? out_len : 0,
+                       output_webp ? out_len : 0,
+                       out_len2);
                 if(status==0 && status2==0)
                 {
                     printf("Video(s) Saved (Len %zu)!\n",out_len);

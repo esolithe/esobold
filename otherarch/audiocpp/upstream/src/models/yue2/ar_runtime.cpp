@@ -854,6 +854,7 @@ struct Yue2ARRuntime::Impl {
     runtime::TransformerKVState prefill_state(const std::vector<int32_t> & tokens) {
         const int64_t steps = static_cast<int64_t>(tokens.size());
         if (!prefix_state_graph || !prefix_state_graph->matches(steps)) {
+            prefix_state_graph.reset();
             prefix_state_graph = std::make_unique<PrefixStateGraph>(*this, steps);
         }
         auto state = prefix_state_graph->run(tokens);
@@ -863,6 +864,9 @@ struct Yue2ARRuntime::Impl {
     Yue2ARDevicePrefixState prefill_device_state(const std::vector<int32_t> & tokens) {
         const int64_t steps = static_cast<int64_t>(tokens.size());
         if (!prefix_state_graph || !prefix_state_graph->matches(steps)) {
+            // Constructing first would keep the old cache alive during the new
+            // allocation, briefly doubling a buffer that can exceed 1 GiB.
+            prefix_state_graph.reset();
             prefix_state_graph = std::make_unique<PrefixStateGraph>(*this, steps);
         }
         auto state = prefix_state_graph->run_device(tokens);
@@ -945,6 +949,25 @@ struct Yue2ARRuntime::Impl {
                 compact_semantic ? semantic_runtime_weights : (compact_abc ? abc_runtime_weights : runtime_weights));
         }
         engine::debug::timing_log_scalar("yue2.ar.ensure_generation_ms", engine::debug::elapsed_ms(total_start));
+    }
+
+    void release_generation_resources() {
+        // NAR still needs the token embedding and transformer stack to build
+        // its prefix state, but it never uses the AR generation runtimes,
+        // final norm, or LM head. Drop those before allocating NAR weights and
+        // its graph so both phases do not occupy VRAM at the same time.
+        runtime.reset();
+        negative_runtime.reset();
+        abc_runtime.reset();
+        abc_negative_runtime.reset();
+        semantic_runtime.reset();
+        semantic_negative_runtime.reset();
+        abc_runtime_weights = {};
+        semantic_runtime_weights = {};
+        runtime_weights.final_norm = {};
+        runtime_weights.lm_head.reset();
+        generation_view_ctx.reset();
+        generation_store.reset();
     }
 
     core::ExecutionContext & execution;
@@ -1031,6 +1054,10 @@ void Yue2ARRuntime::release_runtime_graphs() {
     if (impl_->semantic_negative_runtime) {
         impl_->semantic_negative_runtime->release_runtime_graphs();
     }
+}
+
+void Yue2ARRuntime::release_generation_resources() {
+    impl_->release_generation_resources();
 }
 
 }  // namespace engine::models::yue2

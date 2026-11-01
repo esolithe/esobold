@@ -197,6 +197,7 @@ select{
 <div style="display:flex; gap:8px; margin-bottom:10px;">
   <button class="secondary" onclick="switchTab('music')" id="tab_music">🎵 Create Music</button>
   <button class="secondary" onclick="switchTab('tts')" id="tab_tts">🗣 Create TTS</button>
+  <button class="secondary" onclick="switchTab('transcribe')" id="tab_transcribe">Transcribe</button>
 </div>
 <div id="musicTab">
   <h2>Song Setup</h2>
@@ -356,8 +357,16 @@ select{
   </div>
 
   <div style="margin-top:10px">
+    <label>Seed (optional)</label>
+    <input title="TTS Seed" id="tts_seed" type="number" min="1" step="1" placeholder="Random">
+  </div>
+
+  <div style="margin-top:10px">
     <label>Reference text (optional)</label>
-    <input title="TTS Reference Audio Transcript" id="tts_reference_text" type="text" placeholder="Exact transcript of the selected reference audio">
+    <div style="display:flex; gap:6px; align-items:center;">
+      <input title="TTS Reference Audio Transcript" id="tts_reference_text" type="text" placeholder="Exact transcript of the selected reference audio">
+      <button type="button" id="tts_auto_transcribe" class="secondary" title="Transcribe the selected WAV/MP3 voice using Whisper" onclick="autoTranscribeReference()">AutoTranscribe</button>
+    </div>
   </div>
 
   <div style="margin-top:10px">
@@ -391,6 +400,52 @@ select{
 
 </div>
 
+<div id="transcribeTab" class="hidden">
+
+  <h2>Audio Transcription</h2>
+
+  <div style="margin-top:10px">
+    <label>Audio file</label>
+    <input title="Upload audio to transcribe" id="transcribe_file" type="file" accept=".wav,.mp3,.flac,audio/wav,audio/mpeg,audio/flac">
+  </div>
+
+  <div style="margin-top:10px">
+    <label>Language (optional)</label>
+    <input title="Transcription Language" id="transcribe_language" placeholder="e.g. en (leave blank to auto-detect)">
+  </div>
+
+  <div style="margin-top:10px">
+    <label>Transcription</label>
+    <textarea id="transcribe_output" style="min-height:180px;" placeholder="The transcription will appear here."></textarea>
+    <button type="button" class="secondary" style="margin-top:6px" onclick="copyTranscription()">Copy</button>
+  </div>
+
+  <div style="margin-top:14px">
+    <label>API Base URL (optional)</label>
+    <input id="transcribe_baseUrl" placeholder="http://localhost:5001">
+    <label>API Key (optional)</label>
+    <div style="display:flex; gap:6px;">
+      <input type="password" id="transcribe_baseUrlKey" placeholder="(Input Key)">
+    </div>
+  </div>
+
+  <p id="transcribe_status" class="hint">Whisper availability has not been checked.</p>
+
+  <div id="transcribeActions" class="actions">
+    <button id="transcribe_button" class="primary" onclick="transcribeAudio()">Transcribe Audio</button>
+    <button class="danger" onclick="clearTranscription()">Clear</button>
+  </div>
+  <div id="transcribeLoading" class="actions hidden">
+    <button class="danger" onclick="abortRequest()">Abort</button>
+    <div title="Please Wait, Transcription In Progress" id="inlineSpinner3" class="inline-spinner"></div>
+  </div>
+
+  <p style="font-size:14px;margin-top:10px">
+    Transcriptions are temporary and are not saved to your library.
+  </p>
+
+</div>
+
 </div>
 
 <div class="panel">
@@ -419,6 +474,7 @@ let currentController=null;
 
 let currentTab = "music";
 let tabSelectionVersion = 0;
+let transcribeAvailable = null;
 
 function switchTab(tab, userSelected = true){
   if(userSelected) tabSelectionVersion++;
@@ -426,9 +482,13 @@ function switchTab(tab, userSelected = true){
 
   document.getElementById("musicTab").classList.toggle("hidden", tab !== "music");
   document.getElementById("ttsTab").classList.toggle("hidden", tab !== "tts");
+  document.getElementById("transcribeTab").classList.toggle("hidden", tab !== "transcribe");
 
   document.getElementById("tab_music").classList.toggle("primary", tab==="music");
   document.getElementById("tab_tts").classList.toggle("primary", tab==="tts");
+  document.getElementById("tab_transcribe").classList.toggle("primary", tab==="transcribe");
+
+  if(tab === "transcribe") fetchTranscribeCapability();
 
   loadLibrary(); // refresh view if needed later
 }
@@ -498,8 +558,9 @@ async function fetchStats(){
     if(requestId !== statsRequestId) return;
     has_llm_loaded = !!(perf && perf.llm);
     has_music_llm_loaded = !!(perf && perf.musicllm);
-    if(tabSelectionVersion === 0 && perf && !perf.music && perf.tts){
-      switchTab("tts", false);
+    if(tabSelectionVersion === 0 && perf && !perf.music){
+      if(perf.tts) switchTab("tts", false);
+      else if(perf.transcribe) switchTab("transcribe", false);
     }
     if(controlSelectionVersion === musicControlSelectionVersion){
       document.getElementById("music_controls").value = perf && perf.musicfamily === "yue2" ? "yue2" : "acestep";
@@ -524,6 +585,162 @@ function populateVoiceList(list){
     opt.textContent=v;
     select.appendChild(opt);
   });
+  updateAutoTranscribeButton();
+}
+
+function updateAutoTranscribeButton(){
+  const voice=document.getElementById("tts_voice").value.toLowerCase();
+  const button=document.getElementById("tts_auto_transcribe");
+  const isFile=voice.endsWith(".wav") || voice.endsWith(".mp3");
+  button.disabled=!isFile || currentController!==null;
+  button.title=isFile
+    ? "Transcribe the selected voice using Whisper"
+    : "Select a WAV or MP3 voice loaded from the TTS voices directory";
+}
+
+function getApiError(data, fallback){
+  if(data && data.detail){
+    if(typeof data.detail === "string") return data.detail;
+    if(data.detail.msg) return data.detail.msg;
+    if(data.detail.error) return data.detail.error;
+  }
+  return fallback;
+}
+
+async function autoTranscribeReference(){
+  const voice=document.getElementById("tts_voice").value;
+  if(!/\.(wav|mp3)$/i.test(voice)){
+    showMessage("Select a WAV or MP3 voice from the TTS voices directory first.");
+    return;
+  }
+  try{
+    currentController=new AbortController();
+    setLoading(true);
+
+    const base=document.getElementById("tts_baseUrl").value.trim();
+    const url=(base ? base.replace(/\/$/,"") : "") + "/api/extra/transcribe";
+    const headers={"Content-Type":"application/json"};
+    const apiKey=document.getElementById("tts_baseUrlKey").value;
+    if(apiKey) headers["Authorization"]=`Bearer ${apiKey}`;
+
+    const res=await fetch(url,{
+      method:"POST",
+      headers:headers,
+      body:JSON.stringify({voice:voice}),
+      signal:currentController.signal
+    });
+    const data=await res.json().catch(()=>({}));
+    if(!res.ok) throw new Error(getApiError(data,"Unable to transcribe the selected voice."));
+    if(!data.text || !data.text.trim()) throw new Error("Whisper returned an empty transcription.");
+
+    document.getElementById("tts_reference_text").value=data.text.trim();
+    showMessage("Reference text transcribed.");
+  }catch(e){
+    if(e.name!=="AbortError") showMessage(e.message || "Failed to transcribe the selected voice.",5000);
+  }finally{
+    currentController=null;
+    setLoading(false);
+  }
+}
+
+async function fetchTranscribeCapability(){
+  const status=document.getElementById("transcribe_status");
+  const button=document.getElementById("transcribe_button");
+  transcribeAvailable=null;
+  button.disabled=false;
+  try{
+    const base=document.getElementById("transcribe_baseUrl").value.trim();
+    const url=(base ? base.replace(/\/$/,"") : "") + "/api/extra/version";
+    const headers={};
+    const apiKey=document.getElementById("transcribe_baseUrlKey").value;
+    if(apiKey) headers["Authorization"]=`Bearer ${apiKey}`;
+    const res=await fetch(url,{method:"GET",headers:headers});
+    if(!res.ok) throw new Error();
+    const data=await res.json();
+    const available=!!data.transcribe;
+    transcribeAvailable=available;
+    status.textContent=available
+      ? "Whisper transcription is available."
+      : "No Whisper transcription model is currently available on this server.";
+    button.title=available
+      ? "Transcribe the selected audio file"
+      : "No Whisper transcription model is available";
+  }catch(e){
+    transcribeAvailable=null;
+    status.textContent="Could not check Whisper availability; you can still try the endpoint.";
+    button.title="Transcribe the selected audio file";
+  }
+}
+
+async function transcribeAudio(){
+  if(transcribeAvailable === false){
+    showMessage("No Whisper transcription model is currently available on this server.",5000);
+    return;
+  }
+  const file=document.getElementById("transcribe_file").files[0];
+  if(!file){
+    showMessage("Select an audio file to transcribe.");
+    return;
+  }
+  try{
+    currentController=new AbortController();
+    setLoading(true);
+
+    const base=document.getElementById("transcribe_baseUrl").value.trim();
+    const url=(base ? base.replace(/\/$/,"") : "") + "/v1/audio/transcriptions";
+    const headers={};
+    const apiKey=document.getElementById("transcribe_baseUrlKey").value;
+    if(apiKey) headers["Authorization"]=`Bearer ${apiKey}`;
+    const formData=new FormData();
+    formData.append("file",file,file.name);
+    const language=document.getElementById("transcribe_language").value.trim();
+    if(language) formData.append("language",language);
+
+    const res=await fetch(url,{
+      method:"POST",
+      headers:headers,
+      body:formData,
+      signal:currentController.signal
+    });
+    const data=await res.json().catch(()=>({}));
+    if(!res.ok) throw new Error(getApiError(data,"Transcription request failed."));
+    if(!data.text || !data.text.trim()) throw new Error("Whisper returned an empty transcription.");
+
+    document.getElementById("transcribe_output").value=data.text.trim();
+    showMessage("Audio transcribed.");
+  }catch(e){
+    if(e.name!=="AbortError") showMessage(e.message || "Failed to transcribe audio.",5000);
+  }finally{
+    currentController=null;
+    setLoading(false);
+  }
+}
+
+function clearTranscription(){
+  document.getElementById("transcribe_file").value="";
+  document.getElementById("transcribe_language").value="";
+  document.getElementById("transcribe_output").value="";
+}
+
+async function copyTranscription(){
+  const output=document.getElementById("transcribe_output");
+  if(!output.value){
+    showMessage("There is no transcription to copy.");
+    return;
+  }
+  try{
+    if(navigator.clipboard && window.isSecureContext){
+      await navigator.clipboard.writeText(output.value);
+    }else{
+      output.focus();
+      output.select();
+      if(!document.execCommand("copy")) throw new Error();
+      output.setSelectionRange(0,0);
+    }
+    showMessage("Transcription copied.");
+  }catch(e){
+    showMessage("Could not copy automatically. Select the text and copy it manually.",5000);
+  }
 }
 
 async function generateTTS(){
@@ -545,6 +762,9 @@ async function generateTTS(){
 
     const referenceText = document.getElementById("tts_reference_text").value;
     if(referenceText) payload.reference_text = referenceText;
+
+    const seed = document.getElementById("tts_seed").value.trim();
+    if(seed) payload.seed = seed;
 
     let headers =  {"Content-Type": "application/json"};
     if(document.getElementById("tts_baseUrlKey").value!="")
@@ -589,6 +809,7 @@ async function generateTTS(){
 
 function clearTTS(){
   document.getElementById("tts_input").value="";
+  document.getElementById("tts_seed").value="";
   document.getElementById("tts_reference_text").value="";
   document.getElementById("tts_instruction").value="";
   document.getElementById("tts_use_mp3").checked=false;
@@ -599,11 +820,15 @@ function clearTTS(){
 function setLoading(isLoading){
   document.getElementById("normalActions").style.display = isLoading ? "none" : "flex";
   document.getElementById("ttsActions").style.display = isLoading ? "none" : "flex";
+  document.getElementById("transcribeActions").style.display = isLoading ? "none" : "flex";
+  document.getElementById("transcribeLoading").classList.toggle("hidden", !isLoading);
+  document.getElementById("tts_auto_transcribe").disabled = isLoading;
 
   // shared controls
   document.getElementById("abortBtn").classList.toggle("hidden", !isLoading);
   document.getElementById("inlineSpinner").classList.toggle("hidden", !isLoading);
   document.getElementById("inlineSpinner2").classList.toggle("hidden", !isLoading);
+  if(!isLoading) updateAutoTranscribeButton();
 }
 
 function abortRequest(){
@@ -700,7 +925,7 @@ function getFormData(){
   return data;
 }
 
-function updateForm(data){
+function updateForm(data, itemType){
   data={...data};
   const looksYue2=data.musicfamily === "yue2" || data.abc !== undefined || data.cot !== undefined || data.semantic_prefix !== undefined;
   if(looksYue2){
@@ -723,7 +948,11 @@ function updateForm(data){
   }
   //let origseed = document.getElementById("seed").value;
   Object.keys(data).forEach(k=>{
-    if(document.getElementById(k))
+    if(itemType === "tts" && k === "seed")
+    {
+      document.getElementById("tts_seed").value=data[k]??"";
+    }
+    else if(document.getElementById(k))
     {
       const el = document.getElementById(k);
       if(el.type === "checkbox"){
@@ -1058,8 +1287,10 @@ function loadTrackJSON(id){
     if(item.type !== "tts") {
       document.getElementById("audio_codes").value = "";
       document.getElementById("abc").value = "";
+    } else {
+      document.getElementById("tts_seed").value = "";
     }
-    updateForm(data);
+    updateForm(data, item.type);
   });
 }
 
@@ -1201,6 +1432,9 @@ document.getElementById("cot").addEventListener("change", ()=>{
 }));
 document.getElementById("baseUrl").addEventListener("change", fetchStats);
 document.getElementById("baseUrlKey").addEventListener("change", fetchStats);
+document.getElementById("tts_voice").addEventListener("change", updateAutoTranscribeButton);
+document.getElementById("transcribe_baseUrl").addEventListener("change", fetchTranscribeCapability);
+document.getElementById("transcribe_baseUrlKey").addEventListener("change", fetchTranscribeCapability);
 initDB().then(loadLibrary);
 fetchVoices();
 fetchStats();

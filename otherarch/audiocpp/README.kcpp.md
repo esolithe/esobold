@@ -10,16 +10,24 @@ converters, tests, or unrelated model implementations.
 Run the repository script against an Audio.cpp checkout or source snapshot:
 
 ```powershell
-./scripts/sync-audiocpp.ps1 -SourceRoot C:\path\to\audio.cpp -Component supertonic
-./scripts/sync-audiocpp.ps1 -SourceRoot C:\path\to\audio.cpp -Component yue2
-./scripts/sync-audiocpp.ps1 -SourceRoot C:\path\to\audio.cpp -Component fish_audio
-./scripts/sync-audiocpp.ps1 -SourceRoot C:\path\to\audio.cpp -Component maya1
-./scripts/sync-audiocpp.ps1 -SourceRoot C:\path\to\audio.cpp -Component chatterbox
-./scripts/sync-audiocpp.ps1 -SourceRoot C:\path\to\audio.cpp -Component chatterbox_turbo
-./scripts/sync-audiocpp.ps1 -SourceRoot C:\path\to\audio.cpp -Component kitten_tts2
-./scripts/sync-audiocpp.ps1 -SourceRoot C:\path\to\audio.cpp -Component soprano_tts
-./scripts/sync-audiocpp.ps1 -SourceRoot C:\path\to\audio.cpp -Component cosyvoice3
-./scripts/sync-audiocpp.ps1 -SourceRoot C:\path\to\audio.cpp -Component yue2 -ModelSourcesOnly
+./tools/sync-audiocpp.ps1 -SourceRoot C:\path\to\audio.cpp -Component supertonic
+./tools/sync-audiocpp.ps1 -SourceRoot C:\path\to\audio.cpp -Component yue2
+./tools/sync-audiocpp.ps1 -SourceRoot C:\path\to\audio.cpp -Component sheetsage2
+./tools/sync-audiocpp.ps1 -SourceRoot C:\path\to\audio.cpp -Component fish_audio
+./tools/sync-audiocpp.ps1 -SourceRoot C:\path\to\audio.cpp -Component maya1
+./tools/sync-audiocpp.ps1 -SourceRoot C:\path\to\audio.cpp -Component chatterbox
+./tools/sync-audiocpp.ps1 -SourceRoot C:\path\to\audio.cpp -Component chatterbox_turbo
+./tools/sync-audiocpp.ps1 -SourceRoot C:\path\to\audio.cpp -Component kitten_tts2
+./tools/sync-audiocpp.ps1 -SourceRoot C:\path\to\audio.cpp -Component soprano_tts
+./tools/sync-audiocpp.ps1 -SourceRoot C:\path\to\audio.cpp -Component cosyvoice3
+./tools/sync-audiocpp.ps1 -SourceRoot C:\path\to\audio.cpp -Component voxcpm2
+./tools/sync-audiocpp.ps1 -SourceRoot C:\path\to\audio.cpp -Component voxcpm1
+./tools/sync-audiocpp.ps1 -SourceRoot C:\path\to\audio.cpp -Component omnivoice
+./tools/sync-audiocpp.ps1 -SourceRoot C:\path\to\audio.cpp -Component breeze_tts
+./tools/sync-audiocpp.ps1 -SourceRoot C:\path\to\audio.cpp -Component ming3_tts
+./tools/sync-audiocpp.ps1 -SourceRoot C:\path\to\audio.cpp -Component neutts
+./tools/sync-audiocpp.ps1 -SourceRoot C:\path\to\audio.cpp -Component qwen3_tts
+./tools/sync-audiocpp.ps1 -SourceRoot C:\path\to\audio.cpp -Component yue2 -ModelSourcesOnly
 ```
 
 The script is intentionally additive: it overwrites files in its explicit
@@ -69,13 +77,40 @@ exact upstream commit cannot be recorded until a real checkout is supplied.
 - `cosyvoice3`: multilingual zero-shot, cross-lingual, and
   instruction-conditioned TTS. Every request uses a reference recording;
   zero-shot mode additionally uses its transcript.
+- `voxcpm2`: multilingual offline TTS, short-reference voice cloning, and
+  voice design. KoboldCpp maps its instruction field to VoxCPM2's native
+  parenthesized text prefix and supports reference transcripts for ultimate
+  cloning.
+- `voxcpm1`: the legacy 0.5B multilingual VoxCPM runtime, with offline TTS
+  and short-reference cloning. It remains a separate community family because
+  its GGUF tensor layout and 16 kHz output differ from VoxCPM2.
+- `omnivoice`: massively multilingual offline TTS, optional short-reference
+  voice cloning, and instruction-driven voice design. Reference transcripts
+  are optional, and VoiceTut-TTS packages use the same runtime.
+- `breeze_tts`: English and Chinese BreezeTTS 2 offline generation, free-form
+  delivery instructions, voice design, and reference-audio cloning. Cloning
+  requires the exact reference transcript. Upstream streaming code remains in
+  the synchronized model but is not exposed through KoboldCpp's offline API.
+- `ming3_tts`: Ming 3.0 TTS 0.5B multilingual offline generation, free-form
+  delivery instructions, voice design, and reference-audio cloning. A
+  reference without a transcript uses CAMPPlus speaker-only conditioning;
+  adding the exact transcript also enables the acoustic latent prompt.
+- `neutts`: NeuTTS 2E English offline generation with nine built-in voices
+  and seven fixed emotion tokens. It does not support reference-audio cloning
+  or free-form delivery instructions. Upstream streaming remains synchronized
+  but is not exposed through KoboldCpp's offline API.
+- `qwen3_tts`: Audio.cpp's single-GGUF Qwen3-TTS runtime alongside the legacy
+  split-file implementation. The embedded checkpoint selects Base voice
+  cloning, CustomVoice packaged speakers, or VoiceDesign instructions. Base
+  cloning automatically uses speaker-embedding-only mode when no reference
+  transcript is supplied.
 - Later candidates should be added only when their framework closure is small
-  and measurable. Existing KoboldCpp Qwen3-TTS, MiniMax H3, ACE-Step, Kokoro,
-  OuteTTS, Parler, Dia, and Orpheus implementations are not imported.
+  and measurable. Existing KoboldCpp MiniMax H3, ACE-Step, Kokoro, OuteTTS,
+  Parler, Dia, and Orpheus implementations are not imported.
 
 The MinGW default and Vulkan DLL targets compile and link with all selected
-models. Runtime output still needs validation with real Soprano and
-CosyVoice3 packages; weights are intentionally not vendored here.
+models. Runtime output for newly imported families still needs validation
+with real packages; weights are intentionally not vendored here.
 
 ## Adapter contract
 
@@ -96,7 +131,10 @@ be supplied directly as JSON arrays.
 Pass `fish-audio-s2-pro-q8_0.gguf` as the normal TTS model. Plain TTS requires
 no other file. For cloning, select a WAV or MP3 from KoboldCpp's voice
 directory. Send `reference_text` containing its transcript when available;
-otherwise KoboldCpp supplies the adapter's neutral fallback transcript.
+otherwise KoboldCpp supplies the adapter's neutral fallback transcript. The
+shared `instruction` field is prepended using Fish S2 Pro's native free-form
+bracket syntax, so `professional broadcast tone` becomes
+`[professional broadcast tone]` before the text.
 
 Pass `maya1-q8_0.gguf` (or `maya1-orig.gguf`) as the normal TTS model. Supply a
 voice description with the existing `instruction` request field; when omitted,
@@ -141,6 +179,74 @@ controls include `top_k`,
 `min_tokens`, `max_tokens`, `num_inference_steps`, and `seed`. Supported target
 languages are Chinese, English, Japanese, Korean, German, Spanish, French,
 Italian, Russian, and Cantonese.
+
+Pass a VoxCPM2 GGUF such as `voxcpm2-q8_0.gguf` as the normal TTS model.
+Plain TTS needs no reference. The existing `instruction` field enables voice
+design and is wrapped in VoxCPM2's native parenthesized prefix. Selecting a
+WAV/MP3 enables voice cloning; supplying its exact `reference_text` enables
+the model's transcript-conditioned ultimate-clone path. Common generation and
+memory controls can be sent through `audiocpp_extra_params_json`.
+
+Pass `voxcpm-0.5b-q8_0-audiovae-f16.gguf` for VoxCPM1. It supports plain
+offline TTS and reference-audio cloning; provide `reference_text` when
+available. VoxCPM1 produces 16 kHz mono output and does not support VoxCPM2
+voice-design instructions.
+
+Pass an OmniVoice GGUF package as the normal TTS model. Plain synthesis needs
+no reference. Selecting a WAV/MP3 enables 24 kHz voice cloning, with an
+optional exact transcript in `reference_text`. KoboldCpp maps its existing
+`instruction` field to OmniVoice's native `instruct` voice-design option.
+Language selection and advanced diffusion, duration, chunking, and sampling
+controls remain available through `audiocpp_extra_params_json`.
+Streaming is intentionally not exposed because upstream implements it as
+text-chunked event delivery rather than a distinct streaming model runtime.
+
+Pass `neutts-2e-orig.gguf` as the normal TTS model. `voice` or `voice_id`
+selects `dave`, `emily`, `greta`, `jo`, `juliette`, `mateo`, `paul`, `sophie`,
+or `steven`; the default is `emily`. The `emotion` request option accepts
+`angry`, `disgusted`, `sad`, `happy`, `fearful`, `neutral`, or `surprised`.
+KoboldCpp aliases `kobo`, `cheery`, `sleepy`, `shouty`, and `chatty` to `paul`,
+`emily`, `sophie`, `steven`, and `jo`, respectively. Emotion remains an
+independent request option. NeuTTS is English-only and does not consume
+reference audio or instructions.
+
+Pass an Audio.cpp Qwen3-TTS GGUF as the normal TTS model. Base checkpoints use
+a selected WAV/MP3 reference and its optional exact `reference_text`; when the
+transcript is absent KoboldCpp enables Audio.cpp's `x_vector_only_mode` speaker
+embedding path. CustomVoice checkpoints accept `aiden`, `serena`, `ono_anna`,
+`ryan`, `sohee`, `eric`, `dylan`, `vivian`, or `uncle_fu` through `voice` or
+`voice_id`, plus the existing instruction field for style control. VoiceDesign
+checkpoints consume that instruction without a reference. All variants produce
+24 kHz mono audio and retain Audio.cpp's sampling controls. The legacy
+`qwen3-tts` architecture and split-file loader remain available unchanged.
+
+Pass a BreezeTTS 2 GGUF package such as `breeze-tts-2-q8_0.gguf` as the
+normal TTS model. KoboldCpp maps its existing `instruction` field to Breeze's
+free-form `instruct` option. Selecting a WAV/MP3 enables cloning and requires
+its exact transcript in `reference_text`. Plain instruction-conditioned voice
+design needs no reference. Breeze produces 24 kHz mono English or Chinese
+audio; sampling and memory controls remain available through
+`audiocpp_extra_params_json`.
+
+Pass a Ming 3.0 TTS 0.5B GGUF package such as
+`ming-3.0-tts-0.5b-q8_0.gguf` as the normal TTS model. Selecting a WAV/MP3
+without `reference_text` uses its transcript-free CAMPPlus speaker embedding;
+adding the exact transcript also supplies Ming's acoustic latent prefix.
+KoboldCpp maps its existing `instruction` field to Ming's `freeform` template
+unless `template_name` is supplied explicitly. Ming produces 44.1 kHz mono
+audio in Chinese, English, Japanese, Korean, German, French, or Spanish.
+
+Pass `sheetsage2-orig.gguf` through the existing `--whispermodel` slot to use
+music-to-ABC transcription instead of Whisper speech-to-text. Both
+`/api/extra/transcribe` and `/v1/audio/transcriptions` return the generated ABC
+in their normal `text` field. The convenience `/api/extra/music/transcribe`
+alias returns the same score as both `text` and `abc`. That ABC can be passed unchanged to
+`/api/extra/music/prepare` for YuE2; `cot=full` retains SheetSage's melody and
+harmonic conditioning, while `cot=melody` requests the melody-only path.
+SheetSage2 decodes input at 24 kHz and defaults to 1024-row attention tiling to
+avoid the model's multi-gigabyte untiled attention allocation. This compatibility
+bridge occupies the transcription slot, so Whisper and SheetSage2 cannot both be
+resident there at once.
 
 ## Intentional compatibility changes
 

@@ -7,7 +7,8 @@ patches listed here. Recheck these after every run of `sync-audiocpp.ps1`.
    key/value configs remain supported; YAML produces an explicit error.
 2. `src/framework/modules/activation_modules.cpp`: replace Audio.cpp's
    unofficial `ggml_round_bf16` operation with a standard F32 -> BF16 -> F32
-   cast sequence.
+   cast sequence. Inputs are first widened to F32 because KoboldCpp's Vulkan
+   backend intentionally has no direct F16 -> BF16 copy kernel.
 3. `src/framework/modules/conv_modules.cpp`: use standard cast, multiply, and
    add graphs instead of Audio.cpp's private BF16-round, fused matmul-accumulate,
    and cuDNN annotation helpers. These are correctness-preserving fallbacks;
@@ -52,6 +53,9 @@ patches listed here. Recheck these after every run of `sync-audiocpp.ps1`.
 17. `src/framework/modules/attention/attention_internal.h`: lower the optional
     CUDA packed-four projection to the ordinary linear path because
     `ggml_mul_mat_pack4` is private to Audio.cpp's GGML fork.
+18. `src/framework/modules/transformers/causal_decoder_runtime.cpp`: replace
+    Audio.cpp's private BF16-round operation with portable F32 -> BF16 -> F32
+    casts. BreezeTTS uses this path to match its reference BF16 activations.
 
 Do not add KCPP adapter behavior to upstream-owned files. Put it in the parent
 directory so upstream refreshes remain reviewable.
