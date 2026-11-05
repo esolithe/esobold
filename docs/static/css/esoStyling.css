@@ -632,13 +632,15 @@
 	
 	#esoGuideContainer .esoGuideBody {
 		text-align: left;
+		overflow: hidden;
 	}
 	
 	.esoGuideLayout {
 		display: flex;
 		gap: 14px;
 		padding: 8px 10px;
-		min-height: 100%;
+		height: 100%;
+		min-height: 0;
 		box-sizing: border-box;
 	}
 	
@@ -649,10 +651,13 @@
 		gap: 2px;
 		padding-right: 10px;
 		border-right: 1px solid var(--theme_color_border);
+		min-height: 0;
+		overflow-y: auto;
 	}
 	
 	.esoGuideToc button {
 		text-align: left;
+		flex-shrink: 0;
 		background: none;
 		border: none;
 		border-radius: 6px;
@@ -672,6 +677,9 @@
 	.esoGuideArticle {
 		flex: 1;
 		min-width: 0;
+		min-height: 0;
+		overflow-y: auto;
+		overflow-wrap: anywhere;
 		color: var(--theme_color_fg);
 	}
 	
@@ -723,6 +731,11 @@
 		margin-bottom: 10px;
 	}
 	
+	.esoGuideRow button {
+		max-width: 100%;
+		white-space: normal;
+	}
+	
 	.esoGuideChapterNav {
 		margin-top: 16px;
 	}
@@ -754,7 +767,7 @@
 		}
 	
 		.esoGuideToc {
-			flex: none;
+			flex: 0 0 30%;
 			flex-direction: row;
 			flex-wrap: wrap;
 			border-right: none;

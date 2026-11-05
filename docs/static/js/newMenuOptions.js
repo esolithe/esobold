@@ -765,7 +765,7 @@ window.addEventListener('load', () => {
     settingLabelElem = createSettingElemBool("agentSkipPlanningStep", "Skip agent planning step", "When enabled, the agent skips the initial plan_actions step and selects commands directly from the user prompt each cycle. The model can either call tools or return direct text. Explicit plans provided by macros still run normally.")
     agentElems.push(settingLabelElem)
 
-    settingLabelElem = createSettingElemRange("agentMaxActionsInHistory", "Maximum actions in history", "Defines the maximum number of previous actions to load into the current context. This value should be higher than the 'Maximum agent actions per plan' option to maintain history.", 0, 100, 1, 30)
+    settingLabelElem = createSettingElemRange("agentMaxActionsInHistory", "Maximum actions in history", "Defines the maximum number of previous actions to load into the current context. This value should be higher than the 'Maximum agent actions per plan' option to maintain history. If turn boundaries are set, this value is ignored.", 0, 100, 1, 30)
     agentElems.push(settingLabelElem)
 
     settingLabelElem = createSettingElemBool("agentSkipPreviousCOTWhenProcessing", "Skip previous COT when processing history", "When enabled, hides previous chain of thought entries during history initialization, similar to 'Hide agent COT' but applied only when loading past actions.")
