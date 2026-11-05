@@ -120,5 +120,22 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload rolling dist/koboldcpp-linux-x64 --clobber --repo ${{ github.repository }}
-          gh release upload rolling dist/koboldcpp-linux-x64-nocuda --clobber --repo ${{ github.repository }}
+          upload_with_retry() {
+            asset="$1"
+            max_attempts=5
+            attempt=1
+            while [ "$attempt" -le "$max_attempts" ]; do
+              if gh release upload rolling "$asset" --clobber --repo ${{ github.repository }}; then
+                return 0
+              fi
+              if [ "$attempt" -eq "$max_attempts" ]; then
+                echo "Failed to upload $asset after $max_attempts attempts."
+                return 1
+              fi
+              echo "Upload failed for $asset (attempt $attempt/$max_attempts). Retrying..."
+              sleep $((attempt * 5))
+              attempt=$((attempt + 1))
+            done
+          }
+          upload_with_retry dist/koboldcpp-linux-x64
+          upload_with_retry dist/koboldcpp-linux-x64-nocuda
