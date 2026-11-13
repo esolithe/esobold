@@ -119,7 +119,6 @@ NONECFLAGS =
 # prefer bundled glslc
 LLAMA_USE_BUNDLED_GLSLC := 1
 
-FAILSAFE_FLAGS = -DUSE_FAILSAFE
 VULKAN_FLAGS = -DGGML_USE_VULKAN
 ifdef LLAMA_CUBLAS
 CUBLAS_FLAGS = -DGGML_USE_CUDA
@@ -133,6 +132,8 @@ OBJS_FULL += ggml-alloc.o ggml-cpu-traits.o ggml-quants.o ggml-cpu-quants.o kcpp
 OBJS_SIMPLE += ggml-alloc.o ggml-cpu-traits.o ggml-quants_noavx2.o ggml-cpu-quants.o kcpp-quantmapper_noavx2.o kcpp-repackmapper_noavx2.o unicode.o unicode-common.o unicode-data.o ggml-threading.o ggml-cpu-cpp.o gguf.o sgemm_noavx2.o common.o common-json.o speculative.o llama-impl.o sampling.o budget.o kcpputils.o kcppllmutils.o mtmdaudio.o ggml-rpc.o transport.o hash.o
 OBJS_SIMPLER += ggml-alloc.o ggml-cpu-traits.o ggml-quants_noavx1.o ggml-cpu-quants.o kcpp-quantmapper_noavx1.o kcpp-repackmapper_noavx1.o unicode.o unicode-common.o unicode-data.o ggml-threading.o ggml-cpu-cpp.o gguf.o sgemm_noavx1.o common.o common-json.o speculative.o llama-impl.o sampling.o budget.o kcpputils.o kcppllmutils.o mtmdaudio.o ggml-rpc.o transport.o hash.o
 OBJS_FAILSAFE += ggml-alloc.o ggml-cpu-traits.o ggml-quants_failsafe.o ggml-cpu-quants.o kcpp-quantmapper_failsafe.o kcpp-repackmapper_failsafe.o unicode.o unicode-common.o unicode-data.o ggml-threading.o ggml-cpu-cpp.o gguf.o sgemm_failsafe.o common.o common-json.o speculative.o llama-impl.o sampling.o budget.o kcpputils.o kcppllmutils.o mtmdaudio.o ggml-rpc.o transport.o hash.o
+
+MTMD_CORE_OBJS = mtmd-model.o mtmd-subcontext.o mtmd-graph.o
 
 # OS specific
 ifeq ($(UNAME_S),Linux)
@@ -550,25 +551,25 @@ $(info )
 ggml.o: ggml/src/ggml.c ggml/include/ggml.h
 	$(CC)  $(CFLAGS) $(FULLCFLAGS) -c $< -o $@
 ggml_v4_failsafe.o: ggml/src/ggml.c ggml/include/ggml.h
-	$(CC)  $(CFLAGS) $(NONECFLAGS) $(FAILSAFE_FLAGS) -c $< -o $@
+	$(CC)  $(CFLAGS) $(NONECFLAGS) -c $< -o $@
 ggml_v4_noavx2.o: ggml/src/ggml.c ggml/include/ggml.h
-	$(CC)  $(CFLAGS) $(SIMPLECFLAGS) $(FAILSAFE_FLAGS) -c $< -o $@
+	$(CC)  $(CFLAGS) $(SIMPLECFLAGS) -c $< -o $@
 ggml_v4_cublas.o: ggml/src/ggml.c ggml/include/ggml.h
 	$(CC)  $(CFLAGS) $(FULLCFLAGS) $(CUBLAS_FLAGS) $(HIPFLAGS) -c $< -o $@
 ggml_v4_vulkan.o: ggml/src/ggml.c ggml/include/ggml.h
 	$(CC)  $(CFLAGS) $(FULLCFLAGS) $(VULKAN_FLAGS) -c $< -o $@
 ggml_v4_vulkan_noavx2.o: ggml/src/ggml.c ggml/include/ggml.h
-	$(CC)  $(CFLAGS) $(SIMPLECFLAGS) $(VULKAN_FLAGS) $(FAILSAFE_FLAGS) -c $< -o $@
+	$(CC)  $(CFLAGS) $(SIMPLECFLAGS) $(VULKAN_FLAGS) -c $< -o $@
 ggml_v4_vulkan_failsafe.o: ggml/src/ggml.c ggml/include/ggml.h
-	$(CC)  $(CFLAGS) $(SIMPLERCFLAGS) $(VULKAN_FLAGS) $(FAILSAFE_FLAGS) -c $< -o $@
+	$(CC)  $(CFLAGS) $(SIMPLERCFLAGS) $(VULKAN_FLAGS) -c $< -o $@
 
 # addon cpu files
 ggml-cpu.o: ggml/src/ggml-cpu/ggml-cpu.c ggml/include/ggml-cpu.h
 	$(CC)  $(CFLAGS) $(FULLCFLAGS) -c $< -o $@
 ggml-cpu_v4_failsafe.o: ggml/src/ggml-cpu/ggml-cpu.c ggml/include/ggml-cpu.h
-	$(CC)  $(CFLAGS) $(NONECFLAGS) $(FAILSAFE_FLAGS) -c $< -o $@
+	$(CC)  $(CFLAGS) $(NONECFLAGS) -c $< -o $@
 ggml-cpu_v4_noavx2.o: ggml/src/ggml-cpu/ggml-cpu.c ggml/include/ggml-cpu.h
-	$(CC)  $(CFLAGS) $(SIMPLECFLAGS) $(FAILSAFE_FLAGS) -c $< -o $@
+	$(CC)  $(CFLAGS) $(SIMPLECFLAGS) -c $< -o $@
 ggml-binops.o: ggml/src/ggml-cpu/binary-ops.cpp ggml/src/ggml-cpu/binary-ops.h ggml/src/ggml-cpu/common.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 ggml-unops.o: ggml/src/ggml-cpu/unary-ops.cpp ggml/src/ggml-cpu/unary-ops.h ggml/src/ggml-cpu/common.h
@@ -576,15 +577,15 @@ ggml-unops.o: ggml/src/ggml-cpu/unary-ops.cpp ggml/src/ggml-cpu/unary-ops.h ggml
 ggml-ops.o: ggml/src/ggml-cpu/ops.cpp ggml/src/ggml-cpu/ops.h
 	$(CXX) $(CXXFLAGS) $(FULLCFLAGS) -c $< -o $@
 ggml-ops-noavx2.o: ggml/src/ggml-cpu/ops.cpp ggml/src/ggml-cpu/ops.h
-	$(CXX) $(CXXFLAGS) $(SIMPLECFLAGS) $(FAILSAFE_FLAGS) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(SIMPLECFLAGS) -c $< -o $@
 ggml-ops-failsafe.o: ggml/src/ggml-cpu/ops.cpp ggml/src/ggml-cpu/ops.h
-	$(CXX) $(CXXFLAGS) $(NONECFLAGS) $(FAILSAFE_FLAGS) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(NONECFLAGS) -c $< -o $@
 ggml-vec.o: ggml/src/ggml-cpu/vec.cpp ggml/src/ggml-cpu/vec.h
 	$(CXX) $(CXXFLAGS) $(FULLCFLAGS) -c $< -o $@
 ggml-vec-noavx2.o: ggml/src/ggml-cpu/vec.cpp ggml/src/ggml-cpu/vec.h
-	$(CXX) $(CXXFLAGS) $(SIMPLECFLAGS) $(FAILSAFE_FLAGS) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(SIMPLECFLAGS) -c $< -o $@
 ggml-vec-failsafe.o: ggml/src/ggml-cpu/vec.cpp ggml/src/ggml-cpu/vec.h
-	$(CXX) $(CXXFLAGS) $(NONECFLAGS) $(FAILSAFE_FLAGS) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(NONECFLAGS) -c $< -o $@
 ggml-tiled.o: ggml/src/ggml-cpu/tiled/tiled.cpp ggml/src/ggml-cpu/tiled/tiled.h ggml/src/ggml-cpu/tiled/tiled-kernel.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 ggml-tiled-kernel.o: ggml/src/ggml-cpu/tiled/tiled-kernel.cpp ggml/src/ggml-cpu/tiled/tiled-kernel.h
@@ -594,11 +595,11 @@ ggml-tiled-kernel.o: ggml/src/ggml-cpu/tiled/tiled-kernel.cpp ggml/src/ggml-cpu/
 ggml-quants.o: ggml/src/ggml-quants.c ggml/include/ggml.h ggml/src/ggml-quants.h ggml/src/ggml-common.h
 	$(CC)  $(CFLAGS) $(FULLCFLAGS) -c $< -o $@
 ggml-quants_noavx2.o: ggml/src/ggml-quants.c ggml/include/ggml.h ggml/src/ggml-quants.h ggml/src/ggml-common.h
-	$(CC)  $(CFLAGS) $(SIMPLECFLAGS) $(FAILSAFE_FLAGS) -c $< -o $@
+	$(CC)  $(CFLAGS) $(SIMPLECFLAGS) -c $< -o $@
 ggml-quants_noavx1.o: ggml/src/ggml-quants.c ggml/include/ggml.h ggml/src/ggml-quants.h ggml/src/ggml-common.h
-	$(CC)  $(CFLAGS) $(SIMPLERCFLAGS) $(FAILSAFE_FLAGS) -c $< -o $@
+	$(CC)  $(CFLAGS) $(SIMPLERCFLAGS) -c $< -o $@
 ggml-quants_failsafe.o: ggml/src/ggml-quants.c ggml/include/ggml.h ggml/src/ggml-quants.h ggml/src/ggml-common.h
-	$(CC)  $(CFLAGS) $(NONECFLAGS) $(FAILSAFE_FLAGS) -c $< -o $@
+	$(CC)  $(CFLAGS) $(NONECFLAGS) -c $< -o $@
 
 #cpu quants
 ggml-cpu-quants.o: ggml/src/ggml-cpu/quants.c ggml/include/ggml.h ggml/src/ggml-cpu/quants.h ggml/src/ggml-common.h
@@ -606,11 +607,11 @@ ggml-cpu-quants.o: ggml/src/ggml-cpu/quants.c ggml/include/ggml.h ggml/src/ggml-
 kcpp-quantmapper.o: ggml/src/ggml-cpu/kcpp-quantmapper.c
 	$(CC)  $(CFLAGS) $(FULLCFLAGS) -c $< -o $@
 kcpp-quantmapper_noavx2.o: ggml/src/ggml-cpu/kcpp-quantmapper.c
-	$(CC)  $(CFLAGS) $(SIMPLECFLAGS) $(FAILSAFE_FLAGS) -c $< -o $@
+	$(CC)  $(CFLAGS) $(SIMPLECFLAGS) -c $< -o $@
 kcpp-quantmapper_noavx1.o: ggml/src/ggml-cpu/kcpp-quantmapper.c
-	$(CC)  $(CFLAGS) $(SIMPLERCFLAGS) $(FAILSAFE_FLAGS) -c $< -o $@
+	$(CC)  $(CFLAGS) $(SIMPLERCFLAGS) -c $< -o $@
 kcpp-quantmapper_failsafe.o: ggml/src/ggml-cpu/kcpp-quantmapper.c
-	$(CC)  $(CFLAGS) $(NONECFLAGS) $(FAILSAFE_FLAGS) -c $< -o $@
+	$(CC)  $(CFLAGS) $(NONECFLAGS) -c $< -o $@
 
 #aarch64 repack
 ggml-repack.o: ggml/src/ggml-cpu/repack.cpp ggml/include/ggml.h ggml/src/ggml-cpu/repack.h
@@ -618,21 +619,21 @@ ggml-repack.o: ggml/src/ggml-cpu/repack.cpp ggml/include/ggml.h ggml/src/ggml-cp
 kcpp-repackmapper.o: ggml/src/ggml-cpu/kcpp-repackmapper.cpp
 	$(CXX) $(CXXFLAGS) $(FULLCFLAGS) -c $< -o $@
 kcpp-repackmapper_noavx2.o: ggml/src/ggml-cpu/kcpp-repackmapper.cpp
-	$(CXX) $(CXXFLAGS) $(SIMPLECFLAGS) $(FAILSAFE_FLAGS) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(SIMPLECFLAGS) -c $< -o $@
 kcpp-repackmapper_noavx1.o: ggml/src/ggml-cpu/kcpp-repackmapper.cpp
-	$(CXX) $(CXXFLAGS) $(SIMPLERCFLAGS) $(FAILSAFE_FLAGS) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(SIMPLERCFLAGS) -c $< -o $@
 kcpp-repackmapper_failsafe.o: ggml/src/ggml-cpu/kcpp-repackmapper.cpp
-	$(CXX) $(CXXFLAGS) $(NONECFLAGS) $(FAILSAFE_FLAGS) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(NONECFLAGS) -c $< -o $@
 
 #sgemm
 sgemm.o: ggml/src/ggml-cpu/llamafile/sgemm.cpp ggml/src/ggml-cpu/llamafile/sgemm.h ggml/include/ggml.h
 	$(CXX) $(CXXFLAGS) $(FULLCFLAGS) -c $< -o $@
 sgemm_noavx2.o: ggml/src/ggml-cpu/llamafile/sgemm.cpp ggml/src/ggml-cpu/llamafile/sgemm.h ggml/include/ggml.h
-	$(CXX) $(CXXFLAGS) $(SIMPLECFLAGS) $(FAILSAFE_FLAGS) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(SIMPLECFLAGS) -c $< -o $@
 sgemm_noavx1.o: ggml/src/ggml-cpu/llamafile/sgemm.cpp ggml/src/ggml-cpu/llamafile/sgemm.h ggml/include/ggml.h
-	$(CXX) $(CXXFLAGS) $(SIMPLERCFLAGS) $(FAILSAFE_FLAGS) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(SIMPLERCFLAGS) -c $< -o $@
 sgemm_failsafe.o: ggml/src/ggml-cpu/llamafile/sgemm.cpp ggml/src/ggml-cpu/llamafile/sgemm.h ggml/include/ggml.h
-	$(CXX) $(CXXFLAGS) $(NONECFLAGS) $(FAILSAFE_FLAGS) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(NONECFLAGS) -c $< -o $@
 
 #there's no intrinsics or special gpu ops used here, so we can have a universal object
 ggml-alloc.o: ggml/src/ggml-alloc.c ggml/include/ggml.h ggml/include/ggml-alloc.h
@@ -679,7 +680,11 @@ ggml-backend-reg_vulkan.o: ggml/src/ggml-backend-reg.cpp ggml/src/ggml-backend-i
 	$(CXX)  $(CXXFLAGS) $(VULKAN_FLAGS) -c $< -o $@
 ggml-backend-reg_cublas.o: ggml/src/ggml-backend-reg.cpp ggml/src/ggml-backend-impl.h ggml/include/ggml.h ggml/include/ggml-backend.h ggml/include/ggml-cpu.h
 	$(CXX)  $(CXXFLAGS) $(CUBLAS_FLAGS) $(HIPFLAGS) -c $< -o $@
-clip_default.o: tools/mtmd/clip.cpp tools/mtmd/clip.h
+mtmd-model.o: tools/mtmd/mtmd-model.cpp tools/mtmd/mtmd-model.h tools/mtmd/mtmd-impl.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+mtmd-subcontext.o: tools/mtmd/mtmd-subcontext.cpp tools/mtmd/mtmd-subcontext.h tools/mtmd/mtmd-graph.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+mtmd-graph.o: tools/mtmd/mtmd-graph.cpp tools/mtmd/mtmd-graph.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 #rpc
@@ -696,9 +701,9 @@ ggml-blas.o: ggml/src/ggml-blas/ggml-blas.cpp ggml/include/ggml-blas.h
 ggml_v3.o: otherarch/ggml_v3.c otherarch/ggml_v3.h
 	$(CC)  $(FASTCFLAGS) $(FULLCFLAGS) -c $< -o $@
 ggml_v3_failsafe.o: otherarch/ggml_v3.c otherarch/ggml_v3.h
-	$(CC)  $(FASTCFLAGS) $(NONECFLAGS) $(FAILSAFE_FLAGS) -c $< -o $@
+	$(CC)  $(FASTCFLAGS) $(NONECFLAGS) -c $< -o $@
 ggml_v3_noavx2.o: otherarch/ggml_v3.c otherarch/ggml_v3.h
-	$(CC)  $(FASTCFLAGS) $(SIMPLECFLAGS) $(FAILSAFE_FLAGS) -c $< -o $@
+	$(CC)  $(FASTCFLAGS) $(SIMPLECFLAGS) -c $< -o $@
 ggml_v3_cublas.o: otherarch/ggml_v3.c otherarch/ggml_v3.h
 	$(CC)  $(FASTCFLAGS) $(FULLCFLAGS) $(CUBLAS_FLAGS) $(HIPFLAGS) -c $< -o $@
 
@@ -706,9 +711,9 @@ ggml_v3_cublas.o: otherarch/ggml_v3.c otherarch/ggml_v3.h
 ggml_v2.o: otherarch/ggml_v2.c otherarch/ggml_v2.h
 	$(CC)  $(FASTCFLAGS) $(FULLCFLAGS) -c $< -o $@
 ggml_v2_failsafe.o: otherarch/ggml_v2.c otherarch/ggml_v2.h
-	$(CC)  $(FASTCFLAGS) $(NONECFLAGS) $(FAILSAFE_FLAGS) -c $< -o $@
+	$(CC)  $(FASTCFLAGS) $(NONECFLAGS) -c $< -o $@
 ggml_v2_noavx2.o: otherarch/ggml_v2.c otherarch/ggml_v2.h
-	$(CC)  $(FASTCFLAGS) $(SIMPLECFLAGS) $(FAILSAFE_FLAGS) -c $< -o $@
+	$(CC)  $(FASTCFLAGS) $(SIMPLECFLAGS) -c $< -o $@
 ggml_v2_cublas.o: otherarch/ggml_v2.c otherarch/ggml_v2.h
 	$(CC)  $(FASTCFLAGS) $(FULLCFLAGS) $(CUBLAS_FLAGS) $(HIPFLAGS) -c $< -o $@
 
@@ -719,11 +724,15 @@ ggml_v1_failsafe.o: otherarch/ggml_v1.c otherarch/ggml_v1.h
 	$(CC)  $(FASTCFLAGS) $(NONECFLAGS) -c $< -o $@
 
 #vulkan
-ggml-vulkan.o: ggml/src/ggml-vulkan/ggml-vulkan.cpp ggml/include/ggml-vulkan.h $(VKGEN_CPP)
+# ggml-vulkan.cpp textually includes these implementation files, so make must
+# rebuild the object whenever any of them changes.
+GGML_VULKAN_INCLUDED_SRCS = ggml/src/ggml-vulkan/ggml-vulkan-common.h ggml/src/ggml-vulkan/ggml-vulkan-buffers.cpp ggml/src/ggml-vulkan/ggml-vulkan-debug.cpp ggml/src/ggml-vulkan/ggml-vulkan-comm.cpp
+
+ggml-vulkan.o: ggml/src/ggml-vulkan/ggml-vulkan.cpp ggml/include/ggml-vulkan.h $(GGML_VULKAN_INCLUDED_SRCS) $(VKGEN_CPP) Makefile
 	$(CXX) $(CXXFLAGS) $(VKGEN_NOEXT_ADD) $(VULKAN_FLAGS) -c $< -o $@
 ggml-vulkan-shaders.o: $(VKGEN_CPP) ggml/include/ggml-vulkan.h
 	$(CXX) $(CXXFLAGS) $(VKGEN_NOEXT_ADD) $(VULKAN_FLAGS) -c $< -o $@
-ggml-vulkan-noext.o: ggml/src/ggml-vulkan/ggml-vulkan.cpp ggml/include/ggml-vulkan.h ggml/src/ggml-vulkan-shaders-noext.cpp
+ggml-vulkan-noext.o: ggml/src/ggml-vulkan/ggml-vulkan.cpp ggml/include/ggml-vulkan.h $(GGML_VULKAN_INCLUDED_SRCS) ggml/src/ggml-vulkan-shaders-noext.cpp Makefile
 	$(CXX) $(CXXFLAGS) $(VKGEN_NOEXT_FORCE) $(VULKAN_FLAGS) -c $< -o $@
 ggml-vulkan-shaders-noext.o: ggml/src/ggml-vulkan-shaders-noext.cpp ggml/include/ggml-vulkan.h
 	$(CXX) $(CXXFLAGS) $(VKGEN_NOEXT_FORCE) $(VULKAN_FLAGS) -c $< -o $@
@@ -830,7 +839,7 @@ LLAMASERVER_CXXFLAGS := -I./tools/mtmd
 
 
 #whisper objects
-whispercpp_default.o: otherarch/whispercpp/whisper_adapter.cpp otherarch/whispercpp/whisper.cpp kcpp_src/kcpp_backend.h
+whispercpp_default.o: otherarch/whispercpp/whisper_adapter.cpp otherarch/whispercpp/whisper.cpp kcpp_src/kcpp_backend.h otherarch/audiocpp/upstream/generated/kcpp_transcription_registry_headers.inc otherarch/audiocpp/upstream/generated/kcpp_transcription_registry_loaders.inc
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 # Audio.cpp sources as one integration unit.
@@ -867,12 +876,12 @@ music_default.o: otherarch/acestep/music_adapter.cpp
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 # idiotic "for easier compilation"
-GPTTYPE_ADAPTER = kcpp_src/gpttype_adapter.cpp kcpp_src/kcpp_backend.h kcpp_src/model_adapter.h otherarch/otherarch.h include/llama.h otherarch/llama_v2.cpp otherarch/llama_v3.cpp otherarch/gptj_v1.cpp otherarch/gptj_v2.cpp otherarch/gptj_v3.cpp otherarch/gpt2_v1.cpp otherarch/gpt2_v2.cpp otherarch/gpt2_v3.cpp otherarch/rwkv_v2.cpp otherarch/rwkv_v3.cpp otherarch/neox_v2.cpp otherarch/neox_v3.cpp otherarch/mpt_v3.cpp
+GPTTYPE_ADAPTER = kcpp_src/gpttype_adapter.cpp kcpp_src/kcpp_backend.h kcpp_src/model_adapter.h otherarch/otherarch.h include/llama.h otherarch/llama-util.h otherarch/llama_v2-util.h otherarch/llama_v2.cpp otherarch/llama_v3.cpp otherarch/gptj_v1.cpp otherarch/gptj_v2.cpp otherarch/gptj_v3.cpp otherarch/gpt2_v1.cpp otherarch/gpt2_v2.cpp otherarch/gpt2_v3.cpp otherarch/rwkv_v2.cpp otherarch/rwkv_v3.cpp otherarch/neox_v2.cpp otherarch/neox_v3.cpp otherarch/mpt_v3.cpp
 gpttype_adapter_default.o: $(GPTTYPE_ADAPTER) common/fit.h otherarch/webp_image.h vendor/tinylibwebp/src/webp/decode.h
 	$(CXX) -I./vendor/tinylibwebp/src $(CXXFLAGS) -c $< -o $@
 
 kcpp_backend_failsafe.o: kcpp_src/kcpp_backend.cpp kcpp_src/kcpp_backend.h
-	$(CXX) $(CXXFLAGS) $(FAILSAFE_FLAGS) -c $< -o $@
+	$(CXX) $(CXXFLAGS) -c $< -o $@
 kcpp_backend_default.o: kcpp_src/kcpp_backend.cpp kcpp_src/kcpp_backend.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 kcpp_backend_cublas.o: kcpp_src/kcpp_backend.cpp kcpp_src/kcpp_backend.h
@@ -880,7 +889,7 @@ kcpp_backend_cublas.o: kcpp_src/kcpp_backend.cpp kcpp_src/kcpp_backend.h
 kcpp_backend_vulkan.o: kcpp_src/kcpp_backend.cpp kcpp_src/kcpp_backend.h
 	$(CXX) $(CXXFLAGS) $(VULKAN_FLAGS) -c $< -o $@
 kcpp_backend_vulkan_noavx2.o: kcpp_src/kcpp_backend.cpp kcpp_src/kcpp_backend.h
-	$(CXX) $(CXXFLAGS) $(FAILSAFE_FLAGS) $(VULKAN_FLAGS) -c $< -o $@
+	$(CXX) $(CXXFLAGS) $(VULKAN_FLAGS) -c $< -o $@
 
 clean:
 	rm -vf *.o main ttsmain sdmain sdmain-vulkan whispermain quantize_gguf quantize_gpt2 quantize_gptj quantize_neox quantize_mpt vulkan-shaders-gen vulkan-shaders-gen-noext gguf-split mtmd-cli mainvk fitparams embedding embeddingvk qwen3tts rpcserver llamaserver llamaservervk rpcserver.exe llamaserver.exe llamaservervk.exe qwen3tts.exe embeddingvk.exe embedding.exe fitparams.exe mainvk.exe mtmd-cli.exe gguf-split.exe vulkan-shaders-gen.exe vulkan-shaders-gen-noext.exe main.exe ttsmain.exe sdmain.exe sdmain-vulkan.exe whispermain.exe quantize_gguf.exe quantize_gptj.exe quantize_gpt2.exe quantize_neox.exe quantize_mpt.exe koboldcpp_common.dll koboldcpp_backend.def koboldcpp_backend.dll.a koboldcpp_default.dll.a koboldcpp_vulkan_shaders.dll.a koboldcpp_vulkan_noext_shaders.dll.a koboldcpp_default.dll koboldcpp_failsafe.dll koboldcpp_noavx2.dll koboldcpp_vulkan_failsafe.dll koboldcpp_cublas.dll koboldcpp_hipblas.dll koboldcpp_vulkan.dll koboldcpp_vulkan_noavx2.dll koboldcpp_vulkan_shaders.dll koboldcpp_vulkan_noext_shaders.dll koboldcpp_common.so koboldcpp_default.so koboldcpp_failsafe.so koboldcpp_macos_failsafe.so koboldcpp_noavx2.so koboldcpp_vulkan_failsafe.so koboldcpp_cublas.so koboldcpp_hipblas.so koboldcpp_vulkan.so koboldcpp_vulkan_noavx2.so koboldcpp_vulkan_shaders.so koboldcpp_vulkan_noext_shaders.so ggml/src/ggml-vulkan-shaders.cpp ggml/src/ggml-vulkan-shaders.hpp ggml/src/ggml-vulkan-shaders-noext.cpp ggml/src/ggml-vulkan-shaders-noext.hpp
@@ -892,37 +901,37 @@ clean:
 	rm -vf otherarch/sdcpp/*.o otherarch/sdcpp/*/*.o otherarch/sdcpp/*/*/*.o otherarch/sdcpp/*/*/*/*.o
 
 # useful tools
-main: tools/completion/main.cpp tools/completion/completion.cpp common/arg.cpp common/preset.cpp $(COMMON_DOWNLOAD_SRCS) build-info.h ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o console.o clip_default.o mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
+main: tools/completion/main.cpp tools/completion/completion.cpp common/arg.cpp common/preset.cpp $(COMMON_DOWNLOAD_SRCS) build-info.h ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o console.o $(MTMD_CORE_OBJS) mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
 	$(CXX) $(CXXFLAGS) $(filter-out %.h,$^) -o $@ $(LDFLAGS)
-mainvk: tools/completion/main.cpp tools/completion/completion.cpp common/arg.cpp common/preset.cpp $(COMMON_DOWNLOAD_SRCS) build-info.h ggml_v4_vulkan.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o console.o clip_default.o mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_vulkan.o ggml-vulkan.o ggml-vulkan-shaders.o ggml-repack.o $(OBJS_FULL) $(OBJS)
+mainvk: tools/completion/main.cpp tools/completion/completion.cpp common/arg.cpp common/preset.cpp $(COMMON_DOWNLOAD_SRCS) build-info.h ggml_v4_vulkan.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o console.o $(MTMD_CORE_OBJS) mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_vulkan.o ggml-vulkan.o ggml-vulkan-shaders.o ggml-repack.o $(OBJS_FULL) $(OBJS)
 	$(CXX) $(CXXFLAGS) -DGGML_USE_VULKAN $(filter-out %.h,$^) $(VULKAN_LIB) -o $@ $(LDFLAGS)
-fitparams: tools/fit-params/main.cpp tools/fit-params/fit-params.cpp common/arg.cpp common/preset.cpp $(COMMON_DOWNLOAD_SRCS) build-info.h ggml_v4_vulkan.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o console.o clip_default.o mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_vulkan.o ggml-vulkan.o ggml-vulkan-shaders.o ggml-repack.o $(OBJS_FULL) $(OBJS)
+fitparams: tools/fit-params/main.cpp tools/fit-params/fit-params.cpp common/arg.cpp common/preset.cpp $(COMMON_DOWNLOAD_SRCS) build-info.h ggml_v4_vulkan.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o console.o $(MTMD_CORE_OBJS) mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_vulkan.o ggml-vulkan.o ggml-vulkan-shaders.o ggml-repack.o $(OBJS_FULL) $(OBJS)
 	$(CXX) $(CXXFLAGS) -DGGML_USE_VULKAN $(filter-out %.h,$^) $(VULKAN_LIB) -o $@ $(LDFLAGS)
-sdmain: $(OBJS_SDCOMMON) $(OBJS_SDMAIN) build-info.h ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o console.o clip_default.o mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
+sdmain: $(OBJS_SDCOMMON) $(OBJS_SDMAIN) build-info.h ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o console.o $(MTMD_CORE_OBJS) mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
 	$(CXX) $(CXXFLAGS) $(filter-out %.h,$^) -o $@ $(LDFLAGS)
-sdmain-vulkan: $(OBJS_SDCOMMON) $(OBJS_SDMAIN) build-info.h ggml_v4_vulkan.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o console.o clip_default.o mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_vulkan.o ggml-vulkan.o ggml-vulkan-shaders.o ggml-repack.o $(OBJS_FULL) $(OBJS)
+sdmain-vulkan: $(OBJS_SDCOMMON) $(OBJS_SDMAIN) build-info.h ggml_v4_vulkan.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o console.o $(MTMD_CORE_OBJS) mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_vulkan.o ggml-vulkan.o ggml-vulkan-shaders.o ggml-repack.o $(OBJS_FULL) $(OBJS)
 	$(CXX) $(CXXFLAGS) -DGGML_USE_VULKAN $(filter-out %.h,$^) $(VULKAN_LIB) -o $@ $(LDFLAGS)
-whispermain: otherarch/whispercpp/main.cpp otherarch/whispercpp/whisper.cpp kcpp_src/kcpp_backend.h kcpp_backend_default.o build-info.h ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o console.o clip_default.o mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
+whispermain: otherarch/whispercpp/main.cpp otherarch/whispercpp/whisper.cpp kcpp_src/kcpp_backend.h kcpp_backend_default.o build-info.h ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o console.o $(MTMD_CORE_OBJS) mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
 	$(CXX) $(CXXFLAGS) $(filter-out %.h,$^) -o $@ $(LDFLAGS)
-ttsmain: tools/tts/tts.cpp common/arg.cpp common/preset.cpp $(COMMON_DOWNLOAD_SRCS) build-info.h ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o console.o clip_default.o mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
+ttsmain: tools/tts/tts.cpp common/arg.cpp common/preset.cpp $(COMMON_DOWNLOAD_SRCS) build-info.h ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o console.o $(MTMD_CORE_OBJS) mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
 	$(CXX) $(CXXFLAGS) $(filter-out %.h,$^) -o $@ $(LDFLAGS)
-gguf-split: tools/gguf-split/gguf-split.cpp ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o build-info.h clip_default.o mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
+gguf-split: tools/gguf-split/gguf-split.cpp ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o build-info.h $(MTMD_CORE_OBJS) mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
 	$(CXX) $(CXXFLAGS) $(filter-out %.h,$^) -o $@ $(LDFLAGS)
-mtmd-cli: tools/mtmd/mtmd-cli.cpp tools/mtmd/clip.cpp common/debug.cpp common/arg.cpp common/preset.cpp $(COMMON_DOWNLOAD_SRCS) build-info.h mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o console.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
+mtmd-cli: tools/mtmd/mtmd-cli.cpp $(MTMD_CORE_OBJS) common/debug.cpp common/arg.cpp common/preset.cpp $(COMMON_DOWNLOAD_SRCS) build-info.h mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o console.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
 	$(CXX) $(CXXFLAGS) $(filter-out %.h,$^) -o $@ $(LDFLAGS)
-embedding: examples/embedding/embedding.cpp common/arg.cpp common/preset.cpp $(COMMON_DOWNLOAD_SRCS) src/llama-cparams.cpp build-info.h ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o console.o clip_default.o mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
+embedding: examples/embedding/embedding.cpp common/arg.cpp common/preset.cpp $(COMMON_DOWNLOAD_SRCS) src/llama-cparams.cpp build-info.h ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o console.o $(MTMD_CORE_OBJS) mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
 	$(CXX) $(CXXFLAGS) $(filter-out %.h,$^) -o $@ $(LDFLAGS)
-embeddingvk: examples/embedding/embedding.cpp common/arg.cpp common/preset.cpp $(COMMON_DOWNLOAD_SRCS) src/llama-cparams.cpp build-info.h ggml_v4_vulkan.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o console.o clip_default.o mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_vulkan.o ggml-vulkan.o ggml-vulkan-shaders.o ggml-repack.o $(OBJS_FULL) $(OBJS)
+embeddingvk: examples/embedding/embedding.cpp common/arg.cpp common/preset.cpp $(COMMON_DOWNLOAD_SRCS) src/llama-cparams.cpp build-info.h ggml_v4_vulkan.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o console.o $(MTMD_CORE_OBJS) mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_vulkan.o ggml-vulkan.o ggml-vulkan-shaders.o ggml-repack.o $(OBJS_FULL) $(OBJS)
 	$(CXX) $(CXXFLAGS) -DGGML_USE_VULKAN $(filter-out %.h,$^) $(VULKAN_LIB) -o $@ $(LDFLAGS)
-ttscppmain: otherarch/ttscpp/cli/cli.cpp otherarch/ttscpp/cli/playback.cpp otherarch/ttscpp/cli/playback.h otherarch/ttscpp/cli/write_file.cpp otherarch/ttscpp/cli/write_file.h otherarch/ttscpp/cli/vad.cpp otherarch/ttscpp/cli/vad.h otherarch/ttscpp/src/ttscpp.cpp otherarch/ttscpp/src/ttstokenizer.cpp otherarch/ttscpp/src/ttssampler.cpp otherarch/ttscpp/src/parler_model.cpp otherarch/ttscpp/src/dac_model.cpp otherarch/ttscpp/src/ttsutil.cpp otherarch/ttscpp/src/ttsargs.cpp otherarch/ttscpp/src/ttst5_encoder_model.cpp otherarch/ttscpp/src/phonemizer.cpp otherarch/ttscpp/src/tts_model.cpp otherarch/ttscpp/src/kokoro_model.cpp otherarch/ttscpp/src/dia_model.cpp otherarch/ttscpp/src/orpheus_model.cpp otherarch/ttscpp/src/snac_model.cpp otherarch/ttscpp/src/general_neural_audio_codec.cpp ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o console.o clip_default.o mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
+ttscppmain: otherarch/ttscpp/cli/cli.cpp otherarch/ttscpp/cli/playback.cpp otherarch/ttscpp/cli/playback.h otherarch/ttscpp/cli/write_file.cpp otherarch/ttscpp/cli/write_file.h otherarch/ttscpp/cli/vad.cpp otherarch/ttscpp/cli/vad.h otherarch/ttscpp/src/ttscpp.cpp otherarch/ttscpp/src/ttstokenizer.cpp otherarch/ttscpp/src/ttssampler.cpp otherarch/ttscpp/src/parler_model.cpp otherarch/ttscpp/src/dac_model.cpp otherarch/ttscpp/src/ttsutil.cpp otherarch/ttscpp/src/ttsargs.cpp otherarch/ttscpp/src/ttst5_encoder_model.cpp otherarch/ttscpp/src/phonemizer.cpp otherarch/ttscpp/src/tts_model.cpp otherarch/ttscpp/src/kokoro_model.cpp otherarch/ttscpp/src/dia_model.cpp otherarch/ttscpp/src/orpheus_model.cpp otherarch/ttscpp/src/snac_model.cpp otherarch/ttscpp/src/general_neural_audio_codec.cpp ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o console.o $(MTMD_CORE_OBJS) mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
 	$(CXX) $(CXXFLAGS) $(filter-out %.h,$^) -o $@ $(LDFLAGS)
-qwen3tts: otherarch/qwen3tts/q3ttsmain.cpp otherarch/qwen3tts/qwen3_tts.cpp otherarch/qwen3tts/text_tokenizer.cpp otherarch/qwen3tts/gguf_loader.cpp otherarch/qwen3tts/tts_transformer.cpp otherarch/qwen3tts/audio_tokenizer_decoder.cpp otherarch/qwen3tts/audio_tokenizer_encoder.cpp otherarch/qwen3tts/coreml_code_predictor_stub.cpp ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o console.o clip_default.o mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
+qwen3tts: otherarch/qwen3tts/q3ttsmain.cpp otherarch/qwen3tts/qwen3_tts.cpp otherarch/qwen3tts/text_tokenizer.cpp otherarch/qwen3tts/gguf_loader.cpp otherarch/qwen3tts/tts_transformer.cpp otherarch/qwen3tts/audio_tokenizer_decoder.cpp otherarch/qwen3tts/audio_tokenizer_encoder.cpp otherarch/qwen3tts/coreml_code_predictor_stub.cpp ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o console.o $(MTMD_CORE_OBJS) mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
 	$(CXX) $(CXXFLAGS) $(filter-out %.h,$^) -o $@ $(LDFLAGS)
-rpcserver: tools/rpc/rpc-server.cpp common/arg.cpp common/preset.cpp $(COMMON_DOWNLOAD_SRCS) build-info.h ggml_v4_vulkan.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o console.o clip_default.o mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_vulkan.o ggml-vulkan.o ggml-vulkan-shaders.o ggml-repack.o $(OBJS_FULL) $(OBJS)
+rpcserver: tools/rpc/rpc-server.cpp common/arg.cpp common/preset.cpp $(COMMON_DOWNLOAD_SRCS) build-info.h ggml_v4_vulkan.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o console.o $(MTMD_CORE_OBJS) mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_vulkan.o ggml-vulkan.o ggml-vulkan-shaders.o ggml-repack.o $(OBJS_FULL) $(OBJS)
 	$(CXX) $(CXXFLAGS) -DGGML_USE_VULKAN $(filter-out %.h,$^) $(VULKAN_LIB) -o $@ $(LDFLAGS)
-llamaserver: $(LLAMASERVER_SRCS) $(LLAMASERVER_COMMON_SRCS) build-info.h ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o console.o clip_default.o mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
+llamaserver: $(LLAMASERVER_SRCS) $(LLAMASERVER_COMMON_SRCS) build-info.h ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o console.o $(MTMD_CORE_OBJS) mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
 	$(CXX) $(CXXFLAGS) $(LLAMASERVER_CXXFLAGS) $(filter-out %.h,$^) -o $@ $(LDFLAGS)
-llamaservervk: $(LLAMASERVER_SRCS) $(LLAMASERVER_COMMON_SRCS) build-info.h ggml_v4_vulkan.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o console.o clip_default.o mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_vulkan.o ggml-vulkan.o ggml-vulkan-shaders.o ggml-repack.o $(OBJS_FULL) $(OBJS)
+llamaservervk: $(LLAMASERVER_SRCS) $(LLAMASERVER_COMMON_SRCS) build-info.h ggml_v4_vulkan.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o console.o $(MTMD_CORE_OBJS) mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_vulkan.o ggml-vulkan.o ggml-vulkan-shaders.o ggml-repack.o $(OBJS_FULL) $(OBJS)
 	$(CXX) $(CXXFLAGS) $(LLAMASERVER_CXXFLAGS) -DGGML_USE_VULKAN $(filter-out %.h,$^) $(VULKAN_LIB) -o $@ $(LDFLAGS)
 
 ggml/src/ggml-vulkan-shaders.cpp: ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
@@ -1019,7 +1028,7 @@ endif
 # High-level objects are identical for every MinGW/Linux variant.  Keep these in
 # one shared library; the selected low-level variant supplies the GGML, CPU ISA,
 # legacy GGML and GPU symbols used by this code.
-KOBOLDCPP_ENGINE_HIGHLEVEL_OBJS = gpttype_adapter_default.o whispercpp_default.o clip_default.o expose.o chat.o llama.o llama-model.o embeddings_default.o music_default.o tts_default.o $(OBJS_AUDIOCPP) mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o $(OBJS_SDTYPE) $(LIB_TINYLIBWEBP)
+KOBOLDCPP_ENGINE_HIGHLEVEL_OBJS = gpttype_adapter_default.o whispercpp_default.o $(MTMD_CORE_OBJS) expose.o chat.o llama.o llama-model.o embeddings_default.o music_default.o tts_default.o $(OBJS_AUDIOCPP) mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o $(OBJS_SDTYPE) $(LIB_TINYLIBWEBP)
 
 # This is the invariant subset that used to be repeated verbatim in OBJS_FULL,
 # OBJS_SIMPLE, OBJS_SIMPLER and OBJS_FAILSAFE.
@@ -1267,17 +1276,17 @@ endif
 endif # KCPP_COMMONIZE
 
 # tools
-quantize_gguf: tools/quantize/main.cpp tools/quantize/quantize.cpp common/imatrix-loader.cpp ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o clip_default.o mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
+quantize_gguf: tools/quantize/main.cpp tools/quantize/quantize.cpp common/imatrix-loader.cpp ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o $(MTMD_CORE_OBJS) mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
-quantize_gptj: otherarch/tools/gptj_quantize.cpp otherarch/tools/common-ggml.cpp ggml_v3.o ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o clip_default.o mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
+quantize_gptj: otherarch/tools/gptj_quantize.cpp otherarch/tools/common-ggml.cpp ggml_v3.o ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o $(MTMD_CORE_OBJS) mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
-quantize_gpt2: otherarch/tools/gpt2_quantize.cpp otherarch/tools/common-ggml.cpp ggml_v3.o ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o clip_default.o mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
+quantize_gpt2: otherarch/tools/gpt2_quantize.cpp otherarch/tools/common-ggml.cpp ggml_v3.o ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o $(MTMD_CORE_OBJS) mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
-quantize_neox: otherarch/tools/neox_quantize.cpp otherarch/tools/common-ggml.cpp ggml_v3.o ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o clip_default.o mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
+quantize_neox: otherarch/tools/neox_quantize.cpp otherarch/tools/common-ggml.cpp ggml_v3.o ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o $(MTMD_CORE_OBJS) mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
-quantize_mpt: otherarch/tools/mpt_quantize.cpp otherarch/tools/common-ggml.cpp ggml_v3.o ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o clip_default.o mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
+quantize_mpt: otherarch/tools/mpt_quantize.cpp otherarch/tools/common-ggml.cpp ggml_v3.o ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o $(MTMD_CORE_OBJS) mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
-quantize_ace: otherarch/acestep/quantize-acestep.cpp tools/mtmd/clip.cpp ggml_v3.o ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
+quantize_ace: otherarch/acestep/quantize-acestep.cpp $(MTMD_CORE_OBJS) ggml_v3.o ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o llama-model.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
 	$(CXX) $(CXXFLAGS) $^ -o $@ $(LDFLAGS)
 
 

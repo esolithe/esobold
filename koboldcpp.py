@@ -47,6 +47,7 @@ from typing import Any, Dict, Optional, Tuple
 import shutil
 import subprocess
 import gzip
+import zlib
 import queue
 
 # PDF extraction logic
@@ -63,7 +64,7 @@ bias_min_value = -100.0
 bias_max_value = 100.0
 logprobs_max = 10
 default_draft_amount = 4
-default_ttsmaxlen = 4096
+default_ttsmaxlen = 8192
 default_embeddingsmaxctx = 4096
 default_visionmaxres = 1024
 tools_max_temperature = 1.0 #chat requests with tools are clamped to this temperature; the horde worker declares it as a limit
@@ -83,6 +84,45 @@ queue_concurrent_limit = 10
 swa_padding_default = 0
 default_reqtimeout = 600 # 10 min default
 default_maxctx = 16384
+
+
+class RequestBodyEncodingError(ValueError):
+    pass
+
+
+class RequestBodyTooLargeError(ValueError):
+    pass
+
+
+def decode_request_body(body, content_encoding, max_size):
+    """Decode HTTP Content-Encoding values while bounding expanded payload size."""
+    encodings = [encoding.strip().lower() for encoding in (content_encoding or "").split(",") if encoding.strip()]
+    decoded = body
+    for encoding in reversed(encodings):
+        if encoding == "identity":
+            continue
+        if encoding in ("gzip", "x-gzip"):
+            decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        elif encoding == "deflate":
+            decompressor = zlib.decompressobj()
+        else:
+            raise RequestBodyEncodingError(f"Unsupported Content-Encoding: {encoding}")
+
+        try:
+            decoded = decompressor.decompress(decoded, max_size + 1)
+            if len(decoded) > max_size:
+                raise RequestBodyTooLargeError(f"Decompressed request body exceeds {max_size} bytes")
+            decoded += decompressor.flush(max_size + 1 - len(decoded))
+        except RequestBodyTooLargeError:
+            raise
+        except zlib.error as e:
+            raise RequestBodyEncodingError(f"Invalid {encoding} request body: {e}") from e
+
+        if len(decoded) > max_size:
+            raise RequestBodyTooLargeError(f"Decompressed request body exceeds {max_size} bytes")
+        if not decompressor.eof or decompressor.unused_data:
+            raise RequestBodyEncodingError(f"Invalid {encoding} request body")
+    return decoded
 
 def parse_reqtimeout(value):
     try:
@@ -113,6 +153,7 @@ FS_DIR_MARKER_FILENAME = ".kcpp_dir_marker"
 
 handle = None
 common_backend_handle = None
+backend_variant_handle = None
 dll_directory_handles = []
 friendlymodelname = "inactive"
 friendlysdmodelname = "inactive"
@@ -130,6 +171,9 @@ lastgeneratedcomfyimg = b''
 lastgeneratedcachedpayload = b''
 lastgeneratedcachedpayloadkey = ''
 currgenimgkey = ''
+image_recovery_lock = threading.Lock()
+sdcpp_current_job = None
+sdcpp_last_job = None
 lastuploadedcomfyimg = b''
 fullsdmodelpath = ""  #if empty, it's not initialized
 password = "" #if empty, no auth key required
@@ -193,6 +237,7 @@ multiplayer_dataformat = "" # used to tell what is the data payload in saved sto
 multiplayer_lastactive = {} # timestamp of last activity for each unique player
 websearch_lastquery = ""
 websearch_lastresponse = []
+KOBOLDCPP_WEBSEARCH_MCP_TOOL_NAME = "koboldcpp_websearch"
 preloaded_story = None
 chatcompl_adapter = None
 chatcompl_adapter_list = None #if using autoguess, will populate this will potential adapters
@@ -295,6 +340,7 @@ deprecated_keys = {
     "useswa",
     "jinja_tools",
     "multiuser",
+    "whispermodel",
 }
 
 saved_stdout = None
@@ -561,6 +607,7 @@ class sd_info_outputs(ctypes.Structure):
 
 class whisper_load_model_inputs(ctypes.Structure):
     _fields_ = [("model_filename", ctypes.c_char_p),
+                ("aligner_filename", ctypes.c_char_p),
                 ("executable_path", ctypes.c_char_p),
                 ("kcpp_main_gpu", ctypes.c_int),
                 ("devices_override", ctypes.c_char_p),
@@ -571,11 +618,13 @@ class whisper_generation_inputs(ctypes.Structure):
     _fields_ = [("prompt", ctypes.c_char_p),
                 ("audio_data", ctypes.c_char_p),
                 ("suppress_non_speech", ctypes.c_bool),
-                ("langcode", ctypes.c_char_p)]
+                ("langcode", ctypes.c_char_p),
+                ("audiocpp_extra_params_json", ctypes.c_char_p)]
 
 class whisper_generation_outputs(ctypes.Structure):
     _fields_ = [("status", ctypes.c_int),
-                ("data", ctypes.c_char_p)]
+                ("data", ctypes.c_char_p),
+                ("metadata_json", ctypes.c_char_p)]
 
 class tts_load_model_inputs(ctypes.Structure):
     _fields_ = [("threads", ctypes.c_int),
@@ -986,7 +1035,7 @@ default_option, cublas_option, hipblas_option, vulkan_option, noavx2_option, vul
 runopts = [opt for lib, opt in lib_option_pairs if file_exists(lib)]
 
 def init_library():
-    global handle, args, libname, common_backend_handle, dll_directory_handles
+    global handle, args, libname, common_backend_handle, backend_variant_handle, dll_directory_handles
     global lib_default,lib_failsafe,lib_noavx2,lib_vulkan_failsafe,lib_cublas,lib_hipblas,lib_vulkan,lib_vulkan_noavx2
 
     libname = lib_default
@@ -1060,6 +1109,10 @@ def init_library():
             if not os.path.isfile(route_path):
                 raise FileNotFoundError("Missing backend route DLL: " + route_path)
             dll_directory_handles.append(os.add_dll_directory(route_dir))
+            # Load the actual backend by absolute path before its forwarder.
+            # Windows 7 does not reliably apply AddDllDirectory search paths
+            # while resolving a forwarded export's target DLL.
+            backend_variant_handle = ctypes.CDLL(backend_path)
             common_backend_handle = ctypes.CDLL(route_path)
             handle = ctypes.CDLL(common_path)
         else:
@@ -1226,6 +1279,11 @@ def set_backend_props(inputs):
         if args.usevulkan: # is an empty array if using vulkan without defined gpu
             vulkangpus = ','.join([str(g) for g in args.usevulkan])
             handle.set_environment_variable("GGML_VK_VISIBLE_DEVICES".encode("UTF-8"),vulkangpus.encode("UTF-8"))
+
+    # Test high-priority Vulkan allocations on all supported devices. This is
+    # consumed when the Vulkan device is initialized during model loading.
+    if args.usevulkan is not None:
+        handle.set_environment_variable(b"GGML_VK_ENABLE_MEMORY_PRIORITY", b"1")
 
     # set universal flags
     inputs.devices_override = (args.device if args.device else "").encode("UTF-8")
@@ -1448,7 +1506,7 @@ def old_cpu_check(): #return -1 for pass, 0 if has avx2, 1 if has avx, 2 if has 
         return -1 #cannot determine
 
 def has_valid_model():
-    return args.model_param or args.sdmodel or args.whispermodel or args.ttsmodel or args.embeddingsmodel or args.musicdiffusion or args.musicllm or args.mcpfile or args.nomodel or args.rpcmode=="host"
+    return args.model_param or args.sdmodel or args.transcribemodel or args.ttsmodel or args.embeddingsmodel or args.musicdiffusion or args.musicllm or args.mcpfile or args.nomodel or args.rpcmode=="host"
 
 def unpack_to_dir(destpath = ""):
     srcpath = os.path.abspath(os.path.dirname(__file__))
@@ -1654,7 +1712,7 @@ def get_capabilities():
             embeddingModel = ""
     has_guidance = True if args.enableguidance else False
     has_jinja = True if args.jinja else False
-    has_mcp = True if (args.mcpfile and mcp_connections and len(mcp_connections) > 0) else False
+    has_mcp = bool(args.websearch or (args.mcpfile and mcp_connections))
     has_fs = fs_is_enabled()
     fs_mode = "memory"
     try:
@@ -1907,7 +1965,7 @@ def read_gguf_metadata(file_path):
     except Exception:
         return None
 
-def extract_modelfile_params(filepath,sdfilepath,whisperfilepath,mmprojfilepath,draftmodelpath,ttsmodelpath,embdmodelpath,musicllmpath,musicditpath,musicvaepath):
+def extract_modelfile_params(filepath,sdfilepath,whisperfilepath,alignerfilepath,mmprojfilepath,draftmodelpath,ttsmodelpath,embdmodelpath,musicllmpath,musicditpath,musicvaepath):
     global modelfile_extracted_meta
     modelfile_extracted_meta = None
     sdfsize = 0
@@ -1923,6 +1981,8 @@ def extract_modelfile_params(filepath,sdfilepath,whisperfilepath,mmprojfilepath,
         sdfsize = os.path.getsize(sdfilepath)
     if whisperfilepath and os.path.exists(whisperfilepath):
         whisperfsize = os.path.getsize(whisperfilepath)
+    if alignerfilepath and os.path.exists(alignerfilepath):
+        whisperfsize += os.path.getsize(alignerfilepath)
     if mmprojfilepath and os.path.exists(mmprojfilepath):
         mmprojsize = os.path.getsize(mmprojfilepath)
     if draftmodelpath and os.path.exists(draftmodelpath):
@@ -2486,7 +2546,8 @@ def generate(genparams, stream_flag=False):
     if args.genlimit > 0 and max_length > args.genlimit:
         max_length = args.genlimit
     if max_length >= (max_context_length-min_remain_softlimit):
-        print(f"\n!!! ====== !!!\nWarning: You are trying to generate text with max_length ({max_length}) near or exceeding max_context_length limit ({max_context_length}).\nMost of the context will be removed, and your outputs will not be very coherent.\nConsider launching with increased --contextsize to avoid issues.\n!!! ====== !!!")
+        if not args.quiet:
+            print(f"\n!!! ====== !!!\nWarning: You are trying to generate text with max_length ({max_length}) near or exceeding max_context_length limit ({max_context_length}).\nMost of the context will be removed, and your outputs will not be very coherent.\nConsider launching with increased --contextsize to avoid issues.\n!!! ====== !!!")
         if max_length >= (max_context_length-min_remain_hardlimit):
             max_length = max_context_length-min_remain_hardlimit
 
@@ -3168,6 +3229,93 @@ def lora_map_name_to_path(request_list):
             result.append(out)
     return result
 
+def sdcpp_native_to_genparams(request):
+    """Flatten the native sd.cpp image schema into KoboldCpp's image schema."""
+    if not isinstance(request, dict):
+        raise ValueError("request body must be a JSON object")
+    sample = request.get('sample_params') or {}
+    sample = sample if isinstance(sample, dict) else {}
+    guidance = sample.get('guidance') or {}
+    guidance = guidance if isinstance(guidance, dict) else {}
+    ref_image_args = request.get('ref_image_args') or ''
+    if request.get('increase_ref_index'):
+        ref_image_args = ','.join(x for x in (ref_image_args, 'ref_index_mode=increase') if x)
+    return {
+        'prompt': str(request.get('prompt') or ''),
+        'negative_prompt': str(request.get('negative_prompt') or ''),
+        'clip_skip': request.get('clip_skip', -1),
+        'width': request.get('width', 512),
+        'height': request.get('height', 512),
+        'denoising_strength': request.get('strength', 0.75),
+        'seed': request.get('seed', -1),
+        'init_images': [request['init_image']] if request.get('init_image') else [],
+        'mask': request.get('mask_image') or '',
+        'extra_images': request.get('ref_images') or [],
+        'lora': request.get('lora') or [],
+        'ref_image_args': ref_image_args,
+        'sampler_name': sample.get('sample_method', 'default'),
+        'scheduler': sample.get('scheduler', 'default'),
+        'steps': sample.get('sample_steps', 20),
+        'eta': sample.get('eta'),
+        'shifted_timestep': sample.get('shifted_timestep'),
+        'flow_shift': sample.get('flow_shift'),
+        'custom_sigmas': sample.get('custom_sigmas') or [],
+        'extra_sample_args': sample.get('extra_sample_args', ''),
+        'cfg_scale': guidance.get('txt_cfg', 5),
+        'distilled_guidance': guidance.get('distilled_guidance'),
+        'cache_mode': request.get('cache_mode', ''),
+        'cache_options': request.get('cache_option', ''),
+    }
+
+def sdcpp_capabilities():
+    loaded = not (friendlysdmodelname == "inactive" or fullsdmodelpath == "")
+    if autoswapmode and imageName is not None:
+        loaded = True
+    max_side = tryparseint(getattr(args, 'sdclamped', 0), 0) if args is not None else 0
+    max_side = max_side if max_side > 0 else 8192
+    defaults = {'width': 512, 'height': 512, 'strength': 0.75, 'seed': -1,
+                'sample_params': {'sample_method': 'default', 'scheduler': 'default',
+                                  'sample_steps': 20, 'guidance': {'txt_cfg': 5}}}
+    features = {'init_image': True, 'mask_image': True, 'ref_images': True,
+                'lora': bool(imglora_bypath), 'cache': True,
+                'cancel_generating': True, 'preview': True}
+    model_name = imageName if autoswapmode and imageName is not None else friendlysdmodelname
+    model_name = os.path.basename(model_name) if model_name else ''
+    return {
+        'model': {'name': model_name, 'stem': model_name, 'path': ''} if loaded else {},
+        'runtime': sdcpp_model_status(),
+        'current_mode': 'img_gen',
+        'supported_modes': ['img_gen'] if loaded else [],
+        'defaults': defaults,
+        'output_formats': ['png'],
+        'features': features,
+        'defaults_by_mode': {'img_gen': defaults},
+        'output_formats_by_mode': {'img_gen': ['png']},
+        'features_by_mode': {'img_gen': features},
+        'samplers': list(cached_sd_info.get('available_samplers', [])),
+        'schedulers': list(cached_sd_info.get('available_schedulers', [])) + list(cached_sd_custom_sigmas.keys()),
+        'loras': [dict(item, display_path=item['path']) for item in mk_sdapi_lora_list(imglora_bypath)],
+        'upscalers': [],
+        'upscale': False,
+        'preview_modes': ['none', 'proj'],
+        'limits': {
+            'min_width': 64, 'max_width': max_side,
+            'min_height': 64, 'max_height': max_side,
+            'max_batch_count': 1, 'max_queue_size': 0,
+            'max_upscale_width': 0, 'max_upscale_height': 0,
+        },
+    }
+
+def sdcpp_model_status():
+    loaded = not (friendlysdmodelname == 'inactive' or fullsdmodelpath == '')
+    loaded = loaded or bool(autoswapmode and imageName is not None)
+    return {
+        'state': 'ready' if loaded else 'empty', 'recipe': None,
+        'models': {'model': 'koboldcpp-current'} if loaded else {},
+        'error': None, 'origin': 'command_line', 'revision': 1,
+        'load_elapsed_seconds': 0 if loaded else None,
+    }
+
 def sd_generate(genparams):
     global maxctx, args, currentusergenkey, totalgens, pendingabortkey, chatcompl_adapter, cached_sd_custom_sigmas
 
@@ -3210,7 +3358,7 @@ def sd_generate(genparams):
         seed = random.randint(100000, 999999)
     sample_method = (genparams.get("sampler_name") or "default")
     scheduler = (genparams.get("scheduler") or "default").lower()
-    custom_sigmas = cached_sd_custom_sigmas.get(scheduler)
+    custom_sigmas = genparams.get("custom_sigmas") or cached_sd_custom_sigmas.get(scheduler)
     extra_sample_args = str(genparams.get("extra_sample_args") or "")
     ref_image_args = str(genparams.get("ref_image_args") or "").strip()
     clip_skip = tryparseint(genparams.get("clip_skip", -1),-1)
@@ -3331,6 +3479,35 @@ def sd_get_ongoing_generation_info():
         print("An error occurred while getting sd ongoing generation info")
     return {}
 
+def sdcpp_get_job(job_id):
+    with image_recovery_lock:
+        current = copy.deepcopy(sdcpp_current_job) if sdcpp_current_job else None
+        last = copy.deepcopy(sdcpp_last_job) if sdcpp_last_job else None
+    if current and current['id'] == job_id:
+        handle.sd_request_ongoing_generation_preview()
+        info = sd_get_ongoing_generation_info()
+        step, steps = info.get('step', 0), info.get('steps', 0)
+        elapsed = int(info.get('elapsed_time', 0) * 1000)
+        current['progress'] = {
+            'stage': {'conditioning': 'conditioning', 'diffusing': 'sampling',
+                      'decoding': 'vae_decode'}.get(info.get('status'), 'preparing'),
+            'detail': '', 'pass': 0, 'completed': step, 'total': steps,
+            'unit': 'steps', 'stage_elapsed_ms': elapsed, 'elapsed_ms': elapsed,
+        }
+        current['preview'] = ({'pass': 1, 'step': step, 'total_steps': steps,
+                               'b64_json': info['preview']} if info.get('preview') else None)
+        return current
+    return last if last and last['id'] == job_id else None
+
+def sdcpp_cancel_job(job_id):
+    with image_recovery_lock:
+        if not sdcpp_current_job or sdcpp_current_job['id'] != job_id:
+            return None
+        sdcpp_current_job['cancel_requested'] = True
+        job = copy.deepcopy(sdcpp_current_job)
+    handle.sd_abort_generation()
+    return job
+
 def parse_query_bool(parsed_dict, key, default=False):
     value = parsed_dict.get(key, [default])
     if isinstance(value, list):
@@ -3434,13 +3611,19 @@ def a1111_progress_response(preview=False):
         preview and status.get('preview') or None)
     return result
 
-def whisper_load_model(model_filename):
+def whisper_load_model(model_filename, aligner_filename=""):
     global args
     inputs = whisper_load_model_inputs()
     inputs.model_filename = model_filename.encode("UTF-8")
+    inputs.aligner_filename = aligner_filename.encode("UTF-8") if aligner_filename else b""
     inputs = set_backend_props(inputs)
     ret = handle.whisper_load_model(inputs)
     return ret
+
+def transcription_requests_timestamps(genparams):
+    value = genparams.get("return_timestamps", False)
+    explicit = value is True or (isinstance(value, str) and value.strip().lower() in ("1", "true", "yes", "on"))
+    return explicit or bool(str(genparams.get("transcript", "") or "").strip())
 
 def extract_text(genparams):
     global args
@@ -4010,7 +4193,7 @@ def getTextFromPDFJsonEncapsulatedPyMuPdf(pages):
 def getTextFromPDFEncapsulatedPyMuPdf(decoded_bytes):
     return getTextFromPDFJsonEncapsulatedPyMuPdf(getJsonFromPDFEncapsulatedPyMuPdf(decoded_bytes))
 
-def whisper_generate(genparams):
+def whisper_generate_result(genparams):
     global args
     prompt = genparams.get("prompt", "")
     audio_data = genparams.get("audio_data", "")
@@ -4020,14 +4203,38 @@ def whisper_generate(genparams):
     inputs.prompt = prompt.encode("UTF-8")
     inputs.audio_data = audio_data.encode("UTF-8")
     lc = genparams.get("langcode", genparams.get("language", "auto"))
-    lc = lc.strip().lower() if (lc and lc.strip().lower()!="") else "auto"
+    lc = lc.strip() if (lc and lc.strip()) else "auto"
     inputs.langcode = lc.encode("UTF-8")
     inputs.suppress_non_speech = genparams.get("suppress_non_speech", False)
+    audiocpp_options = {}
+    for key in ("max_tokens", "audio_chunk_mode", "audio_chunk_duration_sec",
+                "keep_tags", "enable_itn", "target_language", "punc",
+                "preserve_punctuation", "return_timestamps",
+                "clamp_timestamps_to_audio", "text_normalization",
+                "star_frequency", "merge_threshold_sec"):
+        if key in genparams and genparams[key] is not None:
+            audiocpp_options[key] = genparams[key]
+    supplied_transcript = str(genparams.get("transcript", "") or "").strip()
+    if supplied_transcript:
+        audiocpp_options["alignment_transcript"] = supplied_transcript
+    if transcription_requests_timestamps(genparams):
+        audiocpp_options["return_timestamps"] = True
+        audiocpp_options.setdefault("clamp_timestamps_to_audio", True)
+        audiocpp_options.setdefault("preserve_punctuation", True)
+    inputs.audiocpp_extra_params_json = json.dumps(audiocpp_options).encode("UTF-8")
     ret = handle.whisper_generate(inputs)
-    outstr = ""
+    result = {"status": ret.status, "text": ""}
     if ret.status==1:
-        outstr = ret.data.decode("UTF-8","ignore")
-    return outstr
+        result["text"] = ret.data.decode("UTF-8","ignore")
+    if ret.metadata_json:
+        try:
+            result.update(json.loads(ret.metadata_json.decode("UTF-8", "ignore")))
+        except (ValueError, TypeError):
+            pass
+    return result
+
+def whisper_generate(genparams):
+    return whisper_generate_result(genparams).get("text", "")
 
 def tts_load_model(ttc_model_filename,cts_model_filename):
     global args
@@ -4042,7 +4249,7 @@ def tts_load_model(ttc_model_filename,cts_model_filename):
         if ttst > 0:
             thds = ttst
     inputs.threads = thds
-    inputs.ttsmaxlen = args.ttsmaxlen if args.ttsmaxlen < 4096 else 4096
+    inputs.ttsmaxlen = args.ttsmaxlen
     inputs = set_backend_props(inputs)
     ret = handle.tts_load_model(inputs)
     return ret
@@ -4623,6 +4830,48 @@ def websearch(query):
     websearch_lastquery = query
     websearch_lastresponse = results
     return results
+
+def get_koboldcpp_websearch_mcp_tool():
+    return {
+        "name": KOBOLDCPP_WEBSEARCH_MCP_TOOL_NAME,
+        "description": "Search the web and return relevant results with excerpts from their pages.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "The web search query.",
+                },
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+    }
+
+def call_koboldcpp_websearch_mcp(request_id, callparams):
+    arguments = callparams.get("arguments", {})
+    query = arguments.get("query") if isinstance(arguments, dict) else None
+    if not isinstance(query, str) or not query.strip():
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "error": {
+                "code": -32602,
+                "message": "Invalid arguments: 'query' must be a non-empty string",
+            },
+        }
+    results = websearch(query)
+    return {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "result": {
+            "content": [{
+                "type": "text",
+                "text": json.dumps(results, ensure_ascii=False),
+            }],
+            "structuredContent": {"results": results},
+        },
+    }
 
 def is_port_in_use(portNum):
     try:
@@ -8282,7 +8531,7 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
         is_chat_completions_path = (clean_path.endswith('/v1/chat/completions') or clean_path=='/chat/completions')
 
         #any requests to the following endpoints is capable of waking the server
-        wake_requests = ["/api/extra/generate/stream","/api/extra/tokencount","/api/v1/generate","/sdapi/v1/interrogate","/v1/completions","/v1/chat/completions","/v1/responses","/completions","/chat/completions","/responses","/api/extra/transcribe","/api/extra/music/transcribe","/v1/audio/transcriptions","/api/extra/tts","/v1/audio/speech","/api/extra/embeddings","/v1/embeddings","/api/embed","/api/extra/music/prepare","/api/extra/music/generate","/images/generations","/v1/images/generations","/images/edits","/v1/images/edits","/sdapi/v1/txt2img","/sdapi/v1/img2img","/sdapi/v1/upscale","/api/generate", "/api/chat", "/v1/messages", "/messages"]
+        wake_requests = ["/api/extra/generate/stream","/api/extra/tokencount","/api/v1/generate","/sdapi/v1/interrogate","/v1/completions","/v1/chat/completions","/v1/responses","/completions","/chat/completions","/responses","/api/extra/transcribe","/api/extra/music/transcribe","/v1/audio/transcriptions","/api/extra/tts","/v1/audio/speech","/api/extra/embeddings","/v1/embeddings","/api/embed","/api/extra/music/prepare","/api/extra/music/generate","/images/generations","/v1/images/generations","/images/edits","/v1/images/edits","/sdapi/v1/txt2img","/sdapi/v1/img2img","/sdapi/v1/upscale","/sdcpp/v1/img_gen","/api/generate", "/api/chat", "/v1/messages", "/messages"]
         is_wake_request = clean_path in wake_requests
 
         autoswapEnabled = global_memory["autoswapmode"] is not None and global_memory["autoswapmode"]
@@ -8337,7 +8586,7 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                     ttsReqs = ["/api/extra/tts", "/v1/audio/speech"]
                     embedReqs = ["/api/extra/embeddings", "/v1/embeddings", "/api/embed", "/api/extra/fs/semantic_search", "/api/extra/fs/search_all_documents"]
                     musicReqs = ["/api/extra/music/prepare","/api/extra/music/generate"]
-                    imageReqs = ["/images/generations", "/v1/images/generations", "/images/edits", "/v1/images/edits", "/sdapi/v1/txt2img", "/sdapi/v1/img2img", "/sdapi/v1/upscale"] # "/sdapi/v1/sd-models", "/sdapi/v1/options", "/sdapi/v1/samplers"
+                    imageReqs = ["/images/generations", "/v1/images/generations", "/images/edits", "/v1/images/edits", "/sdapi/v1/txt2img", "/sdapi/v1/img2img", "/sdapi/v1/upscale", "/sdcpp/v1/img_gen"] # "/sdapi/v1/sd-models", "/sdapi/v1/options", "/sdapi/v1/samplers"
 
                     requestedType = None
 
@@ -10475,7 +10724,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
                 else:
                     gen_payload = {"prompt": prefix+prompt,"max_length": max_length,"temperature": temperature,"top_k": top_k,"top_p": top_p,"rep_pen": rep_pen,"ban_eos_token":ban_eos_token, "stop_sequence":stops}
                     respjson = make_url_request(f'{epurl}/api/v1/generate', gen_payload)
-                    reply = html.escape(respjson["results"][0]["text"])
+                    reply = respjson["results"][0]["text"]
                     if chatmode:
                         reply = " "+reply.strip()
                 status = "Generation Completed"
@@ -10504,30 +10753,38 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         <input type="submit" value="Image Mode">
         </form>'''
 
+        def escape_html(value):
+            return html.escape(str(value), quote=True)
+
         bodycontent = f'''<b><u>{"Image Mode" if imgmode else ("Chat Mode" if chatmode else "Story Mode")}</u></b><br>'''
         optionscontent = ""
         if imgmode:
             randimg = f'<img src="view_image{random.randint(100, 999)}.png" width="320" width="320">'
-            bodycontent += f'''<p>Generated Image: {prompt if prompt else "None"}</p>
+            bodycontent += f'''<p>Generated Image: {escape_html(prompt) if prompt else "None"}</p>
             {randimg if prompt else ""}<br>
             <label>Image Prompt: </label><input type="text" size="40" value="" name="imgprompt">
             <input type="hidden" name="generate" value="Generate" />
             <input type="submit" value="Generate"> (Be patient)'''
         elif chatmode:
-            oldconvo = prompt.strip().replace(f"{human_name}:",f"<b>{human_name}:</b>").replace(f"{bot_name}:",f"<b>{bot_name}:</b>").replace("\n","<br>")
-            oldconvo += f'''<input type="hidden" name="human_name" value="{human_name}"><input type="hidden" name="bot_name" value="{bot_name}">'''
+            safe_human_name = escape_html(human_name)
+            safe_bot_name = escape_html(bot_name)
+            oldconvo = escape_html(prompt.strip())
+            oldconvo = oldconvo.replace(f"{safe_human_name}:", f"<b>{safe_human_name}:</b>")
+            oldconvo = oldconvo.replace(f"{safe_bot_name}:", f"<b>{safe_bot_name}:</b>")
+            oldconvo = oldconvo.replace("\n", "<br>")
+            oldconvo += f'''<input type="hidden" name="human_name" value="{safe_human_name}"><input type="hidden" name="bot_name" value="{safe_bot_name}">'''
             newconvo = '''Start a new conversation.<br>
             <label>Your Name: </label> <input type="text" size="10" value="User" name="human_name"><br>
             <label>Bot Name: </label> <input type="text" size="10" value="Assistant" name="bot_name"><br>'''
             clnprompt = prompt.replace("\n","1HdNl1")
             bodycontent += f'''<p>{newconvo if prompt=="" else oldconvo}</p>
-            <input type="hidden" name="prompt" value="{clnprompt}">
+            <input type="hidden" name="prompt" value="{escape_html(clnprompt)}">
             <label>Say: </label><input type="text" size="40" value="" name="chatmsg">
             <input type="hidden" name="generate" value="Send" />
             <input type="submit" value="Send"> (Be patient)'''
         else:
             bodycontent += f'''
-<textarea name="prompt" cols="60" rows="8" wrap="soft" placeholder="Enter Prompt Here">{prompt}</textarea><br>
+<textarea name="prompt" cols="60" rows="8" wrap="soft" placeholder="Enter Prompt Here">{escape_html(prompt)}</textarea><br>
 <input type="hidden" name="generate" value="Generate" />
 <input type="submit" value="Generate"> (Be patient)
 '''
@@ -10555,7 +10812,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
 <form action="/noscript">
 {bodycontent}
 <hr>
-<b>{status}</b><br>
+<b>{escape_html(status)}</b><br>
 <hr>
 {optionscontent}
 <input type="hidden" name="chatmode" value="{chatmode}">
@@ -10622,7 +10879,45 @@ Change Mode<br>
             if not self.secure_fs_endpoint():
                 return None
 
-        if clean_path in [""]: # the root url is lite
+        if clean_path.startswith('/sdcpp/v1/') and not self.secure_endpoint():
+            return
+
+        if clean_path == '/sdcpp/v1/capabilities':
+            response_body = json.dumps(sdcpp_capabilities()).encode()
+
+        elif clean_path == '/sdcpp/v1/model-files':
+            status = sdcpp_model_status()
+            model_name = imageName if autoswapmode and imageName is not None else friendlysdmodelname
+            files = ([{'id': 'koboldcpp-current', 'name': os.path.basename(model_name),
+                       'category': 'checkpoints', 'root': '', 'relative_path': 'koboldcpp-current'}]
+                     if status['state'] == 'ready' else [])
+            response_body = json.dumps({'files': files, 'errors': []}).encode()
+
+        elif clean_path == '/sdcpp/v1/recipes':
+            response_body = json.dumps({'recipes': [], 'errors': []}).encode()
+
+        elif clean_path == '/sdcpp/v1/models/status':
+            response_body = json.dumps(sdcpp_model_status()).encode()
+
+        elif clean_path == '/sdcpp/v1/models':
+            status = sdcpp_model_status()
+            model_name = imageName if autoswapmode and imageName is not None else friendlysdmodelname
+            data = ([{'id': 'koboldcpp-current', 'name': os.path.basename(model_name),
+                      'object': 'model', 'created': int(time.time()), 'owned_by': 'koboldcpp',
+                      'status': {'value': 'loaded'}, 'permission': [], 'root': 'koboldcpp'}]
+                    if status['state'] == 'ready' else [])
+            response_body = json.dumps({'object': 'list', 'data': data}).encode()
+
+        elif re.fullmatch(r'/sdcpp/v1/jobs/[^/]+', clean_path):
+            job_id = clean_path.rsplit('/', 1)[-1]
+            job = sdcpp_get_job(job_id)
+            if job is None:
+                response_code = 404
+                response_body = json.dumps({'error': 'Job not found', 'code': 'job_not_found'}).encode()
+            else:
+                response_body = json.dumps(job).encode()
+
+        elif clean_path in [""]: # the root url is lite
             content_type = 'text/html'
             if (not args.developerMode) and supports_gzip and embedded_kailite_gz is not None:
                 response_body = embedded_kailite_gz
@@ -11122,25 +11417,41 @@ Change Mode<br>
         elif clean_path=='/view' or clean_path=='/view.png' or clean_path=='/api/view' or clean_path.startswith('/view_image'): #emulate comfyui
             content_type = 'image/png'
             response_body = lastgeneratedcomfyimg
+        elif clean_path.startswith('/sdapi/v1/recovery-status'):
+            parsed_url = urllib.parse.urlparse(self.path)
+            parsed_dict = urllib.parse.parse_qs(parsed_url.query)
+            genkey = parsed_dict.get('genkey', [''])[0]
+            with image_recovery_lock:
+                if genkey and genkey == currgenimgkey:
+                    recovery_status = 'running'
+                elif genkey and genkey == lastgeneratedcachedpayloadkey and lastgeneratedcachedpayload:
+                    recovery_status = 'complete'
+                else:
+                    recovery_status = 'unknown'
+            response_body = json.dumps({"status": recovery_status}).encode()
         elif clean_path.startswith('/sdapi/v1/get_last.json'):
             parsed_url = urllib.parse.urlparse(self.path)
             parsed_dict = urllib.parse.parse_qs(parsed_url.query)
             genkey = parsed_dict.get('genkey', [''])[0]
-            if genkey and genkey==lastgeneratedcachedpayloadkey and lastgeneratedcachedpayload:
-                response_body = lastgeneratedcachedpayload
-            else:
-                response_body = None
+            with image_recovery_lock:
+                if genkey and genkey==lastgeneratedcachedpayloadkey and lastgeneratedcachedpayload:
+                    response_body = lastgeneratedcachedpayload
+                else:
+                    response_body = None
         elif clean_path.startswith('/sdapi/v1/progress'):
             parsed_url = urllib.parse.urlparse(self.path)
             parsed_dict = urllib.parse.parse_qs(parsed_url.query)
             genkey = parsed_dict.get('genkey', [''])[0]
             skip_current_image = parse_query_bool(parsed_dict, 'skip_current_image')
             # Only expose progress and previews for the requested active generation.
-            auth = bool(genkey and genkey==currgenimgkey)
+            with image_recovery_lock:
+                auth = bool(genkey and genkey==currgenimgkey)
             info = build_a1111_progress_response('idle')
             if auth:
                 active_info = a1111_progress_response(not skip_current_image)
-                if genkey == currgenimgkey:
+                with image_recovery_lock:
+                    still_active = genkey == currgenimgkey
+                if still_active:
                     info = active_info
             response_body = json.dumps(info).encode()
         elif clean_path=='/history' or clean_path=='/api/history' or clean_path.startswith('/api/history/') or clean_path.startswith('/history/'): #emulate comfyui
@@ -11311,7 +11622,7 @@ Change Mode<br>
 
     def do_POST(self):
         global thinkformats
-        global modelbusy, batched_request_runner_count, requestsinqueue, currentusergenkey, totalgens, pendingabortkey, lastuploadedcomfyimg, lastgeneratedcomfyimg, lastgeneratedcachedpayload, lastgeneratedcachedpayloadkey, currgenimgkey, multiplayer_turn_major, multiplayer_turn_minor, multiplayer_story_data_compressed, multiplayer_dataformat, multiplayer_lastactive, net_save_slots, has_vision_support, savestate_limit, mcp_lock
+        global modelbusy, batched_request_runner_count, requestsinqueue, currentusergenkey, totalgens, pendingabortkey, lastuploadedcomfyimg, lastgeneratedcomfyimg, lastgeneratedcachedpayload, lastgeneratedcachedpayloadkey, currgenimgkey, sdcpp_current_job, sdcpp_last_job, multiplayer_turn_major, multiplayer_turn_minor, multiplayer_story_data_compressed, multiplayer_dataformat, multiplayer_lastactive, net_save_slots, has_vision_support, savestate_limit, mcp_lock
         global autoswapmode, textName, sttName, ttsName, embedName, musicName, imageName, mmprojName
         post_path = self.path.rstrip('/')
         if self.is_fs_protected_path(post_path):
@@ -11320,10 +11631,11 @@ Change Mode<br>
         contlenstr = self.headers['content-length']
         content_length = 0
         body = None
+        max_pl = int(args.maxrequestsize) if args.maxrequestsize else 32
+        max_payload_size = 1024*1024*max_pl
         if contlenstr:
             content_length = int(contlenstr)
-            max_pl = int(args.maxrequestsize) if args.maxrequestsize else 32
-            if content_length > (1024*1024*max_pl): #payload size limit
+            if content_length > max_payload_size: #payload size limit
                 self.send_response(500)
                 self.end_headers(content_type='application/json')
                 self.wfile.write(json.dumps({"detail": {
@@ -11366,6 +11678,27 @@ Change Mode<br>
                 }}).encode())
                 return
 
+        try:
+            body = decode_request_body(body, self.headers.get('content-encoding', ''), max_payload_size)
+        except RequestBodyTooLargeError:
+            self.send_response(413)
+            self.end_headers(content_type='application/json')
+            self.wfile.write(json.dumps({"detail": {
+            "msg": f"Decompressed payload is too big. Max payload size is {max_pl}MB.",
+            "type": "bad_input",
+            }}).encode())
+            return
+        except RequestBodyEncodingError as e:
+            utfprint("Request Body Encoding Error: " + str(e))
+            response_code = 415 if str(e).startswith("Unsupported Content-Encoding:") else 400
+            self.send_response(response_code)
+            self.end_headers(content_type='application/json')
+            self.wfile.write(json.dumps({"detail": {
+            "msg": str(e),
+            "type": "bad_input",
+            }}).encode())
+            return
+
         if self.proxy_OpenLumara("POST", body=body):
             return
 
@@ -11373,8 +11706,28 @@ Change Mode<br>
         clean_path = self.path.split("?")[0] #for cases where we do not want query params
         response_body = None
         response_code = 200
+        if clean_path.startswith('/sdcpp/v1/') and not self.secure_endpoint():
+            return
 
-        if clean_path.endswith('/api/extra/tokencount') or clean_path.endswith('/api/extra/tokenize'):
+        cancel_match = re.fullmatch(r'/sdcpp/v1/jobs/([^/]+)/cancel', clean_path)
+        if cancel_match:
+            cancelled = sdcpp_cancel_job(cancel_match.group(1))
+            if cancelled is None:
+                response_code = 404
+                response_body = json.dumps({'error': 'Job not found', 'code': 'job_not_found'}).encode()
+            else:
+                response_body = json.dumps(cancelled).encode()
+
+        elif clean_path == '/sdcpp/v1/models/refresh':
+            response_body = json.dumps({'errors': []}).encode()
+
+        elif clean_path in ('/sdcpp/v1/models/load', '/sdcpp/v1/models/unload'):
+            status = sdcpp_model_status()
+            if clean_path.endswith('/load') and status['state'] == 'ready':
+                status['already_loaded'] = True
+            response_body = json.dumps(status).encode()
+
+        elif clean_path.endswith('/api/extra/tokencount') or clean_path.endswith('/api/extra/tokenize'):
             if not self.secure_endpoint():
                 return
             try:
@@ -11815,6 +12168,24 @@ Change Mode<br>
             else:
                 response_body = (json.dumps({"success": "false", "done":"false"}).encode())
 
+        elif clean_path.endswith('/sdapi/v1/interrupt'):
+            image_genkey = ""
+            try:
+                tempbody = json.loads(body)
+                if isinstance(tempbody, dict):
+                    image_genkey = str(tempbody.get('genkey', ''))
+            except Exception:
+                pass
+            # This endpoint is handled before acquiring modelbusy, allowing an
+            # explicit UI cancellation to stop an in-flight image generation.
+            # Requiring the active genkey prevents one client from cancelling a
+            # different client's generation.
+            with image_recovery_lock:
+                image_abort_requested = bool(image_genkey and image_genkey == currgenimgkey)
+                if image_abort_requested:
+                    handle.sd_abort_generation()
+            response_body = json.dumps({"success": image_abort_requested}).encode()
+
         elif clean_path.endswith('/api/extra/generate/check'):
             if not self.secure_endpoint():
                 return
@@ -12248,22 +12619,34 @@ Change Mode<br>
                         for conn in mcp_connections:
                             currtools = conn["tools"]
                             for tool in currtools:
-                                reply["result"]["tools"].append(tool)
+                                is_native_websearch = (
+                                    args.websearch and isinstance(tool, dict) and
+                                    tool.get("name", "") == KOBOLDCPP_WEBSEARCH_MCP_TOOL_NAME
+                                )
+                                if not is_native_websearch:
+                                    reply["result"]["tools"].append(tool)
+                    if args.websearch:
+                        reply["result"]["tools"].append(get_koboldcpp_websearch_mcp_tool())
                     response_body = (json.dumps(reply).encode())
                 elif method == "tools/call":
                     foundtool = False
                     callparams = tempbody.get("params",{})
                     callname = callparams.get("name","")
-                    with mcp_lock:
-                        for conn in mcp_connections:
-                            currtools = conn["tools"]
-                            currclient = conn["client"]
-                            for tool in currtools:
-                                if currclient and tool.get("name","")!="" and tool.get("name","")==callname:
-                                    foundtool = True
-                                    mcpresp = currclient.send(tempbody)
-                                    response_body = (json.dumps(mcpresp).encode())
-                                    break
+                    if args.websearch and callname == KOBOLDCPP_WEBSEARCH_MCP_TOOL_NAME:
+                        foundtool = True
+                        mcpresp = call_koboldcpp_websearch_mcp(request_id, callparams)
+                        response_body = (json.dumps(mcpresp).encode())
+                    else:
+                        with mcp_lock:
+                            for conn in mcp_connections:
+                                currtools = conn["tools"]
+                                currclient = conn["client"]
+                                for tool in currtools:
+                                    if currclient and tool.get("name","")!="" and tool.get("name","")==callname:
+                                        foundtool = True
+                                        mcpresp = currclient.send(tempbody)
+                                        response_body = (json.dumps(mcpresp).encode())
+                                        break
                     if not foundtool:
                         response_body = (json.dumps({"jsonrpc": "2.0", "id": request_id, "error": {"code": -32602, "message": "Tool not found"}}).encode())
                 else:
@@ -12316,7 +12699,7 @@ Change Mode<br>
                 return
             ratelimitlookup[client_ip] = datetime.now()
         muint = int(args.queuelimit)
-        if muint < 2 and ((args.whispermodel and args.whispermodel!="") or (args.sdmodel and args.sdmodel!="") or (args.ttsmodel and args.ttsmodel!="") or (args.embeddingsmodel and args.embeddingsmodel!="")):
+        if muint < 2 and ((args.transcribemodel and args.transcribemodel!="") or (args.sdmodel and args.sdmodel!="") or (args.ttsmodel and args.ttsmodel!="") or (args.embeddingsmodel and args.embeddingsmodel!="")):
             muint = 2 # this prevents errors when using voice/img together with text
         if args.parallelrequests > 1 and muint <=0:
             muint = queue_concurrent_limit # required for batching
@@ -12348,6 +12731,7 @@ Change Mode<br>
             is_comfyui_imggen = False
             is_oai_imggen = False
             is_oai_imgedit = False
+            is_sdcpp_imggen = False
             is_img_upscale = False
             is_transcribe = False
             is_extract_text = False
@@ -12448,10 +12832,12 @@ Change Mode<br>
                 api_format = 9
             elif clean_path.endswith('/sdapi/v1/extra-single-image') or clean_path.endswith('/sdapi/v1/upscale'):
                 is_img_upscale = True
-            elif clean_path=="/prompt" or clean_path=="/images/generations" or clean_path.endswith('/v1/images/generations') or clean_path=="/images/edits" or clean_path.endswith('/v1/images/edits') or clean_path.endswith('/sdapi/v1/txt2img') or clean_path.endswith('/sdapi/v1/img2img'):
+            elif clean_path=="/prompt" or clean_path=="/images/generations" or clean_path.endswith('/v1/images/generations') or clean_path=="/images/edits" or clean_path.endswith('/v1/images/edits') or clean_path.endswith('/sdapi/v1/txt2img') or clean_path.endswith('/sdapi/v1/img2img') or clean_path=='/sdcpp/v1/img_gen':
                 is_imggen = True
                 if clean_path=="/prompt":
                     is_comfyui_imggen = True
+                elif clean_path=='/sdcpp/v1/img_gen':
+                    is_sdcpp_imggen = True
                 elif clean_path.endswith('/v1/images/generations') or clean_path=="/images/generations":
                     is_oai_imggen = True
                 elif clean_path.endswith('/v1/images/edits') or clean_path=="/images/edits":
@@ -12491,14 +12877,11 @@ Change Mode<br>
                 except Exception:
                     genparams = None
                     if is_transcribe: #fallback handling of file uploads
-                        formdata = self.extract_formdata_from_file_upload(body)
-                        if "file" in formdata and formdata["file"]:
-                            b64wav = formdata["file"]
-                            genparams = {"audio_data":b64wav}
-                            if "prompt" in formdata and formdata["prompt"]:
-                                genparams["prompt"] = formdata["prompt"]
-                            if "language" in formdata and formdata["language"]:
-                                genparams["language"] = formdata["language"]
+                        formdata = self.extract_multipart_formdata(body)
+                        uploaded_files = formdata.get("files", {})
+                        if uploaded_files.get("file"):
+                            genparams = dict(formdata.get("fields", {}))
+                            genparams["audio_data"] = uploaded_files["file"][0]
                     elif is_oai_imgedit:
                         genparams = self.extract_oai_image_edit_formdata(body)
 
@@ -12513,6 +12896,8 @@ Change Mode<br>
                         return
 
                 # Embedded Horde chat jobs mandate jinja
+                if is_sdcpp_imggen:
+                    genparams = sdcpp_native_to_genparams(genparams)
                 if genparams.get("is_chat_job") is True:
                     use_jinja = True
 
@@ -12873,14 +13258,15 @@ Change Mode<br>
                 elif is_imggen: #image gen
                     keepalive_started = False
                     final_write_started = False
+                    recovery_genkey = ''
+                    sdcpp_created = 0
                     try:
-                        lastgeneratedcachedpayload = b''
-                        lastgeneratedcachedpayloadkey = ''
                         send_keepalive = bool(tryparseint(genparams.get('keepalive', False), 0))
                         recovery_params = copy.deepcopy(genparams)
                         recovery_genkey = genparams.get('genkey', '')
                         recovery_model = imageName if autoswapmode and imageName is not None else friendlysdmodelname
-                        currgenimgkey = recovery_genkey
+                        with image_recovery_lock:
+                            currgenimgkey = recovery_genkey
                         if is_comfyui_imggen:
                             lastgeneratedcomfyimg = b''
                             genparams = sd_comfyui_tranform_params(genparams)
@@ -12900,8 +13286,17 @@ Change Mode<br>
                             abort_gen = None
                             send_keepalive = True
                         # Cloudflare proxy heuristic, trigger keepalive if cloudflare is detected
-                        if self.headers.get('CF-Connecting-IP'):
+                        if self.headers.get('CF-Connecting-IP') and not is_sdcpp_imggen:
                             send_keepalive = True
+                        if is_sdcpp_imggen:
+                            sdcpp_created = int(time.time() * 1000)
+                            with image_recovery_lock:
+                                sdcpp_last_job = None
+                                sdcpp_current_job = {
+                                    'id': 'job_koboldcpp', 'kind': 'img_gen', 'status': 'generating',
+                                    'created': sdcpp_created, 'started': sdcpp_created, 'completed': None,
+                                    'queue_position': 0, 'result': None, 'error': None,
+                                }
                         if send_keepalive:
                             # Close-delimited JSON works with HTTP/1.0 and HTTP/1.1.
                             # No Content-Length: the body includes periodic whitespace.
@@ -12917,14 +13312,13 @@ Change Mode<br>
                         gendatextra = gen["data_extra"]
                         genfinalframe = gen["final_frame"]
                         geninfo = json.dumps(gen["info"]) # sdapi really expects a stringified JSON
-                        currgenimgkey = ''
                         genresp = None
                         if gendat:
                             recovery_prompt = recovery_params.get('prompt', '')
                             recovery_negative_prompt = recovery_params.get('negative_prompt', '')
                             if recovery_negative_prompt:
                                 recovery_prompt = f"{recovery_prompt} ### {recovery_negative_prompt}"
-                            lastgeneratedcachedpayload = json.dumps({
+                            completed_payload = json.dumps({
                                 "images": [gendat],
                                 "parameters": recovery_params,
                                 "info": geninfo,
@@ -12934,8 +13328,41 @@ Change Mode<br>
                                 "prompt": recovery_prompt,
                                 "models": [recovery_model],
                             }).encode()
-                            lastgeneratedcachedpayloadkey = recovery_genkey
-                        if is_comfyui_imggen:
+                            # Publish the completed slot before clearing the active
+                            # slot, so recovery-status never observes a gap between
+                            # "running" and "complete" for a successful request.
+                            with image_recovery_lock:
+                                if recovery_genkey:
+                                    lastgeneratedcachedpayload = completed_payload
+                                    lastgeneratedcachedpayloadkey = recovery_genkey
+                                if currgenimgkey == recovery_genkey:
+                                    currgenimgkey = ''
+                        else:
+                            with image_recovery_lock:
+                                if currgenimgkey == recovery_genkey:
+                                    currgenimgkey = ''
+                        if is_sdcpp_imggen:
+                            completed = int(time.time() * 1000)
+                            with image_recovery_lock:
+                                cancelled = bool(sdcpp_current_job and sdcpp_current_job.get('cancel_requested'))
+                                sdcpp_last_job = {
+                                    'id': 'job_koboldcpp', 'kind': 'img_gen',
+                                    'status': 'completed' if gendat else ('cancelled' if cancelled else 'failed'),
+                                    'created': sdcpp_created, 'started': sdcpp_created,
+                                    'completed': completed, 'queue_position': 0,
+                                    'result': ({'output_format': 'png', 'images': [{'index': 0, 'b64_json': gendat}]}
+                                               if gendat else None),
+                                    'error': (None if gendat else {
+                                        'code': 'cancelled' if cancelled else 'generation_failed',
+                                        'message': 'job cancelled by client' if cancelled else 'image generation returned no result'}),
+                                }
+                                sdcpp_current_job = None
+                            genresp = json.dumps({
+                                'id': 'job_koboldcpp', 'kind': 'img_gen',
+                                'status': sdcpp_last_job['status'], 'created': sdcpp_created,
+                                'poll_url': '/sdcpp/v1/jobs/job_koboldcpp',
+                            }).encode()
+                        elif is_comfyui_imggen:
                             if gendat:
                                 lastgeneratedcomfyimg = base64.b64decode(gendat)
                             else:
@@ -12947,13 +13374,24 @@ Change Mode<br>
                         else:
                             genresp = (json.dumps({"images":[gendat],"parameters":{},"info":geninfo,"animated":genanim,"extra_data":gendatextra, "final_frame":genfinalframe}).encode())
                         if not keepalive_started:
-                            self.send_response(200)
+                            self.send_response(202 if is_sdcpp_imggen else 200)
                             self.send_header('content-length', str(len(genresp)))
                             self.end_headers(content_type='application/json')
                         final_write_started = True
                         self.wfile.write(genresp)
                     except Exception as ex:
-                        currgenimgkey = ''
+                        with image_recovery_lock:
+                            if currgenimgkey == recovery_genkey:
+                                currgenimgkey = ''
+                            if is_sdcpp_imggen:
+                                sdcpp_current_job = None
+                                sdcpp_last_job = {
+                                    'id': 'job_koboldcpp', 'kind': 'img_gen', 'status': 'failed',
+                                    'created': sdcpp_created, 'started': sdcpp_created,
+                                    'completed': int(time.time() * 1000), 'queue_position': 0,
+                                    'result': None,
+                                    'error': {'code': 'generation_failed', 'message': 'image generation failed'},
+                                }
                         if keepalive_started and not final_write_started:
                             # Headers are already committed; finish with a JSON error.
                             try:
@@ -12993,7 +13431,18 @@ Change Mode<br>
                                 self.wfile.write(genresp)
                                 return
                             genparams["audio_data"] = voice_audio
-                        gendat = None
+                        wants_timestamps = transcription_requests_timestamps(genparams)
+                        if wants_timestamps and not args.transcribealigner:
+                            genresp = json.dumps({"detail": {
+                                "msg": "Timestamp output requires --transcribealigner with a supported forced-aligner GGUF.",
+                                "type": "model_unavailable",
+                            }}).encode()
+                            self.send_response(400)
+                            self.send_header('content-length', str(len(genresp)))
+                            self.end_headers(content_type='application/json')
+                            self.wfile.write(genresp)
+                            return
+                        transcription_result = None
                         if genparams.get("audio_data","") and fullwhispermodelpath=="" and has_audio_support: #if we have no whisper model but an audio-capable projector, use that instead
                             adapter_obj = {} if chatcompl_adapter is None else chatcompl_adapter
                             user_message_start = adapter_obj.get("user_start", "### Instruction:")
@@ -13011,10 +13460,34 @@ Change Mode<br>
                                 "audio": [rawaudio]
                             }
                             temp_poll_result = generate(genparams=temp_poll)
-                            gendat = temp_poll_result['text']
+                            transcription_result = {"status": 1, "text": temp_poll_result['text']}
                         else:
-                            gendat = whisper_generate(genparams)
+                            transcription_result = whisper_generate_result(genparams)
+                        gendat = transcription_result.get("text", "")
+                        if wants_timestamps and transcription_result.get("family") != "qwen3_asr":
+                            genresp = json.dumps({"detail": {
+                                "msg": "Word timestamps are currently supported only by Qwen3-ASR with --transcribealigner.",
+                                "type": "unsupported_model",
+                            }}).encode()
+                            self.send_response(400)
+                            self.send_header('content-length', str(len(genresp)))
+                            self.end_headers(content_type='application/json')
+                            self.wfile.write(genresp)
+                            return
+                        if transcription_result.get("status") != 1:
+                            error_message = transcription_result.get("error", "Audio transcription failed.")
+                            genresp = json.dumps({"detail": {
+                                "msg": error_message,
+                                "type": "generation_error",
+                            }}).encode()
+                            self.send_response(500)
+                            self.send_header('content-length', str(len(genresp)))
+                            self.end_headers(content_type='application/json')
+                            self.wfile.write(genresp)
+                            return
                         transcribe_response = {"text":gendat}
+                        if wants_timestamps:
+                            transcribe_response["words"] = transcription_result.get("words", [])
                         if clean_path.endswith('/api/extra/music/transcribe'):
                             transcribe_response["abc"] = gendat
                         genresp = json.dumps(transcribe_response).encode()
@@ -13152,7 +13625,7 @@ Change Mode<br>
         else:
             self.send_header('access-control-allow-origin', '*')
         self.send_header('access-control-allow-methods', '*')
-        self.send_header('access-control-allow-headers', '*, Accept, Content-Type, Content-Length, Cache-Control, Accept-Encoding, X-CSRF-Token, Client-Agent, X-Fields, Content-Type, Authorization, X-Requested-With, X-HTTP-Method-Override, apikey, genkey')
+        self.send_header('access-control-allow-headers', '*, Accept, Content-Type, Content-Length, Content-Encoding, Cache-Control, Accept-Encoding, X-CSRF-Token, Client-Agent, X-Fields, Content-Type, Authorization, X-Requested-With, X-HTTP-Method-Override, apikey, genkey')
         self.send_header('access-control-allow-private-network', 'true')
         self.send_header("cache-control", "no-store")
         if content_type is not None:
@@ -13787,6 +14260,7 @@ def show_gui():
     gen_defaults_overwrite_var = ctk.IntVar(value=0)
 
     whisper_model_var = ctk.StringVar()
+    transcribe_aligner_var = ctk.StringVar()
     tts_model_var = ctk.StringVar()
     wavtokenizer_var = ctk.StringVar()
     ttsgpu_var = ctk.IntVar(value=0)
@@ -14192,6 +14666,7 @@ def show_gui():
             filepath = model_var.get()
             sdfilepath = sd_model_var.get()
             whisperfilepath = whisper_model_var.get()
+            alignerfilepath = transcribe_aligner_var.get()
             mmprojfilepath = mmproj_var.get()
             draftmodelpath = draftmodel_var.get()
             ttsmodelpath = tts_model_var.get() if ttsgpu_var.get()==1 else ""
@@ -14199,7 +14674,7 @@ def show_gui():
             musicllmpath = musicllm_var.get()
             musicditpath = musicdiffusion_var.get()
             musicvaepath = musicvae_var.get()
-            extract_modelfile_params(filepath,sdfilepath,whisperfilepath,mmprojfilepath,draftmodelpath,ttsmodelpath,embdmodelpath,musicllmpath,musicditpath,musicvaepath)
+            extract_modelfile_params(filepath,sdfilepath,whisperfilepath,alignerfilepath,mmprojfilepath,draftmodelpath,ttsmodelpath,embdmodelpath,musicllmpath,musicditpath,musicvaepath)
             changed_gpulayers_estimate()
         pass
 
@@ -14865,12 +15340,14 @@ def show_gui():
 
     # audio tab
     audio_tab = tabcontent["Audio"]
-    makefileentry(audio_tab, "Audio Transcription:", "Select Whisper or SheetSage2 Model File", whisper_model_var, 1, width=280, filetypes=[("*.bin *.gguf","*.bin *.gguf")], tooltiptxt="Select a Whisper .bin for speech-to-text, or a SheetSage2 .gguf for music-to-ABC transcription.")
+    makefileentry(audio_tab, "Transcriber:", "Select Whisper or Audio.cpp Transcription Model", whisper_model_var, 1, width=280, singlerow=True, filetypes=[("*.bin *.gguf","*.bin *.gguf")], tooltiptxt="Select a Whisper .bin or Audio.cpp ASR .gguf for speech-to-text, or a SheetSage2 .gguf for music-to-ABC transcription.")
     whisper_model_var.trace_add("write", gui_changed_modelfile)
-    makefileentry(audio_tab, "TTS Model (Text-To-Speech):", "Select TTS GGUF Model File", tts_model_var, 3, width=280, filetypes=[("*.gguf","*.gguf")], tooltiptxt="Select a TTS GGUF model file on disk to be loaded for Narration.")
+    makefileentry(audio_tab, "STT Aligner:", "Optional Qwen3 or MMS Forced Aligner GGUF", transcribe_aligner_var, 2, width=280, singlerow=True, filetypes=[("*.gguf","*.gguf")], tooltiptxt="Optional Qwen3 or MMS Forced Aligner model used for word timestamps.")
+    transcribe_aligner_var.trace_add("write", gui_changed_modelfile)
+    makefileentry(audio_tab, "TTS Model:", "Select TTS GGUF Model File", tts_model_var, 3, width=280, singlerow=True, filetypes=[("*.gguf","*.gguf")], tooltiptxt="Select a TTS GGUF model file on disk to be loaded for Narration.")
     tts_model_var.trace_add("write", gui_changed_modelfile)
     makelabelentry(audio_tab, "TTS Threads:" , tts_threads_var, 5, 50,padx=100,singleline=True,tooltip="How many threads to use during TTS generation.\nIf left blank, uses same value as threads.")
-    makelabelentry(audio_tab, "TTS Max Tokens:" , ttsmaxlen_var, 5, 50,padx=300,singleline=True,tooltip="Max allowed audiotokens to generate per TTS request.", labelpadx=190)
+    makelabelentry(audio_tab, "TTS Max Words:" , ttsmaxlen_var, 5, 50,padx=300,singleline=True,tooltip="Max allowed words to generate per TTS request.", labelpadx=190)
     makecheckbox(audio_tab, "TTS Use GPU", ttsgpu_var, 9, 0,tooltiptxt="Uses the GPU for TTS on supported model architectures.")
     ttsgpu_var.trace_add("write", gui_changed_modelfile)
     makefileentry(audio_tab, "WavTokenizer Model (Required for some models):", "Select WavTokenizer GGUF Model File", wavtokenizer_var, 11, width=280, filetypes=[("*.gguf","*.gguf")], tooltiptxt="Select a WavTokenizer GGUF model file on disk to be loaded for Narration.")
@@ -15289,7 +15766,8 @@ def show_gui():
         args.gendefaults = gen_defaults_var.get()  if gen_defaults_var.get() != "" else ""
         args.reasoningeffort = "default" # already incorporated into the editable generation defaults
         args.gendefaultsoverwrite = (gen_defaults_overwrite_var.get()==1)
-        args.whispermodel = whisper_model_var.get() if whisper_model_var.get() != "" else ""
+        args.transcribemodel = whisper_model_var.get() if whisper_model_var.get() != "" else ""
+        args.transcribealigner = transcribe_aligner_var.get() if transcribe_aligner_var.get() != "" else ""
         args.embeddingsmodel = embeddings_model_var.get()  if embeddings_model_var.get() != "" else ""
         args.embeddingsmaxctx = (0 if embeddings_ctx_var.get()=="" else int(embeddings_ctx_var.get()))
         args.embeddingsgpu = (embeddings_gpu_var.get()==1)
@@ -15637,7 +16115,8 @@ def show_gui():
         gen_defaults_var.set(gendefaults)
         gen_defaults_overwrite_var.set(1 if "gendefaultsoverwrite" in mydict and mydict["gendefaultsoverwrite"] else 0)
 
-        whisper_model_var.set(mydict["whispermodel"] if ("whispermodel" in mydict and mydict["whispermodel"]) else "")
+        whisper_model_var.set(mydict["transcribemodel"] if ("transcribemodel" in mydict and mydict["transcribemodel"]) else "")
+        transcribe_aligner_var.set(mydict["transcribealigner"] if ("transcribealigner" in mydict and mydict["transcribealigner"]) else "")
 
         tts_threads_var.set(str(mydict["ttsthreads"]) if ("ttsthreads" in mydict and mydict["ttsthreads"]) else str(default_threads))
         tts_model_var.set(mydict["ttsmodel"] if ("ttsmodel" in mydict and mydict["ttsmodel"]) else "")
@@ -16290,6 +16769,8 @@ def convert_invalid_args(args):
         del dict["tmpfsdirect"]
     if "usecuda" not in dict and "usecublas" in dict and dict["usecublas"]:
         dict["usecuda"] = dict["usecublas"]
+    if "whispermodel" in dict and dict["whispermodel"] and not dict.get("transcribemodel"):
+        dict["transcribemodel"] = dict["whispermodel"]
     if "usecuda" in dict and dict["usecuda"] and "lowvram" in dict["usecuda"]:
         dict["lowvram"] = True
     if "usecuda" in dict and dict["usecuda"] and "nommq" in dict["usecuda"]:
@@ -17553,7 +18034,7 @@ def main(launch_args, default_args):
             res = launch_OpenLumara(args)
             global_memory["OpenLumara"] = res is not None
         if args.remotetunnel and not args.prompt and not args.benchmark and not args.cli:
-            setuptunnel(global_memory, True if args.sdmodel else False, True if (args.musicdiffusion or args.musicllm or args.ttsmodel or args.whispermodel) else False)
+            setuptunnel(global_memory, True if args.sdmodel else False, True if (args.musicdiffusion or args.musicllm or args.ttsmodel or args.transcribemodel) else False)
         kcpp_main_process(args,global_memory,using_gui_launcher)
         if global_memory["input_to_exit"]:
             print("===")
@@ -17570,7 +18051,7 @@ def main(launch_args, default_args):
                 res = launch_OpenLumara(args)
                 global_memory["OpenLumara"] = res is not None
             if args.remotetunnel and not args.prompt and not args.benchmark and not args.cli:
-                setuptunnel(global_memory, True if args.sdmodel else False, True if (args.musicdiffusion or args.musicllm or args.ttsmodel or args.whispermodel) else False)
+                setuptunnel(global_memory, True if args.sdmodel else False, True if (args.musicdiffusion or args.musicllm or args.ttsmodel or args.transcribemodel) else False)
 
             # Sets the current configuration
             global_memory["currentConfig"] = args.config[0] if "config" in args and args.config is not None and len(args.config) > 0 else None
@@ -17816,7 +18297,7 @@ def mk_lora_info(imgloras, multipliers):
 
 autoswap_model_fields = {
     "text": ["model", "model_param", "lora", "mmproj", "draftmodel"],
-    "stt": ["whispermodel"],
+    "stt": ["transcribemodel", "transcribealigner"],
     "tts": ["ttsmodel", "ttswavtokenizer"],
     "embed": ["embeddingsmodel"],
     "music": ["musicllm", "musicembeddings", "musicdiffusion", "musicvae"],
@@ -17825,7 +18306,7 @@ autoswap_model_fields = {
 
 autoswap_primary_fields = {
     "text": ["model", "model_param"],
-    "stt": ["whispermodel"],
+    "stt": ["transcribemodel"],
     "tts": ["ttsmodel"],
     "embed": ["embeddingsmodel"],
     "music": ["musicllm", "musicdiffusion"],
@@ -17952,8 +18433,8 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
                 tempName = os.path.basename(os.path.abspath(args.mmproj))
                 tempName = os.path.splitext(tempName)[0]
                 mmprojName = sanitize_string(tempName)
-        if args.whispermodel and args.whispermodel!="":
-            tempName = os.path.basename(os.path.abspath(args.whispermodel))
+        if args.transcribemodel and args.transcribemodel!="":
+            tempName = os.path.basename(os.path.abspath(args.transcribemodel))
             tempName = os.path.splitext(tempName)[0]
             sttName = sanitize_string(tempName)
         if args.ttsmodel and args.ttsmodel!="":
@@ -18120,10 +18601,14 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
         dlfile = download_model_from_url(args.mmproj,[".gguf"],min_file_size=500000)
         if dlfile:
             args.mmproj = dlfile
-    if args.whispermodel and args.whispermodel!="":
-        dlfile = download_model_from_url(args.whispermodel,[".gguf",".bin"],min_file_size=500000)
+    if args.transcribemodel and args.transcribemodel!="":
+        dlfile = download_model_from_url(args.transcribemodel,[".gguf",".bin"],min_file_size=500000)
         if dlfile:
-            args.whispermodel = dlfile
+            args.transcribemodel = dlfile
+    if args.transcribealigner and args.transcribealigner!="":
+        dlfile = download_model_from_url(args.transcribealigner,[".gguf"],min_file_size=500000)
+        if dlfile:
+            args.transcribealigner = dlfile
     if args.draftmodel and args.draftmodel!="":
         dlfile = download_model_from_url(args.draftmodel,[".gguf"],min_file_size=500000)
         if dlfile:
@@ -18302,7 +18787,7 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
             if args.gpulayers==-1 and args.model_param and os.path.exists(args.model_param):
                 if (not args.usecpu) and ((args.usecuda is not None) or (args.usevulkan is not None) or sys.platform=="darwin"):
                     if MaxMemory[0] > 0:
-                        extract_modelfile_params(args.model_param,args.sdmodel,args.whispermodel,args.mmproj,args.draftmodel,args.ttsmodel if args.ttsgpu else "",args.embeddingsmodel if args.embeddingsgpu else "", args.musicllm, args.musicdiffusion, args.musicvae)
+                        extract_modelfile_params(args.model_param,args.sdmodel,args.transcribemodel,args.transcribealigner,args.mmproj,args.draftmodel,args.ttsmodel if args.ttsgpu else "",args.embeddingsmodel if args.embeddingsgpu else "", args.musicllm, args.musicdiffusion, args.musicvae)
                         layeramt = autoset_gpu_layers(args.contextsize,args.sdquant,args.batchsize,args.musiclowvram)
                         print(f"Auto Recommended GPU Layers: {layeramt}")
                         args.gpulayers = layeramt
@@ -18519,20 +19004,38 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
                 exitcounter = 999
                 exit_with_error(3,"Could not load image model: " + imgmodel)
 
-    #handle whisper model
-    if args.whispermodel and args.whispermodel!="":
-        whispermodel = args.whispermodel
+    #handle audio transcription model
+    if args.transcribealigner and not args.transcribemodel:
+        if args.ignoremissing:
+            print("Ignoring --transcribealigner because no --transcribemodel was specified.")
+            args.transcribealigner = None
+        else:
+            exitcounter = 999
+            exit_with_error(2,"--transcribealigner requires --transcribemodel.")
+    if args.transcribemodel and args.transcribemodel!="":
+        whispermodel = args.transcribemodel
         if not whispermodel or not os.path.exists(whispermodel):
             if args.ignoremissing:
-                print(f"Ignoring missing whisper model file: {whispermodel}")
-                args.whispermodel = None
+                print(f"Ignoring missing transcription model file: {whispermodel}")
+                args.transcribemodel = None
             else:
                 exitcounter = 999
-                exit_with_error(2,f"Cannot find whisper model file: {whispermodel}")
+                exit_with_error(2,f"Cannot find transcription model file: {whispermodel}")
         else:
             whispermodel = os.path.abspath(whispermodel)
             fullwhispermodelpath = whispermodel
-            loadok = whisper_load_model(whispermodel)
+            alignermodel = args.transcribealigner
+            if alignermodel and not os.path.exists(alignermodel):
+                if args.ignoremissing:
+                    print(f"Ignoring missing transcription aligner model file: {alignermodel}")
+                    alignermodel = ""
+                    args.transcribealigner = None
+                else:
+                    exitcounter = 999
+                    exit_with_error(2,f"Cannot find transcription aligner model file: {alignermodel}")
+            if alignermodel:
+                alignermodel = os.path.abspath(alignermodel)
+            loadok = whisper_load_model(whispermodel, alignermodel)
             print("Load Audio Transcription Model OK: " + str(loadok))
             if not loadok:
                 exitcounter = 999
@@ -18699,7 +19202,7 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
         with open(os.path.join(embddir, "kcpp_musicui.embd"), mode='rb') as f:
             embedded_musicui = f.read()
             embedded_musicui_gz = gzip.compress(embedded_musicui)
-            if args.musicllm or args.musicdiffusion or args.ttsmodel or args.whispermodel:
+            if args.musicllm or args.musicdiffusion or args.ttsmodel or args.transcribemodel:
                 print("Embedded MusicUI loaded.")
     except Exception:
         print("Could not find Embedded MusicUI.")
@@ -18811,7 +19314,7 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
             print(f"Starting llama.cpp secondary WebUI at {endpoint_url}/lcpp/")
             if args.sdmodel:
                 print(f"StableUI is available at {endpoint_url}/sdui/")
-            if args.musicdiffusion or args.musicllm or args.ttsmodel or args.whispermodel:
+            if args.musicdiffusion or args.musicllm or args.ttsmodel or args.transcribemodel:
                 print(f"MusicUI is available at {endpoint_url}/musicui/")
         elif global_memory:
             val = global_memory["tunnel_url"]
@@ -18823,7 +19326,7 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
                 print(f"Starting llama.cpp secondary WebUI at {endpoint_url}/lcpp/")
                 if args.sdmodel:
                     print(f"StableUI is available at {endpoint_url}/sdui/")
-                if args.musicdiffusion or args.musicllm or args.ttsmodel or args.whispermodel:
+                if args.musicdiffusion or args.musicllm or args.ttsmodel or args.transcribemodel:
                     print(f"MusicUI is available at {endpoint_url}/musicui/")
             global_memory["load_complete"] = True
         if args.launch:
@@ -19170,14 +19673,15 @@ if __name__ == '__main__':
     sdparsergroup.add_argument("--sdvaedevice", metavar=('[Device ID]'), help=f"VAE device for image generation. GPU index, -1 or 'main' for the main GPU, or 'CPU' (default: {default_sdvaedevice}).", type=sd_get_device_number, default=None)
     sdparsergroup.add_argument("--sdvramlimit", metavar=('[limit MB]'), help="If set, prevent VRAM usage from image gen from using more than this many MB.", type=int, default=0)
 
-    whisperparsergroup = parser.add_argument_group('Whisper Transcription Commands')
-    whisperparsergroup.add_argument("--whispermodel", metavar=('[filename]'), help="Specify a Whisper .bin for speech-to-text or SheetSage2 .gguf for music-to-ABC transcription.", default="")
+    whisperparsergroup = parser.add_argument_group('Audio Transcription Commands')
+    whisperparsergroup.add_argument("--transcribemodel", metavar=('[filename]'), help="Specify a Whisper .bin or Audio.cpp ASR .gguf for speech-to-text, or SheetSage2 .gguf for music-to-ABC transcription.", default="")
+    whisperparsergroup.add_argument("--transcribealigner", metavar=('[filename]'), help="Optional Qwen3 or MMS Forced Aligner GGUF used for word timestamps.", default="")
 
     ttsparsergroup = parser.add_argument_group('TTS Narration Commands')
     ttsparsergroup.add_argument("--ttsmodel", metavar=('[filename]'), help="Specify the TTS Text-To-Speech GGUF model.", default="")
     ttsparsergroup.add_argument("--ttswavtokenizer", metavar=('[filename]'), help="Specify the WavTokenizer GGUF model.", default="")
     ttsparsergroup.add_argument("--ttsgpu", help="Use the GPU for TTS.", action='store_true')
-    ttsparsergroup.add_argument("--ttsmaxlen", help="Limit number of audio tokens generated with TTS.",  type=int, default=default_ttsmaxlen)
+    ttsparsergroup.add_argument("--ttsmaxlen", help="Limit number of words generated with TTS.",  type=int, default=default_ttsmaxlen)
     ttsparsergroup.add_argument("--ttsthreads", metavar=('[threads]'), help="Use a different number of threads for TTS if specified. Otherwise, has the same value as --threads.", type=int, default=0)
     ttsparsergroup.add_argument("--ttsdir", metavar=('[directory]'), help="Select directory containing voices for voice cloning.", default="")
 
@@ -19238,6 +19742,7 @@ if __name__ == '__main__':
     deprecatedgroup = parser.add_argument_group('Deprecated Commands, DO NOT USE!')
     deprecatedgroup.add_argument("--hordeconfig", help=argparse.SUPPRESS, nargs='+')
     deprecatedgroup.add_argument("--sdconfig", help=argparse.SUPPRESS, nargs='+')
+    deprecatedgroup.add_argument("--whispermodel", help=argparse.SUPPRESS, metavar=('[filename]'))
     compatgroup.add_argument("--noblas", help=argparse.SUPPRESS, action='store_true')
     compatgroup3.add_argument("--nommap","--no-mmap", help=argparse.SUPPRESS, action='store_true')
     deprecatedgroup.add_argument("--nopipelineparallel", help=argparse.SUPPRESS, action='store_true') #now to automatically enable when ubatch < batchsize and multigpu
