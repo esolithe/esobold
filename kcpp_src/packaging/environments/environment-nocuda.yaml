@@ -68,6 +68,7 @@ dependencies:
     - tree_sitter_language_pack
     - mcp
     - simpleeval
+    - typer
     - tomli
     - rich
     - flask
