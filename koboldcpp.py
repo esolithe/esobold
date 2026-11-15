@@ -8329,7 +8329,7 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
     def _rewrite_OpenLumara_body_text(self, text, content_type=""):
         # Prefix absolute-root references so OpenLumara works from /openlumara.
         prefixes = [
-            "/static/", "/api/", "/messages", "/stream", "/send", "/edit", "/delete", "/cancel", "/upload",
+            "/ext-assets/", "/static/", "/api/", "/messages", "/stream", "/send", "/edit", "/delete", "/cancel", "/upload",
             "/chats", "/chat/", "/settings/", "/storage/", "/server/", "/manifest.json", "/sw.js", "/icon-192.png", "/icon-512.png",
             "/themes.js", "/openapi.json", "/logout", "/login",
         ]
@@ -18421,8 +18421,8 @@ def launch_OpenLumara(launch_args):
                 "--channels.settings.webui.port", f"{OpenLumara_default_webui_port}",
                 "--channels.settings.webui.require_login", "true" if (launch_args.OpenLumara_requirelogin is None or launch_args.OpenLumara_requirelogin) else "false",
                 "--core.data_folder", f"{launch_args.OpenLumara_datadir if launch_args.OpenLumara_datadir is not None else 'data'}",
-                "--modules.settings.coder.sandbox_folder", f"{launch_args.OpenLumara_sandboxfolder if launch_args.OpenLumara_sandboxfolder is not None else 'sandbox'}",
-                "--modules.settings.sandboxed_shell.sandbox_path", f"{launch_args.OpenLumara_sandboxfolder if launch_args.OpenLumara_sandboxfolder is not None else 'sandbox'}",
+                "--modules.settings.coder.sandbox_paths", f"{launch_args.OpenLumara_sandboxfolder if launch_args.OpenLumara_sandboxfolder is not None else 'sandbox'}",
+                "--modules.settings.shell.sandbox_path", f"{launch_args.OpenLumara_sandboxfolder if launch_args.OpenLumara_sandboxfolder is not None else 'sandbox'}",
                 "--modules.settings.auto_backup.backup_path", f"{launch_args.OpenLumara_backuppath if launch_args.OpenLumara_backuppath is not None else 'data_backups'}",
                 "--user_modules.path", f"{userModulesPath}",
                 "--disable_auto_installer"
@@ -20360,7 +20360,7 @@ if __name__ == '__main__':
     OpenLumaragroup.add_argument("--OpenLumara_TemporaryMode", help="Enable temporary mode for OpenLumara AI agent. This prevents writing through most of the tools to disk. This does not include shell commands.", action='store_true')
     OpenLumaragroup.add_argument("--OpenLumara_configfile", metavar=('[filename]'), help="Path to the OpenLumara config YAML file. Generated with defaults if the file is absent.", default="", type=str)
     OpenLumaragroup.add_argument("--OpenLumara_datadir", metavar=('[directory]'), help="Overrides the data_dir field in the OpenLumara config.", default="", type=str)
-    OpenLumaragroup.add_argument("--OpenLumara_sandboxfolder", metavar=('[directory]'), help="Overrides the sandbox_folder field in the OpenLumara config.", default="", type=str)
+    OpenLumaragroup.add_argument("--OpenLumara_sandboxfolder", metavar=('[directory]'), help="Overrides both modules.settings.coder.sandbox_paths and modules.settings.shell.sandbox_path in OpenLumara.", default="", type=str)
     OpenLumaragroup.add_argument("--OpenLumara_backuppath", metavar=('[directory]'), help="Overrides the backup_path field in the OpenLumara auto_backup module.", default="", type=str)
     OpenLumaragroup.add_argument("--OpenLumara_apiurl", metavar=('[url]'), help="Overrides the API URL field in the OpenLumara config.", default="", type=str)
     OpenLumaragroup.add_argument("--OpenLumara_requirelogin", help="Require login for the OpenLumara WebUI (default: true). Default credentials are admin:admin, change these in the OpenLumara webui or config file after the first launch.", action='store_true', default=True)
