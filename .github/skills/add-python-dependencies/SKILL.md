@@ -1,6 +1,6 @@
 ---
 name: add-python-dependencies
-description: 'Add or update Python dependencies for esobold packaging and release pipelines. Use when adding, removing, or changing a package across requirements, conda env files, PyInstaller commands, and GitHub workflows. Keywords: dependency, dependancy, pip install, pyinstaller --collect-all, tree_sitter_language_pack, tomllib.'
+description: 'Add or update Python dependencies for esobold packaging and release pipelines. Use when adding, removing, or changing a package across requirements, conda env files, PyInstaller commands, and GitHub workflows. Keywords: dependency, dependancy, pip install, pyinstaller --collect-all, tree_sitter_language_pack, tomli, tomllib.'
 argument-hint: '<pip-package> [pyinstaller-module]'
 ---
 
@@ -10,7 +10,7 @@ Use this skill when you need to add, remove, or rename a Python dependency and k
 
 ## Scope Guardrails
 
-- Exclude `esoExtras/opticlaw/**` from this workflow.
+- Exclude `esoExtras/opticlaw/**` from dependency propagation unless explicitly requested.
 - Include hidden paths in searches so `.github/workflows/**` is scanned.
 
 ## Canonical Search Terms
@@ -73,6 +73,7 @@ Examples:
 - `pyyaml` -> `yaml`
 - `json-repair` -> `json_repair`
 - `partial-json-parser` -> `partial_json_parser`
+- `tomli` -> `tomli`
 - `tree-sitter-language-pack` -> `tree_sitter_language_pack`
 
 ## Validation Checklist
@@ -96,3 +97,11 @@ If the loop prints nothing, dependency propagation is complete for this workflow
 - Missing hidden files by forgetting `--hidden` (this skips `.github/workflows/**`).
 - Updating only pip manifests but not PyInstaller `--collect-all` lists.
 - Using only the pip package name when PyInstaller needs a different module name.
+- Adding `tomllib` to pip dependency lists. Use `tomli` for Python < 3.11 compatibility, and use this import pattern in code when needed:
+
+```python
+try:
+   import tomllib
+except ModuleNotFoundError:
+   import tomli as tomllib
+```

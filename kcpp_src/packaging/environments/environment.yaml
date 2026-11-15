@@ -69,6 +69,6 @@ dependencies:
     - partial-json-parser
     - filetype
     - tree_sitter_language_pack
-    - tomllib
+    - tomli
     - rich
     - flask
