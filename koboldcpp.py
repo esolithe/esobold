@@ -18411,6 +18411,10 @@ def launch_OpenLumara(launch_args):
         userModulesPath = os.path.abspath(userModulesPath)
         userModulesPath = os.path.join(userModulesPath, "user_modules")
         os.makedirs(userModulesPath, exist_ok=True)
+
+        proxy_public_port = getattr(launch_args, "proxy_port", None) or getattr(launch_args, "port_param", None) or getattr(launch_args, "port", None) or defaultport
+        openlumara_extra_allowed_origins = f"localhost:{proxy_public_port},127.0.0.1:{proxy_public_port}"
+
         args_to_add = ["--config", configPath,
                 "--api.key", f"{launch_args.password if launch_args.password is not None else 'KEY_HERE'}",
                 "--api.url", f"{api_url}",
@@ -18419,6 +18423,7 @@ def launch_OpenLumara(launch_args):
                 "--channels.settings.webui.network_mode", "custom",
                 "--channels.settings.webui.custom_host", "0.0.0.0",
                 "--channels.settings.webui.port", f"{OpenLumara_default_webui_port}",
+                "--channels.settings.webui.extra_allowed_origins", f"{openlumara_extra_allowed_origins}",
                 "--channels.settings.webui.require_login", "true" if (launch_args.OpenLumara_requirelogin is None or launch_args.OpenLumara_requirelogin) else "false",
                 "--core.data_folder", f"{launch_args.OpenLumara_datadir if launch_args.OpenLumara_datadir is not None else 'data'}",
                 "--modules.settings.coder.sandbox_paths", f"{launch_args.OpenLumara_sandboxfolder if launch_args.OpenLumara_sandboxfolder is not None else 'sandbox'}",
