@@ -26,7 +26,9 @@ from sqlite3 import Cursor
 import struct
 import json
 import sys
+import http.client
 import http.server
+import ssl
 import time
 import asyncio
 import socket
@@ -9426,11 +9428,14 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         req_id_suffix = genparams.get('oai_uniqueid',1)
         chatcmpl_id = f"chatcmpl-A{req_id_suffix}"
         cmpl_id = f"cmpl-A{req_id_suffix}"
+        is_background_worker = (
+            genparams.get('genkey', '').startswith('HORDEREQ_') or
+            self.headers.get('X-KoboldCpp-Background-Worker') == 'beavernet'
+        )
 
         def run_blocking():  # api format 1=basic,2=kai,3=oai,4=oai-chat
             # flag instance as non-idle for a while
-            washordereq = genparams.get('genkey', '').startswith('HORDEREQ_')
-            if not washordereq:
+            if not is_background_worker:
                 global last_non_horde_req_time
                 last_non_horde_req_time = time.time()
 
@@ -9464,8 +9469,7 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             logprobsdict = parse_last_logprobs(lastlogprobs)
 
         # flag instance as non-idle for a while
-        washordereq = genparams.get('genkey', '').startswith('HORDEREQ_')
-        if not washordereq:
+        if not is_background_worker:
             global last_non_horde_req_time
             last_non_horde_req_time = time.time()
 
@@ -14017,6 +14021,7 @@ def show_gui():
         togglectxshift(1,1,1)
         togglesmartcache(1,1,1)
         togglehorde(1,1,1)
+        togglebeavernet(1,1,1)
         toggletaesd(1,1,1)
         togglesdlora(1,1,1)
         togglejinja(1,1,1)
@@ -14099,7 +14104,7 @@ def show_gui():
 
     tabs = ctk.CTkFrame(root, corner_radius = 0, width=windowwidth, height=windowheight-50)
     tabs.grid(row=0, stick="nsew")
-    tabnames= ["Quick Launch", "Hardware", "Context", "Loaded Files", "Network", "Horde Worker","Image Gen","Audio","Agent","Admin","Autoswap","Filesystem","OpenLumara","Extra"]
+    tabnames= ["Quick Launch", "Hardware", "Context", "Loaded Files", "Network", "Online Worker","Image Gen","Audio","Agent","Admin","Autoswap","Filesystem","OpenLumara","Extra"]
     navbuttons = {}
     navbuttonframe = ctk.CTkFrame(tabs, width=int(104), height=int(tabs.cget("height")))
     navbuttonframe.grid(row=0, column=0, padx=2,pady=2)
@@ -14216,6 +14221,8 @@ def show_gui():
     horde_apikey_var = ctk.StringVar(value="")
     horde_workername_var = ctk.StringVar(value="")
     usehorde_var = ctk.IntVar()
+    beavernet_apikey_var = ctk.StringVar(value="")
+    usebeavernet_var = ctk.IntVar()
     ssl_cert_var = ctk.StringVar()
     ssl_key_var = ctk.StringVar()
     password_var = ctk.StringVar()
@@ -14375,6 +14382,12 @@ def show_gui():
             temp.bind("<Enter>", lambda event: show_tooltip(event, tooltiptxt))
             temp.bind("<Leave>", hide_tooltip)
         return temp
+
+    def makehyperlink(parent, text, url, row, column=0, columnspan=1):
+        link = ctk.CTkLabel(parent, text=text, text_color="#3B8ED0", font=ctk.CTkFont(underline=True), cursor="hand2")
+        link.grid(row=row, column=column, columnspan=columnspan, padx=8, pady=1, sticky="nw")
+        link.bind("<Button-1>", lambda event: LaunchWebbrowser(url, f"Could not open {url} in a browser."))
+        return link
 
     def makeslider(parent, label, options, var, row=0, width=160, height=12, set=0, tooltip=""):
         slider_row = ctk.CTkFrame(parent, fg_color="transparent")
@@ -15243,14 +15256,15 @@ def show_gui():
 
 
     # Horde Tab
-    horde_tab = tabcontent["Horde Worker"]
-    makelabel(horde_tab, "Horde:", 18,0,"Settings for embedded AI Horde worker").grid(pady=10)
+    horde_tab = tabcontent["Online Worker"]
+    makelabel(horde_tab, "AI Horde Worker:", 18,0,"Settings for embedded AI Horde worker").grid(pady=10)
 
     horde_name_entry,  horde_name_label = makelabelentry(horde_tab, "Horde Model Name:", horde_name_var, 20, 180,tooltip="The model name to be displayed on the AI Horde.")
     horde_gen_entry,  horde_gen_label = makelabelentry(horde_tab, "Gen. Length:", horde_gen_var, 21, 50,tooltip="The maximum amount to generate per request that this worker will accept jobs for.")
     horde_context_entry,  horde_context_label = makelabelentry(horde_tab, "Max Context:",horde_context_var, 22, 50,tooltip="The maximum context length that this worker will accept jobs for.\nIf 0, matches main context limit.")
-    horde_apikey_entry,  horde_apikey_label = makelabelentry(horde_tab, "API Key (If Embedded Worker):",horde_apikey_var, 23, 180,tooltip="Your AI Horde API Key that you have registered.")
+    horde_apikey_entry,  horde_apikey_label = makelabelentry(horde_tab, "AI Horde API Key:",horde_apikey_var, 23, 180,tooltip="Your AI Horde API Key that you have registered.")
     horde_workername_entry,  horde_workername_label = makelabelentry(horde_tab, "Horde Worker Name:",horde_workername_var, 24, 180,tooltip="Your worker's name to be displayed.")
+    horde_signup_link = makehyperlink(horde_tab, "Register AI Horde API Key", "https://aihorde.net/register", 25, columnspan=2)
 
     def togglehorde(a,b,c):
         horde_items = zip([horde_name_entry, horde_gen_entry, horde_context_entry, horde_apikey_entry, horde_workername_entry],
@@ -15263,11 +15277,31 @@ def show_gui():
             else:
                 item.grid_remove()
                 label.grid_remove()
+        if usehorde_var.get() == 1:
+            horde_signup_link.grid()
+        else:
+            horde_signup_link.grid_remove()
         if usehorde_var.get()==1 and (horde_name_var.get()=="koboldcpp" or horde_name_var.get()=="") and model_var.get()!="":
             basefile = os.path.basename(model_var.get())
             horde_name_var.set(sanitize_string(os.path.splitext(basefile)[0]))
 
     makecheckbox(horde_tab, "Configure for Horde", usehorde_var, 19, command=togglehorde,tooltiptxt="Enable the embedded AI Horde worker.")
+
+    makelabel(horde_tab, "BeaverNet Worker:", 26,0,"Settings for embedded BeaverNet worker").grid(pady=10)
+    beavernet_apikey_entry, beavernet_apikey_label = makelabelentry(horde_tab, "BeaverNet API Key:", beavernet_apikey_var, 28, 180, tooltip="Your BeaverNet provider API key.")
+    beavernet_signup_link = makehyperlink(horde_tab, "Register BeaverNet API Key", "https://net.beaverai.org", 29, columnspan=2)
+
+    def togglebeavernet(a,b,c):
+        if usebeavernet_var.get() == 1:
+            beavernet_apikey_entry.grid()
+            beavernet_apikey_label.grid()
+            beavernet_signup_link.grid()
+        else:
+            beavernet_apikey_entry.grid_remove()
+            beavernet_apikey_label.grid_remove()
+            beavernet_signup_link.grid_remove()
+
+    makecheckbox(horde_tab, "Enable BeaverNet Worker", usebeavernet_var, 27, command=togglebeavernet, tooltiptxt="Share this KoboldCpp model through BeaverNet.")
 
     # Image Gen Tab
 
@@ -15523,6 +15557,7 @@ def show_gui():
     togglectxshift(1,1,1)
     togglesmartcache(1,1,1)
     togglehorde(1,1,1)
+    togglebeavernet(1,1,1)
     toggletaesd(1,1,1)
     togglesdlora(1,1,1)
     togglejinja(1,1,1)
@@ -15732,6 +15767,8 @@ def show_gui():
             if horde_apikey_var.get()!="" and horde_workername_var.get()!="":
                 args.hordekey = horde_apikey_var.get()
                 args.hordeworkername = horde_workername_var.get()
+
+        args.beavernetkey = beavernet_apikey_var.get() if usebeavernet_var.get() != 0 else ""
 
         args.sdmodel = sd_model_var.get() if sd_model_var.get() != "" else ""
         args.sdflashattention = True if sd_flash_attention_var.get()==1 else False
@@ -16070,6 +16107,8 @@ def show_gui():
         horde_apikey_var.set(mydict["hordekey"] if ("hordekey" in mydict and mydict["hordekey"]) else "")
         horde_workername_var.set(mydict["hordeworkername"] if ("hordeworkername" in mydict and mydict["hordeworkername"]) else "")
         usehorde_var.set(1 if ("hordekey" in mydict and mydict["hordekey"]) else 0)
+        beavernet_apikey_var.set(mydict["beavernetkey"] if ("beavernetkey" in mydict and mydict["beavernetkey"]) else "")
+        usebeavernet_var.set(1 if ("beavernetkey" in mydict and mydict["beavernetkey"]) else 0)
         maxrequestsize_var.set(mydict["maxrequestsize"] if ("maxrequestsize" in mydict and mydict["maxrequestsize"]) else 32)
         ratelimit_var.set(mydict["ratelimit"] if ("ratelimit" in mydict and mydict["ratelimit"]) else 0)
         reqtimeout_var.set(mydict["reqtimeout"] if ("reqtimeout" in mydict and mydict["reqtimeout"]) else 0)
@@ -16382,7 +16421,7 @@ def make_url_request(url, data, method='POST', headers={}, timeout=600, error_in
         ssl_cert_dir = os.environ.get('SSL_CERT_DIR')
         if not ssl_cert_dir and not nocertify and os.name != 'nt':
             os.environ['SSL_CERT_DIR'] = '/etc/ssl/certs'
-        if method=='POST':
+        if data is not None:
             json_payload = json.dumps(data).encode('utf-8')
             request = urllib.request.Request(url, data=json_payload, headers=headers, method=method)
             request.add_header('content-type', 'application/json')
@@ -16390,10 +16429,14 @@ def make_url_request(url, data, method='POST', headers={}, timeout=600, error_in
             request = urllib.request.Request(url, headers=headers, method=method)
         response_data = ""
         with urllib.request.urlopen(request,timeout=timeout) as response:
+            if error_info is not None:
+                error_info["status"] = response.status
             content_type = response.headers.get('Content-Type', '')
             response_data = response.read()
             if 'audio/wav' in content_type:
                 return response_data #raw binary
+            elif not response_data:
+                return True #successful response with no body, e.g. HTTP 204
             else:
                 json_response = json.loads(response_data.decode('utf-8',"ignore"))
                 return json_response
@@ -16415,6 +16458,572 @@ def make_url_request(url, data, method='POST', headers={}, timeout=600, error_in
     except Exception as e:
         print_with_time(f"Error: {e} - {response_data}")
         return None
+
+
+class _BeaverNetWebSocketClosed(Exception):
+    def __init__(self, code=None, reason=""):
+        super().__init__(reason)
+        self.code = code
+        self.reason = reason
+
+
+class _BeaverNetWebSocket:
+    """Small WebSocket client for the embedded BeaverNet worker."""
+
+    def __init__(self, url):
+        target = urllib.parse.urlsplit(url)
+        if target.scheme != "wss" or not target.hostname:
+            raise ValueError("BeaverNet worker URL must use wss://")
+        port = target.port or 443
+        raw_socket = socket.create_connection((target.hostname, port), timeout=15)
+        try:
+            self.socket = ssl.create_default_context().wrap_socket(raw_socket, server_hostname=target.hostname)
+        except Exception:
+            raw_socket.close()
+            raise
+        self.socket.settimeout(45)
+        self.send_lock = threading.Lock()
+        self.buffer = bytearray()
+        self.closed = False
+
+        ws_key = base64.b64encode(os.urandom(16)).decode("ascii")
+        path = target.path or "/"
+        if target.query:
+            path += "?" + target.query
+        host = target.netloc
+        request = (
+            f"GET {path} HTTP/1.1\r\n"
+            f"Host: {host}\r\n"
+            "Upgrade: websocket\r\n"
+            "Connection: Upgrade\r\n"
+            f"Sec-WebSocket-Key: {ws_key}\r\n"
+            "Sec-WebSocket-Version: 13\r\n"
+            "Sec-WebSocket-Protocol: beavernet-agent.1\r\n\r\n"
+        )
+        self.socket.sendall(request.encode("ascii"))
+        response = self._read_headers()
+        lines = response.decode("iso-8859-1").split("\r\n")
+        if not lines or " 101 " not in lines[0]:
+            self.abort()
+            raise ConnectionError(f"WebSocket upgrade failed: {lines[0] if lines else 'no response'}")
+        headers = {}
+        for line in lines[1:]:
+            if ":" in line:
+                key, value = line.split(":", 1)
+                headers[key.strip().lower()] = value.strip()
+        expected = base64.b64encode(hashlib.sha1((ws_key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("ascii")).digest()).decode("ascii")
+        if headers.get("sec-websocket-accept") != expected or headers.get("sec-websocket-protocol") != "beavernet-agent.1":
+            self.abort()
+            raise ConnectionError("BeaverNet returned an invalid WebSocket handshake")
+
+    def _read_headers(self):
+        while b"\r\n\r\n" not in self.buffer:
+            chunk = self.socket.recv(4096)
+            if not chunk:
+                raise ConnectionError("Connection closed during WebSocket upgrade")
+            self.buffer.extend(chunk)
+            if len(self.buffer) > 32768:
+                raise ConnectionError("WebSocket upgrade headers are too large")
+        at = self.buffer.index(b"\r\n\r\n") + 4
+        headers = bytes(self.buffer[:at])
+        del self.buffer[:at]
+        return headers
+
+    def _recv_exact(self, amount):
+        while len(self.buffer) < amount:
+            chunk = self.socket.recv(max(4096, amount - len(self.buffer)))
+            if not chunk:
+                raise _BeaverNetWebSocketClosed()
+            self.buffer.extend(chunk)
+        data = bytes(self.buffer[:amount])
+        del self.buffer[:amount]
+        return data
+
+    def _recv_frame(self):
+        first, second = self._recv_exact(2)
+        if first & 0x70:
+            raise ConnectionError("Unsupported WebSocket extension data")
+        final = bool(first & 0x80)
+        opcode = first & 0x0f
+        masked = bool(second & 0x80)
+        length = second & 0x7f
+        if length == 126:
+            length = struct.unpack("!H", self._recv_exact(2))[0]
+        elif length == 127:
+            length = struct.unpack("!Q", self._recv_exact(8))[0]
+        if length > 2 * 1024 * 1024:
+            raise ConnectionError("BeaverNet WebSocket frame is too large")
+        mask = self._recv_exact(4) if masked else None
+        payload = self._recv_exact(length)
+        if mask:
+            payload = bytes(value ^ mask[index & 3] for index, value in enumerate(payload))
+        return final, opcode, payload
+
+    def recv_message(self):
+        message_opcode = None
+        chunks = []
+        while True:
+            final, opcode, payload = self._recv_frame()
+            if opcode == 0x8:
+                code = struct.unpack("!H", payload[:2])[0] if len(payload) >= 2 else None
+                reason = payload[2:].decode("utf-8", "replace") if len(payload) > 2 else ""
+                try:
+                    self.send_frame(0x8, payload[:125])
+                except Exception:
+                    pass
+                raise _BeaverNetWebSocketClosed(code, reason)
+            if opcode == 0x9:
+                self.send_frame(0xA, payload)
+                continue
+            if opcode == 0xA:
+                continue
+            if opcode in (0x1, 0x2):
+                if message_opcode is not None:
+                    raise ConnectionError("Unexpected WebSocket data frame")
+                message_opcode = opcode
+                chunks = [payload]
+            elif opcode == 0x0:
+                if message_opcode is None:
+                    raise ConnectionError("Unexpected WebSocket continuation frame")
+                chunks.append(payload)
+            else:
+                raise ConnectionError("Unsupported WebSocket frame")
+            if final:
+                return message_opcode, b"".join(chunks)
+
+    def send_frame(self, opcode, payload=b""):
+        if isinstance(payload, str):
+            payload = payload.encode("utf-8")
+        mask = os.urandom(4)
+        length = len(payload)
+        if length < 126:
+            header = bytes((0x80 | opcode, 0x80 | length))
+        elif length <= 0xffff:
+            header = bytes((0x80 | opcode, 0x80 | 126)) + struct.pack("!H", length)
+        else:
+            header = bytes((0x80 | opcode, 0x80 | 127)) + struct.pack("!Q", length)
+        masked = bytes(value ^ mask[index & 3] for index, value in enumerate(payload))
+        with self.send_lock:
+            if self.closed:
+                raise _BeaverNetWebSocketClosed()
+            self.socket.sendall(header + mask + masked)
+
+    def send_json(self, message):
+        self.send_frame(0x1, json.dumps(message, separators=(",", ":")))
+
+    def close(self, code=1000, reason=""):
+        try:
+            self.send_frame(0x8, struct.pack("!H", code) + reason.encode("utf-8")[:123])
+        except Exception:
+            pass
+        self.abort()
+
+    def abort(self):
+        with self.send_lock:
+            if self.closed:
+                return
+            self.closed = True
+            try:
+                self.socket.shutdown(socket.SHUT_RDWR)
+            except Exception:
+                pass
+            self.socket.close()
+
+
+def _beavernet_api_request(api_key, method, path, data=None, timeout=30):
+    """Call the BeaverNet provider API with its common URL and authorization."""
+    error_info = {}
+    result = make_url_request(
+        "https://net.beaverai.org/v1" + path,
+        data,
+        method,
+        {"Authorization": "Bearer " + api_key},
+        timeout,
+        error_info,
+    )
+    return error_info.get("status"), result
+
+
+def _beavernet_error_message(result):
+    if isinstance(result, dict):
+        error = result.get("error")
+        if isinstance(error, dict) and error.get("message"):
+            return str(error["message"])
+        if isinstance(error, str):
+            return error
+        if result.get("message"):
+            return str(result["message"])
+    return "unknown error"
+
+
+def _reconcile_beavernet_model(api_key, upstream_id, model_name, max_concurrency):
+    """Make an embedded-worker upstream contain exactly the loaded KoboldCpp model."""
+    quoted_upstream = urllib.parse.quote(upstream_id, safe="")
+    status, upstream = _beavernet_api_request(api_key, "GET", f"/upstreams/{quoted_upstream}")
+    if status != 200 or not isinstance(upstream, dict):
+        print_with_time(f"BeaverNet Worker - Could not read upstream models ({status}): {_beavernet_error_message(upstream)}")
+        return False
+
+    models = upstream.get("models") if isinstance(upstream.get("models"), list) else []
+    current_model = None
+    for model in models:
+        if not isinstance(model, dict):
+            continue
+        if model.get("model") == model_name:
+            current_model = model
+            continue
+        model_id = model.get("id")
+        if not model_id:
+            continue
+        quoted_model = urllib.parse.quote(str(model_id), safe="")
+        delete_status, delete_result = _beavernet_api_request(api_key, "DELETE", f"/upstreams/{quoted_upstream}/models/{quoted_model}")
+        if delete_status not in (200, 204, 404):
+            print_with_time(f"BeaverNet Worker - Could not remove stale model '{model.get('model')}' ({delete_status}): {_beavernet_error_message(delete_result)}")
+            return False
+        print_with_time(f"BeaverNet Worker - Removed stale model '{model.get('model')}'.")
+
+    if current_model is None:
+        add_status, add_result = _beavernet_api_request(
+            api_key,
+            "POST",
+            f"/upstreams/{quoted_upstream}/models",
+            {"model": model_name, "listed": True, "max_concurrency": max_concurrency},
+            timeout=120,
+        )
+        if add_status not in (200, 201):
+            print_with_time(f"BeaverNet Worker - Could not register model '{model_name}' ({add_status}): {_beavernet_error_message(add_result)}")
+            return False
+        print_with_time(f"BeaverNet Worker - Registered model '{model_name}'.")
+    elif not current_model.get("listed") or current_model.get("paused"):
+        model_id = current_model.get("id")
+        if not model_id:
+            print_with_time(f"BeaverNet Worker - Existing model '{model_name}' has no model id.")
+            return False
+        quoted_model = urllib.parse.quote(str(model_id), safe="")
+        patch_status, patch_result = _beavernet_api_request(
+            api_key,
+            "PATCH",
+            f"/upstreams/{quoted_upstream}/models/{quoted_model}",
+            {"listed": True, "paused": False},
+        )
+        if patch_status != 200:
+            print_with_time(f"BeaverNet Worker - Could not enable model '{model_name}' ({patch_status}): {_beavernet_error_message(patch_result)}")
+            return False
+        print_with_time(f"BeaverNet Worker - Enabled model '{model_name}'.")
+    else:
+        print_with_time(f"BeaverNet Worker - Model '{model_name}' is already registered.")
+
+    if current_model is not None:
+        model_id = current_model.get("id")
+        if not model_id:
+            print_with_time(f"BeaverNet Worker - Existing model '{model_name}' has no model id.")
+            return False
+        shared_limits = (((current_model.get("rateLimits") or {}).get("shared") or {}).get("own") or {})
+        if shared_limits.get("maxConcurrency") != max_concurrency:
+            rate_limits = {"max_concurrency": max_concurrency}
+            for api_name, response_name in (
+                ("per_minute", "perMinute"),
+                ("per_hour", "perHour"),
+                ("per_day", "perDay"),
+            ):
+                if shared_limits.get(response_name) is not None:
+                    rate_limits[api_name] = shared_limits[response_name]
+            quoted_model = urllib.parse.quote(str(model_id), safe="")
+            limit_status, limit_result = _beavernet_api_request(
+                api_key,
+                "PUT",
+                f"/upstreams/{quoted_upstream}/models/{quoted_model}/rate-limits/shared",
+                rate_limits,
+            )
+            if limit_status not in (200, 204):
+                print_with_time(f"BeaverNet Worker - Could not set model concurrency to {max_concurrency} ({limit_status}): {_beavernet_error_message(limit_result)}")
+                return False
+            print_with_time(f"BeaverNet Worker - Set model concurrency to {max_concurrency}.")
+
+    probe_status, probe_result = _beavernet_api_request(api_key, "POST", f"/upstreams/{quoted_upstream}/probe", {}, timeout=60)
+    if probe_status != 200:
+        print_with_time(f"BeaverNet Worker - Model registered, but refresh probe failed ({probe_status}): {_beavernet_error_message(probe_result)}")
+    return True
+
+
+class _BeaverNetLocalCall:
+    def __init__(self, websocket, local_url, method, path, headers, body, request_id, finished):
+        self.websocket = websocket
+        self.local = urllib.parse.urlsplit(local_url)
+        self.method = method
+        self.path = path
+        self.headers = headers
+        self.body = body
+        self.request_id = request_id
+        self.finished = finished
+        self.cancelled = False
+        self.connection = None
+
+    def cancel(self):
+        self.cancelled = True
+        connection = self.connection
+        if connection and connection.sock:
+            try:
+                connection.sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    def _send_error(self, kind, message):
+        if not self.cancelled:
+            self.websocket.send_json({"t": "error", "id": self.request_id, "kind": kind, "message": str(message)[:300]})
+
+    def run(self):
+        global password
+        completed = False
+        connection_type = http.client.HTTPSConnection if self.local.scheme == "https" else http.client.HTTPConnection
+        try:
+            self.connection = connection_type(self.local.hostname, self.local.port, timeout=10)
+            try:
+                self.connection.connect()
+            except OSError as error:
+                self._send_error("connect", f"Can't reach local KoboldCpp: {error}")
+                return
+            self.connection.sock.settimeout(None)
+            request_headers = {key: value for key, value in self.headers.items() if key in ("content-type", "accept", "x-beavernet-hop")}
+            request_headers["x-koboldcpp-background-worker"] = "beavernet"
+            if password:
+                request_headers["authorization"] = "Bearer " + password
+            self.connection.request(self.method, self.path, body=self.body or None, headers=request_headers)
+            response = self.connection.getresponse()
+            content_type = response.getheader("content-type")
+            response_headers = {"content-type": content_type} if content_type else {}
+            if self.cancelled:
+                return
+            self.websocket.send_json({"t": "head", "id": self.request_id, "status": response.status, "headers": response_headers})
+            read = getattr(response, "read1", None) or response.read
+            prefix = bytes((len(self.request_id),)) + self.request_id.encode("ascii")
+            while not self.cancelled:
+                chunk = read(64 * 1024)
+                if not chunk:
+                    break
+                self.websocket.send_frame(0x2, prefix + chunk)
+            if not self.cancelled:
+                self.websocket.send_json({"t": "end", "id": self.request_id})
+                completed = True
+        except Exception as error:
+            try:
+                self._send_error("local", f"Local KoboldCpp request failed: {error}")
+            except Exception:
+                pass
+        finally:
+            if self.connection:
+                try:
+                    self.connection.close()
+                except Exception:
+                    pass
+            self.finished(self.request_id, self.method, self.path, completed)
+
+
+def run_beavernet_worker(args, api_key, worker_slots=None):
+    """Minimal dependency-free BeaverNet agent for this KoboldCpp server."""
+    global exitcounter, friendlymodelname
+    server_url = "wss://net.beaverai.org/v1/agent"
+    local_url = get_my_epurl()
+    allowed_paths = {"POST /v1/chat/completions", "POST /v1/completions", "GET /v1/models"}
+    # determined upstream always for this api key. idea is that we'll reuse the same upstream for automated kcpp workers for this user.
+    # ofc they can always add their own upstream if they use drummer's standalone agent, but this prevents kcpp from accidentally messing with other upstreams
+    device_id = hashlib.sha256(f"kcpp_auto_upstream_for_{api_key}".encode("utf-8")).hexdigest()
+    stop_codes = {4001, 4003, 4004, 4006, 4009}
+    if worker_slots is None:
+        worker_slots = getattr(args, "parallelrequests", 1)
+    max_inflight = max(1, min(64, int(worker_slots or 1)))
+    retry_delay = 1
+    announced_upstream = None
+    registration_lock = threading.Lock()
+    registered_model = [None]
+
+    def register_when_ready(upstream_id, model_name, models_ready, session_closed):
+        for _ in range(60):
+            if models_ready.wait(1):
+                break
+            if session_closed.is_set() or exitcounter >= 100:
+                return
+        else:
+            print_with_time("BeaverNet Worker - Initial model health check did not finish; automatic registration skipped.")
+            return
+        with registration_lock:
+            registration = (upstream_id, model_name, max_inflight)
+            if registered_model[0] == registration or session_closed.is_set() or exitcounter >= 100:
+                return
+            if _reconcile_beavernet_model(api_key, upstream_id, model_name, max_inflight):
+                registered_model[0] = registration
+
+    print(f"\n===\nEmbedded BeaverNet Worker Starting with {max_inflight} parallel request(s)...\n")
+    while exitcounter < 100:
+        websocket = None
+        calls = {}
+        calls_lock = threading.Lock()
+        pending = {}
+        draining = [False]
+        welcomed = False
+        models_ready = threading.Event()
+        session_closed = threading.Event()
+
+        def call_finished(request_id, method, path, completed):
+            with calls_lock:
+                calls.pop(request_id, None)
+                idle = not calls and not pending
+            if completed and method == "GET" and path == "/v1/models":
+                models_ready.set()
+            if draining[0] and idle:
+                websocket.close(1001, "Drained")
+
+        try:
+            websocket = _BeaverNetWebSocket(server_url)
+            websocket.send_json({
+                "t": "hello",
+                "key": api_key,
+                "upstream": None,
+                "new": False,
+                "device": device_id,
+                "agent": {"name": "koboldcpp_embedded_worker", "version": KcppVersion},
+                "paths": sorted(allowed_paths),
+                "features": [],
+                "max_inflight": max_inflight,
+            })
+
+            while exitcounter < 100:
+                opcode, payload = websocket.recv_message()
+                if opcode == 0x2:
+                    if len(payload) < 2 or payload[0] == 0 or payload[0] > 64 or len(payload) < payload[0] + 1:
+                        websocket.close(4008, "Bad body frame")
+                        break
+                    id_length = payload[0]
+                    try:
+                        request_id = payload[1:1 + id_length].decode("ascii")
+                    except UnicodeDecodeError:
+                        websocket.close(4008, "Bad request id")
+                        break
+                    if request_id in pending:
+                        if not pending[request_id][2]:
+                            pending[request_id][1].extend(payload[1 + id_length:])
+                            if len(pending[request_id][1]) > 10 * 1024 * 1024:
+                                pending[request_id][1].clear()
+                                pending[request_id][2] = True
+                    continue
+
+                try:
+                    message = json.loads(payload.decode("utf-8"))
+                except (UnicodeDecodeError, ValueError):
+                    websocket.close(4008, "Bad JSON")
+                    break
+                if not isinstance(message, dict) or not isinstance(message.get("t"), str):
+                    websocket.close(4008, "Bad control message")
+                    break
+                message_type = message["t"]
+
+                if message_type == "welcome":
+                    welcomed = True
+                    retry_delay = 1
+                    upstream = message.get("upstream") if isinstance(message.get("upstream"), dict) else {}
+                    upstream_id = upstream.get("id")
+                    upstream_name = upstream.get("label") or upstream.get("name") or upstream_id or "unknown"
+                    if announced_upstream != upstream_id:
+                        action = "Created upstream" if message.get("created") else "Connected as"
+                        print_with_time(f"BeaverNet Worker - {action} {upstream_name} ({upstream_id}).")
+                        announced_upstream = upstream_id
+                    else:
+                        print_with_time("BeaverNet Worker - Reconnected.")
+                    if isinstance(upstream_id, str) and upstream_id:
+                        model_name = textName if autoswapmode and textName is not None else friendlymodelname
+                        threading.Thread(
+                            target=register_when_ready,
+                            args=(upstream_id, model_name, models_ready, session_closed),
+                            daemon=True,
+                        ).start()
+                elif message_type == "request":
+                    request_id = message.get("id")
+                    if isinstance(request_id, str) and 1 <= len(request_id) <= 64:
+                        try:
+                            request_id.encode("ascii")
+                        except UnicodeEncodeError:
+                            websocket.close(4008, "Bad request id")
+                            break
+                        else:
+                            pending[request_id] = [message, bytearray(), False]
+                elif message_type == "body_end":
+                    request_id = message.get("id")
+                    request_data = pending.pop(request_id, None)
+                    if request_data is None:
+                        continue
+                    request, body, too_large = request_data
+                    method = request.get("method")
+                    path = request.get("path")
+                    route = f"{method} {path}"
+                    if too_large or route not in allowed_paths:
+                        reason = "Request body is too large" if too_large else f"Not allowed: {route}"
+                        websocket.send_json({"t": "error", "id": request_id, "kind": "refused", "message": reason})
+                        continue
+                    headers = request.get("headers") if isinstance(request.get("headers"), dict) else {}
+                    headers = {str(key).lower(): str(value) for key, value in headers.items()}
+                    with calls_lock:
+                        if len(calls) >= max_inflight or request_id in calls:
+                            call = None
+                        else:
+                            call = _BeaverNetLocalCall(websocket, local_url, method, path, headers, bytes(body), request_id, call_finished)
+                            calls[request_id] = call
+                    if call is None:
+                        websocket.send_json({"t": "error", "id": request_id, "kind": "refused", "message": "Worker is busy"})
+                    else:
+                        threading.Thread(target=call.run, daemon=True).start()
+                elif message_type == "cancel":
+                    request_id = message.get("id")
+                    pending.pop(request_id, None)
+                    with calls_lock:
+                        call = calls.get(request_id)
+                    if call:
+                        call.cancel()
+                elif message_type == "drain":
+                    draining[0] = True
+                    with calls_lock:
+                        idle = not calls and not pending
+                    if idle:
+                        websocket.close(1001, "Drained")
+                        break
+
+        except _BeaverNetWebSocketClosed as closed:
+            if exitcounter >= 100:
+                break
+            if closed.code in stop_codes:
+                hints = {
+                    4001: "The BeaverNet API key was rejected.",
+                    4003: "The BeaverNet upstream is unavailable.",
+                    4004: "The BeaverNet account has reached its upstream limit.",
+                    4006: "This BeaverNet upstream is connected from another machine.",
+                    4009: "This BeaverNet agent protocol version is no longer supported.",
+                }
+                print_with_time(f"BeaverNet Worker stopped: {hints[closed.code]}")
+                return
+            if closed.code == 1001:
+                retry_delay = 1
+            elif welcomed:
+                print_with_time(f"BeaverNet Worker disconnected{f' ({closed.code})' if closed.code else ''}; reconnecting in {retry_delay}s.")
+        except Exception as error:
+            if exitcounter < 100:
+                print_with_time(f"BeaverNet Worker connection failed: {error}. Retrying in {retry_delay}s.")
+        finally:
+            session_closed.set()
+            with calls_lock:
+                active_calls = list(calls.values())
+            for call in active_calls:
+                call.cancel()
+            if websocket:
+                websocket.abort()
+
+        if exitcounter >= 100:
+            break
+        for _ in range(retry_delay):
+            if exitcounter >= 100:
+                break
+            time.sleep(1)
+        retry_delay = min(retry_delay * 2, 30)
+
+    print_with_time("BeaverNet Worker Shutdown - Server Closing.")
 
 #A very simple and stripped down embedded horde worker with no dependencies
 def run_horde_worker(args, api_key, worker_name, worker_id, parallel_batching_threads):
@@ -17087,6 +17696,7 @@ def convert_args_to_template(savdict):
     savdict["threads"] = -1
     savdict["hordekey"] = ""
     savdict["hordeworkername"] = ""
+    savdict["beavernetkey"] = ""
     savdict["sdthreads"] = 0
     savdict["maingpu"] = -1
     savdict["sdmaingpu"] = -1
@@ -18827,7 +19437,7 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
         password = args.password.strip()
 
     safe_args = argparse.Namespace(**vars(args))
-    for secret_key in ("password", "adminpassword", "hordekey", "agent_api_key"):
+    for secret_key in ("password", "adminpassword", "hordekey", "beavernetkey", "agent_api_key"):
         if getattr(safe_args, secret_key, None):
             setattr(safe_args, secret_key, "***")
     print(safe_args)
@@ -19343,11 +19953,19 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
                 agent_host = f"[{agent_host}]"
             agent_base_url = f"{httpsaffix}://{agent_host}:{displayedport}/v1"
 
+        horde_enabled = bool(args.hordekey and args.hordeworkername)
+        beavernet_enabled = bool(args.beavernetkey)
+        total_worker_slots = max(1, int(args.parallelrequests or 1))
+        horde_worker_slots = total_worker_slots
+        beavernet_worker_slots = total_worker_slots
+        if horde_enabled and beavernet_enabled:
+            beavernet_worker_slots = max(1, total_worker_slots // 2)
+            horde_worker_slots = max(1, total_worker_slots - beavernet_worker_slots)
+            print(f"Sharing {total_worker_slots} parallel request slot(s): Horde {horde_worker_slots}, BeaverNet {beavernet_worker_slots}.")
+
         if args.hordekey and args.hordekey!="":
             if args.hordeworkername and args.hordeworkername!="":
-                workers_to_use = 1
-                if args.parallelrequests:
-                    workers_to_use = args.parallelrequests if (args.parallelrequests>1) else 1
+                workers_to_use = horde_worker_slots
                 for w in range(0,workers_to_use):
                     wid = (w+1)
                     print(f"Launching horde worker {wid}...")
@@ -19356,6 +19974,11 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
                     horde_thread.start()
             else:
                 print("Horde worker could not start. You need to specify a horde worker name with --hordeworkername")
+
+        if args.beavernetkey:
+            print("Launching BeaverNet worker...")
+            beavernet_thread = threading.Thread(target=run_beavernet_worker, args=(args, args.beavernetkey, beavernet_worker_slots), daemon=True)
+            beavernet_thread.start()
 
     #if post-ready script specified, execute it
     if args.onready:
@@ -19645,6 +20268,9 @@ if __name__ == '__main__':
     hordeparsergroup.add_argument("--hordekey", metavar=('[apikey]'), help="Sets your AI Horde API key.", default="")
     hordeparsergroup.add_argument("--hordemaxctx", metavar=('[amount]'), help="Sets the maximum context length your worker will accept from an AI Horde job. If 0, matches main context limit.", type=int, default=0)
     hordeparsergroup.add_argument("--hordegenlen", metavar=('[amount]'), help="Sets the maximum number of tokens your worker will generate from an AI horde job.", type=int, default=0)
+
+    beavernetparsergroup = parser.add_argument_group('BeaverNet Worker Commands')
+    beavernetparsergroup.add_argument("--beavernetkey", metavar=('[apikey]'), help="Sets your BeaverNet provider API key and enables the embedded BeaverNet worker.", default="")
 
     sdparsergroup = parser.add_argument_group('Image Generation Commands')
     sdparsergroup.add_argument("--sdaudiovae", metavar=('[filename]'), help="Specify an image generation audio VAE for LTX2.3 video generation.", default="")
