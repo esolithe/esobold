@@ -46,7 +46,13 @@ Known gotchas and proposed fixes:
 	- Proposed fix: in esoExtras/opticlaw/core/modules.py, make missing-dependency detection use requirement parsing plus import-spec probing in frozen mode and downgrade those pre-check warnings to advisory unless import actually fails.
 
 - OpenLumara websocket origin allowlist localhost mismatch
-	- Symptom: websocket handshake rejected as foreign origin even when extra_allowed_origins includes localhost:PORT (for example, Origin https://localhost:5001).
+	- Symptom: websocket handshake rejected as foreign origin even when extra_allowed_origins includes localhost:PORT (for example, Origin http://localhost:15021 or https://localhost:5001).
 	- Why it happens: in OpenLumara's websocket origin check path, allowlist entries normalize localhost to 127.0.0.1 before comparison, but the incoming Origin host can remain localhost in that branch. This creates an asymmetric compare (127.0.0.1 vs localhost) and the match fails.
-	- Current mitigation: normalize proxied OpenLumara websocket Origin localhost -> 127.0.0.1 in KoboldCpp and pass local proxy origins via --channels.settings.webui.extra_allowed_origins.
+	- Replication steps:
+		1. Launch OpenLumara with network_mode=custom, custom_host=0.0.0.0, port=15021.
+		2. Include localhost:15021 in extra_allowed_origins.
+		3. Open http://localhost:15021 and watch logs for websocket handshake rejected: foreign origin 'http://localhost:15021'.
+		4. Open http://127.0.0.1:15021 and observe websocket connects (workaround path).
+	- Current mitigation in KoboldCpp proxy: rewrite OpenLumara-bound Origin host to 127.0.0.1 and inject required OpenLumara API guard headers when proxying.
+	- Temporary operator workaround for non-proxy direct access: use http://127.0.0.1:15021 instead of localhost until upstream fix lands.
 	- Proper upstream fix: in OpenLumara, normalize origin_host localhost to 127.0.0.1 before host equality checks so both sides use the same canonical form.
