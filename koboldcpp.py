@@ -8373,13 +8373,37 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
         connection = (self.headers.get("Connection") or "").lower()
         return ("websocket" in upgrade) and ("upgrade" in connection)
 
-    def _build_websocket_forward_headers(self, target_host, target_port):
+    def _build_websocket_forward_headers(self, target_host, target_port, normalize_openlumara_origin=False):
         headers = {}
         for k, v in self.headers.items():
             lk = k.lower()
             if lk in {"proxy-authenticate", "proxy-authorization", "te", "trailers", "transfer-encoding"}:
                 continue
             headers[k] = v
+
+        if normalize_openlumara_origin:
+            origin_key = None
+            if "Origin" in headers:
+                origin_key = "Origin"
+            elif "origin" in headers:
+                origin_key = "origin"
+
+            if origin_key:
+                try:
+                    parsed_origin = urllib.parse.urlsplit(headers[origin_key])
+                    if (parsed_origin.hostname or "").lower() == "localhost":
+                        new_netloc = "127.0.0.1"
+                        if parsed_origin.port is not None:
+                            new_netloc = f"{new_netloc}:{parsed_origin.port}"
+                        headers[origin_key] = urllib.parse.urlunsplit((
+                            parsed_origin.scheme,
+                            new_netloc,
+                            parsed_origin.path,
+                            parsed_origin.query,
+                            parsed_origin.fragment,
+                        ))
+                except Exception:
+                    pass
 
         headers["Host"] = f"{target_host}:{target_port}"
         headers["Connection"] = "Upgrade"
@@ -8515,7 +8539,11 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
         is_websocket_upgrade = self._is_websocket_upgrade_request()
         if is_websocket_upgrade:
             target_host, target_port, forward_path, upstream_secure = self._resolve_websocket_upstream_target(target_host, target_port, forward_path)
-            ws_headers = self._build_websocket_forward_headers(target_host, target_port)
+            ws_headers = self._build_websocket_forward_headers(
+                target_host,
+                target_port,
+                normalize_openlumara_origin=is_OpenLumara_request,
+            )
             self._proxy_websocket_tunnel(target_host, target_port, forward_path, ws_headers, body, upstream_secure=upstream_secure)
             return
 

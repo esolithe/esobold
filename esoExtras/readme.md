@@ -44,3 +44,9 @@ Known gotchas and proposed fixes:
 	- Symptom: warnings that dependencies are missing in frozen/PyInstaller runs even when modules later load.
 	- Why it happens: the pre-check relies on metadata lookup and can misreport in bundled runtimes.
 	- Proposed fix: in esoExtras/opticlaw/core/modules.py, make missing-dependency detection use requirement parsing plus import-spec probing in frozen mode and downgrade those pre-check warnings to advisory unless import actually fails.
+
+- OpenLumara websocket origin allowlist localhost mismatch
+	- Symptom: websocket handshake rejected as foreign origin even when extra_allowed_origins includes localhost:PORT (for example, Origin https://localhost:5001).
+	- Why it happens: in OpenLumara's websocket origin check path, allowlist entries normalize localhost to 127.0.0.1 before comparison, but the incoming Origin host can remain localhost in that branch. This creates an asymmetric compare (127.0.0.1 vs localhost) and the match fails.
+	- Current mitigation: normalize proxied OpenLumara websocket Origin localhost -> 127.0.0.1 in KoboldCpp and pass local proxy origins via --channels.settings.webui.extra_allowed_origins.
+	- Proper upstream fix: in OpenLumara, normalize origin_host localhost to 127.0.0.1 before host equality checks so both sides use the same canonical form.
