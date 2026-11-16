@@ -18441,7 +18441,7 @@ def launch_OpenLumara(launch_args):
         os.makedirs(userModulesPath, exist_ok=True)
 
         proxy_public_port = getattr(launch_args, "proxy_port", None) or getattr(launch_args, "port_param", None) or getattr(launch_args, "port", None) or defaultport
-        openlumara_extra_allowed_origins = f"localhost:{proxy_public_port},127.0.0.1:{proxy_public_port}"
+        openlumara_extra_allowed_origins = f"localhost:{proxy_public_port},127.0.0.1:{proxy_public_port},localhost:{OpenLumara_default_webui_port},127.0.0.1:{OpenLumara_default_webui_port}"
 
         args_to_add = ["--config", configPath,
                 "--api.key", f"{launch_args.password if launch_args.password is not None else 'KEY_HERE'}",
