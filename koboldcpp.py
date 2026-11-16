@@ -8553,6 +8553,11 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                 headers[k] = v
         headers["Connection"] = "close"
 
+        if is_OpenLumara_request:
+            upstream_path = urllib.parse.urlsplit(forward_path).path or "/"
+            if upstream_path.startswith("/api") and not any(k.lower() == "x-openlumara" for k in headers):
+                headers["x-openlumara"] = "1"
+
         global global_memory
         #specifically look for generation requests from completions or chat completions to handle hotswap
         is_post = self.command.upper() == "POST"
@@ -9240,9 +9245,13 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
         headers["Host"] = f"localhost:{OpenLumara_default_webui_port}"
         headers["Connection"] = "close"
 
+        upstream_path = self._OpenLumara_upstream_path(self.path)
+        if (urllib.parse.urlsplit(upstream_path).path or "/").startswith("/api") and not any(k.lower() == "x-openlumara" for k in headers):
+            headers["x-openlumara"] = "1"
+
         try:
             conn = http.client.HTTPConnection("127.0.0.1", OpenLumara_default_webui_port, timeout=600)
-            conn.request(method, self._OpenLumara_upstream_path(self.path), body=body, headers=headers)
+            conn.request(method, upstream_path, body=body, headers=headers)
             resp = conn.getresponse()
         except Exception as e:
             response_body = json.dumps({"detail": {"msg": f"OpenLumara proxy error: {str(e)}", "type": "service_unavailable"}}).encode()
