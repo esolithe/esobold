@@ -8329,7 +8329,7 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
     def _rewrite_OpenLumara_body_text(self, text, content_type=""):
         # Prefix absolute-root references so OpenLumara works from /openlumara.
         prefixes = [
-            "/ext-assets/", "/static/", "/api/", "/messages", "/stream", "/send", "/edit", "/delete", "/cancel", "/upload",
+            "/themes/", "/assets/", "/ext-assets/", "/static/", "/api/", "/messages", "/stream", "/send", "/edit", "/delete", "/cancel", "/upload",
             "/chats", "/chat/", "/settings/", "/storage/", "/server/", "/manifest.json", "/sw.js", "/icon-192.png", "/icon-512.png",
             "/themes.js", "/openapi.json", "/logout", "/login",
         ]
