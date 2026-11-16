@@ -8289,6 +8289,27 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
             upstream_path = path
         return urllib.parse.urlunsplit(("", "", upstream_path, parsed.query, ""))
 
+    def _rewrite_OpenLumara_origin(self, origin_value):
+        try:
+            parsed = urllib.parse.urlsplit(origin_value)
+        except Exception:
+            return origin_value
+
+        if not parsed.scheme or not parsed.hostname:
+            return origin_value
+
+        remapped_netloc = "127.0.0.1"
+        if parsed.port is not None:
+            remapped_netloc = f"{remapped_netloc}:{parsed.port}"
+
+        return urllib.parse.urlunsplit((
+            parsed.scheme,
+            remapped_netloc,
+            parsed.path,
+            parsed.query,
+            parsed.fragment,
+        ))
+
     def _rewrite_OpenLumara_location(self, value):
         if not value:
             return value
@@ -8389,21 +8410,7 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
                 origin_key = "origin"
 
             if origin_key:
-                try:
-                    parsed_origin = urllib.parse.urlsplit(headers[origin_key])
-                    if (parsed_origin.hostname or "").lower() == "localhost":
-                        new_netloc = "127.0.0.1"
-                        if parsed_origin.port is not None:
-                            new_netloc = f"{new_netloc}:{parsed_origin.port}"
-                        headers[origin_key] = urllib.parse.urlunsplit((
-                            parsed_origin.scheme,
-                            new_netloc,
-                            parsed_origin.path,
-                            parsed_origin.query,
-                            parsed_origin.fragment,
-                        ))
-                except Exception:
-                    pass
+                headers[origin_key] = self._rewrite_OpenLumara_origin(headers[origin_key])
 
         headers["Host"] = f"{target_host}:{target_port}"
         headers["Connection"] = "Upgrade"
@@ -8554,6 +8561,10 @@ class KcppProxyHandler(http.server.BaseHTTPRequestHandler):
         headers["Connection"] = "close"
 
         if is_OpenLumara_request:
+            for k in list(headers.keys()):
+                if k.lower() == "origin":
+                    headers[k] = self._rewrite_OpenLumara_origin(headers[k])
+                    break
             upstream_path = urllib.parse.urlsplit(forward_path).path or "/"
             if upstream_path.startswith("/api") and not any(k.lower() == "x-openlumara" for k in headers):
                 headers["x-openlumara"] = "1"
@@ -9154,6 +9165,27 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             upstream_path = path
         return urllib.parse.urlunsplit(("", "", upstream_path, parsed.query, ""))
 
+    def _rewrite_OpenLumara_origin(self, origin_value):
+        try:
+            parsed = urllib.parse.urlsplit(origin_value)
+        except Exception:
+            return origin_value
+
+        if not parsed.scheme or not parsed.hostname:
+            return origin_value
+
+        remapped_netloc = "127.0.0.1"
+        if parsed.port is not None:
+            remapped_netloc = f"{remapped_netloc}:{parsed.port}"
+
+        return urllib.parse.urlunsplit((
+            parsed.scheme,
+            remapped_netloc,
+            parsed.path,
+            parsed.query,
+            parsed.fragment,
+        ))
+
     def _rewrite_OpenLumara_location(self, value):
         if not value:
             return value
@@ -9242,6 +9274,12 @@ class KcppServerRequestHandler(http.server.SimpleHTTPRequestHandler):
             if lk in hop_by_hop or lk == "host":
                 continue
             headers[k] = v
+
+        for k in list(headers.keys()):
+            if k.lower() == "origin":
+                headers[k] = self._rewrite_OpenLumara_origin(headers[k])
+                break
+
         headers["Host"] = f"localhost:{OpenLumara_default_webui_port}"
         headers["Connection"] = "close"
 
@@ -18451,7 +18489,7 @@ def launch_OpenLumara(launch_args):
 
         proxy_public_port = getattr(launch_args, "proxy_port", None) or getattr(launch_args, "port_param", None) or getattr(launch_args, "port", None) or defaultport
 
-        hosts = ["localhost", "127.0.0.1"]
+        hosts = ["localhost", "127.0.0.1", "0.0.0.0"]
         ports = [proxy_public_port, OpenLumara_default_webui_port]
         protocols = ["", "http://", "https://"]
         origins = []
