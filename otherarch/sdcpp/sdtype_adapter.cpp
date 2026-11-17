@@ -490,6 +490,48 @@ static inline double get_time_delta(const std::chrono::steady_clock::time_point&
     return std::chrono::duration<double>(now - start).count();
 }
 
+static void generation_progress_callback(const sd_generation_progress_t* progress, void* data)
+{
+    (void) data;
+    if (progress == nullptr || progress->stage == nullptr) {
+        return;
+    }
+    const std::string stage = progress->stage;
+    const int64_t completed = progress->completed;
+    const int64_t total = progress->total;
+    try {
+        std::lock_guard<std::mutex> lock(geninfo.mux);
+        if (geninfo.aborted) {
+            return;
+        }
+        if (stage == "sampling") {
+            /* the effective total can change (img2img, custom schedules, hires passes) */
+            if (total > 0) {
+                geninfo.steps = (int) total;
+            }
+            if (completed != geninfo.gendata.step) {
+                geninfo.gendata.preview = "";
+            }
+            geninfo.gendata.step = (int) completed;
+            if (geninfo.gendata.status != 2) {
+                geninfo.gendata.status = 2;
+                if (!geninfo.preview_requested) {
+                    /* previews are only generated on demand */
+                    set_preview_images(0);
+                }
+            }
+            if (geninfo.preview_requested && !geninfo.preview_enabled) {
+                geninfo.preview_enabled = true;
+                set_preview_images(2);
+            }
+        } else if (stage == "vae_decode") {
+            geninfo.gendata.status = 3;
+        }
+    } catch (...) {
+        /* generation progress callbacks must not throw */
+    }
+}
+
 static void progress_callback(int step, int steps, float time, void* data)
 {
     step = step < 0 ? -step : step;
@@ -500,22 +542,8 @@ static void progress_callback(int step, int steps, float time, void* data)
         if (geninfo.aborted) {
             return;
         }
-        if (geninfo.gendata.status == 2 && geninfo.preview_requested && !geninfo.preview_enabled) {
-            geninfo.preview_enabled = true;
-            set_preview_images(2);
-        }
-        /* Once diffusion has started, use progress_callback for step counts
-        because img2img and custom schedules can change the effective total. */
+        /* phases and step counts are driven by generation_progress_callback */
         if (geninfo.gendata.status == 2) {
-            /* adjust the max step count (may change for img2img) */
-            geninfo.steps = steps;
-            if (step != geninfo.gendata.step) {
-                geninfo.gendata.step = step;
-                geninfo.gendata.preview = "";
-            }
-            if (step == steps) {
-                geninfo.gendata.status = 3;
-            }
             phase = "Generating image";
         } else if (geninfo.gendata.status == 3) {
             phase = "Decoding";
@@ -541,7 +569,6 @@ static void progress_callback(int step, int steps, float time, void* data)
 struct model_info: public sd_model_info {
     /* from base class:
         int version;
-        bool is_chroma;
         int vae_scale_factor;
         int spatial_multiple;
     */
@@ -573,7 +600,7 @@ static model_info get_model_info(sd_ctx_t* ctx)
     SDVersion loadedsdver = (SDVersion)res.version;
     res.is_wan = (loadedsdver == SDVersion::VERSION_WAN2 || loadedsdver == SDVersion::VERSION_WAN2_2_I2V || loadedsdver == SDVersion::VERSION_WAN2_2_TI2V);
     res.is_qwenimg = sd_version_is_qwen_image(loadedsdver);
-    res.is_kontext = (loadedsdver==SDVersion::VERSION_FLUX && !res.is_chroma);
+    res.is_kontext = (loadedsdver == SDVersion::VERSION_FLUX);
     res.is_flux2 = (loadedsdver == SDVersion::VERSION_FLUX2 || loadedsdver == SDVersion::VERSION_FLUX2_KLEIN);
     res.is_flux1 = (loadedsdver == SDVersion::VERSION_FLUX);
     res.is_zimage = (loadedsdver == SDVersion::VERSION_Z_IMAGE);
@@ -1156,7 +1183,7 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
     }
     if(t5xxl_filename!="")
     {
-        printf("With Custom T5-XXL Model: %s\n",t5xxl_filename.c_str());
+        printf("With Custom Text Encoder LLM Model: %s\n",t5xxl_filename.c_str());
     }
     if(clip1_filename!="")
     {
@@ -1318,6 +1345,7 @@ bool sdtype_load_model(const sd_load_model_inputs inputs) {
     set_preview_images(0);
 
     sd_set_progress_callback(progress_callback, nullptr);
+    sd_set_generation_progress_callback(sd_ctx, generation_progress_callback, nullptr);
 
     return true;
 }
@@ -1877,8 +1905,8 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
 
     if (!remove_limits && info.is_flux1)
     {
-        if (!info.is_chroma && sd_params->cfg_scale != 1.0f) {
-            //non chroma clamp cfg scale
+        if (sd_params->cfg_scale != 1.0f) {
+            // clamp cfg scale
             if (!sd_is_quiet && sddebugmode) {
                 printf("Flux: clamping CFG Scale to 1\n");
             }
@@ -2257,7 +2285,6 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
      //special case, is img2img and denoise strength is 0 and steps is 1, do a passthru
     bool is_passthrough = (sd_params->sample_steps<=1 && sd_params->strength<=0 && is_img2img && vid_req_frames<=1 && extra_image_data.size()==0);
     sd_audio_t* generated_audio = nullptr;
-    sd_audio_t input_audio = {0, 0, 0, nullptr};
 
     if(is_vid_model)
     {
@@ -2279,13 +2306,6 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
         vid_gen_params.vae_tiling_params = params.vae_tiling_params;
         vid_gen_params.loras = params.loras;
         vid_gen_params.lora_count = params.lora_count;
-        if (!info.is_minimaxh3 && ref_audio_data.size()>0) {
-            input_audio = load_audio_from_b64(ref_audio_data[0]);
-            if (input_audio.data == nullptr) {
-                return sd_generation.error("KCPP SD: load audio from base64 failed!");
-            }
-            vid_gen_params.input_audio = &input_audio;
-        }
         if (info.is_minimaxh3 && reference_imgs.size() > 0) {
             vid_gen_params.ref_images = reference_imgs.data();
             vid_gen_params.ref_images_count = (int)reference_imgs.size();
@@ -2327,7 +2347,6 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
             << "\nINIT_IMGS:" << ((vid_gen_params.init_image.data ? 1 : 0) + (vid_gen_params.end_image.data ? 1 : 0))
             << "\nREF_IMGS:" << vid_gen_params.ref_images_count
             << "\nREF_AUDIOS:" << vid_gen_params.ref_audios_count
-            << "\nINPUT_AUDIO:" << (vid_gen_params.input_audio ? "true" : "false")
             << "\n\n";
             printf("%s", ss.str().c_str());
         }
@@ -2448,10 +2467,6 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
     }
 
     if (!is_passthrough && (is_vid_model ? vid_result == nullptr : img_result == nullptr)) {
-        if (input_audio.data) {
-            free(input_audio.data);
-            input_audio.data = nullptr;
-        }
         if (info.is_qwenimg && params.ref_images_count > 0) {
             printf("\nKCPP SD: If using Qwen Image 2.1, editing requires Qwen3-VL vision mmproj!\n");
         }
@@ -2605,11 +2620,6 @@ sd_generation_outputs sdtype_generate(const sd_generation_inputs inputs)
             free_sd_image_generation_result(img_result);
             img_result = nullptr;
         }
-    }
-
-    if (input_audio.data) {
-        free(input_audio.data);
-        input_audio.data = nullptr;
     }
 
     total_img_gens += 1;

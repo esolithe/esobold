@@ -1,6 +1,9 @@
 # Add custom options to Makefile.local rather than editing this file.
 -include $(abspath $(lastword ${MAKEFILE_LIST})).local
 
+PREFIX ?= /usr/local
+INSTALL ?= install
+
 # GNU Make's ifdef considers command-line values such as FOO=0 to be enabled.
 # Accept the conventional explicit disable form before evaluating feature flags.
 ifeq ($(strip $(LLAMA_CUBLAS)),0)
@@ -20,7 +23,7 @@ $(error LLAMA_CUBLAS and LLAMA_HIPBLAS share object files; enable only one and r
 endif
 endif
 
-.PHONY: finishedmsg tinylibwebp tinylibwebp-smoke koboldcpp_default_backend koboldcpp_common koboldcpp_vulkan_shaders koboldcpp_vulkan_noext_shaders
+.PHONY: install finishedmsg tinylibwebp tinylibwebp-smoke koboldcpp_default_backend koboldcpp_common koboldcpp_vulkan_shaders koboldcpp_vulkan_noext_shaders
 
 default: koboldcpp_default koboldcpp_failsafe koboldcpp_noavx2 koboldcpp_vulkan_failsafe koboldcpp_cublas koboldcpp_hipblas koboldcpp_vulkan koboldcpp_vulkan_noavx2 finishedmsg
 tools: quantize_gpt2 quantize_gptj quantize_gguf quantize_neox quantize_mpt ttsmain whispermain sdmain gguf-split
@@ -772,9 +775,9 @@ SDCPP_THIRDPARTY_BASENAMES := thirdparty/darts.h thirdparty/miniz.h thirdparty/o
 
 # sdcpp sources/headers are discovered at build time, so new files under
 # include/, src/ and examples/ are picked up without editing this Makefile.
-SDCPP_SRC_BASENAMES := $(sort $(shell cd otherarch/sdcpp && find include src -type f \( -name '*.c' -o -name '*.cpp' -o -name '*.cc' -o -name '*.cxx' -o -name '*.h' -o -name '*.hpp' \)))
-SDCPP_EXAMPLES_BASENAMES := $(sort $(shell cd otherarch/sdcpp && find examples/common examples/cli -type f \( -name '*.c' -o -name '*.cpp' -o -name '*.cc' -o -name '*.cxx' -o -name '*.h' -o -name '*.hpp' \)))
-SDCPP_VOCAB_BASENAMES := $(filter-out src/tokenizers/vocab/vocab.h,$(sort $(shell cd otherarch/sdcpp && find src/tokenizers/vocab -type f \( -name '*.c' -o -name '*.cpp' -o -name '*.cc' -o -name '*.cxx' -o -name '*.h' -o -name '*.hpp' \))))
+SDCPP_SRC_BASENAMES := $(sort $(shell cd otherarch/sdcpp && find include src -type f \( -name '*.c' -o -name '*.cpp' -o -name '*.h' -o -name '*.hpp' \)))
+SDCPP_EXAMPLES_BASENAMES := $(sort $(shell cd otherarch/sdcpp && find examples/common examples/cli -type f \( -name '*.c' -o -name '*.cpp' -o -name '*.h' -o -name '*.hpp' \)))
+SDCPP_VOCAB_BASENAMES := $(filter-out src/tokenizers/vocab/vocab.h,$(sort $(shell cd otherarch/sdcpp && find src/tokenizers/vocab -type f \( -name '*.c' -o -name '*.cpp' -o -name '*.h' -o -name '*.hpp' \))))
 
 # The vocab tables (.hpp) and vocab.cpp, together with convert.cpp and
 # version.cpp, are only linked with sdmain
@@ -801,35 +804,44 @@ tinylibwebp-smoke: $(LIB_TINYLIBWEBP) vendor/tinylibwebp/tests/anim_smoke.c
 SOURCES_SDCOMMON := $(foreach f,$(SDCPP_COMMON_BASENAMES),otherarch/sdcpp/$(f))
 HEADERS_SDCOMMON := $(filter %.h,$(SOURCES_SDCOMMON)) $(filter %.hpp, $(SOURCES_SDCOMMON))
 OBJS_SDCOMMON := $(patsubst %.cpp,%.o,$(filter %.cpp,$(SOURCES_SDCOMMON))) $(patsubst %.c,%.o,$(filter %.c,$(SOURCES_SDCOMMON)))
+SDCPP_COMMON_CPP_OBJS := $(patsubst %.cpp,%.o,$(filter %.cpp,$(SOURCES_SDCOMMON)))
 
 SOURCES_SDMAIN := $(foreach f,$(SDCPP_MAIN_BASENAMES),otherarch/sdcpp/$(f))
 HEADERS_SDMAIN := $(filter %.h,$(SOURCES_SDMAIN)) $(filter %.hpp, $(SOURCES_SDMAIN))
 OBJS_SDMAIN := $(patsubst %.cpp,%.o,$(filter %.cpp,$(SOURCES_SDMAIN)))
 
-$(patsubst %.cpp,%.o,$(filter %.cpp,$(SOURCES_SDCOMMON))): $(HEADERS_SDCOMMON)
+# Compiler-generated exact per-object dependencies. Objects without a .d file
+# fall back to the coarse all-headers rules until their next compilation.
+SDCPP_DEPS := $(OBJS_SDCOMMON:.o=.d) $(OBJS_SDMAIN:.o=.d) otherarch/sdcpp/sdtype_adapter.d
+-include $(SDCPP_DEPS)
 
-$(OBJS_SDMAIN): $(HEADERS_SDMAIN)
+# coarse fallback: only objects without a .d file depend on all sdcpp headers
+# (.c objects never had header dependencies)
+$(patsubst %.d,%.o,$(filter-out $(wildcard $(SDCPP_COMMON_CPP_OBJS:.o=.d)),$(SDCPP_COMMON_CPP_OBJS:.o=.d))): $(HEADERS_SDCOMMON)
+$(patsubst %.d,%.o,$(filter-out $(wildcard $(OBJS_SDMAIN:.o=.d)),$(OBJS_SDMAIN:.o=.d))): $(HEADERS_SDMAIN)
 
 otherarch/sdcpp/src/%.o: otherarch/sdcpp/src/%.cpp
-	$(CXX) -DUTF8PROC_STATIC -DSD_USE_UPSTREAM_GGML -I./otherarch/sdcpp/include -I./otherarch/sdcpp/src -I./otherarch/sdcpp/src/core -I./vendor/nlohmann -I./otherarch/sdcpp/thirdparty/oniguruma -I./otherarch/sdcpp/thirdparty/utf8proc $(CXXFLAGS) -c $< -o $@
+	$(CXX) -DUTF8PROC_STATIC -DSD_USE_UPSTREAM_GGML -I./otherarch/sdcpp/include -I./otherarch/sdcpp/src -I./otherarch/sdcpp/src/core -I./vendor/nlohmann -I./otherarch/sdcpp/thirdparty/oniguruma -I./otherarch/sdcpp/thirdparty/utf8proc $(CXXFLAGS) -MMD -MP -c $< -o $@
 
 otherarch/sdcpp/thirdparty/oniguruma/%.o: otherarch/sdcpp/thirdparty/oniguruma/%.c
-	$(CC) $(CFLAGS) -I./otherarch/sdcpp/thirdparty/oniguruma -c $< -o $@
+	$(CC) $(CFLAGS) -I./otherarch/sdcpp/thirdparty/oniguruma -MMD -MP -c $< -o $@
 
 otherarch/sdcpp/thirdparty/utf8proc/%.o: otherarch/sdcpp/thirdparty/utf8proc/%.c
-	$(CC) -DUTF8PROC_STATIC $(CFLAGS) -I./otherarch/sdcpp/thirdparty/utf8proc -c $< -o $@
+	$(CC) -DUTF8PROC_STATIC $(CFLAGS) -I./otherarch/sdcpp/thirdparty/utf8proc -MMD -MP -c $< -o $@
 
 otherarch/sdcpp/examples/%.o: otherarch/sdcpp/examples/%.cpp
-	$(CXX) -I./otherarch/sdcpp/include -I./otherarch/sdcpp/examples -I./vendor/nlohmann $(CXXFLAGS) -c $< -o $@
+	$(CXX) -I./otherarch/sdcpp/include -I./otherarch/sdcpp/examples -I./vendor/nlohmann $(CXXFLAGS) -MMD -MP -c $< -o $@
 
-otherarch/sdcpp/sdtype_adapter.o: otherarch/sdcpp/sdtype_adapter.cpp otherarch/sdcpp/include/stable-diffusion.h otherarch/sdcpp/src/kcpp_sd_extensions.h kcpp_src/model_adapter.h otherarch/utils.h otherarch/webp_image.h vendor/tinylibwebp/src/webp/decode.h vendor/tinylibwebp/src/webp/encode.h vendor/tinylibwebp/src/webp/mux.h
-	$(CXX) -I./otherarch/sdcpp/include -I./otherarch/sdcpp/src -I./vendor/tinylibwebp/src $(CXXFLAGS) -c $< -o $@
+# header fallback for sdtype_adapter.o when no .d file exists
+SDCPP_ADAPTER_HEADERS := otherarch/sdcpp/include/stable-diffusion.h otherarch/sdcpp/src/kcpp_sd_extensions.h kcpp_src/model_adapter.h otherarch/utils.h otherarch/webp_image.h vendor/tinylibwebp/src/webp/decode.h vendor/tinylibwebp/src/webp/encode.h vendor/tinylibwebp/src/webp/mux.h
+otherarch/sdcpp/sdtype_adapter.o: otherarch/sdcpp/sdtype_adapter.cpp $(if $(wildcard otherarch/sdcpp/sdtype_adapter.d),,$(SDCPP_ADAPTER_HEADERS))
+	$(CXX) -I./otherarch/sdcpp/include -I./otherarch/sdcpp/src -I./vendor/tinylibwebp/src $(CXXFLAGS) -MMD -MP -c $< -o $@
 
 kcpp_sdcpp_tokenizer.o: kcpp_src/sdcpp_gguf_tokenizer.cpp kcpp_src/sdcpp_gguf_tokenizer.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 otherarch/sdcpp/thirdparty/zip.o: otherarch/sdcpp/thirdparty/zip.c
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
 OBJS_SDTYPE := otherarch/sdcpp/sdtype_adapter.o kcpp_sdcpp_tokenizer.o $(OBJS_SDCOMMON)
 LDFLAGS += -lm
@@ -856,17 +868,23 @@ SOURCES_AUDIOCPP := $(foreach f,$(AUDIOCPP_COMMON_BASENAMES),otherarch/audiocpp/
 HEADERS_AUDIOCPP := $(foreach f,$(AUDIOCPP_HEADER_BASENAMES),otherarch/audiocpp/upstream/$(f))
 OBJS_AUDIOCPP := $(patsubst %.cpp,%.o,$(filter %.cpp,$(SOURCES_AUDIOCPP))) $(patsubst %.cc,%.o,$(filter %.cc,$(SOURCES_AUDIOCPP))) $(patsubst %.c,%.o,$(filter %.c,$(SOURCES_AUDIOCPP)))
 
+AUDIOCPP_POSIX_DEFINES := -D_POSIX_C_SOURCE=200809L
+ifeq ($(UNAME_S),FreeBSD)
+# FreeBSD libc++ uses isascii(), which is hidden unless XSI is visible.
+AUDIOCPP_POSIX_DEFINES += -D_XOPEN_SOURCE=700
+endif
+
 $(OBJS_AUDIOCPP): $(HEADERS_AUDIOCPP)
 
 # cJSON for audiocpp
 otherarch/audiocpp/upstream/external/cJSON/cJSON.o otherarch/audiocpp/upstream/src/framework/io/json.o: Makefile
 otherarch/audiocpp/upstream/src/framework/model_spec/package.o: otherarch/audiocpp/upstream/generated/model_specs.inc
 otherarch/audiocpp/upstream/%.o: otherarch/audiocpp/upstream/%.cpp
-	$(CXX) -DCJSON_HIDE_SYMBOLS -D_USE_INTERNAL_STRING_VIEW -DHAVE_PTHREAD=1 -D_POSIX_C_SOURCE=200809L -DYAML_DECLARE_STATIC=1 -DYAML_VERSION_MAJOR=0 -DYAML_VERSION_MINOR=2 -DYAML_VERSION_PATCH=5 -DYAML_VERSION_STRING=\"0.2.5\" $(CXXFLAGS) -c $< -o $@
+	$(CXX) -DCJSON_HIDE_SYMBOLS -D_USE_INTERNAL_STRING_VIEW -DHAVE_PTHREAD=1 $(AUDIOCPP_POSIX_DEFINES) -DYAML_DECLARE_STATIC=1 -DYAML_VERSION_MAJOR=0 -DYAML_VERSION_MINOR=2 -DYAML_VERSION_PATCH=5 -DYAML_VERSION_STRING=\"0.2.5\" $(CXXFLAGS) -c $< -o $@
 otherarch/audiocpp/upstream/%.o: otherarch/audiocpp/upstream/%.cc
-	$(CXX) -DCJSON_HIDE_SYMBOLS -D_USE_INTERNAL_STRING_VIEW -DHAVE_PTHREAD=1 -D_POSIX_C_SOURCE=200809L -DYAML_DECLARE_STATIC=1 -DYAML_VERSION_MAJOR=0 -DYAML_VERSION_MINOR=2 -DYAML_VERSION_PATCH=5 -DYAML_VERSION_STRING=\"0.2.5\" $(CXXFLAGS) -c $< -o $@
+	$(CXX) -DCJSON_HIDE_SYMBOLS -D_USE_INTERNAL_STRING_VIEW -DHAVE_PTHREAD=1 $(AUDIOCPP_POSIX_DEFINES) -DYAML_DECLARE_STATIC=1 -DYAML_VERSION_MAJOR=0 -DYAML_VERSION_MINOR=2 -DYAML_VERSION_PATCH=5 -DYAML_VERSION_STRING=\"0.2.5\" $(CXXFLAGS) -c $< -o $@
 otherarch/audiocpp/upstream/%.o: otherarch/audiocpp/upstream/%.c
-	$(CC) -DCJSON_HIDE_SYMBOLS -D_POSIX_C_SOURCE=200809L -DYAML_DECLARE_STATIC=1 -DYAML_VERSION_MAJOR=0 -DYAML_VERSION_MINOR=2 -DYAML_VERSION_PATCH=5 -DYAML_VERSION_STRING=\"0.2.5\" $(CFLAGS) -c $< -o $@
+	$(CC) -DCJSON_HIDE_SYMBOLS $(AUDIOCPP_POSIX_DEFINES) -DYAML_DECLARE_STATIC=1 -DYAML_VERSION_MAJOR=0 -DYAML_VERSION_MINOR=2 -DYAML_VERSION_PATCH=5 -DYAML_VERSION_STRING=\"0.2.5\" $(CFLAGS) -c $< -o $@
 
 tts_default.o: otherarch/tts_adapter.cpp otherarch/audiocpp/upstream/generated/kcpp_tts_registry_headers.inc otherarch/audiocpp/upstream/generated/kcpp_tts_registry_loaders.inc otherarch/ttscpp/src/ttscpp.cpp otherarch/ttscpp/src/ttstokenizer.cpp otherarch/ttscpp/src/ttssampler.cpp otherarch/ttscpp/src/parler_model.cpp otherarch/ttscpp/src/dac_model.cpp otherarch/ttscpp/src/ttsutil.cpp otherarch/ttscpp/src/ttsargs.cpp otherarch/ttscpp/src/ttst5_encoder_model.cpp otherarch/ttscpp/src/phonemizer.cpp otherarch/ttscpp/src/tts_model.cpp otherarch/ttscpp/src/kokoro_model.cpp otherarch/ttscpp/src/dia_model.cpp otherarch/ttscpp/src/orpheus_model.cpp otherarch/ttscpp/src/snac_model.cpp otherarch/ttscpp/src/general_neural_audio_codec.cpp
 	$(CXX) $(CXXFLAGS) -c $< -o $@
@@ -900,7 +918,28 @@ clean:
 	rm -vrf ggml/src/ggml-cuda/*.o
 	rm -vrf ggml/src/ggml-cuda/template-instances/*.o
 	rm -vrf llguidance
-	rm -vf otherarch/sdcpp/*.o otherarch/sdcpp/*/*.o otherarch/sdcpp/*/*/*.o otherarch/sdcpp/*/*/*/*.o
+	rm -vf otherarch/sdcpp/*.o otherarch/sdcpp/*/*.o otherarch/sdcpp/*/*/*.o otherarch/sdcpp/*/*/*/*.o otherarch/sdcpp/*.d otherarch/sdcpp/*/*.d otherarch/sdcpp/*/*/*.d otherarch/sdcpp/*/*/*/*.d
+
+ifeq ($(OS),Windows_NT)
+install:
+	$(error make install is supported on Unix only; on Windows run python koboldcpp.py from the build directory)
+else
+install: default
+	$(INSTALL) -d "$(DESTDIR)$(PREFIX)/bin" "$(DESTDIR)$(PREFIX)/share/koboldcpp/embd_res" "$(DESTDIR)$(PREFIX)/share/koboldcpp/kcpp_adapters" "$(DESTDIR)$(PREFIX)/share/koboldcpp/kcpp_src"
+	$(INSTALL) -m 755 koboldcpp.py "$(DESTDIR)$(PREFIX)/share/koboldcpp/koboldcpp.py"
+	$(INSTALL) -m 644 kcpp_agent.py "$(DESTDIR)$(PREFIX)/share/koboldcpp/kcpp_agent.py"
+	$(INSTALL) -m 644 kcpp_src/json_to_gbnf.py "$(DESTDIR)$(PREFIX)/share/koboldcpp/kcpp_src/json_to_gbnf.py"
+	$(INSTALL) -m 644 embd_res/* "$(DESTDIR)$(PREFIX)/share/koboldcpp/embd_res/"
+	$(INSTALL) -m 644 kcpp_adapters/* "$(DESTDIR)$(PREFIX)/share/koboldcpp/kcpp_adapters/"
+	@if [ -d kernels ]; then \
+		$(INSTALL) -d "$(DESTDIR)$(PREFIX)/share/koboldcpp/kernels" && \
+		$(INSTALL) -m 644 kernels/*.metal kernels/*.h "$(DESTDIR)$(PREFIX)/share/koboldcpp/kernels/" || exit 1; \
+	fi
+	@for lib in koboldcpp_*.so; do \
+		if [ -f "$$lib" ]; then $(INSTALL) -m 755 "$$lib" "$(DESTDIR)$(PREFIX)/share/koboldcpp/$$lib" || exit 1; fi; \
+	done
+	ln -sf ../share/koboldcpp/koboldcpp.py "$(DESTDIR)$(PREFIX)/bin/koboldcpp"
+endif
 
 # useful tools
 main: tools/completion/main.cpp tools/completion/completion.cpp common/arg.cpp common/preset.cpp $(COMMON_DOWNLOAD_SRCS) build-info.h ggml.o ggml-cpu.o ggml-ops.o ggml-vec.o ggml-binops.o ggml-tiled.o ggml-tiled-kernel.o ggml-unops.o llama.o chat.o chat-tts-norm.o llama-model.o console.o $(MTMD_CORE_OBJS) mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o ggml-backend.o ggml-backend-meta.o ggml-backend-reg_default.o ggml-repack.o $(OBJS_FULL) $(OBJS)
