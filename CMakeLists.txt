@@ -612,6 +612,7 @@ set(SDCPP_THIRDPARTY_SOURCES
     otherarch/sdcpp/thirdparty/zip.c)
 
 add_library(sdtype_adapter
+            kcpp_src/model_file_probe.cpp
             kcpp_src/sdcpp_gguf_tokenizer.cpp
             otherarch/sdcpp/sdtype_adapter.cpp
             ${SDCPP_SOURCES}
@@ -640,7 +641,7 @@ set_target_properties(music_adapter PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
 add_library(tts_adapter
             otherarch/tts_adapter.cpp)
-target_include_directories(tts_adapter PUBLIC . ./kcpp_src ./ggml/include ./ggml/src ./ggml/src/ggml-cpu ./include ./otherarch ./otherarch/tools ./vendor/stb ./vendor/nlohmann ./vendor ./otherarch/ttscpp/include ./otherarch/ttscpp/src ./otherarch/qwen3tts ./tools ./common)
+target_include_directories(tts_adapter PUBLIC . ./kcpp_src ./ggml/include ./ggml/src ./ggml/src/ggml-cpu ./include ./otherarch ./otherarch/tools ./vendor/stb ./vendor/nlohmann ./vendor ./otherarch/ttscpp/include ./otherarch/ttscpp/src ./otherarch/qwen3tts ./tools ./common ./tools/mtmd)
 target_compile_features(tts_adapter PUBLIC cxx_std_17) # don't bump
 target_link_libraries(tts_adapter PRIVATE common2 ggml audiocpp ${LLAMA_EXTRA_LIBS})
 set_target_properties(tts_adapter PROPERTIES POSITION_INDEPENDENT_CODE ON)

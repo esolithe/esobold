@@ -248,6 +248,13 @@ CUBLAS_OBJS += $(OBJS_CUDA_TEMP_INST)
 NVCC      = nvcc
 NVCCFLAGS = --forward-unknown-to-host-compiler -use_fast_math -extended-lambda
 
+# Keep old CUDA headers compatible with the C23 math declarations in glibc
+# 2.41 and newer without modifying either system package.
+ifeq ($(UNAME_S),Linux)
+CUDA_GLIBC_COMPAT := kcpp_src/cuda_glibc_compat.h
+CUBLAS_CXXFLAGS += -include $(CUDA_GLIBC_COMPAT)
+endif
+
 ifdef LLAMA_ADD_CONDA_PATHS
 CUBLASLD_FLAGS += -Lconda/envs/linux/lib -Lconda/envs/linux/lib/stubs
 endif
@@ -291,15 +298,15 @@ ifdef LLAMA_CUDA_CCBIN
 NVCCFLAGS += -ccbin $(LLAMA_CUDA_CCBIN)
 endif
 
-ggml/src/ggml-cuda/%.o: ggml/src/ggml-cuda/%.cu ggml/include/ggml.h ggml/src/ggml-common.h ggml/src/ggml-cuda/common.cuh
+ggml/src/ggml-cuda/%.o: ggml/src/ggml-cuda/%.cu ggml/include/ggml.h ggml/src/ggml-common.h ggml/src/ggml-cuda/common.cuh $(CUDA_GLIBC_COMPAT)
 	$(NVCC) $(NVCCFLAGS) $(subst -Ofast,-O3,$(CXXFLAGS)) $(CUBLAS_FLAGS) $(HIPFLAGS) $(CUBLAS_CXXFLAGS) -Wno-pedantic -c $< -o $@
-ggml-cuda.o: ggml/src/ggml-cuda/ggml-cuda.cu ggml/include/ggml-cuda.h ggml/include/ggml.h ggml/include/ggml-backend.h ggml/src/ggml-backend-impl.h ggml/src/ggml-common.h $(wildcard ggml/src/ggml-cuda/*.cuh)
+ggml-cuda.o: ggml/src/ggml-cuda/ggml-cuda.cu ggml/include/ggml-cuda.h ggml/include/ggml.h ggml/include/ggml-backend.h ggml/src/ggml-backend-impl.h ggml/src/ggml-common.h $(wildcard ggml/src/ggml-cuda/*.cuh) $(CUDA_GLIBC_COMPAT)
 	$(NVCC) $(NVCCFLAGS) $(subst -Ofast,-O3,$(CXXFLAGS)) $(CUBLAS_FLAGS) $(HIPFLAGS) $(CUBLAS_CXXFLAGS) -Wno-pedantic -c $< -o $@
-ggml_v2-cuda.o: otherarch/ggml_v2-cuda.cu otherarch/ggml_v2-cuda.h
+ggml_v2-cuda.o: otherarch/ggml_v2-cuda.cu otherarch/ggml_v2-cuda.h $(CUDA_GLIBC_COMPAT)
 	$(NVCC) $(NVCCFLAGS) $(subst -Ofast,-O3,$(CXXFLAGS)) $(CUBLAS_FLAGS) $(HIPFLAGS) $(CUBLAS_CXXFLAGS) -Wno-pedantic -c $< -o $@
-ggml_v2-cuda-legacy.o: otherarch/ggml_v2-cuda-legacy.cu otherarch/ggml_v2-cuda-legacy.h
+ggml_v2-cuda-legacy.o: otherarch/ggml_v2-cuda-legacy.cu otherarch/ggml_v2-cuda-legacy.h $(CUDA_GLIBC_COMPAT)
 	$(NVCC) $(NVCCFLAGS) $(subst -Ofast,-O3,$(CXXFLAGS)) $(CUBLAS_FLAGS) $(HIPFLAGS) $(CUBLAS_CXXFLAGS) -Wno-pedantic -c $< -o $@
-ggml_v3-cuda.o: otherarch/ggml_v3-cuda.cu otherarch/ggml_v3-cuda.h
+ggml_v3-cuda.o: otherarch/ggml_v3-cuda.cu otherarch/ggml_v3-cuda.h $(CUDA_GLIBC_COMPAT)
 	$(NVCC) $(NVCCFLAGS) $(subst -Ofast,-O3,$(CXXFLAGS)) $(CUBLAS_FLAGS) $(HIPFLAGS) $(CUBLAS_CXXFLAGS) -Wno-pedantic -c $< -o $@
 endif # LLAMA_CUBLAS
 
@@ -757,7 +764,7 @@ sampling.o: common/sampling.cpp common/common.h common/sampling.h common/log.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 console.o: common/console.cpp common/console.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
-expose.o: kcpp_src/expose.cpp kcpp_src/expose.h kcpp_src/model_adapter.cpp
+expose.o: kcpp_src/expose.cpp kcpp_src/expose.h kcpp_src/model_adapter.cpp kcpp_src/model_file_probe.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 llama-impl.o: src/llama-impl.cpp src/llama-impl.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
@@ -833,11 +840,14 @@ otherarch/sdcpp/examples/%.o: otherarch/sdcpp/examples/%.cpp
 	$(CXX) -I./otherarch/sdcpp/include -I./otherarch/sdcpp/examples -I./vendor/nlohmann $(CXXFLAGS) -MMD -MP -c $< -o $@
 
 # header fallback for sdtype_adapter.o when no .d file exists
-SDCPP_ADAPTER_HEADERS := otherarch/sdcpp/include/stable-diffusion.h otherarch/sdcpp/src/kcpp_sd_extensions.h kcpp_src/model_adapter.h otherarch/utils.h otherarch/webp_image.h vendor/tinylibwebp/src/webp/decode.h vendor/tinylibwebp/src/webp/encode.h vendor/tinylibwebp/src/webp/mux.h
+SDCPP_ADAPTER_HEADERS := otherarch/sdcpp/include/stable-diffusion.h otherarch/sdcpp/src/kcpp_sd_extensions.h otherarch/sdcpp/src/conditioning/prompt_input.h kcpp_src/model_adapter.h kcpp_src/model_file_probe.h otherarch/utils.h otherarch/webp_image.h vendor/tinylibwebp/src/webp/decode.h vendor/tinylibwebp/src/webp/encode.h vendor/tinylibwebp/src/webp/mux.h
 otherarch/sdcpp/sdtype_adapter.o: otherarch/sdcpp/sdtype_adapter.cpp $(if $(wildcard otherarch/sdcpp/sdtype_adapter.d),,$(SDCPP_ADAPTER_HEADERS))
 	$(CXX) -I./otherarch/sdcpp/include -I./otherarch/sdcpp/src -I./vendor/tinylibwebp/src $(CXXFLAGS) -MMD -MP -c $< -o $@
 
 kcpp_sdcpp_tokenizer.o: kcpp_src/sdcpp_gguf_tokenizer.cpp kcpp_src/sdcpp_gguf_tokenizer.h
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+kcpp_src/model_file_probe.o: kcpp_src/model_file_probe.cpp kcpp_src/model_file_probe.h
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 otherarch/sdcpp/thirdparty/zip.o: otherarch/sdcpp/thirdparty/zip.c
@@ -846,7 +856,7 @@ otherarch/sdcpp/thirdparty/zip.o: otherarch/sdcpp/thirdparty/zip.c
 OBJS_SDTYPE := otherarch/sdcpp/sdtype_adapter.o kcpp_sdcpp_tokenizer.o $(OBJS_SDCOMMON)
 LDFLAGS += -lm
 
-LLAMASERVER_SRCS := tools/server/main.cpp tools/server/server.cpp tools/server/server-schema.cpp tools/server/server-chat.cpp tools/server/server-common.cpp tools/server/server-context.cpp tools/server/server-connect.cpp tools/server/server-realtime.cpp tools/server/server-models-sched.cpp tools/server/server-http.cpp tools/server/server-models.cpp tools/server/server-queue.cpp tools/server/server-task.cpp tools/server/server-tools.cpp tools/server/server-mcp.cpp tools/server/server-decision.cpp tools/server/ui.cpp tools/server/server-stream.cpp common/subproc.cpp
+LLAMASERVER_SRCS := tools/server/main.cpp tools/server/server.cpp tools/server/server-schema.cpp tools/server/server-chat.cpp tools/server/server-common.cpp tools/server/server-context.cpp tools/server/server-slot-sched.cpp  tools/server/server-connect.cpp tools/server/server-realtime.cpp tools/server/server-models-sched.cpp tools/server/server-http.cpp tools/server/server-models.cpp tools/server/server-queue.cpp tools/server/server-task.cpp tools/server/server-tools.cpp tools/server/server-mcp.cpp tools/server/server-decision.cpp tools/server/ui.cpp tools/server/server-stream.cpp common/subproc.cpp
 COMMON_DOWNLOAD_SRCS := common/download.cpp common/hf-cache.cpp common/file-lock.cpp vendor/cpp-httplib/httplib.cpp
 LLAMASERVER_COMMON_SRCS := common/arg.cpp common/preset.cpp $(COMMON_DOWNLOAD_SRCS)
 LLAMASERVER_CXXFLAGS := -I./tools/mtmd
@@ -1069,7 +1079,7 @@ endif
 # High-level objects are identical for every MinGW/Linux variant.  Keep these in
 # one shared library; the selected low-level variant supplies the GGML, CPU ISA,
 # legacy GGML and GPU symbols used by this code.
-KOBOLDCPP_ENGINE_HIGHLEVEL_OBJS = gpttype_adapter_default.o whispercpp_default.o $(MTMD_CORE_OBJS) expose.o chat.o chat-tts-norm.o llama.o llama-model.o embeddings_default.o music_default.o tts_default.o $(OBJS_AUDIOCPP) mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o $(OBJS_SDTYPE) $(LIB_TINYLIBWEBP)
+KOBOLDCPP_ENGINE_HIGHLEVEL_OBJS = gpttype_adapter_default.o whispercpp_default.o $(MTMD_CORE_OBJS) expose.o kcpp_src/model_file_probe.o chat.o chat-tts-norm.o llama.o llama-model.o embeddings_default.o music_default.o tts_default.o $(OBJS_AUDIOCPP) mtmd.o mtmd-helper.o mtmd-helper-gen.o mtmd-image.o $(OBJS_SDTYPE) $(LIB_TINYLIBWEBP)
 
 # This is the invariant subset that used to be repeated verbatim in OBJS_FULL,
 # OBJS_SIMPLE, OBJS_SIMPLER and OBJS_FAILSAFE.
