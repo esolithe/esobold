@@ -18786,7 +18786,7 @@ def launch_OpenLumara(launch_args):
                 "--channels.settings.webui.network_mode", "custom",
                 "--channels.settings.webui.custom_host", "0.0.0.0",
                 "--channels.settings.webui.port", f"{OpenLumara_default_webui_port}",
-                "--channels.settings.webui.extra_allowed_origins", f"{openlumara_extra_allowed_origins}",
+                "--channels.settings.webui.allowed_domains", f"{openlumara_extra_allowed_origins}",
                 "--channels.settings.webui.require_login", "true" if (launch_args.OpenLumara_requirelogin is None or launch_args.OpenLumara_requirelogin) else "false",
                 "--core.data_folder", f"{launch_args.OpenLumara_datadir if launch_args.OpenLumara_datadir is not None else 'data'}",
                 "--modules.settings.coder.sandbox_paths", f"{launch_args.OpenLumara_sandboxfolder if launch_args.OpenLumara_sandboxfolder is not None else 'sandbox'}",
