@@ -13,7 +13,7 @@ Current version indicated by LITEVER below.
 <head>
 	<script id="init-config">
 	/* split: src/config/init-config.js */
-	const LITEVER = 359;
+	const LITEVER = 360;
 	const urlParams = new URLSearchParams(window.location.search);
 	var localflag = urlParams.get('local'); //this will be replaced automatically in embedded kcpp
 	const STORAGE_PREFIX = (localflag?"e_":"")+"kaihordewebui_";
@@ -4055,8 +4055,8 @@ Current version indicated by LITEVER below.
 	var documentdb_searchhistory = false;
 	var documentdb_searchdocuments = false;
 	var documentdb_numresults = 3;
-	var documentdb_searchrange = 300;
-	var documentdb_chunksize = 800;
+	var documentdb_searchrange = 450;
+	var documentdb_chunksize = 1600;
 	var documentdb_data = "";
 	var documentdb_sqPrefix = ""
 	var documentdb_cPrefix = ""
@@ -6438,6 +6438,187 @@ Current version indicated by LITEVER below.
 			fallbackResolveLoad();
 		}
 		});
+	}
+	function open_browser_backup_db()
+	{
+		return new Promise((resolve, reject) => {
+			const request = indexedDB.open(STORAGE_PREFIX, 1);
+			request.onsuccess = () => resolve(request.result);
+			request.onerror = () => reject(request.error || new Error("Unable to open browser storage."));
+			request.onupgradeneeded = event => {
+				const db = event.target.result;
+				if(!db.objectStoreNames.contains(STORAGE_PREFIX)) db.createObjectStore(STORAGE_PREFIX, { keyPath: "key" });
+			};
+		});
+	}
+	function replace_browser_backup_entries(db, entries)
+	{
+		return new Promise((resolve, reject) => {
+			let transaction;
+			try {
+				transaction = db.transaction(STORAGE_PREFIX, "readwrite");
+				const store = transaction.objectStore(STORAGE_PREFIX);
+				store.clear();
+				for(let i = 0; i < entries.length; i++) store.put(entries[i]);
+			} catch(error) {
+				reject(error);
+				return;
+			}
+			transaction.oncomplete = () => resolve();
+			transaction.onerror = transaction.onabort = () => reject(transaction.error || new Error("Unable to write browser storage."));
+		});
+	}
+	function replace_browser_backup_localstorage(entries)
+	{
+		const keysToRemove = [];
+		for(let i = 0; i < localStorage.length; i++)
+		{
+			const key = localStorage.key(i);
+			if(key && key.startsWith(STORAGE_PREFIX)) keysToRemove.push(key);
+		}
+		for(let i = 0; i < keysToRemove.length; i++) localStorage.removeItem(keysToRemove[i]);
+		for(let i = 0; i < entries.length; i++) localStorage.setItem(entries[i][0], entries[i][1]);
+	}
+	function export_browser_backup()
+	{
+		const backup = { format: "koboldai-lite-browser-backup", version: 1, created: new Date().toISOString(), data: {} };
+		const offloadedKeys = new Set();
+		try {
+			// Match indexeddb_load: only read IndexedDB values for localStorage offload markers.
+			for(let i = 0; i < localStorage.length; i++)
+			{
+				const key = localStorage.key(i);
+				if(key && key.startsWith(STORAGE_PREFIX))
+				{
+					const value = localStorage.getItem(key);
+					const objkey = key.slice(STORAGE_PREFIX.length);
+					if(value === "offload_to_indexeddb") offloadedKeys.add(objkey);
+					else backup.data[objkey] = value;
+				}
+			}
+			const save_backup_file = () => {
+				const blob = new Blob([JSON.stringify(backup)], { type: "application/json" });
+				const url = URL.createObjectURL(blob);
+				const link = document.createElement("a");
+				link.href = url;
+				link.download = "koboldai-lite-backup-" + new Date().toISOString().slice(0, 10) + ".json";
+				document.body.appendChild(link);
+				link.click();
+				document.body.removeChild(link);
+				setTimeout(() => URL.revokeObjectURL(url), 1000);
+			};
+			if(!window.indexedDB) { save_backup_file(); return; }
+			open_browser_backup_db().then(db => {
+				const request = db.transaction(STORAGE_PREFIX, "readonly").objectStore(STORAGE_PREFIX).getAll();
+				request.onsuccess = () => {
+					const entries = request.result || [];
+					for(let i = 0; i < entries.length; i++)
+						if(entries[i] && offloadedKeys.has(entries[i].key) && typeof entries[i].value === "string") backup.data[entries[i].key] = entries[i].value;
+					db.close();
+					save_backup_file();
+				};
+				request.onerror = () => { db.close(); msgbox("Unable to read browser storage.", "Backup Failed"); };
+			}).catch(error => msgbox(error.message || "Unable to read browser storage.", "Backup Failed"));
+		} catch(error) {
+			msgbox(error.message || "Unable to create a backup file.", "Backup Failed");
+		}
+	}
+	function restore_browser_backup(input)
+	{
+		const file = input.files && input.files[0];
+		input.value = "";
+		if(!file) return;
+		const reader = new FileReader();
+		reader.onerror = () => msgbox("Unable to read this backup file.", "Backup Restore Failed");
+		reader.onload = () => {
+			let backup;
+			try {
+				backup = JSON.parse(reader.result);
+				if(!backup || backup.format !== "koboldai-lite-browser-backup" || !backup.data || typeof backup.data !== "object" || Array.isArray(backup.data))
+					throw new Error("This file is not a valid KoboldAI Lite browser backup.");
+				const keys = Object.keys(backup.data);
+				for(let i = 0; i < keys.length; i++)
+					if(!keys[i] || typeof backup.data[keys[i]] !== "string") throw new Error("The backup contains invalid saved data.");
+			} catch(error) {
+				msgbox(error.message || "Unable to read this backup file.", "Backup Restore Failed");
+				return;
+			}
+			if(!confirm("Restore this backup? WARNING: Restoring a backup is permanent and destructive. It will replace ALL KoboldAI Lite data saved in this browser, including settings, autosaves, and save slots. This cannot be undone.")) return;
+			const oldLocalStorage = [];
+			try {
+				for(let i = 0; i < localStorage.length; i++)
+				{
+					const key = localStorage.key(i);
+					if(key && key.startsWith(STORAGE_PREFIX)) oldLocalStorage.push([key, localStorage.getItem(key)]);
+				}
+			} catch(error) {
+				msgbox(error.message || "Unable to read current browser storage.", "Backup Restore Failed");
+				return;
+			}
+			const finish_restore = () => {
+				warn_unsaved = false;
+				alert("Backup restored. KoboldAI Lite will now reload.");
+				window.location.reload();
+			};
+			const fail_restore = error => msgbox(error.message || "Unable to restore this backup. Check that the browser has enough storage space.", "Backup Restore Failed");
+			if(!window.indexedDB)
+			{
+				try {
+					const keys = Object.keys(backup.data);
+					const newLocalStorage = [];
+					for(let i = 0; i < keys.length; i++) newLocalStorage.push([STORAGE_PREFIX + keys[i], backup.data[keys[i]]]);
+					replace_browser_backup_localstorage(newLocalStorage);
+					finish_restore();
+				} catch(error) {
+					try { replace_browser_backup_localstorage(oldLocalStorage); }
+					catch(rollbackError) { fail_restore(new Error((error.message || "Restore failed.") + " The previous data could not be fully recovered.")); return; }
+					fail_restore(error);
+				}
+				return;
+			}
+			open_browser_backup_db().then(db => {
+				return new Promise((resolve, reject) => {
+					try {
+						const readTransaction = db.transaction(STORAGE_PREFIX, "readonly");
+						const request = readTransaction.objectStore(STORAGE_PREFIX).getAll();
+						request.onerror = () => { db.close(); reject(request.error || new Error("Unable to read current browser storage.")); };
+						request.onsuccess = () => {
+							const oldEntries = request.result || [];
+							const keys = Object.keys(backup.data);
+							const newEntries = [];
+							const newLocalStorage = [];
+							for(let i = 0; i < keys.length; i++)
+							{
+								newEntries.push({ key: keys[i], value: backup.data[keys[i]] });
+								newLocalStorage.push([STORAGE_PREFIX + keys[i], "offload_to_indexeddb"]);
+							}
+							replace_browser_backup_entries(db, newEntries).then(() => {
+								try {
+									replace_browser_backup_localstorage(newLocalStorage);
+									db.close();
+									resolve();
+								} catch(error) {
+									replace_browser_backup_entries(db, oldEntries).then(() => {
+										try {
+											replace_browser_backup_localstorage(oldLocalStorage);
+											db.close();
+											reject(error);
+										} catch(rollbackError) {
+											db.close();
+											reject(new Error((error.message || "Restore failed.") + " The previous data could not be fully recovered."));
+										}
+									}).catch(() => {
+										db.close();
+										reject(new Error((error.message || "Restore failed.") + " The previous data could not be fully recovered."));
+									});
+								}
+							}).catch(error => { db.close(); reject(error); });
+						};
+					} catch(error) { db.close(); reject(error); }
+				});
+			}).then(finish_restore).catch(fail_restore);
+		};
+		reader.readAsText(file);
 	}
 	/* split: src/import/tavern.js */
 	function readTavernPngFromBlob(blob, onDone) // File loading and import functionality
@@ -11315,7 +11496,7 @@ Current version indicated by LITEVER below.
 			let userinput = getInputBoxValue().trim();
 			if(userinput!="")
 			{
-				import_compressed_story(userinput, false);
+				confirm_load_unsaved(() => import_compressed_story(userinput, false));
 			}
 		},false,true);
 	}
@@ -11776,8 +11957,13 @@ Current version indicated by LITEVER below.
 	};
 
 	//attempt to load a file from disk. could be any format, even images
-	function load_selected_file(selectedFile, to_groupchat=false)
+	function load_selected_file(selectedFile, to_groupchat=false, load_confirmed=false)
 	{
+		if (!to_groupchat && !load_confirmed) {
+			confirm_load_unsaved(() => load_selected_file(selectedFile, to_groupchat, true));
+			return;
+		}
+		var selectedFilename = "";
 		if(selectedFile)
 		{
 			selectedFilename = selectedFile.name;
@@ -11925,6 +12111,16 @@ Current version indicated by LITEVER below.
 
 		};
 		reader.readAsText(selectedFile);
+	}
+
+	function confirm_load_unsaved(onProceed)
+	{
+		let input = document.getElementById("input_text");
+		if (!localsettings.no_warn_unsaved && (warn_unsaved || (input && input.value !== ""))) {
+			msgboxYesNo("Unsaved changes will be lost, proceed?", "Confirm Load", onProceed, null);
+		} else {
+			onProceed();
+		}
 	}
 
 	function safe_to_overwrite()
@@ -13457,8 +13653,12 @@ Current version indicated by LITEVER below.
 			confirmCallback();
 		}
 	}
-	function confirm_scenario()
+	function confirm_scenario(load_confirmed=false)
 	{
+		if (temp_scenario!=null && !load_confirmed) {
+			confirm_load_unsaved(() => confirm_scenario(true));
+			return;
+		}
 		mainmenu_untab(false);
 		if(temp_scenario!=null)
 		{
@@ -17866,14 +18066,7 @@ Current version indicated by LITEVER below.
 				});
 			}
 		}
-		if (!safe_to_overwrite() && warn_unsaved) {
-			msgboxYesNo("Unsaved changes will be lost, proceed?", "Confirm Load", () => {
-				proceed_load_from_slot();
-			}, null);
-		}
-		else {
-			proceed_load_from_slot();
-		}
+		confirm_load_unsaved(proceed_load_from_slot);
 	}
 	function download_from_slot(slot,islocal,isscenario)
 	{
@@ -20326,9 +20519,9 @@ Current version indicated by LITEVER below.
 		documentdb_numresults = parseInt(documentdb_numresults);
 		documentdb_numresults = cleannum(documentdb_numresults,1,10);
 		documentdb_searchrange = parseInt(documentdb_searchrange);
-		documentdb_searchrange = cleannum(documentdb_searchrange,0,1024);
+		documentdb_searchrange = cleannum(documentdb_searchrange,0,2048);
 		documentdb_chunksize = parseInt(documentdb_chunksize);
-		documentdb_chunksize = cleannum(documentdb_chunksize,32,2048);
+		documentdb_chunksize = cleannum(documentdb_chunksize,32,4096);
 	}
 
 	function set_personal_notes()
@@ -20925,8 +21118,8 @@ Current version indicated by LITEVER below.
 			documentdb_searchhistory = false;
 			documentdb_searchdocuments = false;
 			documentdb_numresults = 3;
-			documentdb_searchrange = 300;
-			documentdb_chunksize = 800;
+			documentdb_searchrange = 450;
+			documentdb_chunksize = 1600;
 			documentdb_data = "";
 			newlineaftermemory = true;
 			localsettings.groupchat_data = {};
@@ -21299,7 +21492,6 @@ Current version indicated by LITEVER below.
 	{
 		if(warn_unsaved && !localsettings.no_warn_unsaved)
 		{
-			warn_unsaved = false;
 			return "Unsaved changes will be lost!"; //the actual message will not be shown in new browsers
 		}
 		return undefined;
@@ -23063,7 +23255,7 @@ Current version indicated by LITEVER below.
 		return truncated_context;
 	}
 
-	function prepare_submit_generation() //wrap websearch into this
+	function prepare_submit_generation(onSubmitted = null) //wrap websearch into this
 	{
 		if(is_corpo_ui() && corpo_editing_turn != -1)
 		{
@@ -23091,6 +23283,10 @@ Current version indicated by LITEVER below.
 		document.getElementById("input_text").value = "";
 		PerformWebsearch(senttext,(res)=>{
 			submit_generation(senttext);
+			if(onSubmitted)
+			{
+				onSubmitted();
+			}
 		});
 	}
 
@@ -31514,14 +31710,19 @@ Current version indicated by LITEVER below.
 			}
 			retry_preserve_last = false;
 			let last_retry_stack_temp = retry_prev_text;
-			prepare_submit_generation();
-			retry_in_progress = erased_last;
-			retry_prev_text = last_retry_stack_temp;
-			retry_prev_text.push(temp);
-			if(retry_prev_text.length > 3) //undo limit for retries
+			last_retry_stack_temp.push(temp);
+			if(last_retry_stack_temp.length > 3) //undo limit for retries
 			{
-				retry_prev_text.shift();
+				last_retry_stack_temp.shift();
 			}
+			let restore_retry_history = ()=>{
+				retry_in_progress = erased_last;
+				retry_prev_text = last_retry_stack_temp;
+			};
+			// Keep abort working while web search is pending, then restore the
+			// history again after submit_generation clears the global stacks.
+			restore_retry_history();
+			prepare_submit_generation(restore_retry_history);
 			redo_arr = [];
 			document.getElementById("input_text").value = boxtextstash;
 		}
@@ -34474,11 +34675,11 @@ Current version indicated by LITEVER below.
 							<input title="Extra Text For Search" inputmode="numeric" class="justifyright push-right" id="documentdb_searchrange" oninput="
 							document.getElementById('documentdb_searchrange_slide').value = this.value;">
 						</div>
-						<div><input title="Extra Text For Search Slider" type="range" min="50" max="500" step="10" id="documentdb_searchrange_slide" oninput="
+						<div><input title="Extra Text For Search Slider" type="range" min="50" max="1000" step="10" id="documentdb_searchrange_slide" oninput="
 							document.getElementById('documentdb_searchrange').value = this.value;"></div>
 						<div class="settingminmax">
 							<div class="justifyleft">50</div>
-							<div class="justifyright">500</div>
+							<div class="justifyright">1000</div>
 						</div>
 					</div>
 
@@ -34488,11 +34689,11 @@ Current version indicated by LITEVER below.
 							<input title="Snippet Size" inputmode="numeric" class="justifyright push-right" id="documentdb_chunksize" oninput="
 							document.getElementById('documentdb_chunksize_slide').value = this.value; estimate_and_show_textDB_usage();">
 						</div>
-						<div><input title="Snippet Size Slider" type="range" min="100" max="3000" step="50" id="documentdb_chunksize_slide" oninput="
+						<div><input title="Snippet Size Slider" type="range" min="100" max="4000" step="50" id="documentdb_chunksize_slide" oninput="
 							document.getElementById('documentdb_chunksize').value = this.value; estimate_and_show_textDB_usage();"></div>
 						<div class="settingminmax">
 							<div class="justifyleft">100</div>
-							<div class="justifyright">3000</div>
+							<div class="justifyright">4000</div>
 						</div>
 					</div>
 				</div>
@@ -36070,6 +36271,14 @@ Current version indicated by LITEVER below.
 						</div>
 					</div>
 
+					<div class="settingitem wide">
+						<div class="settingssep"></div>
+						<h3>Browser Backup</h3>
+						<p class="settingsdesctxt">Export your saved data to move it to another browser, or restore a backup file. Restoring replaces this browser's KoboldAI Lite data. The backup may contain saved API credentials; keep it private.</p>
+						<button type="button" class="btn btn-primary" onclick="export_browser_backup()">Download Backup</button>
+						<button type="button" class="btn btn-primary" onclick="document.getElementById('browser_backup_file').click()">Restore Backup</button>
+						<input id="browser_backup_file" type="file" accept=".json,application/json" style="display:none" onchange="restore_browser_backup(this)">
+					</div>
 					<div class="settingitem wide">
 						<div class="settingssep"></div>
 						<button title="Reset All Settings" id="resetallsettings" type="button" class="btn btn-primary bg_red" onclick="reset_all_settings()">Reset ALL Settings</button>
