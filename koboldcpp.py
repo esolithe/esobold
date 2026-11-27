@@ -143,7 +143,7 @@ dry_seq_break_max = 128
 extra_images_max = 4 # for kontext/qwen img
 
 # global vars
-KcppVersion = "1.125.1"
+KcppVersion = "1.126"
 showdebug = True
 kcpp_instance = None #global running instance
 global_memory = {"tunnel_url": "", "restart_target":"", "input_to_exit":False, "load_complete":False, "restart_model": "", "currentConfig": None, "currentBaseConfig": None, "modelOverride": None, "currentModel": None, "last_active_timestamp":datetime.now(), "triggered_sleeping":False, "current_model":"initial_model", "base_config":"", "swapReqType": None, "loadedReqTypes": [], "autoswapmode": False, "autoswapSettings": {}, "fs": {"files": {}, "current_size_bytes": 0, "max_size_bytes": 0, "source_dir": "", "mode": "memory", "initialized": False}, "restart_override_base_config": "", "current_model_override": "", "OpenLumara": False}
@@ -161,6 +161,7 @@ friendlymodelname = "inactive"
 friendlysdmodelname = "inactive"
 friendlyembeddingsmodelname = "inactive"
 autoswapmode = False
+autoswap_music = {}
 autoswapSettings = {}
 textName = None
 sttName = None
@@ -225,6 +226,7 @@ has_audio_support = False
 has_vision_support = False
 has_whisper = False
 cached_chat_template = None
+cached_eos_token = ""
 cached_sd_info = {}
 cached_sd_custom_sigmas = {}
 cached_jinja_kwargs = None
@@ -1188,6 +1190,9 @@ def init_library():
     handle.token_count.restype = token_count_outputs
     handle.get_pending_output.restype = ctypes.c_char_p
     handle.get_chat_template.restype = ctypes.c_char_p
+    if hasattr(handle, "get_eos_token_text"):
+        handle.get_eos_token_text.restype = ctypes.c_char_p
+        handle.get_eos_token_text.argtypes = []
     handle.parse_chat_tool_calls.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_bool, ctypes.c_bool]
     handle.parse_chat_tool_calls.restype = ctypes.c_char_p
 
@@ -1747,6 +1752,14 @@ def convert_json_to_gbnf(json_obj):
         print(f"JSON to GBNF failed: {e}")
         return ""
 
+def get_ollama_capabilities():
+    # capabilities reported by the Ollama-compatible /api/show endpoint.
+    # /api/chat supports tool calling, and images are accepted when a vision projector is available.
+    caps = ["completion", "tools"]
+    if has_vision_support or (autoswapmode and mmprojName is not None):
+        caps.append("vision")
+    return caps
+
 def get_capabilities():
     global savedata_obj, has_multiplayer, KcppVersion, friendlymodelname, friendlysdmodelname, fullsdmodelpath, password, fullwhispermodelpath, ttsmodelpath, embeddingsmodelpath, musicdiffusionmodelpath, musicllmmodelpath, has_audio_support, has_vision_support, mcp_connections
     global autoswapmode, textName, sttName, ttsName, embedName, musicName, imageName, mmprojName
@@ -1786,11 +1799,14 @@ def get_capabilities():
     has_router = True if args.routermode else False
     musicfamily_raw = handle.music_get_family()
     musicfamily = musicfamily_raw.decode("UTF-8", "ignore") if musicfamily_raw else "none"
+    musicllm = bool(musicllmmodelpath)
+    if autoswapmode and autoswap_music:
+        musicllm = autoswap_music['llm']
     _admindocsdir = str(getattr(args, "admindocsdir", "") or "").strip()
     can_search_documents = has_embeddings and bool(_admindocsdir) and os.path.isdir(_admindocsdir)
     hasOpenLumaraEnabled = global_memory["OpenLumara"]
     hasOpenLumaraAuthenticated = bool(getattr(args, "OpenLumara_requirelogin", True))
-    return {"result":"KoboldCpp", "version":KcppVersion, "protected":has_password, "llm":has_llm, "txt2img":has_txt2img,"vision":visionSupport,"audio":audioSupport,"transcribe":has_whisper,"multiplayer":has_multiplayer,"websearch":has_search,"tts":has_tts, "embeddings":has_embeddings, "music":has_music, "fs":has_fs, "fsMode":fs_mode, "musicllm":bool(musicllmmodelpath), "musicfamily":musicfamily, "savedata":(savedata_obj is not None), "admin": admin_type, "router":has_router, "guidance": has_guidance, "jinja": has_jinja, "mcp":has_mcp, "parallelrequests":args.parallelrequests, "defaults_modified":bool(args.gendefaults), "hasServerSaving": has_server_saving, "hasAdminWithHF": had_admin_with_hf, "embeddingModel": embeddingModel, "canSearchDocuments": can_search_documents, "hasOpenLumaraEnabled": hasOpenLumaraEnabled, "hasOpenLumaraAuthenticated": hasOpenLumaraAuthenticated}
+    return {"result":"KoboldCpp", "version":KcppVersion, "protected":has_password, "llm":has_llm, "txt2img":has_txt2img,"vision":visionSupport,"audio":audioSupport,"transcribe":has_whisper,"multiplayer":has_multiplayer,"websearch":has_search,"tts":has_tts, "embeddings":has_embeddings, "music":has_music, "fs":has_fs, "fsMode":fs_mode, "musicllm":musicllm, "musicfamily":musicfamily, "savedata":(savedata_obj is not None), "admin": admin_type, "router":has_router, "guidance": has_guidance, "jinja": has_jinja, "mcp":has_mcp, "parallelrequests":args.parallelrequests, "defaults_modified":bool(args.gendefaults), "hasServerSaving": has_server_saving, "hasAdminWithHF": had_admin_with_hf, "embeddingModel": embeddingModel, "canSearchDocuments": can_search_documents, "hasOpenLumaraEnabled": hasOpenLumaraEnabled, "hasOpenLumaraAuthenticated": hasOpenLumaraAuthenticated}
 
 
 def scan_directory(dirpath, valid_exts, depth):
@@ -5395,7 +5411,15 @@ def format_jinja(messages_orig, tools, chat_template_kwargs=None):
                 parser.stream.skip(1)
                 return parser.parse_statements( ("name:endgeneration",), drop_needle=True)
         from jinja2.sandbox import ImmutableSandboxedEnvironment
-        jinja_env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True,  extensions=[IgnoreGenerationTags,loopcontrols])
+        # Jinja calls finalize on output expressions after evaluating the template logic.
+        # Keep content iterable, but render a directly emitted text-only list as its text.
+        text_only_content = {}
+        def finalize_output(value):
+            content = text_only_content.get(id(value))
+            if content is value and content is not None:
+                return content[0]["text"]
+            return value
+        jinja_env = ImmutableSandboxedEnvironment(trim_blocks=True, lstrip_blocks=True, finalize=finalize_output, extensions=[IgnoreGenerationTags,loopcontrols])
         # sanitize messages to remove none types
         messages = json.loads(json.dumps(messages_orig))
         for m in messages:
@@ -5423,6 +5447,8 @@ def format_jinja(messages_orig, tools, chat_template_kwargs=None):
                         normalized.append(item)
                 if turn_text:
                     normalized.append({"type": "text","text": turn_text})
+                    if all(item.get("type") == "text" for item in m["content"]):
+                        text_only_content[id(normalized)] = normalized
                 m["content"] = normalized
         for m in messages: # Fix tool_calls arguments and content if parsable
             if m.get("tool_calls"):
@@ -5443,17 +5469,26 @@ def format_jinja(messages_orig, tools, chat_template_kwargs=None):
         assist_should_prefill = False
         chat_template_kwargs = chat_template_kwargs or {}
         last_assist_msg = ""
+        single_assistant_prefill = False
+        assistant_prefill_marker = "\ue000740915260831\ue001"
         if messages:
             last_assist_msg = messages[-1]["content"]
             assist_should_prefill = (messages and messages[-1]["role"].lower() == "assistant" and last_assist_msg and isinstance(last_assist_msg, str) and len(last_assist_msg.strip())>0) #avoid single character newline or space content
             last_assist_msg = "" if not assist_should_prefill else last_assist_msg
-            messages_for_render = messages[:-1] if len(messages) > 1 and assist_should_prefill else messages
+            single_assistant_prefill = assist_should_prefill and len(messages) == 1
+            messages_for_render = messages if single_assistant_prefill else (messages[:-1] if assist_should_prefill else messages)
+            if single_assistant_prefill:
+                messages_for_render[0]["content"] = assistant_prefill_marker
+        render_eos_token = "" if single_assistant_prefill else cached_eos_token
+        add_generation_prompt = not single_assistant_prefill
         if tools and len(tools)>0:
-            text = jinja_compiled_template.render(messages=messages_for_render, tools=tools, add_generation_prompt=True, bos_token="", eos_token="", **chat_template_kwargs)
+            text = jinja_compiled_template.render(messages=messages_for_render, tools=tools, add_generation_prompt=add_generation_prompt, bos_token="", eos_token=render_eos_token, **chat_template_kwargs)
         else:
-            text = jinja_compiled_template.render(messages=messages_for_render, add_generation_prompt=True, bos_token="", eos_token="", **chat_template_kwargs)
-        if assist_should_prefill and text and last_assist_msg: # handle prefill continuations
-            text = text + last_assist_msg
+            text = jinja_compiled_template.render(messages=messages_for_render, add_generation_prompt=add_generation_prompt, bos_token="", eos_token=render_eos_token, **chat_template_kwargs)
+        if single_assistant_prefill and text and assistant_prefill_marker in text:
+            text = text[:text.find(assistant_prefill_marker)] + last_assist_msg
+        elif assist_should_prefill and last_assist_msg: # handle prefill continuations
+            text = (text or "") + last_assist_msg
         return text if text else None
     except Exception as e:
         print(f"Jinja formatting failed: {e}")
@@ -6104,6 +6139,35 @@ def apply_forced_sysprompt(genparams, api_format):
     return genparams
 
 
+def apply_ollama_options(genparams):
+    # Map the sampler/length settings from an Ollama request's "options" object onto genparams.
+    # Shared by the Ollama /api/generate and /api/chat endpoints.
+    ollamaopts = genparams.get('options', {})
+    if not isinstance(ollamaopts, dict):
+        return
+    if "num_predict" in ollamaopts:
+        genparams["max_length"] = ollamaopts.get('num_predict', args.defaultgenamt)
+    if "num_ctx" in ollamaopts:
+        genparams["max_context_length"] = ollamaopts.get('num_ctx', maxctx)
+    if "temperature" in ollamaopts:
+        genparams["temperature"] = ollamaopts.get('temperature', 0.7)
+    if "top_k" in ollamaopts:
+        genparams["top_k"] = ollamaopts.get('top_k', 100)
+    if "top_p" in ollamaopts:
+        genparams["top_p"] = ollamaopts.get('top_p', 0.9)
+    if "seed" in ollamaopts:
+        genparams["sampler_seed"] = tryparseint(ollamaopts.get('seed', -1),-1)
+    if "stop" in ollamaopts:
+        stop_sequences = ollamaopts.get('stop')
+        if isinstance(stop_sequences, list):
+            # The transform appends template delimiters, so do not mutate the request's options list.
+            genparams["stop_sequence"] = list(stop_sequences)
+        elif isinstance(stop_sequences, str):
+            genparams["stop_sequence"] = [stop_sequences]
+        else:
+            genparams["stop_sequence"] = []
+
+
 def transform_genparams(genparams, api_format, use_jinja):
     global chatcompl_adapter, maxctx, thinkformats, cached_jinja_kwargs
 
@@ -6179,6 +6243,9 @@ ws ::= | " " | "\n" [ \t]{0,20}
         genparams["sampler_seed"] = tryparseint(genparams.get('seed', -1),-1)
         genparams["mirostat"] = genparams.get('mirostat_mode', 0)
 
+        if api_format==7: # ollama chat passes sampler settings inside "options", same as /api/generate
+            apply_ollama_options(genparams)
+
         if api_format==4 or api_format==7: #handle ollama chat here too
             if genparams.get("tools"):
                 genparams["tools"] = normalize_openai_tools_input(genparams["tools"])
@@ -6209,6 +6276,14 @@ ws ::= | " " | "\n" [ \t]{0,20}
             continue_assistant_turn = genparams.get('continue_assistant_turn', True)
             latest_turn_was_assistant = False
             latest_turn_was_tool = False
+
+            # ollama chat requests structured outputs via "format": either "json" or a JSON schema object
+            if api_format==7 and not genparams.get('response_format', None):
+                ollamaformat = genparams.get('format', None)
+                if isinstance(ollamaformat, str) and ollamaformat.lower() == "json":
+                    genparams['response_format'] = {"type": "json_object"}
+                elif isinstance(ollamaformat, dict) and ollamaformat:
+                    genparams['response_format'] = {"type": "json_schema", "json_schema": {"schema": ollamaformat}}
 
             # handle structured outputs
             respformat = genparams.get('response_format', None)
@@ -6454,23 +6529,14 @@ ws ::= | " " | "\n" [ \t]{0,20}
             utfprint("Ollama Context Error: " + str(e))
         ollamasysprompt = genparams.get('system', "")
         ollamabodyprompt = f"{detokstr}{user_message_start}{genparams.get('prompt', '')}{assistant_message_gen}"
-        ollamaopts = genparams.get('options', {})
-        if genparams.get('stop',[]) is not None:
-            genparams["stop_sequence"] = genparams.get('stop', [])
-        if "num_predict" in ollamaopts:
-            genparams["max_length"] = ollamaopts.get('num_predict', args.defaultgenamt)
-        if "num_ctx" in ollamaopts:
-            genparams["max_context_length"] = ollamaopts.get('num_ctx', maxctx)
-        if "temperature" in ollamaopts:
-            genparams["temperature"] = ollamaopts.get('temperature', 0.7)
-        if "top_k" in ollamaopts:
-            genparams["top_k"] = ollamaopts.get('top_k', 100)
-        if "top_p" in ollamaopts:
-            genparams["top_p"] = ollamaopts.get('top_p', 0.9)
-        if "seed" in ollamaopts:
-            genparams["sampler_seed"] = tryparseint(ollamaopts.get('seed', -1),-1)
-        if "stop" in ollamaopts:
-            genparams["stop_sequence"] = ollamaopts.get('stop', [])
+        ollama_stop = genparams.get('stop', [])
+        if isinstance(ollama_stop, list):
+            genparams["stop_sequence"] = list(ollama_stop)
+        elif isinstance(ollama_stop, str):
+            genparams["stop_sequence"] = [ollama_stop]
+        else:
+            genparams["stop_sequence"] = []
+        apply_ollama_options(genparams)
         genparams["stop_sequence"].append(user_message_start.strip())
         genparams["stop_sequence"].append(assistant_message_start.strip())
         genparams["trim_stop"] = True
@@ -12790,7 +12856,7 @@ Change Mode<br>
             response_body = (json.dumps({"message": "Settings successfully applied"}).encode())
 
         elif clean_path=="/api/show": #ollama compatible
-            response_body = (json.dumps({"parameters":"temperature 1.0","license":"Ollama Emulation. Running on KoboldCpp","modelfile":"KoboldCpp","capabilities":["completion"],"modified_at":"2025-01-01T01:00:00.0000000+00:00","details":{},"model_info":{}}).encode())
+            response_body = (json.dumps({"parameters":"temperature 1.0","license":"Ollama Emulation. Running on KoboldCpp","modelfile":"KoboldCpp","capabilities":get_ollama_capabilities(),"modified_at":"2025-01-01T01:00:00.0000000+00:00","details":{},"model_info":{}}).encode())
 
         elif clean_path=="/mcp": #simple mcp proxy
             if not self.secure_endpoint():
@@ -18218,7 +18284,7 @@ def get_kobold_agent_path():
 
 
 def run_bundled_kobold_agent(base_url=None, api_key=None, load_session=None,
-                             request_timeout=None, no_certify=False):
+                             request_timeout=None, no_certify=False, disable_view_image=False):
     """Run the bundled agent script inside a frozen KoboldCpp process."""
     agent_path = get_kobold_agent_path()
     if not os.path.isfile(agent_path):
@@ -18239,6 +18305,8 @@ def run_bundled_kobold_agent(base_url=None, api_key=None, load_session=None,
             sys.argv.extend(["--request-timeout", str(request_timeout)])
         if no_certify:
             sys.argv.append("--nocertify")
+        if disable_view_image:
+            sys.argv.append("--disable-view-image")
         kcpp_agent.main()
     finally:
         sys.argv = old_argv
@@ -18246,7 +18314,7 @@ def run_bundled_kobold_agent(base_url=None, api_key=None, load_session=None,
 
 def launch_kobold_agent_terminal(base_url=None, api_key=None, same_terminal=False,
                                  load_session=None, request_timeout=None,
-                                 no_certify=False):
+                                 no_certify=False, disable_view_image=False):
     """Run the agent in a new or existing terminal, using the bundled runner when frozen."""
     agent_path = get_kobold_agent_path()
     if not os.path.isfile(agent_path):
@@ -18266,6 +18334,8 @@ def launch_kobold_agent_terminal(base_url=None, api_key=None, same_terminal=Fals
         command.extend(["--reqtimeout" if is_frozen else "--request-timeout", str(request_timeout)])
     if no_certify:
         command.append("--nocertify")
+    if disable_view_image:
+        command.append("--agent-disable-view-image" if is_frozen else "--disable-view-image")
 
     try:
         if same_terminal:
@@ -18377,7 +18447,7 @@ def launch_kobold_agent_terminal(base_url=None, api_key=None, same_terminal=Fals
 
 def launch_kobold_agent_after_mcp_load(
     mcp_load_thread, base_url=None, api_key=None, same_terminal=False, load_session=None,
-    request_timeout=None, no_certify=False
+    request_timeout=None, no_certify=False, disable_view_image=False
 ):
     """Briefly wait for a complete MCP tool list, then launch regardless."""
     if mcp_load_thread is not None:
@@ -18391,7 +18461,8 @@ def launch_kobold_agent_after_mcp_load(
                 "to refresh MCP tools."
             )
     return launch_kobold_agent_terminal(
-        base_url, api_key, same_terminal, load_session, request_timeout, no_certify
+        base_url, api_key, same_terminal, load_session, request_timeout, no_certify,
+        disable_view_image
     )
 
 
@@ -18750,7 +18821,7 @@ def main(launch_args, default_args):
     if args.run_bundled_agent:
         run_bundled_kobold_agent(
             args.agent_base_url, args.agent_api_key, args.agentload, args.reqtimeout,
-            args.nocertify
+            args.nocertify, args.agent_disable_view_image
         )
         return
 
@@ -19303,6 +19374,7 @@ def disableSwappedFieldsInConfig(args, swapReqType, autoswap_settings):
 def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
     global embedded_kailite, embedded_kcpp_docs, embedded_kcpp_sdui, embedded_kailite_gz, embedded_kcpp_docs_gz, embedded_kcpp_sdui_gz, embedded_lcpp_ui_gz, embedded_musicui, embedded_musicui_gz, start_time, exitcounter, global_memory, using_gui_launcher
     global libname, args, friendlymodelname, friendlysdmodelname, fullsdmodelpath, password, fullwhispermodelpath, ttsmodelpath, embeddingsmodelpath, musicdiffusionmodelpath, musicllmmodelpath, friendlyembeddingsmodelname, has_audio_support, has_vision_support, cached_chat_template, cached_jinja_kwargs, cached_sd_info, preloaded_custom_jinja
+    global cached_eos_token
 
     start_server = True
 
@@ -19323,6 +19395,8 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
         args.model_param = global_memory["modelOverride"]
 
     global autoswapmode, textName, sttName, ttsName, embedName, musicName, imageName, mmprojName
+    global autoswap_music, imglora_preload, imglora_bypath, imglora_name2path
+    autoswap_music = {}
     autoswapmode = False
     textName = None
     mmprojName = None
@@ -19357,14 +19431,21 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
             tempName = os.path.basename(os.path.abspath(args.embeddingsmodel))
             tempName = os.path.splitext(tempName)[0]
             embedName = sanitize_string(tempName)
-        if args.musicdiffusion and args.musicdiffusion!="":
-            tempName = os.path.basename(os.path.abspath(args.musicdiffusion))
+        if args.musicdiffusion or args.musicllm:
+            # Preserve advertised capabilities before inactive model paths are cleared.
+            autoswap_music = {
+                'llm': bool(args.musicllm),
+            }
+            tempName = os.path.basename(os.path.abspath(args.musicdiffusion or args.musicllm))
             tempName = os.path.splitext(tempName)[0]
             musicName = sanitize_string(tempName)
         if args.sdmodel and args.sdmodel!="":
             tempName = os.path.basename(os.path.abspath(args.sdmodel))
             tempName = os.path.splitext(tempName)[0]
             imageName = sanitize_string(tempName)
+            # Directory discovery does not require loading the image model.
+            imglora_preload, imglora_bypath, imglora_name2path = mk_lora_info(
+                sanitize_lora_list(args.sdlora), sanitize_lora_multipliers(args.sdloramult))
         if global_memory["swapReqType"] is not None:
             disableSwappedFieldsInConfig(args, global_memory["swapReqType"], global_memory["autoswapSettings"])
         else:
@@ -19826,6 +19907,8 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
         if args.model_param:
             ctbytes = handle.get_chat_template()
             cached_chat_template = ctypes.string_at(ctbytes).decode("UTF-8","ignore")
+            eos_bytes = handle.get_eos_token_text() if hasattr(handle, "get_eos_token_text") else b""
+            cached_eos_token = eos_bytes.decode("UTF-8", "ignore")
             if cached_chat_template != "" and (chatcompl_adapter_list is not None and isinstance(chatcompl_adapter_list, list)):
                 for entry in chatcompl_adapter_list:
                     if all(s in cached_chat_template for s in entry['search']):
@@ -19867,7 +19950,6 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
             imgphotomaker = ""
             imgupscaler = ""
             imgaudiovae = ""
-            global imglora_preload, imglora_bypath, imglora_name2path
             imglora_preload, imglora_bypath, imglora_name2path = mk_lora_info(args.sdlora, args.sdloramult)
             if args.sdvae:
                 if os.path.exists(args.sdvae):
@@ -20425,6 +20507,7 @@ def kcpp_main_process(launch_args, g_memory=None, gui_launcher=False):
                     load_session=args.agentload,
                     request_timeout=args.reqtimeout,
                     no_certify=args.nocertify,
+                    disable_view_image=not (has_vision_support or (autoswapmode and mmprojName is not None)),
                 )
                 if args.cli:
                     raise SystemExit(0 if success else 1)
@@ -20698,6 +20781,7 @@ if __name__ == '__main__':
     internalgroup.add_argument("--run-bundled-agent", "--run-agent", dest="run_bundled_agent", help=argparse.SUPPRESS, action='store_true')
     internalgroup.add_argument("--agent-base-url", help=argparse.SUPPRESS, default=None)
     internalgroup.add_argument("--agent-api-key", help=argparse.SUPPRESS, default=None)
+    internalgroup.add_argument("--agent-disable-view-image", help=argparse.SUPPRESS, action='store_true')
 
     launch_args = parser.parse_args()
     cli_arg_overrides = get_cli_arg_overrides(parser)

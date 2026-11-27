@@ -1,5 +1,79 @@
 #pragma once
 
+// kcpp: mirror the CMake-generated FlashAttention defines for our fixed template instances.
+// Keep enabled pairs in sync with Makefile and CMakeLists.txt.
+#define GGML_CUDA_FA_F16_F16 1
+#define GGML_CUDA_FA_Q4_0_F16 0
+#define GGML_CUDA_FA_Q4_1_F16 0
+#define GGML_CUDA_FA_Q5_0_F16 0
+#define GGML_CUDA_FA_Q5_1_F16 0
+#define GGML_CUDA_FA_Q8_0_F16 0
+#define GGML_CUDA_FA_BF16_F16 0
+#define GGML_CUDA_FA_F16_F8_E4M3 0
+
+#define GGML_CUDA_FA_F16_Q4_0 0
+#define GGML_CUDA_FA_Q4_0_Q4_0 1
+#define GGML_CUDA_FA_Q4_1_Q4_0 0
+#define GGML_CUDA_FA_Q5_0_Q4_0 0
+#define GGML_CUDA_FA_Q5_1_Q4_0 0
+#define GGML_CUDA_FA_Q8_0_Q4_0 0
+#define GGML_CUDA_FA_BF16_Q4_0 0
+#define GGML_CUDA_FA_Q4_0_F8_E4M3 0
+
+#define GGML_CUDA_FA_F16_Q4_1 0
+#define GGML_CUDA_FA_Q4_0_Q4_1 0
+#define GGML_CUDA_FA_Q4_1_Q4_1 0
+#define GGML_CUDA_FA_Q5_0_Q4_1 0
+#define GGML_CUDA_FA_Q5_1_Q4_1 0
+#define GGML_CUDA_FA_Q8_0_Q4_1 0
+#define GGML_CUDA_FA_BF16_Q4_1 0
+#define GGML_CUDA_FA_Q4_1_F8_E4M3 0
+
+#define GGML_CUDA_FA_F16_Q5_0 0
+#define GGML_CUDA_FA_Q4_0_Q5_0 0
+#define GGML_CUDA_FA_Q4_1_Q5_0 0
+#define GGML_CUDA_FA_Q5_0_Q5_0 0
+#define GGML_CUDA_FA_Q5_1_Q5_0 0
+#define GGML_CUDA_FA_Q8_0_Q5_0 0
+#define GGML_CUDA_FA_BF16_Q5_0 0
+#define GGML_CUDA_FA_Q5_0_F8_E4M3 0
+
+#define GGML_CUDA_FA_F16_Q5_1 0
+#define GGML_CUDA_FA_Q4_0_Q5_1 0
+#define GGML_CUDA_FA_Q4_1_Q5_1 0
+#define GGML_CUDA_FA_Q5_0_Q5_1 0
+#define GGML_CUDA_FA_Q5_1_Q5_1 1
+#define GGML_CUDA_FA_Q8_0_Q5_1 0
+#define GGML_CUDA_FA_BF16_Q5_1 0
+#define GGML_CUDA_FA_Q5_1_F8_E4M3 0
+
+#define GGML_CUDA_FA_F16_Q8_0 0
+#define GGML_CUDA_FA_Q4_0_Q8_0 0
+#define GGML_CUDA_FA_Q4_1_Q8_0 0
+#define GGML_CUDA_FA_Q5_0_Q8_0 0
+#define GGML_CUDA_FA_Q5_1_Q8_0 0
+#define GGML_CUDA_FA_Q8_0_Q8_0 1
+#define GGML_CUDA_FA_BF16_Q8_0 0
+#define GGML_CUDA_FA_Q8_0_F8_E4M3 0
+
+#define GGML_CUDA_FA_F16_BF16 0
+#define GGML_CUDA_FA_Q4_0_BF16 0
+#define GGML_CUDA_FA_Q4_1_BF16 0
+#define GGML_CUDA_FA_Q5_0_BF16 0
+#define GGML_CUDA_FA_Q5_1_BF16 0
+#define GGML_CUDA_FA_Q8_0_BF16 0
+#define GGML_CUDA_FA_BF16_BF16 1
+#define GGML_CUDA_FA_BF16_F8_E4M3 0
+
+#define GGML_CUDA_FA_F8_E4M3_F16 0
+#define GGML_CUDA_FA_F8_E4M3_Q4_0 0
+#define GGML_CUDA_FA_F8_E4M3_Q4_1 0
+#define GGML_CUDA_FA_F8_E4M3_Q5_0 0
+#define GGML_CUDA_FA_F8_E4M3_Q5_1 0
+#define GGML_CUDA_FA_F8_E4M3_Q8_0 0
+#define GGML_CUDA_FA_F8_E4M3_BF16 0
+#define GGML_CUDA_FA_F8_E4M3_F8_E4M3 0
+
 #include "ggml.h"
 #include "ggml-impl.h"
 #include "ggml-cuda.h"
@@ -417,6 +491,11 @@ static bool ggml_cuda_is_aligned(const ggml_tensor * tensor, const size_t alignm
            tensor->nb[1] % alignment == 0 &&
            tensor->nb[2] % alignment == 0 &&
            tensor->nb[3] % alignment == 0;
+}
+
+static bool ggml_cuda_is_view_or_noop(const ggml_tensor * t) {
+    return ggml_is_empty(t) || t->op == GGML_OP_RESHAPE || t->op == GGML_OP_TRANSPOSE ||
+           t->op == GGML_OP_VIEW || t->op == GGML_OP_PERMUTE || t->op == GGML_OP_NONE;
 }
 
 static constexpr __device__ int ggml_cuda_get_physical_warp_size() {
@@ -918,7 +997,7 @@ static __device__ __forceinline__ float ggml_cuda_ue4m3_to_fp32(uint8_t x) {
     // but CDNA3 supports only e4m3_fnuz (no inf).
     const uint32_t bits = x * (x != 0x7F && x != 0xFF); // Convert NaN to 0.0f to match CPU implementation.
     const __hip_fp8_e4m3_fnuz xf = *reinterpret_cast<const __hip_fp8_e4m3_fnuz *>(&bits);
-    return static_cast<float>(xf) / 2;
+    return static_cast<float>(xf);
 #else
 #if defined(FP8_AVAILABLE) && !defined(GGML_USE_HIP)
     const uint32_t bits = x * (x != 0x7F && x != 0xFF); // Convert NaN to 0.0f to match CPU implementation.

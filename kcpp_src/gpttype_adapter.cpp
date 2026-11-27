@@ -6413,6 +6413,16 @@ std::string gpttype_get_chat_template()
     return std::string(model_template.data(), model_template.size() - 1);
 }
 
+std::string gpttype_get_eos_token_text()
+{
+    if(file_format != FileFormat::GGUF_GENERIC || !llama_ctx_v4)
+    {
+        return "";
+    }
+    const auto * vocab = llama_model_get_vocab(llama_get_model(llama_ctx_v4));
+    return FileFormatTokenizeID(llama_vocab_eos(vocab), file_format, true);
+}
+
 std::string gpttype_parse_chat_tool_calls(const std::string & generated_text,
                                           const std::string & tools_json,
                                           const std::string & chat_template,
@@ -6440,7 +6450,7 @@ std::string gpttype_parse_chat_tool_calls(const std::string & generated_text,
             return "";
         }
 
-        auto tmpls = common_chat_templates_init(nullptr, tmpl_src);
+        auto tmpls = common_chat_templates_init(nullptr, tmpl_src, "", gpttype_get_eos_token_text());
 
         common_chat_msg msg;
         msg.role = "user";
@@ -6450,7 +6460,7 @@ std::string gpttype_parse_chat_tool_calls(const std::string & generated_text,
         inputs.use_jinja = true;
         inputs.messages = { msg };
         inputs.tools = common_chat_tools_parse_oaicompat(tools);
-        inputs.tool_choice = common_chat_tool_choice_parse_oaicompat(tool_choice.empty() ? "auto" : tool_choice);
+        inputs.tool_choice = common_chat_tool_choice_parse_oaicompat(common_json(tool_choice.empty() ? "auto" : tool_choice), inputs.tools);
         inputs.parallel_tool_calls = parallel_tool_calls;
         inputs.add_generation_prompt = true;
         // Consume reasoning (including a <think> in the generation prompt) before tools.

@@ -90,6 +90,8 @@ jobs:
             -w /workspace \
             -e KCPP_CUDA="rocm" \
             -e KCPP_PORTABLE="1" \
+            -e LLAMA_HIP_GENERIC_TARGETS=1 \
+            -e LLAMA_HIP_OFFLOAD_COMPRESS=1 \
             -e KCPP_PYTHON_VERSION="${{ env.KCPP_PYTHON_VERSION }}" \
             -e BRANCH_NAME="${{ github.head_ref || github.ref_name }}" \
             rocm/dev-ubuntu-22.04:7.14.0-full \
@@ -98,7 +100,8 @@ jobs:
               DEBIAN_FRONTEND=noninteractive apt install -y git curl bzip2 python3-tk tcl tk &&
               export TCL_LIBRARY=\$(find /usr/lib/ -name 'tcl8*' | head -n 1) &&
               export TK_LIBRARY=\$(find /usr/lib/ -name 'tk8*' | head -n 1) &&
-              ./koboldcpp.sh dist
+              ./koboldcpp.sh dist &&
+              ls -lh koboldcpp_hipblas.so dist/koboldcpp-linux-x64-rocm
             "
 
       - name: Save artifact
@@ -108,6 +111,7 @@ jobs:
           path: ${{ github.workspace }}/dist/
 
       - name: Upload to GitHub Rolling Release
+        if: ${{ inputs.commit_hash == '' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

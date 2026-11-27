@@ -323,11 +323,30 @@ public:
     ggml_tensor * s_copy_main; // I32 [n_seqs]
     ggml_tensor * s_copy_tail; // I32 [n_rs - 1]
 
+    // rs_replay: the ubatch first replays the kept pending tokens of the last ubatch (none is a no-op)
+    bool          has_rep  = false;
+    int64_t       n_conv   = 0;       // conv window columns, the widest conv of the model
+    int64_t       n_pend   = 0;       // pending slots per seq
+    ggml_tensor * rep_n    = nullptr; // I32 [n_seqs], kept pending tokens
+    ggml_tensor * rep_cols = nullptr; // I32 [n_conv, n_seqs], conv history columns of the window after the kept tokens
+
+    // views of rep_cols for the delta-net conv and the PLE conv windows, computed once per graph and shared across layers
+    ggml_tensor * rep_cols_r = nullptr;
+    ggml_tensor * rep_cols_p = nullptr;
+
+    void set_input_rep(const llama_memory_recurrent_context * mctx, const llama_ubatch * ubatch);
+
     const llama_memory_recurrent_context * mctx;
 
     // used in view offsets, need to match for valid graph reuse
     uint32_t head;
     int32_t rs_z;
+
+    // the states are read from the cache, see llama_memory_recurrent_context::get_rs_in_place
+    bool rs_in_place;
+
+    // rows to gather, shared by all layers; empty when rs_in_place
+    ggml_tensor * s_copy_rows; // I32 [n_rs] or [0]
 };
 
 class llm_graph_input_cross_embd : public llm_graph_input_i {
@@ -1336,7 +1355,9 @@ struct llm_graph_context {
             ggml_tensor * v_mla,   // [n_embd_head_v_mla, n_embd_head_v, n_head_v]
                 int64_t   n_kv_max,
                   float   kq_scale,
-                    int   il) const;
+                    int   il,
+            ggml_tensor * bias_table = nullptr,   // [n_bins, n_head_q, n_tokens]
+            ggml_tensor * bias_indices = nullptr) const;
 
     llm_graph_input_attn_no_cache * build_attn_inp_no_cache() const;
 
@@ -1481,6 +1502,7 @@ struct llm_graph_context {
     //       when moving, avoid passing `ggml_cgraph` - only pass `ggml_context`. would likely need to split the
     //         implementation in 2 separate methods. the goal is to avoid calling `ggml_build_forward_expand` in
     //         `llama_memory_recurrent`
+    // note: same rules as the build_rs overload below (readers before the store, one call per state tensor per graph)
     ggml_tensor * build_rs(
             ggml_tensor * s,
             ggml_tensor * state_copy,
@@ -1491,16 +1513,22 @@ struct llm_graph_context {
                uint32_t   rs_head,
                uint32_t   rs_size,
                 int32_t   rs_zero,
-            const llm_graph_get_rows_fn & get_state_rows = nullptr) const;
+            const llm_graph_get_rows_fn & get_state_rows = nullptr,
+                   bool   in_place = false,
+                   bool   from_cache = true) const;
 
     llm_graph_input_rs * build_rs_inp() const;
 
+    // the returned states can be a view of the cache, so callers must follow 2 rules:
+    // - expand every reader of the returned tensor before the store into s (the rwkv token shift gets this only from the expand order)
+    // - call it once per state tensor per graph: a second call would gather rows that the first already moved into [head, head + n_seqs)
     ggml_tensor * build_rs(
             llm_graph_input_rs * inp,
             ggml_tensor * s,
                 int32_t   state_size,
                 int32_t   n_seqs,
-            const llm_graph_get_rows_fn & get_state_rows = nullptr) const;
+            const llm_graph_get_rows_fn & get_state_rows = nullptr,
+                   bool   gathered = false) const; // gathered: always read a copy, never the cache
 
     // store the conv history of the ubatch cells, the last n_cols columns of conv_x {n_cols + n_seq_tokens, channels, n_seqs},
     // at byte offset offs of each row of s, and with n_rs_seq > 0 once per rollback slot of this ubatch
@@ -1534,7 +1562,6 @@ struct llm_graph_context {
             uint32_t extent,
             uint32_t extent_swa) const;
 
-    // kq_b is added to the KQ mask, after the KQ scale
     ggml_tensor * build_attn(
             llm_graph_input_mem_hybrid_iswa_rel * inp,
             ggml_tensor * wo,
@@ -1543,7 +1570,7 @@ struct llm_graph_context {
             ggml_tensor * q_cur, // [n_embd_head_q, n_head_q, n_tokens]
             ggml_tensor * k_cur, // [n_embd_head_k, n_head_k, n_tokens]
             ggml_tensor * v_cur, // [n_embd_head_v, n_head_v, n_tokens]
-            ggml_tensor * kq_b,  // [n_kv, n_tokens/n_stream, n_head_q, n_stream]
+            ggml_tensor * bias_table, // [n_bins, n_head_q, n_tokens]
             ggml_tensor * sinks, // [n_head_q]
                   float   kq_scale,
                     int   il) const;

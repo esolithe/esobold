@@ -2617,14 +2617,14 @@ def print_runtime_help(
         ("/load FILE", "Load conversation and settings from JSON"),
         ("/clear", "Clear history and refresh MCP tools"),
         ("/tools", "List tools and confirmation settings (/tool is an alias)"),
-        ("/tools NAME on|off", "Enable or disable a tool, then clear the session"),
+        ("/tools NAME on|off", "Enable or disable a tool. Warning: changing its state clears the conversation history"),
         ("/compact", "Summarize history to save context space"),
         ("/usage", "Show token usage for the latest model request"),
         ("/autocompact [N|off]", "Show, set, or disable automatic compaction by context tokens"),
         ("/maxsteps [N]", "Show or set the maximum model turns per user message (N >= 1)"),
         ("/timeout [SECONDS]", "Show or set the request timeout in seconds (SECONDS >= 1)"),
         ("/workdir", "Show the current working directory"),
-        ("/workdir PATH", "Change directory and clear the session"),
+        ("/workdir PATH", "Set the working directory. Warning: this clears the conversation history"),
         ("/mcp", "Configure the MCP endpoint or turn MCP off"),
         ("/confirm", "Show global default confirmation and tool overrides"),
         ("/confirm on|off|auto", "Set global default: always ask, always approve, or auto (approve only within workdir)"),
@@ -2770,6 +2770,7 @@ def run_agent(
     load_session: Path | None = None,
     reasoning_effort: str | None = None,
     request_timeout_override: int | None = None,
+    disable_view_image: bool = False,
 ) -> None:
     global MAX_TOOL_RESULT_CHARS
 
@@ -2821,6 +2822,8 @@ def run_agent(
         model = model or (models[0] if models else "local-model")
 
     disabled_tools = set(session["disabled_tools"]) if session is not None else set()
+    if disable_view_image:
+        disabled_tools.add("view_image")
     tool_confirmation = dict(tool_confirmation or {})
     all_tools = list(TOOLS)
     available_tools = list(TOOLS)
@@ -2886,6 +2889,8 @@ def run_agent(
         session["messages"] if session is not None else
         [{"role": "system", "content": system_prompt(disabled_tools)}]
     )
+    if disable_view_image and session is not None:
+        messages[0] = {"role": "system", "content": system_prompt(disabled_tools)}
     last_usage: dict[str, int] | None = None
     pending_interruption = session["pending_interruption"] if session is not None else False
     pending_attachments: list[dict[str, Any]] = []
@@ -3690,6 +3695,11 @@ def parse_args() -> argparse.Namespace:
         help="Override a tool's confirmation with on, off, or auto. Repeat for multiple tools; last value wins.",
     )
     parser.add_argument(
+        "--disable-view-image",
+        action="store_true",
+        help="Start with the view_image tool disabled (for models without vision support).",
+    )
+    parser.add_argument(
         "--no-color",
         action="store_true",
         help="Disable colored terminal output.",
@@ -3765,6 +3775,7 @@ def main() -> None:
             request_timeout=args.request_timeout,
             no_color=args.no_color,
             load_session=args.load_session,
+            disable_view_image=args.disable_view_image,
             request_timeout_override=(
                 args.request_timeout if request_timeout_explicit else None
             ),
