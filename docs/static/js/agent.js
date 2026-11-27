@@ -2656,7 +2656,7 @@ window.updateCycleRef = (interactionId, agentRunState) => {
 
 let originalPrepareSubmitGeneration = prepare_submit_generation, originalRestartNewGame = restart_new_game;
 
-prepare_submit_generation = async () => {
+prepare_submit_generation = async (onSubmitted = null) => {
     if (isAgentModeEnabledAndSetCorrectly()) {
         if (pendingAgentUserInputRequest && !pendingAgentUserInputRequest.resolved) {
             await resolvePendingAgentUserInputFromMainInput("continue")
@@ -2679,7 +2679,7 @@ prepare_submit_generation = async () => {
         })
     }
     else {
-        originalPrepareSubmitGeneration()
+        originalPrepareSubmitGeneration(onSubmitted)
     }
 }
 

@@ -196,13 +196,13 @@ window.treeViewer = new TreeViewer()
 treeViewer.showOpenButton()
 
 let prepareSubmitGenerationRef = prepare_submit_generation, submitMultiplayerRef = submit_multiplayer
-prepare_submit_generation = async () => {
+prepare_submit_generation = async (onSubmitted = null) => {
     if (!!treeHandler.enabled) {
         treeHandler.addTreeBranch(concat_gametext())
-        await prepareSubmitGenerationRef()
+        await prepareSubmitGenerationRef(onSubmitted)
     }
     else {
-        await prepareSubmitGenerationRef()
+        await prepareSubmitGenerationRef(onSubmitted)
     }
 }
 
